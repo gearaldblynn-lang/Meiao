@@ -494,6 +494,23 @@ test('video generation exposes api and cli seedance fast paths with api credit e
   assert.match(bottomInputBar, /预计消耗/);
 });
 
+test('short video multimodal input exposes accessible current-material mentions', () => {
+  const bottomInputBar = source();
+
+  assert.match(bottomInputBar, /VIDEO_MATERIAL_MENTION_PARAM/);
+  assert.match(bottomInputBar, /buildVideoMaterialMentionCandidates/);
+  assert.match(bottomInputBar, /findVideoMaterialMentionQuery/);
+  assert.match(bottomInputBar, /insertVideoMaterialMention/);
+  assert.match(bottomInputBar, /upsertVideoMaterialMentionBinding/);
+  assert.match(bottomInputBar, /const canUseVideoMaterialMentions = isDreaminaVideoGeneration && dreaminaMode === 'multimodal2video'/);
+  assert.match(bottomInputBar, /aria-label="引用当前素材"/);
+  assert.match(bottomInputBar, />@\u7d20材</);
+  assert.match(bottomInputBar, /role="listbox"/);
+  assert.match(bottomInputBar, /role="option"/);
+  assert.match(bottomInputBar, /请先上传图片、视频或音频素材/);
+  assert.match(bottomInputBar, /isImeComposing/);
+});
+
 test('video storyboard original mode passes scene reference uploads into storyboard config', () => {
   const shellSource = readFileSync(new URL('../../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
   const builderBody = shellSource.match(/const buildVideoStoryboardConfig = \([\s\S]*?\n\};/)?.[0] || '';

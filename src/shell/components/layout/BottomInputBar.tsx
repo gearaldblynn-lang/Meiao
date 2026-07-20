@@ -5,7 +5,7 @@ import type { OneClickReferencePreset } from '../../../types';
 import {
   Send, ImagePlus, X, ChevronDown, Check, SlidersHorizontal,
   Wand2, Globe, Users, Sparkles, Play, Layers, Palette, Type,
-  BoxSelect, Monitor, Folder, Search, Clapperboard, Plus, Loader2,
+  BoxSelect, Monitor, Folder, Search, Clapperboard, Plus, Loader2, AtSign, Music2,
 } from 'lucide-react';
 import UploadTypeSelector, { type MaterialType } from '../UploadTypeSelector';
 import MaterialPreviewBar from '../MaterialPreviewBar';
@@ -42,6 +42,14 @@ import {
   normalizeMaxForAiVideoSeconds,
 } from '../../../utils/maxforaiVideoModels.mjs';
 import { getReferenceVideoUploadPolicy } from '../../../utils/videoReferenceUploadPolicy.mjs';
+import {
+  VIDEO_MATERIAL_MENTION_PARAM,
+  buildVideoMaterialMentionCandidates,
+  findVideoMaterialMentionQuery,
+  insertVideoMaterialMention,
+  parseVideoMaterialMentionBindings,
+  upsertVideoMaterialMentionBinding,
+} from '../../../utils/videoMaterialMentions.mjs';
 import {
   LOGO_PLACEMENT_RATIOS,
   applyLogoPlacementTemplateToAllRatios,
@@ -1268,6 +1276,10 @@ const BottomInputBar: React.FC<Props> = ({
   const [skuNamingOpen, setSkuNamingOpen] = useState(false);
   const [skuCountOpen, setSkuCountOpen] = useState(false);
   const [xhsPresetOpen, setXhsPresetOpen] = useState(false);
+  const [materialMentionOpen, setMaterialMentionOpen] = useState(false);
+  const [materialMentionIndex, setMaterialMentionIndex] = useState(0);
+  const [materialMentionQuery, setMaterialMentionQuery] = useState('');
+  const [materialMentionRange, setMaterialMentionRange] = useState({ start: 0, end: 0 });
   const [xhsPreviewImage, setXhsPreviewImage] = useState<string | null>(null);
   const logoPlacementFrameRef = useRef<HTMLDivElement>(null);
   const logoReplaceRegionFrameRef = useRef<HTMLDivElement>(null);
@@ -1320,6 +1332,24 @@ const BottomInputBar: React.FC<Props> = ({
     })
     : '';
   const isDreaminaVideoGeneration = module === AppModuleObj.VIDEO && (!activeSubFeature || activeSubFeature === 'generation');
+  const dreaminaMode = normalizeDreaminaUiMode(currentParams.dreaminaMode);
+  const canUseVideoMaterialMentions = isDreaminaVideoGeneration && dreaminaMode === 'multimodal2video';
+  const videoMaterialMentionBindings = useMemo(
+    () => parseVideoMaterialMentionBindings(currentParams[VIDEO_MATERIAL_MENTION_PARAM]),
+    [currentParams],
+  );
+  const videoMaterialMentionCandidates = useMemo(
+    () => buildVideoMaterialMentionCandidates(materials, videoMaterialMentionBindings),
+    [materials, videoMaterialMentionBindings],
+  );
+  const filteredVideoMaterialMentionCandidates = useMemo(() => {
+    const query = materialMentionQuery.trim().toLocaleLowerCase('zh-CN');
+    if (!query) return videoMaterialMentionCandidates;
+    return videoMaterialMentionCandidates.filter((candidate: any) => (
+      [candidate.label, candidate.fileName, candidate.kind === 'image' ? '图片' : candidate.kind === 'video' ? '视频' : '音频']
+        .some((value) => String(value || '').toLocaleLowerCase('zh-CN').includes(query))
+    ));
+  }, [materialMentionQuery, videoMaterialMentionCandidates]);
   const isStoryboardViralReplicationContext = module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard' && isStoryboardViralReplicationMode(currentParams.videoMode);
   const referenceVideoPolicy = getReferenceVideoUploadPolicy({
     activeSubFeature,
@@ -1330,6 +1360,63 @@ const BottomInputBar: React.FC<Props> = ({
   const submitLabel = isSubmitBusy ? '任务处理中...' : generateLabel;
   const handleGenerateClick = () => {
     if (!isGenerateDisabled) onGenerate();
+  };
+  const closeMaterialMentionMenu = () => {
+    setMaterialMentionOpen(false);
+    setMaterialMentionQuery('');
+    setMaterialMentionIndex(0);
+  };
+  const openMaterialMentionMenu = () => {
+    if (!canUseVideoMaterialMentions) return;
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? promptText.length;
+    const end = textarea?.selectionEnd ?? start;
+    const activeQuery = start === end ? findVideoMaterialMentionQuery(promptText, end) : null;
+    setMaterialMentionRange(activeQuery || { start, end });
+    setMaterialMentionQuery(activeQuery?.query || '');
+    setMaterialMentionIndex(0);
+    setMaterialMentionOpen(true);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+  const handlePromptTextChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const nextPrompt = event.target.value;
+    const caret = event.target.selectionStart ?? nextPrompt.length;
+    onPromptChange(nextPrompt);
+    if (!canUseVideoMaterialMentions) {
+      closeMaterialMentionMenu();
+      return;
+    }
+    const activeQuery = findVideoMaterialMentionQuery(nextPrompt, caret);
+    if (!activeQuery) {
+      closeMaterialMentionMenu();
+      return;
+    }
+    setMaterialMentionRange(activeQuery);
+    setMaterialMentionQuery(activeQuery.query);
+    setMaterialMentionIndex(0);
+    setMaterialMentionOpen(true);
+  };
+  const insertSelectedVideoMaterialMention = (candidate: any) => {
+    const nextBindings = upsertVideoMaterialMentionBinding(videoMaterialMentionBindings, candidate);
+    const binding = nextBindings.find((item: any) => (
+      item.kind === candidate.kind && item.materialId === candidate.materialId
+    ));
+    if (!binding) return;
+    const insertion = insertVideoMaterialMention({
+      prompt: promptText,
+      start: materialMentionRange.start,
+      end: materialMentionRange.end,
+      label: binding.label,
+    });
+    onPromptChange(insertion.prompt);
+    onParamChange(VIDEO_MATERIAL_MENTION_PARAM, JSON.stringify(nextBindings));
+    closeMaterialMentionMenu();
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(insertion.caret, insertion.caret);
+    });
   };
   const showPromptInput = module !== AppModuleObj.TRANSLATION;
   const contextMaterialTypes = getMaterialTypesForContext(module, currentParams, activeSubFeature);
@@ -1393,9 +1480,16 @@ const BottomInputBar: React.FC<Props> = ({
     setStoryboardNarrativeSelectOpen(false);
     setStoryboardPresetNamingOpen(false);
     setLogoPlacementEditorOpen(false);
+    setMaterialMentionOpen(false);
+    setMaterialMentionQuery('');
+    setMaterialMentionIndex(0);
     setUploadTarget('');
     setUploadTargetSetIndex(null);
-  }, [module, activeSubFeature, currentParams.mode]);
+  }, [module, activeSubFeature, currentParams.mode, currentParams.dreaminaMode]);
+
+  useEffect(() => {
+    setMaterialMentionIndex((index) => Math.max(0, Math.min(index, filteredVideoMaterialMentionCandidates.length - 1)));
+  }, [filteredVideoMaterialMentionCandidates.length]);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -2876,24 +2970,117 @@ const BottomInputBar: React.FC<Props> = ({
 
         {/* Input container — much larger */}
         <div
-          className="mx-auto w-full max-w-[896px] rounded-3xl border transition-all"
+          className="relative mx-auto w-full max-w-[896px] rounded-3xl border transition-all"
           style={{
             borderColor: showPromptInput && promptText ? 'var(--accent)' : 'var(--border-subtle)',
             background: 'var(--bg-surface)',
             boxShadow: showPromptInput && promptText ? '0 0 0 3px var(--accent-soft)' : 'none',
           }}
         >
+          {canUseVideoMaterialMentions && materialMentionOpen && (
+            <div
+              id="video-material-mention-listbox"
+              role="listbox"
+              aria-label="当前任务素材"
+              className="absolute bottom-full left-4 right-4 z-[240] mb-2 max-h-[320px] overflow-y-auto rounded-3xl border p-2"
+              style={{
+                background: 'var(--bg-base)',
+                borderColor: 'var(--border-subtle)',
+                boxShadow: 'var(--shadow-elevated)',
+              }}
+              onMouseDown={(event) => event.preventDefault()}
+            >
+              <div className="flex items-center justify-between px-3 pb-2 pt-1">
+                <div>
+                  <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>@素材</p>
+                  <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>只引用当前任务已上传素材</p>
+                </div>
+                <span className="text-[10px]" style={{ color: 'var(--text-disabled)' }}>Esc 关闭</span>
+              </div>
+              {filteredVideoMaterialMentionCandidates.length === 0 ? (
+                <div className="rounded-2xl px-3 py-5 text-center text-[12px]" style={{ color: 'var(--text-tertiary)', background: 'var(--bg-surface)' }}>
+                  {videoMaterialMentionCandidates.length === 0
+                    ? '请先上传图片、视频或音频素材'
+                    : '没有匹配的当前素材'}
+                </div>
+              ) : (
+                <div className="grid gap-1">
+                  {filteredVideoMaterialMentionCandidates.map((candidate: any, index: number) => {
+                    const previousKind = filteredVideoMaterialMentionCandidates[index - 1]?.kind;
+                    const kindLabel = candidate.kind === 'image' ? '图片' : candidate.kind === 'video' ? '视频' : '音频';
+                    const active = index === materialMentionIndex;
+                    return (
+                      <React.Fragment key={`${candidate.kind}:${candidate.materialId}`}>
+                        {candidate.kind !== previousKind && (
+                          <div className="px-3 pb-1 pt-2 text-[10px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>{kindLabel}</div>
+                        )}
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={active}
+                          onMouseEnter={() => setMaterialMentionIndex(index)}
+                          onClick={() => insertSelectedVideoMaterialMention(candidate)}
+                          className="flex w-full items-center gap-3 rounded-2xl px-3 py-2 text-left transition-colors"
+                          style={{ background: active ? 'var(--accent-soft)' : 'transparent' }}
+                        >
+                          <span
+                            className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl"
+                            style={{ background: 'var(--bg-elevated)', color: active ? 'var(--accent)' : 'var(--text-tertiary)' }}
+                          >
+                            {candidate.kind === 'image' && candidate.url ? (
+                              <img src={candidate.url} alt="" className="h-full w-full object-cover" />
+                            ) : candidate.kind === 'video' ? (
+                              <Clapperboard size={16} />
+                            ) : (
+                              <Music2 size={16} />
+                            )}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>{candidate.fileName}</span>
+                            <span className="block truncate text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{kindLabel}·当前任务素材</span>
+                          </span>
+                          <span className="shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold" style={{ background: active ? 'var(--accent)' : 'var(--bg-elevated)', color: active ? '#fff' : 'var(--text-secondary)' }}>
+                            {candidate.label}
+                          </span>
+                        </button>
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
           {showPromptInput && (
             <div className="px-5 pt-5 pb-3">
               <textarea
                 ref={textareaRef}
                 value={promptText}
-                onChange={(e) => onPromptChange(e.target.value)}
+                onChange={handlePromptTextChange}
                 placeholder={promptPlaceholder}
                 rows={3}
                 className="w-full resize-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-[var(--text-tertiary)]"
                 style={{ color: 'var(--text-primary)', minHeight: 64 }}
                 onKeyDown={(e) => {
+                  if (materialMentionOpen) {
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      closeMaterialMentionMenu();
+                      return;
+                    }
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      const direction = e.key === 'ArrowDown' ? 1 : -1;
+                      const count = filteredVideoMaterialMentionCandidates.length;
+                      if (count > 0) setMaterialMentionIndex((index) => (index + direction + count) % count);
+                      return;
+                    }
+                    if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) {
+                      e.preventDefault();
+                      const candidate = filteredVideoMaterialMentionCandidates[materialMentionIndex];
+                      if (candidate) insertSelectedVideoMaterialMention(candidate);
+                      return;
+                    }
+                  }
                   if ('Enter' !== e.key || e.shiftKey || isImeComposing(e)) return;
                   e.preventDefault();
                   handleGenerateClick();
@@ -3145,6 +3332,26 @@ const BottomInputBar: React.FC<Props> = ({
                   </>
                 )}
               </div>
+
+              {canUseVideoMaterialMentions && (
+                <button
+                  type="button"
+                  onClick={openMaterialMentionMenu}
+                  aria-label="引用当前素材"
+                  aria-haspopup="listbox"
+                  aria-expanded={materialMentionOpen}
+                  aria-controls="video-material-mention-listbox"
+                  className="flex h-9 items-center gap-1 rounded-2xl px-2.5 text-[11px] font-medium transition-colors"
+                  style={{
+                    color: materialMentionOpen ? 'var(--accent)' : 'var(--text-tertiary)',
+                    background: materialMentionOpen ? 'var(--accent-soft)' : 'transparent',
+                  }}
+                  title="引用当前已上传素材"
+                >
+                  <AtSign size={15} />
+                  <span>@素材</span>
+                </button>
+              )}
 
               {isOneClick && (
                 <PresetLibrary
