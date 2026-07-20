@@ -66,7 +66,7 @@ test('rejects a prompt that still uses a deleted bound material', () => {
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `node --test src/utils/videoMaterialMentions.test.mjs`  
+Run: `node --test src/utils/videoMaterialMentions.test.mjs`
 Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `videoMaterialMentions.mjs`.
 
 - [ ] **Step 3: Implement the pure contract**
@@ -96,7 +96,7 @@ The same file must implement: bounded JSON parsing (maximum 32 bindings, maximum
 
 - [ ] **Step 4: Run tests and verify GREEN**
 
-Run: `node --test src/utils/videoMaterialMentions.test.mjs`  
+Run: `node --test src/utils/videoMaterialMentions.test.mjs`
 Expected: all mention utility tests PASS.
 
 - [ ] **Step 5: Commit**
@@ -131,7 +131,7 @@ test('short video multimodal input exposes current-material mentions only', () =
 
 - [ ] **Step 2: Run the focused UI contract test and verify RED**
 
-Run: `node --test src/shell/components/layout/BottomInputBar.test.mjs`  
+Run: `node --test src/shell/components/layout/BottomInputBar.test.mjs`
 Expected: the new `@素材` assertions FAIL.
 
 - [ ] **Step 3: Implement interaction state and handlers**
@@ -169,7 +169,7 @@ The menu must show grouped image/video/audio candidates, thumbnails or modality 
 
 - [ ] **Step 4: Run UI contract and TypeScript checks**
 
-Run: `node --test src/shell/components/layout/BottomInputBar.test.mjs && npx tsc --noEmit -p tsconfig.app.json`  
+Run: `node --test src/shell/components/layout/BottomInputBar.test.mjs && npx tsc --noEmit -p tsconfig.app.json`
 Expected: PASS with no TypeScript errors.
 
 - [ ] **Step 5: Commit**
@@ -206,7 +206,7 @@ Extend the pure test to assert image order is `product + scene`, modality ordina
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `node --test src/utils/videoMaterialMentions.test.mjs src/components/uiArchitecture.test.mjs`  
+Run: `node --test src/utils/videoMaterialMentions.test.mjs src/components/uiArchitecture.test.mjs`
 Expected: the workflow compilation assertions FAIL.
 
 - [ ] **Step 3: Compile exactly once before job creation**
@@ -223,7 +223,7 @@ Build `videoReferenceSnapshot` from the same paired entries that produce `imageU
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
-Run: `node --test src/utils/videoMaterialMentions.test.mjs src/components/uiArchitecture.test.mjs server/providerMaxForAiVideo.test.mjs server/seedanceReferenceMediaContract.test.mjs server/dreaminaCli.test.mjs`  
+Run: `node --test src/utils/videoMaterialMentions.test.mjs src/components/uiArchitecture.test.mjs server/providerMaxForAiVideo.test.mjs server/seedanceReferenceMediaContract.test.mjs server/dreaminaCli.test.mjs`
 Expected: all selected tests PASS.
 
 - [ ] **Step 5: Commit**
@@ -250,17 +250,17 @@ git commit -m "feat(video): compile stable material mentions"
 
 - [ ] **Step 1: Run formatting and targeted checks**
 
-Run: `git diff --check && node --test src/utils/videoMaterialMentions.test.mjs src/shell/components/layout/BottomInputBar.test.mjs src/components/uiArchitecture.test.mjs server/providerMaxForAiVideo.test.mjs server/seedanceReferenceMediaContract.test.mjs server/dreaminaCli.test.mjs`  
+Run: `git diff --check && node --test src/utils/videoMaterialMentions.test.mjs src/shell/components/layout/BottomInputBar.test.mjs src/components/uiArchitecture.test.mjs server/providerMaxForAiVideo.test.mjs server/seedanceReferenceMediaContract.test.mjs server/dreaminaCli.test.mjs`
 Expected: no whitespace errors and all focused tests PASS.
 
 - [ ] **Step 2: Run the full project gate**
 
-Run: `npm run verify`  
+Run: `npm run verify`
 Expected: TypeScript/ESLint, all test suites, and production build PASS.
 
 - [ ] **Step 3: Run local health checks**
 
-Run: `npm run doctor`  
+Run: `npm run doctor`
 Expected: frontend health, API health, and worker health all report healthy.
 
 - [ ] **Step 4: Browser-check the real interaction**
