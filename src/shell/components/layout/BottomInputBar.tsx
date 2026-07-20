@@ -90,6 +90,21 @@ interface ExtendedParamItem {
 
 type SelectOption = string | { value: string; label: string };
 
+type VideoMaterialMentionKind = 'image' | 'video' | 'audio';
+type VideoMaterialMentionSourceType = 'product' | 'scene' | 'referenceVideo' | 'audio';
+
+interface VideoMaterialMentionBinding {
+  label: string;
+  materialId: string;
+  kind: VideoMaterialMentionKind;
+  sourceType: VideoMaterialMentionSourceType;
+}
+
+interface VideoMaterialMentionCandidate extends VideoMaterialMentionBinding {
+  fileName: string;
+  url: string;
+}
+
 const DEFAULT_DIAGNOSIS_MODEL_OPTIONS = [
   { value: 'gpt-5-4-openai-resp', label: 'GPT-5.4' },
   { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
@@ -1334,22 +1349,27 @@ const BottomInputBar: React.FC<Props> = ({
   const isDreaminaVideoGeneration = module === AppModuleObj.VIDEO && (!activeSubFeature || activeSubFeature === 'generation');
   const dreaminaMode = normalizeDreaminaUiMode(currentParams.dreaminaMode);
   const canUseVideoMaterialMentions = isDreaminaVideoGeneration && dreaminaMode === 'multimodal2video';
+  const videoMaterialMentionBindingsRaw = currentParams[VIDEO_MATERIAL_MENTION_PARAM];
   const videoMaterialMentionBindings = useMemo(
-    () => parseVideoMaterialMentionBindings(currentParams[VIDEO_MATERIAL_MENTION_PARAM]),
-    [currentParams],
+    () => parseVideoMaterialMentionBindings(videoMaterialMentionBindingsRaw) as VideoMaterialMentionBinding[],
+    [videoMaterialMentionBindingsRaw],
   );
   const videoMaterialMentionCandidates = useMemo(
-    () => buildVideoMaterialMentionCandidates(materials, videoMaterialMentionBindings),
+    () => buildVideoMaterialMentionCandidates(materials, videoMaterialMentionBindings) as VideoMaterialMentionCandidate[],
     [materials, videoMaterialMentionBindings],
   );
   const filteredVideoMaterialMentionCandidates = useMemo(() => {
     const query = materialMentionQuery.trim().toLocaleLowerCase('zh-CN');
     if (!query) return videoMaterialMentionCandidates;
-    return videoMaterialMentionCandidates.filter((candidate: any) => (
+    return videoMaterialMentionCandidates.filter((candidate) => (
       [candidate.label, candidate.fileName, candidate.kind === 'image' ? '图片' : candidate.kind === 'video' ? '视频' : '音频']
         .some((value) => String(value || '').toLocaleLowerCase('zh-CN').includes(query))
     ));
   }, [materialMentionQuery, videoMaterialMentionCandidates]);
+  const activeMaterialMentionIndex = Math.max(0, Math.min(
+    materialMentionIndex,
+    filteredVideoMaterialMentionCandidates.length - 1,
+  ));
   const isStoryboardViralReplicationContext = module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard' && isStoryboardViralReplicationMode(currentParams.videoMode);
   const referenceVideoPolicy = getReferenceVideoUploadPolicy({
     activeSubFeature,
@@ -1396,9 +1416,12 @@ const BottomInputBar: React.FC<Props> = ({
     setMaterialMentionIndex(0);
     setMaterialMentionOpen(true);
   };
-  const insertSelectedVideoMaterialMention = (candidate: any) => {
-    const nextBindings = upsertVideoMaterialMentionBinding(videoMaterialMentionBindings, candidate);
-    const binding = nextBindings.find((item: any) => (
+  const insertSelectedVideoMaterialMention = (candidate: VideoMaterialMentionCandidate) => {
+    const nextBindings = upsertVideoMaterialMentionBinding(
+      videoMaterialMentionBindings,
+      candidate,
+    ) as VideoMaterialMentionBinding[];
+    const binding = nextBindings.find((item) => (
       item.kind === candidate.kind && item.materialId === candidate.materialId
     ));
     if (!binding) return;
@@ -1486,16 +1509,6 @@ const BottomInputBar: React.FC<Props> = ({
     setUploadTarget('');
     setUploadTargetSetIndex(null);
   }, [module, activeSubFeature, currentParams.mode]);
-
-  useEffect(() => {
-    setMaterialMentionOpen(false);
-    setMaterialMentionQuery('');
-    setMaterialMentionIndex(0);
-  }, [currentParams.dreaminaMode]);
-
-  useEffect(() => {
-    setMaterialMentionIndex((index) => Math.max(0, Math.min(index, filteredVideoMaterialMentionCandidates.length - 1)));
-  }, [filteredVideoMaterialMentionCandidates.length]);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -1615,6 +1628,12 @@ const BottomInputBar: React.FC<Props> = ({
       }
       onParamChange(key, value);
       return;
+    }
+
+    if (module === AppModuleObj.VIDEO && key === 'dreaminaMode') {
+      setMaterialMentionOpen(false);
+      setMaterialMentionQuery('');
+      setMaterialMentionIndex(0);
     }
 
     if (module !== AppModuleObj.TRANSLATION) {
@@ -3011,10 +3030,10 @@ const BottomInputBar: React.FC<Props> = ({
                 </div>
               ) : (
                 <div className="grid gap-1">
-                  {filteredVideoMaterialMentionCandidates.map((candidate: any, index: number) => {
+                  {filteredVideoMaterialMentionCandidates.map((candidate, index) => {
                     const previousKind = filteredVideoMaterialMentionCandidates[index - 1]?.kind;
                     const kindLabel = candidate.kind === 'image' ? '图片' : candidate.kind === 'video' ? '视频' : '音频';
-                    const active = index === materialMentionIndex;
+                    const active = index === activeMaterialMentionIndex;
                     return (
                       <React.Fragment key={`${candidate.kind}:${candidate.materialId}`}>
                         {candidate.kind !== previousKind && (
@@ -3082,7 +3101,7 @@ const BottomInputBar: React.FC<Props> = ({
                     }
                     if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) {
                       e.preventDefault();
-                      const candidate = filteredVideoMaterialMentionCandidates[materialMentionIndex];
+                      const candidate = filteredVideoMaterialMentionCandidates[activeMaterialMentionIndex];
                       if (candidate) insertSelectedVideoMaterialMention(candidate);
                       return;
                     }
