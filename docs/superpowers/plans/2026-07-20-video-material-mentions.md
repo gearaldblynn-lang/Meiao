@@ -4,7 +4,7 @@
 
 **Goal:** Add stable `@图片N/@视频N/@音频N` references to the current-task materials in short-video multimodal generation.
 
-**Architecture:** Keep the existing textarea and provider payloads. A focused pure utility owns candidate numbering, safe binding JSON, insertion, and submit-time compilation from stable `materialId` bindings to the actual modality-local provider ordinals; the input bar owns interaction, while `runShellVideoGeneration` owns the immutable submit snapshot.
+**Architecture:** Keep the existing textarea and provider payloads. A focused pure utility owns candidate numbering, safe binding JSON, insertion, and submit-time compilation from stable `materialId` bindings to the actual modality-local provider ordinals; the input bar owns interaction, while `runShellVideoGeneration` owns one immutable snapshot pairing each resolved URL with its material ID and provider ordinal.
 
 **Tech Stack:** React 19, TypeScript/TSX, ESM utilities, Node `node:test`, existing shell workflow and internal job API.
 
@@ -26,7 +26,7 @@
 - Create: `src/utils/videoMaterialMentions.test.mjs`
 
 **Interfaces:**
-- Consumes: `materials: Record<string, Array<{ id, type, url, remoteUrl?, fileName }>>` and serialized `videoMaterialMentionBindings`.
+- Consumes: `materials: Record<string, Array<{ id, type, url, remoteUrl?, fileName }>>`, an exact submit-time reference snapshot, and serialized `videoMaterialMentionBindings`.
 - Produces: `parseVideoMaterialMentionBindings`, `buildVideoMaterialMentionCandidates`, `findVideoMaterialMentionQuery`, `insertVideoMaterialMention`, `upsertVideoMaterialMentionBinding`, and `compileVideoMaterialMentions`.
 
 - [ ] **Step 1: Write failing contract tests**
@@ -36,7 +36,10 @@ test('compiles a stable image binding after product material order changes', () 
   const bindings = [{ label: '@图片2', materialId: 'scene-1', kind: 'image', sourceType: 'scene' }];
   const result = compileVideoMaterialMentions({
     prompt: '参考 @图片2 的场景',
-    materials: { product: [{ id: 'new-product' }], scene: [{ id: 'scene-1' }] },
+    references: [
+      { materialId: 'new-product', kind: 'image', sourceType: 'product', providerOrdinal: 1 },
+      { materialId: 'scene-1', kind: 'image', sourceType: 'scene', providerOrdinal: 2 },
+    ],
     bindings,
   });
   assert.equal(result.compiledPrompt, '参考 @图片2 的场景');
@@ -46,7 +49,7 @@ test('compiles a stable image binding after product material order changes', () 
 test('renumbers a bound material to the actual provider ordinal', () => {
   const result = compileVideoMaterialMentions({
     prompt: '参考 @图片3',
-    materials: { product: [], scene: [{ id: 'scene-1' }] },
+    references: [{ materialId: 'scene-1', kind: 'image', sourceType: 'scene', providerOrdinal: 1 }],
     bindings: [{ label: '@图片3', materialId: 'scene-1', kind: 'image', sourceType: 'scene' }],
   });
   assert.equal(result.compiledPrompt, '参考 @图片1');
@@ -55,7 +58,7 @@ test('renumbers a bound material to the actual provider ordinal', () => {
 test('rejects a prompt that still uses a deleted bound material', () => {
   assert.throws(() => compileVideoMaterialMentions({
     prompt: '@视频1 的运镜',
-    materials: { referenceVideo: [] },
+    references: [],
     bindings: [{ label: '@视频1', materialId: 'gone', kind: 'video', sourceType: 'referenceVideo' }],
   }), /@视频1 对应素材已移除/);
 });
@@ -71,8 +74,7 @@ Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `videoMaterialMentions.mjs`.
 ```js
 export const VIDEO_MATERIAL_MENTION_PARAM = 'videoMaterialMentionBindings';
 
-export const compileVideoMaterialMentions = ({ prompt, materials, bindings }) => {
-  const references = buildOrderedVideoReferenceMaterials(materials);
+export const compileVideoMaterialMentions = ({ prompt, references, bindings }) => {
   const byId = new Map(references.map((item) => [item.materialId, item]));
   let compiledPrompt = String(prompt || '');
   const manifest = [];
@@ -90,7 +92,7 @@ export const compileVideoMaterialMentions = ({ prompt, materials, bindings }) =>
 };
 ```
 
-The same file must implement: bounded JSON parsing (maximum 32 bindings, maximum 160 characters per string field), modality-local numbering, unique labels per modality, exact mention-boundary replacement, query extraction at the caret, and insertion that returns `{ prompt, caret, binding }`.
+The same file must implement: bounded JSON parsing (maximum 32 bindings, maximum 160 characters per string field), modality-local numbering, unique labels per modality, a single-pass exact mention replacement that cannot corrupt swaps such as `@图片1` ↔ `@图片2`, query extraction at the caret, and insertion that returns `{ prompt, caret, binding }`.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 
@@ -185,7 +187,7 @@ git commit -m "feat(video): add material mention picker"
 - Modify: `src/utils/videoMaterialMentions.test.mjs`
 
 **Interfaces:**
-- Consumes: `compileVideoMaterialMentions({ prompt, materials, bindings })` and the existing ordered `imageUrls`, `referenceVideoUrls`, and `audioUrls`.
+- Consumes: `compileVideoMaterialMentions({ prompt, references, bindings })` and paired ordered entries that carry both the material and its resolved URL.
 - Produces: `compiledPrompt` in all three video job payload variants and `videoReferenceManifest` in the internal task payload.
 
 - [ ] **Step 1: Add failing workflow-contract tests**
@@ -212,12 +214,12 @@ Expected: the workflow compilation assertions FAIL.
 ```ts
 const { compiledPrompt, manifest: videoReferenceManifest } = compileVideoMaterialMentions({
   prompt: input.prompt.trim(),
-  materials: input.materials,
+  references: videoReferenceSnapshot,
   bindings: input.params[VIDEO_MATERIAL_MENTION_PARAM],
 });
 ```
 
-Use `compiledPrompt` in MaxForAI, KIE, and CLI payload branches and in the returned result prompt. Add `videoReferenceManifest` to each internal job payload, but do not forward bindings or manifest from provider adapters. Keep `imageUrls`, `videoUrls`, and `audioUrls` construction unchanged.
+Build `videoReferenceSnapshot` from the same paired entries that produce `imageUrls`, `referenceVideoUrls`, and `audioUrls`; this prevents a filtered or unreadable URL from shifting provider ordinals. Use `compiledPrompt` in MaxForAI, KIE, and CLI payload branches and in the returned result prompt. Add `videoReferenceManifest` to each internal job payload, but do not forward bindings or manifest from provider adapters.
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
