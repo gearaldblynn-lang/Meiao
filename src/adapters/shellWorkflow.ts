@@ -36,6 +36,11 @@ import {
   normalizeMaxForAiVideoAspectRatio,
   normalizeMaxForAiVideoSeconds,
 } from '../utils/maxforaiVideoModels.mjs';
+import {
+  VIDEO_MATERIAL_MENTION_PARAM,
+  compileVideoMaterialMentions,
+  parseVideoMaterialMentionBindings,
+} from '../utils/videoMaterialMentions.mjs';
 import { loadShellDraftAsset } from '../utils/shellDraftAssetStore';
 import {
   createDefaultLogoPlacement,
@@ -314,6 +319,20 @@ const normalizeDreaminaTransitionDurations = (value: string, fallbackDuration: n
 
 const collectMaterialUrls = (items: ShellMaterialInput[] | undefined, publicBaseUrl = '') =>
   (items || []).map((item) => materialUrl(item, publicBaseUrl)).filter(Boolean);
+
+const collectVideoReferenceEntries = (
+  items: ShellMaterialInput[] | undefined,
+  publicBaseUrl: string,
+  kind: 'image' | 'video' | 'audio',
+  sourceType: 'product' | 'scene' | 'referenceVideo' | 'audio',
+) => (items || [])
+  .map((material) => ({
+    material,
+    url: materialUrl(material, publicBaseUrl),
+    kind,
+    sourceType,
+  }))
+  .filter((entry) => Boolean(entry.url));
 
 const collectMaterialDurations = (items: ShellMaterialInput[] | undefined) =>
   (items || [])
@@ -2910,13 +2929,44 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
   const selectedModel = firstParam(input.params, ['modelVersion', 'videoAccessMode'], MAXFORAI_VIDEO_MODEL_ID);
   const isMaxForAiAccess = mode === 'multimodal2video' && isMaxForAiVideoModel(selectedModel);
   const accessMode = isMaxForAiAccess ? 'maxforai' : normalizeDreaminaAccessMode(mode, selectedModel);
-  const productUrls = collectMaterialUrls(input.materials.product, publicBaseUrl);
-  const sceneUrls = collectMaterialUrls(input.materials.scene, publicBaseUrl);
-  const referenceVideoUrls = collectMaterialUrls(input.materials.referenceVideo, publicBaseUrl);
-  const audioUrls = collectMaterialUrls(input.materials.audio, publicBaseUrl);
+  const productReferenceEntries = collectVideoReferenceEntries(input.materials.product, publicBaseUrl, 'image', 'product');
+  const sceneReferenceEntries = collectVideoReferenceEntries(input.materials.scene, publicBaseUrl, 'image', 'scene');
+  const imageReferenceEntries = [...productReferenceEntries, ...sceneReferenceEntries];
+  const videoReferenceEntries = collectVideoReferenceEntries(input.materials.referenceVideo, publicBaseUrl, 'video', 'referenceVideo');
+  const audioReferenceEntries = collectVideoReferenceEntries(input.materials.audio, publicBaseUrl, 'audio', 'audio');
+  const imageUrls = imageReferenceEntries.map((entry) => entry.url);
+  const referenceVideoUrls = videoReferenceEntries.map((entry) => entry.url);
+  const audioUrls = audioReferenceEntries.map((entry) => entry.url);
   const referenceVideoDurations = collectMaterialDurations(input.materials.referenceVideo);
   const referenceAudioDurations = collectMaterialDurations(input.materials.audio);
-  const imageUrls = [...productUrls, ...sceneUrls];
+  const videoReferenceSnapshot = [
+    ...imageReferenceEntries.map((entry, index) => ({
+      materialId: entry.material.id,
+      kind: entry.kind,
+      sourceType: entry.sourceType,
+      providerOrdinal: index + 1,
+    })),
+    ...videoReferenceEntries.map((entry, index) => ({
+      materialId: entry.material.id,
+      kind: entry.kind,
+      sourceType: entry.sourceType,
+      providerOrdinal: index + 1,
+    })),
+    ...audioReferenceEntries.map((entry, index) => ({
+      materialId: entry.material.id,
+      kind: entry.kind,
+      sourceType: entry.sourceType,
+      providerOrdinal: index + 1,
+    })),
+  ];
+  const { compiledPrompt, manifest: videoReferenceManifest } = mode === 'multimodal2video'
+    ? compileVideoMaterialMentions({
+        prompt: input.prompt.trim(),
+        materials: input.materials,
+        references: videoReferenceSnapshot,
+        bindings: parseVideoMaterialMentionBindings(input.params[VIDEO_MATERIAL_MENTION_PARAM]),
+      })
+    : { compiledPrompt: input.prompt.trim(), manifest: [] };
 
   if (mode === 'frames2video' && imageUrls.length < 2) {
     throw new Error('首尾帧请至少上传 2 张图片素材，第一张作为首帧，第二张作为尾帧。');
@@ -2939,8 +2989,8 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
   const duration = normalizeDreaminaDuration(firstParam(input.params, ['duration'], mode === 'multiframe2video' ? '3秒' : '5秒'));
   const transitionCount = mode === 'multiframe2video' ? Math.max(0, imageUrls.length - 1) : 0;
   const transitionPrompts = mode === 'multiframe2video'
-    ? normalizeDreaminaTransitionPrompts(String(input.params.transitionPrompts || input.params.transitionPrompt || ''), input.prompt.trim(), transitionCount)
-    : String(input.params.transitionPrompts || input.params.transitionPrompt || input.prompt || '')
+    ? normalizeDreaminaTransitionPrompts(String(input.params.transitionPrompts || input.params.transitionPrompt || ''), compiledPrompt, transitionCount)
+    : String(input.params.transitionPrompts || input.params.transitionPrompt || compiledPrompt || '')
       .split(/\n+/)
       .map((item) => item.trim())
       .filter(Boolean);
@@ -2959,7 +3009,7 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
     payload: isMaxForAiAccess
       ? {
           mode: 'multimodal2video',
-          prompt: input.prompt.trim(),
+          prompt: compiledPrompt,
           imageUrls,
           videoUrls: referenceVideoUrls,
           audioUrls,
@@ -2972,11 +3022,12 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
           upstreamModel: MAXFORAI_VIDEO_MODEL.upstreamModel,
           subFeature: input.subFeature,
           ...(input.taskMetadata || {}),
+          videoReferenceManifest,
         }
       : isApiAccess
         ? {
             mode,
-            prompt: input.prompt.trim(),
+            prompt: compiledPrompt,
             imageUrls,
             videoUrls: mode === 'multimodal2video' ? referenceVideoUrls : [],
             audioUrls: mode === 'multimodal2video' ? audioUrls : [],
@@ -2989,10 +3040,11 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
             model: 'bytedance/seedance-2-fast',
             subFeature: input.subFeature,
             ...(input.taskMetadata || {}),
+            videoReferenceManifest,
           }
         : {
             mode,
-            prompt: input.prompt.trim(),
+            prompt: compiledPrompt,
             imageUrls,
             videoUrls: mode === 'multimodal2video' ? referenceVideoUrls : [],
             audioUrls: mode === 'multimodal2video' ? audioUrls : [],
@@ -3005,6 +3057,7 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
             modelVersion: 'seedance2.0fast_vip',
             subFeature: input.subFeature,
             ...(input.taskMetadata || {}),
+            videoReferenceManifest,
           },
     maxRetries: 0,
   });
@@ -3020,7 +3073,7 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
         taskId: String(finalJob.providerTaskId || finalJob.result?.providerTaskId || '').trim() || undefined,
         backendJobId: String(finalJob.id || job.id || '').trim() || undefined,
         status: 'success',
-        prompt: input.prompt.trim(),
+        prompt: compiledPrompt,
         creditsConsumed: Number.isFinite(Number(finalJob.result?.creditsConsumed)) ? Number(finalJob.result?.creditsConsumed) : undefined,
       };
     }
@@ -3031,7 +3084,7 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
         message: finalJob.errorMessage || '任务已取消',
         taskId: String(finalJob.providerTaskId || finalJob.result?.providerTaskId || '').trim() || undefined,
         backendJobId: String(finalJob.id || job.id || '').trim() || undefined,
-        prompt: input.prompt.trim(),
+        prompt: compiledPrompt,
       };
     }
     return {
@@ -3041,12 +3094,12 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
       errorCode: finalJob.errorCode,
       taskId: String(finalJob.providerTaskId || finalJob.result?.providerTaskId || '').trim() || undefined,
       backendJobId: String(finalJob.id || job.id || '').trim() || undefined,
-      prompt: input.prompt.trim(),
+      prompt: compiledPrompt,
     };
   } catch (error: any) {
     if (error?.message === 'INTERRUPTED') {
       void cancelInternalJob(job.id).catch(() => null);
-      return { imageUrl: '', status: 'interrupted', message: '任务已取消', prompt: input.prompt.trim() };
+      return { imageUrl: '', status: 'interrupted', message: '任务已取消', prompt: compiledPrompt };
     }
     return {
       imageUrl: '',
@@ -3054,7 +3107,7 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
       taskId: String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
       backendJobId: job.id,
       message: error?.message || '任务已提交云端，结果待同步',
-      prompt: input.prompt.trim(),
+      prompt: compiledPrompt,
     };
   }
 };

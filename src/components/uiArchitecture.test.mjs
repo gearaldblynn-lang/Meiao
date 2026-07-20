@@ -3428,6 +3428,7 @@ test('shell video generation submits seedance jobs without automatic retry and k
   const workflow = read('../adapters/shellWorkflow.ts');
   const shellApp = read('../ShellMigratedApp.tsx');
   const videoBody = workflow.match(/export const runShellVideoGeneration = async \(input: ShellGenerateInput\) => \{([\s\S]*?)\n\};/)?.[1] || '';
+  const videoJobPayload = videoBody.match(/const \{ job \} = await createInternalJob\(\{[\s\S]*?maxRetries: 0,\n  \}\);/)?.[0] || '';
   const completedVideoResultBlock = shellApp.match(/const newResult: GeneratedResult = \{[\s\S]*?mediaType: 'video'[\s\S]*?\n\t          \};/)?.[0] || '';
 
   assert.match(videoBody, /generateAudio: parseSeedanceGenerateAudio\(input\.params\)/);
@@ -3436,6 +3437,11 @@ test('shell video generation submits seedance jobs without automatic retry and k
   assert.match(videoBody, /provider: isMaxForAiAccess \? 'maxforai'/);
   assert.match(videoBody, /model: MAXFORAI_VIDEO_MODEL_ID/);
   assert.match(videoBody, /upstreamModel: MAXFORAI_VIDEO_MODEL\.upstreamModel/);
+  assert.match(videoBody, /compileVideoMaterialMentions/);
+  assert.match(videoBody, /videoReferenceSnapshot/);
+  assert.match(videoBody, /prompt: compiledPrompt/);
+  assert.match(videoBody, /videoReferenceManifest/);
+  assert.doesNotMatch(videoJobPayload, /prompt: input\.prompt\.trim\(\)/);
   assert.match(videoBody, /maxRetries: 0/);
   assert.doesNotMatch(videoBody, /generateAudio: false/);
   assert.match(completedVideoResultBlock, /backendJobId: activeBackendJobId \|\| undefined/);
