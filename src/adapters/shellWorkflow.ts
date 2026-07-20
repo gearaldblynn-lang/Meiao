@@ -317,9 +317,6 @@ const normalizeDreaminaTransitionDurations = (value: string, fallbackDuration: n
   return Array.from({ length: transitionCount }).map((_, index) => durations[index] || String(fallbackDuration || 3));
 };
 
-const collectMaterialUrls = (items: ShellMaterialInput[] | undefined, publicBaseUrl = '') =>
-  (items || []).map((item) => materialUrl(item, publicBaseUrl)).filter(Boolean);
-
 const collectVideoReferenceEntries = (
   items: ShellMaterialInput[] | undefined,
   publicBaseUrl: string,
