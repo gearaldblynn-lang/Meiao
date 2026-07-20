@@ -97,6 +97,7 @@ import { detectMp4VideoCodecFromBlob } from './utils/videoCodec';
 import { createMaterialUploadCoordinator } from './utils/materialUploadCoordinator';
 import { buildGenerationSubmissionKey } from './utils/generationSubmissionKey';
 import { fetchImageBlobWithProxy } from './utils/browserImageLoader.mjs';
+import { createRuntimeId } from './utils/runtimeId.mjs';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
 import {
   buildTranslationRegionEditLogMeta,
@@ -2852,11 +2853,7 @@ const AppContent: React.FC<{
   const restoredRuntimeTaskIdsRef = useRef(new Set(initialRuntimeSnapshot.tasks.map((task) => task.id)));
   const previousShellLocalScopeUserIdRef = useRef(shellLocalScopeUserId);
   const loggedStorageDiagnosticsForUserRef = useRef<string | null>(null);
-  const shellSessionIdRef = useRef(
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-  );
+  const shellSessionIdRef = useRef(createRuntimeId('session-'));
 
   useEffect(() => {
     projectsRef.current = projects;
@@ -9709,7 +9706,7 @@ const AppContent: React.FC<{
           const retryDescriptor = buildTranslationRetryDescriptor({
             results: project.results,
             sourceResult: result,
-            createId: () => `result-retry-${crypto.randomUUID()}`,
+            createId: () => createRuntimeId('result-retry-'),
             createdAt: Date.now(),
           });
           retryTaskId = retryDescriptor.id;
@@ -10584,7 +10581,7 @@ const AppContent: React.FC<{
     input: { sourceVersionId: string; regions: TranslationEditRegion[] },
   ) => {
     const actionKey = `translation-region-edit:${projectId}:${resultId}`;
-    const versionId = `translation-edit-${crypto.randomUUID()}`;
+    const versionId = createRuntimeId('translation-edit-');
     if (!beginExclusiveAction(actionKey, '该图片已有修改任务，请等待完成后再试')) {
       throw new Error('该图片已有修改任务，请等待完成后再试');
     }

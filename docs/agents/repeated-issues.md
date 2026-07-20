@@ -1052,3 +1052,13 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 只信任锚定的 `^proj(?:-plan)?-(timestamp)` 创建型 ID；该不可变时间优先于可变字段，所有非该 schema ID 仍使用自身 `createdAt`。
 - Regression check: `node --test src/adapters/shellScopeFilters.test.mjs src/shell/shellJobLiveSyncBehavior.test.mjs src/utils/shellJobSync.test.mjs`；`npx tsc -b`；`npm run verify`；独立复审 Critical 0 / Important 0。真实 24/25 数据回归锁定 25 > 24，随机 `job-1784188578940abcdef01234` 负例锁定不得覆盖真实时间。云上源码 SHA-256 与本地一致，公网生产 bundle 包含同一锚定规则；最终页面 DOM 截图因浏览器控制连接超时未取得，不写成已有发布后 UI 截图。
 - Avoid next time: 完成时间和创建时间必须分离。如果只能从 ID 恢复创建顺序，必须先限定明确 ID schema，并在真实正例之外添加随机 ID 负例；不得在任意字符串中搜数字并当作身份。
+
+## 2026-07-20 - 浏览器可选 crypto API 不能成为付费任务入口的前置硬依赖
+
+- Symptom: 多桑账号在出海翻译结果上点击重试时前端提示 `crypto.randomUUID is not a function`；区域修改看似没有真实提交，云上没有新增任务或版本记录。
+- Environment: Tencent Cloud production / Translation result retry and region edit / browser runtime without callable `crypto.randomUUID`.
+- Cloud evidence: 原始翻译策划与 KIE 生图任务均成功，原图结果已持久化；复现时间之后该账号没有任何 translation retry/edit job，项目仍为单个结果、`retryAttempt=0`、`translationEditVersions=[]`。这把断点限定在浏览器提交入口，而不是 provider、队列或服务端拒绝。
+- Root cause: 重试和区域修改两个 handler 都在创建本地占位、版本记录和后端 job 之前直接调用 `crypto.randomUUID()`。当前浏览器暴露了 `crypto`，但没有可调用的 `randomUUID`，因此两个入口共享同一个同步异常；此前真实 provider canary 绕过了这两个 UI handler，未覆盖该浏览器兼容合同。
+- Fix: 新增统一 `createRuntimeId`，仅在 `randomUUID` 确实可调用且返回非空值时使用；缺失、非函数、抛错或空返回时改用时间戳、进程内序列和随机后缀生成非空且不重复的 ID。会话、翻译重试结果和区域修改版本全部改走该入口。
+- Regression check: `node --test src/utils/runtimeId.test.mjs`；`node --experimental-strip-types --test src/components/uiArchitecture.test.mjs src/modules/Translation/*.test.mjs src/adapters/shellDataAdapter.test.mjs src/adapters/shellPersistence.test.mjs src/utils/runtimeId.test.mjs`；`npm run verify`；`npm run doctor`。回归必须覆盖 API 缺失、非函数、调用抛错、空返回以及同毫秒同随机值的连续调用。
+- Avoid next time: 浏览器可选 API 必须用 `typeof ... === 'function'` 检查并提供确定性 fallback，不能只检查对象或属性是否存在。付费 provider canary 只能证明 provider 链路，不能替代重试、修改等真实 UI 提交入口的浏览器兼容验收；无法取得浏览器证据时必须明确标为未观察项。
