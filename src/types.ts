@@ -196,6 +196,7 @@ export type KieAiModel =
   | 'gpt-image-2-secondary'
   | 'maxforai-image-2-relay';
 export type TranslationScope = 'product_isolation' | 'global_translation';
+export type TranslationRetryStage = 'planning' | 'generation_pending' | 'generation' | 'completed' | 'error';
 
 export interface TranslationConfigSnapshot {
   targetLanguage: string;
@@ -1359,6 +1360,7 @@ export interface FileItem {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  translationRetryStage?: TranslationRetryStage;
   translationEditVersions?: TranslationEditVersion[];
   createdAt?: number;
 }

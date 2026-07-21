@@ -882,6 +882,87 @@ test('shell data adapter groups tracked translation generation jobs into their b
   assert.equal(translationProjects.some((project) => project.id.startsWith('job-translation-analysis-job')), false);
 });
 
+test('shell data adapter turns a completed translation planning stage into an idempotent generation resume', () => {
+  const translationConfigSnapshot = {
+    targetLanguage: 'Korean',
+    customLanguage: '',
+    model: 'gpt-image-2',
+    quality: '1k',
+    resolutionMode: 'original',
+    translationScope: 'product_isolation',
+    aspectRatio: 'auto',
+    translationGenerationMode: 'AI优化',
+  };
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'translation-resume-project',
+      name: '详情出海',
+      module: 'translation',
+      status: 'generating',
+      createdAt: 1000,
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'detail',
+      results: [{
+        id: 'translation-resume-result',
+        projectId: 'translation-resume-project',
+        imageUrl: '',
+        prompt: '正在重新提取并分析图片文案...',
+        model: 'gpt-image-2',
+        aspectRatio: '1:4',
+        status: 'generating',
+        createdAt: 1000,
+        module: 'translation',
+        subFeature: 'detail',
+        sourceUrl: 'https://example.com/source.jpg',
+        fileName: 'source.jpg',
+        originalWidth: 790,
+        originalHeight: 2132,
+        translationRetryStage: 'planning',
+        translationConfigSnapshot,
+      }],
+    }],
+  }, [{
+    id: 'translation-planning-job',
+    module: 'translation',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'translation-planning-provider',
+    payload: {
+      shellProjectId: 'translation-resume-project',
+      shellProjectName: '详情出海',
+      shellResultId: 'translation-resume-result',
+      shellPurpose: 'translation_planning_analysis',
+      subFeature: 'detail',
+      translationRetryStage: 'planning',
+      translationConfigSnapshot,
+      finalSize: { width: 790, height: 2132 },
+    },
+    result: {
+      content: 'Translate title to "Storage Basket".',
+      providerTaskId: 'translation-planning-provider',
+      creditsConsumed: 1.5,
+    },
+    createdAt: 2000,
+    updatedAt: 3000,
+    finishedAt: 3000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'translation-resume-project');
+  const result = project?.results.find((item) => item.id === 'translation-resume-result');
+  assert.equal(project?.status, 'error');
+  assert.equal(result?.status, 'error');
+  assert.equal(result?.translationRetryStage, 'generation_pending');
+  assert.equal(result?.translationPlanningText, 'Translate title to "Storage Basket".');
+  assert.equal(result?.translationPlanningTaskId, 'translation-planning-provider');
+  assert.equal(result?.translationPlanningCreditsConsumed, 1.5);
+  assert.equal(result?.creditsConsumed, 1.5);
+  assert.equal(result?.errorCode, 'translation_retry_generation_pending');
+  assert.equal(snapshot.tasks.some((task) => task.backendJobId === 'translation-planning-job'), false);
+  assert.equal(snapshot.projects.some((item) => item.id === 'job-translation-planning-job'), false);
+});
+
 test('shell data adapter keeps translation source urls when backend job refreshes saved result', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{

@@ -9,6 +9,7 @@ import type {
   SubtitleRemovalRegion,
   TranslationConfigSnapshot,
   TranslationEditVersion,
+  TranslationRetryStage,
   VideoStoryboardBoard,
   VideoStoryboardConfig,
   VideoStoryboardProject,
@@ -130,6 +131,7 @@ export interface ShellGeneratedResult {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  translationRetryStage?: TranslationRetryStage;
   translationEditVersions?: TranslationEditVersion[];
 }
 
@@ -1069,6 +1071,7 @@ const resultFromItem = (
     translationGenerationCreditsConsumed: normalizeCreditsConsumed(
       item?.translationGenerationCreditsConsumed ?? item?.payload?.translationGenerationCreditsConsumed,
     ),
+    translationRetryStage: String(item?.translationRetryStage ?? item?.payload?.translationRetryStage ?? '').trim() as TranslationRetryStage || undefined,
     ...(module === MODULE_VALUES.TRANSLATION ? { translationEditVersions } : {}),
   };
 };
@@ -1462,6 +1465,7 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         translationGenerationCreditsConsumed: normalizeCreditsConsumed(
           result?.translationGenerationCreditsConsumed ?? result?.payload?.translationGenerationCreditsConsumed,
         ),
+        translationRetryStage: String(result?.translationRetryStage ?? result?.payload?.translationRetryStage ?? '').trim() as TranslationRetryStage || undefined,
         ...(resultModule === MODULE_VALUES.TRANSLATION ? { translationEditVersions } : {}),
       };
       }) : [],
@@ -2002,6 +2006,8 @@ const mapJobs = (
   const translationEditJobs: InternalJob[] = [];
   const groupedTranslationJobIds = new Set<string>();
   const translationGroups = new Map<string, InternalJob[]>();
+  const groupedTranslationPlanningJobIds = new Set<string>();
+  const translationPlanningJobs: InternalJob[] = [];
   const groupedOneClickPlanningJobIds = new Set<string>();
   const oneClickPlanningGroups = new Map<string, InternalJob[]>();
   const recoveredOneClickPlanningProjects = new Map<string, ShellProjectData>();
@@ -2050,6 +2056,16 @@ const mapJobs = (
     const bucket = translationGroups.get(payloadProjectId) || [];
     bucket.push(job);
     translationGroups.set(payloadProjectId, bucket);
+  });
+
+  jobs.forEach((job) => {
+    const jobId = String(job?.id || '').trim();
+    if (!jobId || hiddenJobIds.has(jobId)) return;
+    if (toModule(job.module) !== MODULE_VALUES.TRANSLATION) return;
+    if (String(job.taskType || '').trim() !== 'kie_chat') return;
+    if (String((job.payload as Record<string, unknown> | undefined)?.shellPurpose || '').trim() !== 'translation_planning_analysis') return;
+    groupedTranslationPlanningJobIds.add(jobId);
+    translationPlanningJobs.push(job);
   });
 
   jobs.forEach((job) => {
@@ -2534,6 +2550,9 @@ const mapJobs = (
 	        translationPlanningTaskId: String(payload.translationPlanningTaskId ?? persistedResult?.translationPlanningTaskId ?? '').trim() || undefined,
 	        translationPlanningCreditsConsumed,
 	        translationGenerationCreditsConsumed,
+	        translationRetryStage: (String(
+	          payload.translationRetryStage ?? persistedResult?.translationRetryStage ?? '',
+	        ).trim() as TranslationRetryStage) || undefined,
 	      };
 	    });
 	    const orderedResults = sortTranslationRetryResults(results) as ShellGeneratedResult[];
@@ -2584,6 +2603,98 @@ const mapJobs = (
 	        });
 	      });
 	  });
+
+  const latestTranslationPlanningJobs = Array.from(translationPlanningJobs.reduce((latestByResult, job) => {
+    const payload = (job.payload || {}) as Record<string, unknown>;
+    const key = `${String(payload.shellProjectId || '').trim()}:${String(payload.shellResultId || '').trim()}`;
+    const previous = latestByResult.get(key);
+    const jobTime = Number(job.updatedAt || job.createdAt || 0);
+    const previousTime = Number(previous?.updatedAt || previous?.createdAt || 0);
+    if (!previous || jobTime >= previousTime) latestByResult.set(key, job);
+    return latestByResult;
+  }, new Map<string, InternalJob>()).values());
+
+  latestTranslationPlanningJobs.forEach((job) => {
+    const payload = (job.payload || {}) as Record<string, unknown>;
+    const projectId = String(payload.shellProjectId || '').trim();
+    const resultId = String(payload.shellResultId || '').trim();
+    if (!projectId || !resultId) return;
+    const planningCreatedAt = Number(job.createdAt || 0);
+    const hasLaterGeneration = jobs.some((candidate) => {
+      const candidatePayload = (candidate.payload || {}) as Record<string, unknown>;
+      return toModule(candidate.module) === MODULE_VALUES.TRANSLATION
+        && ['translation_generation', 'translation_result_retry'].includes(String(candidatePayload.shellPurpose || '').trim())
+        && String(candidatePayload.shellProjectId || '').trim() === projectId
+        && String(candidatePayload.shellResultId || '').trim() === resultId
+        && Number(candidate.createdAt || 0) >= planningCreatedAt;
+    });
+    if (hasLaterGeneration) return;
+
+    const project = persistedProjects.find((item) => item.id === projectId && item.module === MODULE_VALUES.TRANSLATION);
+    const resultIndex = project?.results.findIndex((item) => item.id === resultId) ?? -1;
+    if (!project || resultIndex < 0) return;
+    const currentResult = project.results[resultIndex];
+    const active = ['queued', 'running', 'retry_waiting'].includes(String(job.status || ''));
+    const planningResult = (job.result || {}) as Record<string, unknown>;
+    const planningText = String(
+      planningResult.content
+      || planningResult.text
+      || planningResult.description
+      || '',
+    ).trim();
+    const succeeded = job.status === 'succeeded' && Boolean(planningText);
+    const planningTaskId = getVisibleTaskId(job)
+      || String(currentResult.translationPlanningTaskId || '').trim()
+      || undefined;
+    const planningCredits = normalizeCreditsConsumed(
+      planningResult.creditsConsumed ?? currentResult.translationPlanningCreditsConsumed,
+    );
+    const nextStatus: ShellGeneratedResult['status'] = active ? 'generating' : 'error';
+    const nextResult: ShellGeneratedResult = {
+      ...currentResult,
+      status: nextStatus,
+      backendJobId: String(job.id || '').trim() || currentResult.backendJobId,
+      translationPlanningTaskId: planningTaskId,
+      translationPlanningCreditsConsumed: planningCredits,
+      creditsConsumed: sumTranslationRetryCredits(planningCredits, undefined) ?? currentResult.creditsConsumed,
+      translationRetryStage: active ? 'planning' : succeeded ? 'generation_pending' : 'error',
+      ...(succeeded ? {
+        translationPlanningText: planningText,
+        error: 'AI优化策划已完成，正在继续生成。',
+        errorCode: 'translation_retry_generation_pending',
+      } : active ? {
+        error: undefined,
+        errorCode: undefined,
+      } : {
+        error: String(job.errorMessage || job.errorCode || 'AI优化策划失败').trim(),
+        errorCode: String(job.errorCode || 'translation_planning_failed').trim(),
+      }),
+    };
+    const nextResults = [...project.results];
+    nextResults[resultIndex] = nextResult;
+    projects.push({
+      ...project,
+      status: active ? 'generating' : 'error',
+      results: nextResults,
+      completedCount: nextResults.filter(hasCompletedMediaResult).length,
+      sourceType: project.sourceType || 'persisted',
+    });
+    if (active) {
+      tasks.push({
+        id: String(job.id || ''),
+        projectId,
+        module: MODULE_VALUES.TRANSLATION,
+        type: 'plan',
+        status: taskStatusToTask(job.status),
+        title: jobTaskTitle(job, MODULE_VALUES.TRANSLATION, String(payload.subFeature || project.subFeature || '').trim()),
+        prompt: String(payload.prompt || ''),
+        progress: job.status === 'running' ? 42 : 8,
+        createdAt: toCreatedMs(job.createdAt),
+        subFeature: String(payload.subFeature || project.subFeature || '').trim() || undefined,
+        backendJobId: String(job.id || ''),
+      });
+    }
+  });
 
   const translationEditData = mergeTranslationRegionEditJobs(translationEditJobs, persistedProjects);
   projects.push(...translationEditData.projects);
@@ -2692,6 +2803,7 @@ const mapJobs = (
 	    if (groupedBuyerShowJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedTranslationEditJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedTranslationJobIds.has(String(job.id || '').trim())) return;
+	    if (groupedTranslationPlanningJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedOneClickPlanningJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedStoryboardJobIds.has(String(job.id || '').trim())) return;
     const module = toModule(job.module);
@@ -4012,6 +4124,7 @@ const mergeGeneratedResultPreservingSource = (
     translationPlanningTaskId: next.translationPlanningTaskId ?? existing.translationPlanningTaskId,
     translationPlanningCreditsConsumed: next.translationPlanningCreditsConsumed ?? existing.translationPlanningCreditsConsumed,
     translationGenerationCreditsConsumed: next.translationGenerationCreditsConsumed ?? existing.translationGenerationCreditsConsumed,
+    translationRetryStage: next.translationRetryStage ?? existing.translationRetryStage,
     ...(isTranslation ? { translationEditVersions } : {}),
   };
   if (isTranslation) {

@@ -274,6 +274,136 @@ export const translationSnapshotToParams = (snapshot) => {
   };
 };
 
+const normalizeSourceDimensions = (sourceDimensions) => {
+  const width = optionalNumber(sourceDimensions?.width);
+  const height = optionalNumber(sourceDimensions?.height);
+  return width && height
+    ? { width: Math.round(width), height: Math.round(height) }
+    : null;
+};
+
+export const buildTranslationRetryTaskMetadata = ({
+  projectId,
+  projectName,
+  resultId,
+  subFeature,
+  sourceUrl,
+  sourceFileName,
+  sourceRelativePath,
+  sourceDimensions,
+  translationConfigSnapshot,
+} = {}) => {
+  const snapshot = createTranslationConfigSnapshot(translationConfigSnapshot);
+  if (!snapshot) {
+    throw new TypeError('该历史结果缺少完整的翻译参数，无法安全重新翻译。');
+  }
+  const finalSize = normalizeSourceDimensions(sourceDimensions);
+  if (snapshot.resolutionMode === 'original' && !finalSize) {
+    throw new TypeError('原图尺寸读取失败，无法按历史参数重新翻译。');
+  }
+
+  const normalizedSourceUrl = firstNonEmptyString(sourceUrl);
+  return {
+    shellPurpose: 'translation_result_retry',
+    shellProjectId: firstNonEmptyString(projectId),
+    ...(firstNonEmptyString(projectName) ? { shellProjectName: firstNonEmptyString(projectName) } : {}),
+    shellResultId: firstNonEmptyString(resultId),
+    subFeature: firstNonEmptyString(subFeature),
+    ...(normalizedSourceUrl
+      ? { sourceUrl: normalizedSourceUrl, sourcePreviewUrl: normalizedSourceUrl }
+      : {}),
+    ...(firstNonEmptyString(sourceFileName) ? { sourceFileName: firstNonEmptyString(sourceFileName) } : {}),
+    ...(firstNonEmptyString(sourceRelativePath) ? { sourceRelativePath: firstNonEmptyString(sourceRelativePath) } : {}),
+    ...(finalSize ? { finalSize } : {}),
+    translationConfigSnapshot: snapshot,
+    translationScope: snapshot.translationScope,
+    translationGenerationMode: snapshot.translationGenerationMode,
+  };
+};
+
+export const buildTranslationFailedRetryPlan = ({
+  result,
+  projectParams,
+  projectId,
+  projectName,
+  resultId,
+  subFeature,
+  sourceUrl,
+  sourceFileName,
+  sourceRelativePath,
+  sourceDimensions,
+} = {}) => {
+  const resolvedSnapshot = resolveTranslationRetrySnapshot({ result, projectParams });
+  const snapshot = resolvedSnapshot && firstNonEmptyString(subFeature) === 'remove_text'
+    ? createTranslationConfigSnapshot({
+        ...resolvedSnapshot,
+        translationGenerationMode: 'AI直出',
+      })
+    : resolvedSnapshot;
+  const retryParams = translationSnapshotToParams(snapshot);
+  if (!snapshot || !retryParams) {
+    throw new TypeError('该历史结果缺少完整的翻译参数，无法安全重新翻译。');
+  }
+
+  const taskMetadata = buildTranslationRetryTaskMetadata({
+    projectId,
+    projectName,
+    resultId: firstNonEmptyString(resultId, result?.id),
+    subFeature,
+    sourceUrl,
+    sourceFileName: firstNonEmptyString(sourceFileName, result?.fileName, result?.id),
+    sourceRelativePath: firstNonEmptyString(sourceRelativePath, result?.relativePath),
+    sourceDimensions,
+    translationConfigSnapshot: snapshot,
+  });
+  const resumePlanningResult = firstNonEmptyString(result?.translationRetryStage) === 'generation_pending'
+    && firstNonEmptyString(result?.translationPlanningText)
+    ? {
+        description: firstNonEmptyString(result.translationPlanningText),
+        taskId: firstNonEmptyString(result.translationPlanningTaskId) || undefined,
+        creditsConsumed: optionalNumber(result.translationPlanningCreditsConsumed),
+      }
+    : undefined;
+
+  return {
+    snapshot,
+    retryParams,
+    moduleConfig: {
+      targetLanguage: snapshot.targetLanguage,
+      customLanguage: snapshot.customLanguage,
+      removeWatermark: true,
+      aspectRatio: snapshot.aspectRatio || 'auto',
+      quality: snapshot.quality,
+      model: snapshot.model || 'GPT Image 2',
+      resolutionMode: snapshot.resolutionMode,
+      targetWidth: Number(snapshot.targetWidth || 0),
+      targetHeight: Number(snapshot.targetHeight || 0),
+      maxFileSize: Number(snapshot.maxFileSize || 2),
+    },
+    taskMetadata,
+    resumePlanningResult,
+  };
+};
+
+export const getTranslationResultRatioLabel = (result = {}) => {
+  const snapshot = createTranslationConfigSnapshot(result?.translationConfigSnapshot);
+  if (snapshot?.resolutionMode === 'original') return 'auto';
+  return firstNonEmptyString(result?.matchedAspectRatio, result?.aspectRatio) || 'auto';
+};
+
+export const buildTranslationRetrySubmissionKey = ({
+  projectId,
+  resultId,
+  stage,
+  planningTaskId,
+} = {}) => [
+  'translation-retry',
+  firstNonEmptyString(projectId) || 'unknown-project',
+  firstNonEmptyString(resultId) || 'unknown-result',
+  firstNonEmptyString(stage) || 'generation',
+  firstNonEmptyString(planningTaskId) || 'direct',
+].join(':');
+
 /**
  * @param {{
  *   results?: any[],
@@ -730,6 +860,7 @@ const getPlanningText = (planningResult) => {
 
 export const executeTranslationRetryPipeline = async ({
   snapshot,
+  resumePlanningResult = undefined,
   runPlanning,
   buildPrompt,
   runGeneration,
@@ -741,7 +872,9 @@ export const executeTranslationRetryPipeline = async ({
 
   let planningResult;
   if (normalizedSnapshot.translationGenerationMode === 'AI优化') {
-    planningResult = await runPlanning(normalizedSnapshot);
+    planningResult = getPlanningText(resumePlanningResult)
+      ? resumePlanningResult
+      : await runPlanning(normalizedSnapshot);
   }
 
   const planningText = getPlanningText(planningResult);

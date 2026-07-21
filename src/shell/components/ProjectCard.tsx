@@ -5,6 +5,7 @@ import type { OneClickGenerationContext, TranslationEditRegion, TranslationEditV
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
 import {
   buildTranslationResultDownloadPath,
+  getTranslationResultRatioLabel,
   getTranslationRetryLineageLabel,
   isTranslationResultRetryEligible,
   runTranslationRetriesSequentially,
@@ -905,7 +906,7 @@ const ProjectCard: React.FC<Props> = ({
     );
   };
   const getTranslationRatioLabel = (result: GeneratedResult) =>
-    String(result.matchedAspectRatio || result.aspectRatio || 'auto').trim() || 'auto';
+    getTranslationResultRatioLabel(result);
   const getTranslationPathLabel = (result: GeneratedResult) =>
     String(result.relativePath || result.fileName || result.id || '未命名文件').trim();
   const renderPlanningTaskId = (className = '') => {
