@@ -29,7 +29,7 @@ const extractStoryboardCells = (text = '', panelCount = 9) => {
     .map((match) => match[1]?.trim())
     .filter(Boolean);
   if (matches.length > 0) return matches.slice(0, panelCount);
-  return Array.from({ length: panelCount }, (_, index) => `延续参考爆款视频的第${index + 1}个关键镜头，保持商品、人物、环境和光影连续一致。`);
+  return Array.from({ length: panelCount }, (_, index) => `参考视频中第${index + 1}个关键镜头的通用结构，结合当前商品原创改编，并保持商品、人物、环境和光影连续一致。`);
 };
 
 const normalizeCoreVisualDescription = (value: string, fallback: string) => {
@@ -51,9 +51,9 @@ const extractCoreVisualDescription = (text: string, label: '人物细节' | '环
   return normalizeCoreVisualDescription(match?.[1] || '', fallback);
 };
 
-const getFallbackVoiceover = (_config: VideoStoryboardConfig, _shotIndex: number) => '参考视频该分镜口播未清晰识别';
+const getFallbackVoiceover = (_config: VideoStoryboardConfig, _shotIndex: number) => '参考视频该分镜口播信息未清晰识别';
 
-const getFallbackAudio = () => '参考视频该分镜音效未清晰识别';
+const getFallbackAudio = () => '参考视频该分镜声音类型未清晰识别';
 
 const normalizeVoiceoverText = (value: string, config: VideoStoryboardConfig, shotIndex: number) => {
   const text = String(value || '').trim();
@@ -121,12 +121,12 @@ const normalizeViralStoryboardPrompt = (
   const personDetail = extractCoreVisualDescription(
     raw,
     '人物细节',
-    '参考爆款视频中可见的人物出镜范围、手部/身体动作和服装气质，所有分段保持一致。',
+    '参考视频中客观可见的人物出镜范围、手部/身体动作和服装气质，所有分段保持一致；不得识别或复制人物身份。',
   );
   const environmentDetail = extractCoreVisualDescription(
     raw,
     '环境/场景',
-    '参考爆款视频中可见的真实拍摄场景、道具、光线方向、景深和机位，所有分段保持连续。',
+    '参考视频中客观可见的拍摄场景、道具、光线方向、景深和机位，所有分段保持连续。',
   );
 
   return `${title}
@@ -154,7 +154,7 @@ const normalizeViralDynamicScriptPrompt = (
   return `${title}
 {前置要求：保持视频画面纯净，禁止出现任何文字字幕！
 【全局一致性要求】
-商品必须保持与商品参考图一致；人物/场景/道具/光影必须与爆款视频拆解以及对应宫格分镜保持一致。
+商品必须保持与商品参考图一致；人物/场景/道具/光影必须与参考视频中可观察的通用结构以及对应宫格分镜保持一致。
 【分镜详细描述】
 ${shots.map((shot, shotIndex) => `分镜${CHINESE_NUMERALS[shotIndex] || shotIndex + 1}：${shot.start} - ${shot.end}（脚本第二段也从00:00开始）
 画面描述(视觉)：${shot.visual}；${shot.motion}

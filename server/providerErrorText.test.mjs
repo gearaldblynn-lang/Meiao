@@ -62,3 +62,10 @@ test('providerErrorCodeFromText preserves refusal and bad-response classificatio
   assert.equal(providerErrorCodeFromText('failed to get the file information'), 'provider_bad_response');
   assert.equal(providerErrorCodeFromText('Unauthorized – Authentication failed'), 'provider_bad_request');
 });
+
+test('Google prohibited-use prompt rejection is classified as provider refusal', () => {
+  const refusal = "The prompt could not be submitted. The prompt contains sensitive words that violate Google's Generative AI Prohibited Use policy. Try rephrasing the prompt.";
+
+  assert.equal(isProviderErrorText(refusal), true);
+  assert.equal(providerErrorCodeFromText(refusal), 'provider_refusal');
+});
