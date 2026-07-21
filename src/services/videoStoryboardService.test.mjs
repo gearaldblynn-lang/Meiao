@@ -5,6 +5,17 @@ import { readFileSync } from 'node:fs';
 const source = readFileSync(new URL('./videoStoryboardService.ts', import.meta.url), 'utf8');
 const planningSource = readFileSync(new URL('../utils/videoStoryboardPlanning.ts', import.meta.url), 'utf8');
 
+test('original storyboard segment labels come from an explicit shared runtime import', async () => {
+  const planning = await import(new URL('../utils/videoStoryboardPlanning.ts', import.meta.url).href);
+  const planningImport = source.match(
+    /import\s*\{[\s\S]*?\}\s*from '\.\.\/utils\/videoStoryboardPlanning\.ts';/,
+  )?.[0] || '';
+
+  assert.equal(typeof planning.getSegmentLabel, 'function');
+  assert.equal(planning.getSegmentLabel(0), '分段一');
+  assert.match(planningImport, /\bgetSegmentLabel\b/);
+});
+
 test('viral storyboard prompt forbids expanded product packaging details', () => {
   assert.match(
     source,

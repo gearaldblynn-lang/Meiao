@@ -12,7 +12,7 @@ import { createInternalJob, fetchSystemConfig, waitForInternalJob, safeCreateInt
 import { processWithKieAi, recoverKieAiTask } from './kieAiService';
 import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../utils/gptImage2.mjs';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
-import { parseStoryboardPlanningResult } from '../utils/videoStoryboardPlanning.ts';
+import { getSegmentLabel, parseStoryboardPlanningResult } from '../utils/videoStoryboardPlanning.ts';
 
 export type StoryboardJobContext = {
   shellProjectId?: string;

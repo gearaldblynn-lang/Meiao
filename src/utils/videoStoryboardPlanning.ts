@@ -21,7 +21,7 @@ const getSecondsFromDuration = (duration: VideoStoryboardConfig['duration']) => 
 
 const CHINESE_NUMERALS = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二'];
 
-const getSegmentLabel = (index: number) => `分段${CHINESE_NUMERALS[index] || index + 1}`;
+export const getSegmentLabel = (index: number) => `分段${CHINESE_NUMERALS[index] || index + 1}`;
 
 const extractStoryboardCells = (text = '', panelCount = 9) => {
   const normalized = String(text || '').replace(/\r/g, '').trim();
