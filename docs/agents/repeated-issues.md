@@ -1071,3 +1071,13 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 会话返回完整源文件兼容性；已合规且不需要裁剪的 MP3 和 H.264 MP4 直接保存，其他素材仍按需规范化。前端显示真实上传百分比和独立探测文案；已兼容时显示“使用原文件并继续”。应用在读取 request body 前记录 owner/content-length；Nginx 为 `/api/media-transcodes/` 单独配置 `proxy_request_buffering off`、203m 和 610s。
 - Regression check: 兼容 13 秒 MP3 和完整 H.264/yuv420p MP4 的 FFmpeg 调用次数必须为 0；长于 15 秒、HEVC、非 yuv420p 或用户改动裁剪区间时必须仍转换。同时锁定 `onUploadProgress`、上传起点日志和三层超时/容量对齐；生产验证不调用付费 provider。
 - Avoid next time: 上传支持格式不等于每次都要转码；先用 FFprobe 证明是否需要改字节，再决定快路径或 FFmpeg。排查“长时间转换”必须分别查浏览器上传、反代缓存、multipart 读取、FFprobe、FFmpeg 和持久化，不能用一条模拟进度把全链路统称为转码。
+
+## 2026-07-21 - Gemini HTTP 200 policy refusals must not become storyboard JSON successes
+
+- Symptom: 董丹丹连续两次分镜任务显示“模型返回内容不是有效 JSON，原始错误：爆款复刻拆解解析失败”，页面把问题误导为 JSON 解析错误。
+- Environment: Tencent Cloud production / viral storyboard / `kie_chat` + `gemini-3-5-flash` / one managed reference video and eight product images.
+- Cloud evidence: jobs `32bf77d0e489c5dce10fdb7b` 与 `18777f732156e1ccf8ca0c8b` 都被记录为 `succeeded`、`providerTaskId=null`，但真实 result 是 Google 的 `The prompt could not be submitted... sensitive words... Generative AI Prohibited Use policy` 拒绝文本；两次使用同一个已持久化视频对象。对完全相同的视频 URL 做一次中性 Gemini 3.5 读视频探针，画面、声音及首中尾内容均读取成功，排除了 COS 稳定 URL、视频编码和素材读取故障。
+- Root cause: Gemini 用 HTTP 200 返回策略拒绝文本，provider gateway 的成功边界没有识别该固定拒绝形态，于是把拒绝保存为成功结果；前端随后才按分镜 JSON 解析，产生二次误报。原“爆款拆解复刻”提示词又要求高度复现原口播、声音与镜头，容易触发政策拒绝。
+- Fix: provider 统一错误分类新增 Google prohibited-use 拒绝识别，命中后以 `provider_refusal` 失败并保留可诊断信息，禁止进入成功解析。爆款模式改为“参考视频结构分析与原创改编”，按 RTCFE 五段约束只提取可观察通用结构，不要求逐字口播、身份、品牌或受保护表达复刻；通用占位商品信息在提交前中性化，下游缺省文案也不再重新注入“爆款复刻”措辞。视频仍以真实 `input_file` 交给 Gemini，不做抽帧或文本兜底。
+- Regression check: `node --test server/providerErrorText.test.mjs server/providerErrorHumanize.test.mjs src/utils/videoStoryboardPromptPolicy.test.mjs src/services/videoStoryboardService.test.mjs`; `node --test --test-name-pattern "Google prohibited-use|managed storyboard video|Gemini 3.5" server/providerGateway.test.mjs`; `node --test --test-name-pattern "viral storyboard prompts preserve" src/components/uiArchitecture.test.mjs`; `npm run verify`。集成回归必须锁定 managed video 经测试 COS 签名 URL 作为 Gemini `file_data.file_uri`、仅一次 Gemini 请求、零 KIE 临时上传，并把真实 Markdown 链接拒绝归类为 `provider_refusal`。
+- Avoid next time: HTTP 2xx 只证明传输成功，不代表模型完成业务请求；所有 provider 的策略拒绝、配额、鉴权和安全响应都必须在统一 gateway 先分类，再允许业务解析器消费。真实验收必须分别证明素材可读、模型接受提示词、结果符合结构合同，不能把三层合并成“JSON 失败”。

@@ -3378,6 +3378,77 @@ test('executeProviderJob routes gemini 3.5 flash through kie native gemini strea
   }
 });
 
+test('executeProviderJob rejects Google prohibited-use text instead of completing a video storyboard job', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = global.fetch;
+  const requests = [];
+  const cosCalls = [];
+  const sourceVideoUrl = '/api/assets/file/storyboard/policy-refusal.mp4';
+  const signedVideoUrl = 'https://meiao-gemini-video-test-20260714-1406860462.cos.ap-guangzhou.myqcloud.com/gemini-video/test/policy-refusal.mp4?q-signature=test';
+  const refusal = "The prompt could not be submitted. The prompt contains sensitive words that violate Google's [Generative AI Prohibited Use policy](https://policies.google.com/terms/generative-ai/use-policy). Try rephrasing the prompt. If you think this was an error, [send feedback](https://ai.google.dev/gemini-api/docs/troubleshooting).";
+  installTestCosClient(signedVideoUrl, cosCalls);
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from('managed-video-bytes'), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4', 'content-length': '19' },
+      });
+    }
+    if (!String(url).includes('/gemini/v1/models/gemini-3-5-flash:streamGenerateContent')) {
+      throw new Error(`unexpected request: ${String(url)}`);
+    }
+    return createJsonResponse({
+      candidates: [{ content: { role: 'model', parts: [{ text: refusal }] } }],
+      modelVersion: 'gemini-3-5-flash',
+    });
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          module: 'video',
+          subFeature: 'storyboard',
+          taskType: 'kie_chat',
+          provider: 'kie',
+          payload: {
+            model: 'gemini-3-5-flash',
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'text', text: '分析参考视频。' },
+                { type: 'input_file', file_url: sourceVideoUrl, filename: 'policy-refusal.mp4' },
+              ],
+            }],
+          },
+        },
+        {
+          KIE_API_KEY: 'test-key',
+          MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+          MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+          ...createTestCosEnv(),
+        },
+        new AbortController().signal,
+      ),
+      (error) => error?.code === 'provider_refusal' && /Prohibited Use policy/i.test(error.message),
+    );
+    const geminiRequests = requests.filter((item) => item.url.includes('/gemini/v1/models/gemini-3-5-flash:streamGenerateContent'));
+    assert.equal(geminiRequests.length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.deepEqual(cosCalls.map((call) => call.method), ['putObject', 'getObjectUrl']);
+    const requestBody = JSON.parse(String(geminiRequests[0].init.body));
+    const filePart = requestBody.contents.flatMap((item) => item.parts || []).find((part) => part.file_data);
+    assert.equal(filePart.file_data.mime_type, 'video/mp4');
+    assert.equal(filePart.file_data.file_uri, signedVideoUrl);
+  } finally {
+    global.fetch = originalFetch;
+    __testOnly_setCosClientFactory(null);
+  }
+});
+
 test('executeProviderJob extracts gemini 3.5 flash text from native sse candidates', async () => {
   const originalFetch = global.fetch;
   const seenProviderTaskIds = [];

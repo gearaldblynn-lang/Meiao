@@ -5,6 +5,7 @@ const REFUSAL_PATTERNS = [
   /\bI\s+can(?:not|'t)\s+(?:help|assist|comply|fulfill)\b/i,
   /\bI'm\s+sorry,\s+but\s+I\s+can(?:not|'t)\b/i,
   /\bI\s+am\s+sorry,\s+but\s+I\s+can(?:not|'t)\b/i,
+  /prompt\s+could\s+not\s+be\s+submitted[\s\S]{0,240}(?:sensitive\s+words|prohibited\s+use\s+policy)/i,
   /无法满足(?:该|这个|此)?请求/,
   /不能满足(?:该|这个|此)?请求/,
   /无法协助(?:该|这个|此)?请求/,

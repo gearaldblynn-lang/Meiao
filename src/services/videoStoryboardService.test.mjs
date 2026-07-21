@@ -35,6 +35,25 @@ test('viral storyboard prompt forbids expanded product packaging details', () =>
   );
 });
 
+test('viral storyboard prompt asks for policy-safe structural reference and original adaptation', () => {
+  const viralPromptBlock = source.match(
+    /if \(config\.videoGenerationMode === 'viral_split'\) \{[\s\S]*?\n`\.trim\(\);\n  \}/,
+  )?.[0] || '';
+
+  assert.match(viralPromptBlock, /参考视频结构分析与原创改编导演/);
+  assert.match(viralPromptBlock, /不得逐字转录或复现原视频口播/);
+  assert.match(viralPromptBlock, /不得复制原视频中的人物身份、品牌文案、字幕、歌词或可识别声音特征/);
+  assert.doesNotMatch(viralPromptBlock, /爆款拆解复刻导演/);
+  assert.doesNotMatch(viralPromptBlock, /口播内容必须来自爆款视频中真实可识别的原始口播/);
+  assert.match(source, /import \{ normalizeViralProductInfo \} from '\.\.\/utils\/videoStoryboardPromptPolicy\.mjs'/);
+  assert.match(viralPromptBlock, /const productFacts = normalizeViralProductInfo\(config\.productInfo\)/);
+  assert.match(source, /userContent\.push\(\{ type: 'text', text: '\[参考视频附件已附加\]' \}\)/);
+  assert.doesNotMatch(source, /\[爆款复刻视频URL\]/);
+  for (const heading of ['R Role 角色', 'T Task 任务', 'C Constraint 约束', 'F Format 格式', 'E Example 示例']) {
+    assert.ok(viralPromptBlock.includes(heading), `missing RTCFE heading: ${heading}`);
+  }
+});
+
 test('viral storyboard parser preserves multiline voiceover and audio content from structured scripts', () => {
   assert.ok(planningSource.includes("const voiceLine = lines.find((line) => line.startsWith('口播')) || '';"));
   assert.ok(planningSource.includes("const audioLine = lines.find((line) => line.startsWith('音效')) || '';"));
@@ -55,14 +74,21 @@ test('viral storyboard generation requires a reference video before submitting t
 
 test('normalized viral storyboard prompt emits descriptive placeholders instead of instruction-only content', () => {
   const normalizerBody = planningSource.match(/const normalizeViralStoryboardPrompt = \([\s\S]*?\n\};/)?.[0] || '';
+  const dynamicNormalizerBody = planningSource.match(/const normalizeViralDynamicScriptPrompt = \([\s\S]*?\n\};/)?.[0] || '';
 
-  assert.ok(normalizerBody.includes("'参考爆款视频中可见的人物出镜范围、手部/身体动作和服装气质，所有分段保持一致。'"));
-  assert.ok(normalizerBody.includes("'参考爆款视频中可见的真实拍摄场景、道具、光线方向、景深和机位，所有分段保持连续。'"));
+  assert.ok(normalizerBody.includes("'参考视频中客观可见的人物出镜范围、手部/身体动作和服装气质，所有分段保持一致；不得识别或复制人物身份。'"));
+  assert.ok(normalizerBody.includes("'参考视频中客观可见的拍摄场景、道具、光线方向、景深和机位，所有分段保持连续。'"));
   assert.match(normalizerBody, /人物细节：\$\{personDetail\}/);
   assert.match(normalizerBody, /环境\/场景：\$\{environmentDetail\}/);
   assert.doesNotMatch(normalizerBody, /人物细节：从爆款视频拆解人物类型/);
   assert.doesNotMatch(normalizerBody, /商品：保持与商品参考图完全一致，不展开描述包装细节/);
   assert.doesNotMatch(normalizerBody, /环境\/场景：从爆款视频拆解具体场景/);
+  assert.doesNotMatch(normalizerBody, /参考爆款视频|爆款视频拆解/);
+  assert.match(dynamicNormalizerBody, /参考视频中可观察的通用结构以及对应宫格分镜/);
+  assert.doesNotMatch(dynamicNormalizerBody, /参考爆款视频|爆款视频拆解/);
+  assert.match(planningSource, /getFallbackVoiceover[\s\S]*?'参考视频该分镜口播信息未清晰识别'/);
+  assert.match(planningSource, /getFallbackAudio[\s\S]*?'参考视频该分镜声音类型未清晰识别'/);
+  assert.doesNotMatch(planningSource, /延续参考爆款视频/);
 });
 
 test('original storyboard chain keeps scene references separate from product references', () => {
