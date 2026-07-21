@@ -1081,3 +1081,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: provider 统一错误分类新增 Google prohibited-use 拒绝识别，命中后以 `provider_refusal` 失败并保留可诊断信息，禁止进入成功解析。爆款模式改为“参考视频结构分析与原创改编”，按 RTCFE 五段约束只提取可观察通用结构，不要求逐字口播、身份、品牌或受保护表达复刻；通用占位商品信息在提交前中性化，下游缺省文案也不再重新注入“爆款复刻”措辞。视频仍以真实 `input_file` 交给 Gemini，不做抽帧或文本兜底。
 - Regression check: `node --test server/providerErrorText.test.mjs server/providerErrorHumanize.test.mjs src/utils/videoStoryboardPromptPolicy.test.mjs src/services/videoStoryboardService.test.mjs`; `node --test --test-name-pattern "Google prohibited-use|managed storyboard video|Gemini 3.5" server/providerGateway.test.mjs`; `node --test --test-name-pattern "viral storyboard prompts preserve" src/components/uiArchitecture.test.mjs`; `npm run verify`。集成回归必须锁定 managed video 经测试 COS 签名 URL 作为 Gemini `file_data.file_uri`、仅一次 Gemini 请求、零 KIE 临时上传，并把真实 Markdown 链接拒绝归类为 `provider_refusal`。
 - Avoid next time: HTTP 2xx 只证明传输成功，不代表模型完成业务请求；所有 provider 的策略拒绝、配额、鉴权和安全响应都必须在统一 gateway 先分类，再允许业务解析器消费。真实验收必须分别证明素材可读、模型接受提示词、结果符合结构合同，不能把三层合并成“JSON 失败”。
+
+## 2026-07-21 - 出海翻译失败项重试必须继承原任务尺寸合同
+
+- Symptom: 大善账号详情出海选择“原图”后，`丽水篮 (9).jpg` 的失败项重试结果明显变窄，结果页显示比例 `1:4`；原图实际为 790×2132。
+- Cloud evidence: 原失败项重试 job `733ace97a92456cdad7db0c8` 使用了界面当前模型 `nano-banana-2`，payload 只有 `resolutionMode=original` 和 `aspectRatio=1:4`，缺少 `shellPurpose`、历史参数快照与 `finalSize`，结果资产为 512×2064。随后按完整重试链路创建的 job `058014bc6557e37cf5e591a0` 携带 `finalSize=790×2132`，持久化结果也精确为 790×2132。
+- Root cause: 已完成图片重试和失败项重试是两套实现。前者从 `translationConfigSnapshot` 恢复原任务并写入 `finalSize`；后者读取当前页面参数和当前模型，且调用 `runShellImageGeneration` 时没有传任务元数据。结果既可能换模型，也绕过服务端原图尺寸后处理。界面又优先显示 `matchedAspectRatio`，把 provider 内部匹配比例误呈现为用户选择的输出比例。
+- Fix: 失败项重试统一从结果快照或项目生成上下文恢复语言、模型、分辨率模式和比例；原图尺寸优先读取持久字段，缺失时才探测源图。提交元数据统一包含项目/结果身份、源文件、`finalSize`、翻译快照与范围；原图模式缺少尺寸时在付费任务创建前拒绝提交。结果卡在原图模式显示 `auto`，`matchedAspectRatio` 只保留作内部诊断。AI 优化的策划、待生成、生成、完成和失败阶段持久化，刷新后复用既有策划结果并以稳定提交键续跑，避免重复策划计费或重复生成；去文案只允许 AI 直出，服务层同时拒绝用策划提示词覆盖原生去文案提示词。
+- Regression check: `node --test src/modules/Translation/translationRetryUtils.test.mjs src/modules/Translation/translationRetryIntegration.test.mjs src/adapters/shellDataAdapter.test.mjs src/shell/components/layout/BottomInputBar.test.mjs`；验收必须同时核对最终 job payload 的历史模型、`resolutionMode=original`、`finalSize`，托管结果资产宽高等于原图，以及策划完成刷新后只续建一次生成任务。
+- Avoid next time: 同一按钮支持成功项和失败项时，不得维护两份不同的参数恢复与任务元数据协议。付费重试必须以不可变历史快照为准，界面当前值只用于新任务；“模型生成比例”和“用户输出尺寸”必须分字段展示和验证。多阶段付费流程必须把阶段与幂等身份写入持久层，不能只保存在 React 内存；模式选项与服务端提示词选择必须双层约束。

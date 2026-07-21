@@ -650,7 +650,7 @@ const getTranslationQuickParams = (activeSubFeature?: string): ParamItem[] => {
   const isRemoveText = activeSubFeature === 'remove_text';
   return [
     { key: 'submode', label: isDetail ? '详情出海' : isRemoveText ? '去文案' : '主图出海', title: '翻译模式', icon: <Globe size={12} />, options: ['主图出海', '详情出海', '去文案'], defaultValue: isDetail ? '详情出海' : isRemoveText ? '去文案' : '主图出海' },
-    { key: 'translationGenerationMode', label: 'AI直出', title: '生成逻辑', icon: <Wand2 size={12} />, options: ['AI直出', 'AI优化'], defaultValue: 'AI直出' },
+    { key: 'translationGenerationMode', label: 'AI直出', title: '生成逻辑', icon: <Wand2 size={12} />, options: isRemoveText ? ['AI直出'] : ['AI直出', 'AI优化'], defaultValue: 'AI直出' },
     ...(isRemoveText ? [] : [{
       key: 'translationScope',
       label: '产品隔离',

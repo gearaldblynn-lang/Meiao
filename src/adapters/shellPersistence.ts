@@ -85,6 +85,7 @@ type ShellResult = {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  translationRetryStage?: string;
   translationEditVersions?: TranslationEditVersion[];
 };
 
@@ -186,6 +187,7 @@ type ShellTranslationFile = {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  translationRetryStage?: string;
   initialCanvasWidth?: number;
   initialCanvasHeight?: number;
   translationEditVersions?: TranslationEditVersion[];

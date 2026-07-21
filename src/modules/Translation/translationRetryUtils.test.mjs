@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import sharp from 'sharp';
+import { buildImageOutputTransformFromJob, transformImageOutputBuffer } from '../../../server/imagePostProcess.mjs';
 
 import {
   acquireTranslationRetryScopeLock,
@@ -37,6 +39,213 @@ const completeParams = (overrides = {}) => ({
   ratio: '3:4',
   translationGenerationMode: 'AI优化',
   ...overrides,
+});
+
+test('failed translation retry metadata preserves the original-size output contract', () => {
+  const buildMetadata = translationRetryUtils.buildTranslationRetryTaskMetadata;
+  assert.equal(typeof buildMetadata, 'function');
+  if (typeof buildMetadata !== 'function') return;
+
+  const snapshot = createTranslationConfigSnapshot(completeParams({
+    resolutionMode: 'original',
+    ratio: 'auto',
+    model: 'GPT Image 2',
+    translationGenerationMode: 'AI直出',
+  }));
+  const metadata = buildMetadata({
+    projectId: 'translation-project',
+    projectName: '详情出海 · 1张',
+    resultId: 'translation-result',
+    subFeature: 'detail',
+    sourceUrl: 'https://example.com/source.jpg',
+    sourceFileName: 'source.jpg',
+    sourceRelativePath: 'folder/source.jpg',
+    sourceDimensions: { width: 790, height: 2132 },
+    translationConfigSnapshot: snapshot,
+  });
+
+  assert.deepEqual(metadata, {
+    shellPurpose: 'translation_result_retry',
+    shellProjectId: 'translation-project',
+    shellProjectName: '详情出海 · 1张',
+    shellResultId: 'translation-result',
+    subFeature: 'detail',
+    sourceUrl: 'https://example.com/source.jpg',
+    sourcePreviewUrl: 'https://example.com/source.jpg',
+    sourceFileName: 'source.jpg',
+    sourceRelativePath: 'folder/source.jpg',
+    finalSize: { width: 790, height: 2132 },
+    translationConfigSnapshot: snapshot,
+    translationScope: 'product_isolation',
+    translationGenerationMode: 'AI直出',
+  });
+});
+
+test('original-size translation retry refuses to submit without source dimensions', () => {
+  const buildMetadata = translationRetryUtils.buildTranslationRetryTaskMetadata;
+  assert.equal(typeof buildMetadata, 'function');
+  if (typeof buildMetadata !== 'function') return;
+
+  assert.throws(
+    () => buildMetadata({
+      projectId: 'translation-project',
+      resultId: 'translation-result',
+      subFeature: 'detail',
+      sourceUrl: 'https://example.com/source.jpg',
+      translationConfigSnapshot: createTranslationConfigSnapshot(completeParams({
+        resolutionMode: 'original',
+        translationGenerationMode: 'AI直出',
+      })),
+    }),
+    /原图尺寸读取失败/,
+  );
+});
+
+test('translation ratio label keeps original-size selection distinct from provider matching ratio', () => {
+  const getRatioLabel = translationRetryUtils.getTranslationResultRatioLabel;
+  assert.equal(typeof getRatioLabel, 'function');
+  if (typeof getRatioLabel !== 'function') return;
+
+  assert.equal(getRatioLabel({
+    aspectRatio: '1:4',
+    matchedAspectRatio: '1:4',
+    translationConfigSnapshot: createTranslationConfigSnapshot(completeParams({
+      resolutionMode: 'original',
+      ratio: 'auto',
+      translationGenerationMode: 'AI直出',
+    })),
+  }), 'auto');
+  assert.equal(getRatioLabel({
+    aspectRatio: '3:4',
+    matchedAspectRatio: '3:4',
+    translationConfigSnapshot: createTranslationConfigSnapshot(completeParams({
+      resolutionMode: 'custom',
+      ratio: '3:4',
+      translationGenerationMode: 'AI直出',
+    })),
+  }), '3:4');
+});
+
+test('failed retry plan keeps the historical model and restores a provider 1:4 image to source pixels', async () => {
+  const buildPlan = translationRetryUtils.buildTranslationFailedRetryPlan;
+  assert.equal(typeof buildPlan, 'function');
+  if (typeof buildPlan !== 'function') return;
+
+  const historicalSnapshot = createTranslationConfigSnapshot(completeParams({
+    model: 'GPT Image 2',
+    resolutionMode: 'original',
+    ratio: 'auto',
+    translationGenerationMode: 'AI直出',
+  }));
+  const plan = buildPlan({
+    result: { translationConfigSnapshot: historicalSnapshot },
+    projectParams: completeParams({ model: 'Nano Banana 2' }),
+    projectId: 'translation-project',
+    projectName: '详情出海 · 1张',
+    resultId: 'translation-result',
+    subFeature: 'detail',
+    sourceUrl: 'https://example.com/source.jpg',
+    sourceFileName: 'source.jpg',
+    sourceRelativePath: 'folder/source.jpg',
+    sourceDimensions: { width: 790, height: 2132 },
+  });
+
+  assert.equal(plan.snapshot.model, 'GPT Image 2');
+  assert.equal(plan.moduleConfig.model, 'GPT Image 2');
+  assert.equal(plan.moduleConfig.resolutionMode, 'original');
+  assert.equal(plan.moduleConfig.aspectRatio, 'auto');
+  assert.equal(plan.retryParams.model, 'GPT Image 2');
+  assert.deepEqual(plan.taskMetadata.finalSize, { width: 790, height: 2132 });
+
+  const outputTransform = buildImageOutputTransformFromJob({
+    module: 'translation',
+    taskType: 'kie_image',
+    payload: {
+      ...plan.taskMetadata,
+      model: plan.moduleConfig.model,
+      resolutionMode: plan.moduleConfig.resolutionMode,
+      aspectRatio: '1:4',
+      maxFileSize: 10,
+    },
+  });
+  assert.deepEqual(outputTransform, { width: 790, height: 2132, maxFileSize: 10 });
+
+  const providerOutput = await sharp({
+    create: {
+      width: 512,
+      height: 2064,
+      channels: 3,
+      background: '#ffffff',
+    },
+  }).jpeg().toBuffer();
+  const transformed = await transformImageOutputBuffer(providerOutput, outputTransform);
+  assert.equal(transformed.width, 790);
+  assert.equal(transformed.height, 2132);
+});
+
+test('failed retry plan supports each translation subfeature and keeps remove-text on its native direct prompt', () => {
+  const buildPlan = translationRetryUtils.buildTranslationFailedRetryPlan;
+  assert.equal(typeof buildPlan, 'function');
+  if (typeof buildPlan !== 'function') return;
+
+  for (const subFeature of ['main', 'detail', 'remove_text']) {
+    for (const translationGenerationMode of ['AI直出', 'AI优化']) {
+      const plan = buildPlan({
+        result: {
+          translationConfigSnapshot: createTranslationConfigSnapshot(completeParams({
+            model: 'GPT Image 2',
+            resolutionMode: 'custom',
+            ratio: '3:4',
+            translationGenerationMode,
+          })),
+        },
+        projectParams: completeParams({ model: 'Nano Banana 2' }),
+        projectId: 'translation-project',
+        resultId: `translation-${subFeature}-${translationGenerationMode}`,
+        subFeature,
+        sourceUrl: 'https://example.com/source.jpg',
+        sourceDimensions: { width: 790, height: 2132 },
+      });
+      assert.equal(plan.snapshot.model, 'GPT Image 2');
+      assert.equal(
+        plan.snapshot.translationGenerationMode,
+        subFeature === 'remove_text' ? 'AI直出' : translationGenerationMode,
+      );
+      assert.equal(plan.taskMetadata.subFeature, subFeature);
+      assert.equal(plan.moduleConfig.resolutionMode, 'custom');
+      assert.equal(plan.moduleConfig.targetWidth, 1200);
+    }
+  }
+});
+
+test('failed retry plan resumes a completed planning stage without charging for planning twice', () => {
+  const buildPlan = translationRetryUtils.buildTranslationFailedRetryPlan;
+  assert.equal(typeof buildPlan, 'function');
+  if (typeof buildPlan !== 'function') return;
+
+  const plan = buildPlan({
+    result: {
+      id: 'translation-result',
+      translationRetryStage: 'generation_pending',
+      translationPlanningText: 'Translate title to "Storage Basket".',
+      translationPlanningTaskId: 'planning-provider-1',
+      translationPlanningCreditsConsumed: 1.5,
+      translationConfigSnapshot: createTranslationConfigSnapshot(completeParams({
+        translationGenerationMode: 'AI优化',
+      })),
+    },
+    projectId: 'translation-project',
+    resultId: 'translation-result',
+    subFeature: 'detail',
+    sourceUrl: 'https://example.com/source.jpg',
+    sourceDimensions: { width: 790, height: 2132 },
+  });
+
+  assert.deepEqual(plan.resumePlanningResult, {
+    description: 'Translate title to "Storage Basket".',
+    taskId: 'planning-provider-1',
+    creditsConsumed: 1.5,
+  });
 });
 
 test('normalizeTranslationGenerationMode accepts the legacy planning label', () => {
@@ -1004,6 +1213,31 @@ test('executeTranslationRetryPipeline skips planning in direct generation mode',
     planningCreditsConsumed: undefined,
     generationCreditsConsumed: 2,
   });
+});
+
+test('executeTranslationRetryPipeline reuses a persisted completed planning stage', async () => {
+  let planningCalls = 0;
+  const result = await executeTranslationRetryPipeline({
+    snapshot: completeParams({ translationGenerationMode: 'AI优化' }),
+    resumePlanningResult: {
+      description: 'persisted fresh planning',
+      taskId: 'planning-provider-resume',
+      creditsConsumed: 1.25,
+    },
+    runPlanning: async () => {
+      planningCalls += 1;
+      throw new Error('must not re-plan');
+    },
+    buildPrompt: (planningText) => `prompt:${planningText}`,
+    runGeneration: async () => ({ status: 'success', imageUrl: 'result.png', creditsConsumed: 3 }),
+  });
+
+  assert.equal(planningCalls, 0);
+  assert.equal(result.planningText, 'persisted fresh planning');
+  assert.equal(result.planningTaskId, 'planning-provider-resume');
+  assert.equal(result.planningCreditsConsumed, 1.25);
+  assert.equal(result.generationCreditsConsumed, 3);
+  assert.equal(result.creditsConsumed, 4.25);
 });
 
 test('upsertTranslationRetryResultInProject appends immutably and updates one retry without duplication', () => {

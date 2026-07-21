@@ -927,7 +927,8 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
   const moduleLabel = MODULE_LABELS[input.module] || input.module;
   const materialManifest = buildMaterialManifest(input);
   const xhsPresetPrompt = input.module === AppModule.XHS_COVER ? buildXhsPresetPrompt(input.params) : '';
-  const isTranslationAiOptimizeMode = ['AI优化', '策划分析'].includes(input.params.translationGenerationMode);
+  const isTranslationAiOptimizeMode = input.subFeature !== 'remove_text'
+    && ['AI优化', '策划分析'].includes(input.params.translationGenerationMode);
   const useNativeTranslationPrompt = input.module === AppModule.TRANSLATION && !isTranslationAiOptimizeMode;
   const oneClickSchemeContent = typeof input.taskMetadata?.schemeContent === 'string'
     ? input.taskMetadata.schemeContent.trim()

@@ -2,7 +2,7 @@ import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, TranslationConfigSnapshot, TranslationEditRegion, TranslationEditVersion, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, TranslationConfigSnapshot, TranslationEditRegion, TranslationEditVersion, TranslationRetryStage, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
@@ -123,7 +123,9 @@ import { resolveTranslationInitialCanvasSize } from './modules/Translation/trans
 import {
   acquireTranslationRetryScopeLock,
   buildTranslationGenerationPrompt,
+  buildTranslationFailedRetryPlan,
   buildTranslationRetryDescriptor,
+  buildTranslationRetrySubmissionKey,
   createTranslationConfigSnapshot,
   executeTranslationRetryPipeline,
   reduceTranslationRetryProjectMutation,
@@ -352,6 +354,7 @@ export interface GeneratedResult {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  translationRetryStage?: TranslationRetryStage;
   translationEditVersions?: TranslationEditVersion[];
 }
 
@@ -1936,6 +1939,7 @@ type TranslationBatchFile = {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  translationRetryStage?: TranslationRetryStage;
   translationEditVersions?: TranslationEditVersion[];
 };
 
@@ -1979,6 +1983,7 @@ const translationFileToResult = (
   translationPlanningTaskId: file.translationPlanningTaskId,
   translationPlanningCreditsConsumed: file.translationPlanningCreditsConsumed,
   translationGenerationCreditsConsumed: file.translationGenerationCreditsConsumed,
+  translationRetryStage: file.translationRetryStage,
   ...copyTranslationEditVersionFields(file, 'imageUrl'),
 });
 
@@ -2024,6 +2029,7 @@ const translationResultToFile = (
   translationPlanningTaskId: result.translationPlanningTaskId,
   translationPlanningCreditsConsumed: result.translationPlanningCreditsConsumed,
   translationGenerationCreditsConsumed: result.translationGenerationCreditsConsumed,
+  translationRetryStage: result.translationRetryStage,
   ...copyTranslationEditVersionFields(result, 'resultUrl'),
 });
 
@@ -2821,6 +2827,8 @@ const AppContent: React.FC<{
   const [projects, setProjects] = useState<Project[]>(() => initialRuntimeSnapshot.projects);
   const projectsRef = useRef<Project[]>(initialRuntimeSnapshot.projects);
   const translationRetryScopeLocksRef = useRef<Set<string>>(new Set());
+  const translationRetryAutoResumeKeysRef = useRef<Set<string>>(new Set());
+  const translationRetryAutoResumeRunningRef = useRef(false);
   const projectNameCounterRef = useRef<Record<string, number>>({});
 
   // ── Tasks (in-progress) ──
@@ -5792,6 +5800,9 @@ const AppContent: React.FC<{
       skuCopyText_0?: string;
       [key: string]: string | undefined;
     };
+    if (targetModule === AppModuleObj.TRANSLATION && targetSubFeature === 'remove_text') {
+      generationParams.translationGenerationMode = 'AI直出';
+    }
     if (targetModule === AppModuleObj.RETOUCH) {
       const retouchSizeWarning = getRetouchCustomSizeRatioWarning({
         aspectRatio: generationParams.ratio || generationParams.aspectRatio,
@@ -6181,7 +6192,8 @@ const AppContent: React.FC<{
         void persistTranslationFilesToSharedState(targetSubFeature, nextFiles);
       };
 
-      const useTranslationPlanningAnalysis = ['AI优化', '策划分析'].includes(generationParams.translationGenerationMode);
+      const useTranslationPlanningAnalysis = targetSubFeature !== 'remove_text'
+        && ['AI优化', '策划分析'].includes(generationParams.translationGenerationMode);
 
       const buildTranslationPrompt = (material: TranslationBatchFile, index: number, matchedRatio: string, planningAnalysis = '') => (
         buildTranslationGenerationPrompt({
@@ -6284,6 +6296,7 @@ const AppContent: React.FC<{
 	              translationConfigSnapshot: currentFileItem.translationConfigSnapshot,
 	              translationScope: translationConfigSnapshot.translationScope,
 	              translationGenerationMode: useTranslationPlanningAnalysis ? 'AI优化' : 'AI直出',
+	              translationRetryStage: useTranslationPlanningAnalysis ? 'planning' : 'generation',
 	            };
 	            let planningAnalysis = '';
 
@@ -6295,6 +6308,7 @@ const AppContent: React.FC<{
 	              aspectRatio: matchedRatio,
 	              matchedAspectRatio: matchedRatio,
 	              taskId,
+	              translationRetryStage: useTranslationPlanningAnalysis ? 'planning' : 'generation',
 	            };
             syncTranslationProject(translationFileItems);
 	            setTasks((prev) => prev.map((task) => (
@@ -6335,6 +6349,11 @@ const AppContent: React.FC<{
 	                taskMetadata: {
 	                  ...translationBaseTaskMetadata,
 	                  shellPurpose: 'translation_planning_analysis',
+	                  clientSubmissionKey: buildTranslationRetrySubmissionKey({
+	                    projectId,
+	                    resultId: currentFileItem.id,
+	                    stage: 'planning',
+	                  }),
 	                },
 	                publicBaseUrl,
 	              }, material.sourceUrl, (jobId: string, providerTaskId?: string) => {
@@ -6357,6 +6376,7 @@ const AppContent: React.FC<{
 	                translationPlanningTaskId: planningTaskId,
 	                translationPlanningCreditsConsumed: planningCreditsConsumed,
 	                creditsConsumed: sumTranslationRetryCredits(planningCreditsConsumed, undefined),
+	                translationRetryStage: 'generation_pending',
 	              };
 	              syncTranslationProject(translationFileItems);
 	              setTasks((prev) => prev.map((task) => (
@@ -6371,6 +6391,13 @@ const AppContent: React.FC<{
 	              translationPlanningText: planningAnalysis || undefined,
 	              translationPlanningTaskId: planningTaskId,
 	              translationPlanningCreditsConsumed: planningCreditsConsumed,
+	              translationRetryStage: 'generation',
+	              clientSubmissionKey: buildTranslationRetrySubmissionKey({
+	                projectId,
+	                resultId: currentFileItem.id,
+	                stage: 'generation',
+	                planningTaskId,
+	              }),
 	            };
 
 	            const result = await runShellImageGeneration({
@@ -6406,8 +6433,9 @@ const AppContent: React.FC<{
 	                translationFileItems[index] = {
                   ...translationFileItems[index],
                   backendJobId: jobId || undefined,
-                  taskId: providerTaskId || translationFileItems[index].taskId,
-                };
+	                  taskId: providerTaskId || translationFileItems[index].taskId,
+	                  translationRetryStage: 'generation',
+	                };
                 syncTranslationProject(translationFileItems);
               },
               publicBaseUrl,
@@ -6436,6 +6464,7 @@ const AppContent: React.FC<{
               aspectRatio: matchedRatio,
               originalWidth: resolvedSourceDimensions?.width || translationFileItems[index]?.originalWidth || currentFileItem.originalWidth,
               originalHeight: resolvedSourceDimensions?.height || translationFileItems[index]?.originalHeight || currentFileItem.originalHeight,
+              translationRetryStage: 'completed',
             };
             successCount += 1;
             syncTranslationProject(translationFileItems);
@@ -6459,6 +6488,7 @@ const AppContent: React.FC<{
               error: message,
               prompt: translationFileItems[index]?.prompt || currentFileItem.prompt || message,
               model: String(generationParams.model || 'GPT Image 2'),
+              translationRetryStage: 'error',
             };
             syncTranslationProject(translationFileItems);
             addToast(`${translationFileItems[index].fileName || `翻译图片 ${index + 1}`}：${message}`, 'error');
@@ -9785,6 +9815,9 @@ const AppContent: React.FC<{
             translationPlanningTaskId: undefined,
             translationPlanningCreditsConsumed: undefined,
             translationGenerationCreditsConsumed: undefined,
+            translationRetryStage: translationRetrySnapshot.translationGenerationMode === 'AI优化'
+              ? 'planning'
+              : 'generation',
             originalWidth: sourceDimensions?.width || result.originalWidth,
             originalHeight: sourceDimensions?.height || result.originalHeight,
           };
@@ -9837,6 +9870,12 @@ const AppContent: React.FC<{
                     translationConfigSnapshot: translationRetrySnapshot,
                     translationScope: translationRetrySnapshot.translationScope,
                     translationGenerationMode: translationRetrySnapshot.translationGenerationMode,
+                    translationRetryStage: 'planning',
+                    clientSubmissionKey: buildTranslationRetrySubmissionKey({
+                      projectId: project.id,
+                      resultId: retryDescriptor.id,
+                      stage: 'planning',
+                    }),
                   },
                   publicBaseUrl,
                 }, sourceUrl, (jobId: string, providerTaskId?: string) => {
@@ -9852,6 +9891,7 @@ const AppContent: React.FC<{
                     ...currentRetryResult,
                     backendJobId: jobId || currentRetryResult.backendJobId,
                     translationPlanningTaskId: providerTaskId || currentRetryResult.translationPlanningTaskId,
+                    translationRetryStage: 'planning',
                   };
                   const planningIdentityProject = updateTranslationRetryResult(planningIdentityResult);
                   if (planningIdentityProject) void persistTranslationRetryState(planningIdentityProject);
@@ -9867,6 +9907,7 @@ const AppContent: React.FC<{
                   translationPlanningTaskId: planningTaskId,
                   translationPlanningCreditsConsumed: planningResult.creditsConsumed,
                   creditsConsumed: sumTranslationRetryCredits(planningResult.creditsConsumed, undefined),
+                  translationRetryStage: 'generation_pending',
                 };
                 const plannedProject = updateTranslationRetryResult(plannedResult);
                 if (!plannedProject) throw new Error('重试结果已删除，已停止更新。');
@@ -9909,6 +9950,7 @@ const AppContent: React.FC<{
                       ...latestRetryResult,
                       backendJobId: jobId || latestRetryResult.backendJobId,
                       taskId: providerTaskId || latestRetryResult.taskId,
+                      translationRetryStage: 'generation',
                     };
                     const generationIdentityProject = updateTranslationRetryResult(generationIdentityResult);
                     if (generationIdentityProject) void persistTranslationRetryState(generationIdentityProject);
@@ -9937,6 +9979,13 @@ const AppContent: React.FC<{
                     translationPlanningTaskId: currentRetryResult.translationPlanningTaskId,
                     translationPlanningCreditsConsumed: currentRetryResult.translationPlanningCreditsConsumed,
                     translationGenerationMode: translationRetrySnapshot.translationGenerationMode,
+                    translationRetryStage: 'generation',
+                    clientSubmissionKey: buildTranslationRetrySubmissionKey({
+                      projectId: project.id,
+                      resultId: retryDescriptor.id,
+                      stage: 'generation',
+                      planningTaskId: currentRetryResult.translationPlanningTaskId,
+                    }),
                   },
                 });
               },
@@ -9965,6 +10014,7 @@ const AppContent: React.FC<{
                   translationGenerationCreditsConsumed: pipelineResult.generationCreditsConsumed,
                   creditsConsumed: pipelineResult.creditsConsumed,
                   error: pipelineResult.message || '任务已提交云端，结果待同步',
+                  translationRetryStage: 'generation',
                 };
                 const syncPendingProject = updateTranslationRetryResult(syncPendingResult);
                 if (!syncPendingProject) {
@@ -9996,6 +10046,7 @@ const AppContent: React.FC<{
                 translationGenerationCreditsConsumed: pipelineResult.generationCreditsConsumed,
                 creditsConsumed: pipelineResult.creditsConsumed,
                 error: pipelineResult.message || '重新翻译失败',
+                translationRetryStage: 'error',
               };
               const failedProject = updateTranslationRetryResult(failedResult);
               setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
@@ -10033,6 +10084,7 @@ const AppContent: React.FC<{
               creditsConsumed: pipelineResult.creditsConsumed,
               error: undefined,
               errorDetail: undefined,
+              translationRetryStage: 'completed',
             };
             const completedProject = updateTranslationRetryResult(completedResult);
             setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
@@ -10061,6 +10113,7 @@ const AppContent: React.FC<{
               ...currentRetryResult,
               status: 'error',
               error: error instanceof Error ? error.message : '重新翻译失败',
+              translationRetryStage: 'error',
             };
             const failedProject = updateTranslationRetryResult(failedResult);
             setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
@@ -10079,31 +10132,48 @@ const AppContent: React.FC<{
           addToast('原图公网地址缺失，无法重试该失败项。', 'warning');
           return;
         }
-        const currentScopedImageModel = getCurrentScopedImageModel(project.module, subFeature);
-        const retryParams = normalizeParamsForGeneration(AppModuleObj.TRANSLATION, subFeature, {
-          ...currentParams,
-          ratio: result.aspectRatio || currentParams.ratio,
-          aspectRatio: result.aspectRatio || currentParams.aspectRatio,
-          model: currentScopedImageModel || currentParams.model || result.model,
-        }) as Record<string, string> & { [key: string]: string | undefined };
-        const sourceDimensions = await getImageDimensionsFromUrl(sourceUrl).catch(() => null);
+        const sourceDimensions = result.originalWidth && result.originalHeight
+          ? {
+              width: result.originalWidth,
+              height: result.originalHeight,
+              ratio: result.originalWidth / result.originalHeight,
+            }
+          : await getImageDimensionsFromUrl(sourceUrl).catch(() => null);
+        let failedRetryPlan;
+        try {
+          failedRetryPlan = buildTranslationFailedRetryPlan({
+            result,
+            projectParams: project.generationContext?.params,
+            projectId: project.id,
+            projectName: project.name,
+            resultId: result.id,
+            subFeature,
+            sourceUrl,
+            sourceFileName: result.fileName || result.id,
+            sourceRelativePath: result.relativePath,
+            sourceDimensions,
+          });
+        } catch (error) {
+          addToast(error instanceof Error ? error.message : '该历史结果无法安全重新翻译。', 'warning');
+          return;
+        }
+        const translationRetrySnapshot = failedRetryPlan.snapshot;
+        const snapshotParams = failedRetryPlan.retryParams;
+        const shouldRunFailedRetryPlanning = translationRetrySnapshot.translationGenerationMode === 'AI优化'
+          && !failedRetryPlan.resumePlanningResult;
+        const serializedSnapshotParams = Object.fromEntries(
+          Object.entries(snapshotParams)
+            .filter(([, value]) => value !== undefined)
+            .map(([key, value]) => [key, String(value)]),
+        ) as Record<string, string>;
+        const retryParams = normalizeParamsForGeneration(
+          AppModuleObj.TRANSLATION,
+          subFeature,
+          serializedSnapshotParams,
+        ) as Record<string, string> & { [key: string]: string | undefined };
         const modelConfig = {
-          targetLanguage: String(retryParams.lang || 'English'),
-          customLanguage: '',
-          removeWatermark: true,
-          aspectRatio: String(retryParams.ratio || retryParams.aspectRatio || 'auto'),
-          quality: String(retryParams.quality || '1K').toLowerCase().includes('4')
-            ? '4k'
-            : String(retryParams.quality || '1K').toLowerCase().includes('2')
-              ? '2k'
-              : '1k',
-          model: normalizeShellImageModel(retryParams.model || 'GPT Image 2'),
-          resolutionMode: String(retryParams.resolutionMode || retryParams.sizeMode || 'custom').includes('original')
-            ? 'original'
-            : 'custom',
-          targetWidth: Number(retryParams.targetWidth || retryParams.width || 0),
-          targetHeight: Number(retryParams.targetHeight || retryParams.height || 0),
-          maxFileSize: Number(retryParams.maxFileSize || retryParams.maxSize || 2),
+          ...failedRetryPlan.moduleConfig,
+          model: normalizeShellImageModel(failedRetryPlan.moduleConfig.model),
         };
         const { effectiveConfig } = deriveTranslationExecutionPlan({
           config: modelConfig,
@@ -10111,19 +10181,42 @@ const AppContent: React.FC<{
           sourceDimensions: sourceDimensions || undefined,
         });
         const matchedRatio = String(effectiveConfig.aspectRatio || modelConfig.aspectRatio || 'auto');
-        const retryPrompt = [
-          `模块：${MODULE_NAMES[AppModuleObj.TRANSLATION]}`,
-          `子功能：${subFeature}`,
-          `用户需求：重试该失败项，只处理当前图片，保持商品主体与文字结构稳定。`,
-          `前端参数：${JSON.stringify({
-            ...retryParams,
-            ratio: matchedRatio,
-            aspectRatio: matchedRatio,
-            __retryResultId: result.id,
-            __sourceFileName: result.fileName,
-            __sourceRelativePath: result.relativePath,
-          })}`,
-        ].join('\n');
+        const translationSubFeatureLabel = MODULE_SUB_FEATURES[AppModuleObj.TRANSLATION]
+          ?.find((item) => item.id === subFeature)?.label || '出海翻译';
+        const effectiveRetryParams = {
+          ...retryParams,
+          ratio: matchedRatio,
+          aspectRatio: matchedRatio,
+          __workspacePreferences: JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences()),
+          __retryResultId: result.id,
+          __sourceFileName: result.fileName || '',
+          __sourceRelativePath: result.relativePath || '',
+        };
+        const retryMaterials = {
+          product: [{
+            id: result.id,
+            type: 'product',
+            url: sourceUrl,
+            remoteUrl: sourceUrl,
+            fileName: result.fileName || result.relativePath || 'translation-source.png',
+            subFeature,
+            originalWidth: sourceDimensions?.width,
+            originalHeight: sourceDimensions?.height,
+          }],
+        };
+        const retryPrompt = translationRetrySnapshot.translationGenerationMode === 'AI优化'
+          ? shouldRunFailedRetryPlanning
+            ? '正在重新提取并分析图片文案...'
+            : 'AI优化策划已恢复，正在继续生成...'
+          : buildTranslationGenerationPrompt({
+              mode: translationRetrySnapshot.translationGenerationMode,
+              subFeatureLabel: translationSubFeatureLabel,
+              params: effectiveRetryParams,
+              fileName: result.fileName,
+              relativePath: result.relativePath,
+              batchIndex: 1,
+              batchCount: 1,
+            });
         const toFileItem = (nextResult: GeneratedResult, status: TranslationBatchFile['status']): TranslationBatchFile => ({
           id: nextResult.id,
           file: null,
@@ -10132,9 +10225,11 @@ const AppContent: React.FC<{
           sourceUrl: String(nextResult.sourceUrl || sourceUrl),
           sourcePreviewUrl: String(nextResult.sourcePreviewUrl || nextResult.sourceUrl || sourceUrl),
           status,
-          progress: status === 'completed' || status === 'error' ? 100 : 12,
+          progress: status === 'completed' || status === 'error'
+            ? 100
+            : shouldRunFailedRetryPlanning ? 8 : failedRetryPlan.resumePlanningResult ? 35 : 12,
           prompt: nextResult.prompt || retryPrompt,
-          model: nextResult.model || String(retryParams.model || 'GPT Image 2'),
+          model: nextResult.model || String(translationRetrySnapshot.model || 'GPT Image 2'),
           aspectRatio: nextResult.aspectRatio || matchedRatio,
           subFeature,
           projectId: project.id,
@@ -10146,11 +10241,14 @@ const AppContent: React.FC<{
           resultUrl: nextResult.imageUrl || undefined,
           matchedAspectRatio: nextResult.aspectRatio || matchedRatio,
           error: nextResult.error,
+          originalWidth: nextResult.originalWidth || sourceDimensions?.width,
+          originalHeight: nextResult.originalHeight || sourceDimensions?.height,
           translationConfigSnapshot: nextResult.translationConfigSnapshot,
           translationPlanningText: nextResult.translationPlanningText,
           translationPlanningTaskId: nextResult.translationPlanningTaskId,
           translationPlanningCreditsConsumed: nextResult.translationPlanningCreditsConsumed,
           translationGenerationCreditsConsumed: nextResult.translationGenerationCreditsConsumed,
+          translationRetryStage: nextResult.translationRetryStage,
         });
         let latestFailedRetryResult = result;
         const setProjectResult = (nextResult: GeneratedResult) => {
@@ -10180,6 +10278,12 @@ const AppContent: React.FC<{
           prompt: retryPrompt,
           error: undefined,
           aspectRatio: matchedRatio,
+          matchedAspectRatio: matchedRatio,
+          model: String(snapshotParams.model || result.model || 'GPT Image 2'),
+          originalWidth: sourceDimensions?.width || result.originalWidth,
+          originalHeight: sourceDimensions?.height || result.originalHeight,
+          translationConfigSnapshot: translationRetrySnapshot,
+          translationRetryStage: shouldRunFailedRetryPlanning ? 'planning' : 'generation',
         };
         const pendingProject = setProjectResult(pendingResult);
         if (!pendingProject) return;
@@ -10190,7 +10294,7 @@ const AppContent: React.FC<{
           type: 'image',
           status: 'generating',
           title: `重试: ${result.fileName || result.relativePath || project.name}`,
-          progress: 12,
+          progress: shouldRunFailedRetryPlanning ? 8 : failedRetryPlan.resumePlanningResult ? 35 : 12,
           createdAt: project.createdAt,
           total: 1,
           completed: 0,
@@ -10204,91 +10308,188 @@ const AppContent: React.FC<{
           delete taskControllersRef.current[retryTaskId];
         };
         try {
-        await persistFailedTranslationRetryState(pendingProject, 'processing');
-        const { runShellImageGeneration } = failedTranslationWorkflowModule;
-        const generation = await runShellImageGeneration({
-          module: AppModuleObj.TRANSLATION,
-          subFeature,
-          prompt: retryPrompt,
-          params: {
-            ...retryParams,
-            ratio: matchedRatio,
+          await persistFailedTranslationRetryState(pendingProject, 'processing');
+          const { runShellImageGeneration, runShellTranslationPlanningAnalysis } = failedTranslationWorkflowModule;
+          let planningProviderTaskId = '';
+          let generationProviderTaskId = '';
+          const pipelineResult = await executeTranslationRetryPipeline({
+            snapshot: translationRetrySnapshot,
+            resumePlanningResult: failedRetryPlan.resumePlanningResult,
+            runPlanning: async () => {
+              const planningResult = await runShellTranslationPlanningAnalysis({
+                module: AppModuleObj.TRANSLATION,
+                subFeature,
+                prompt: '',
+                params: effectiveRetryParams,
+                materials: retryMaterials,
+                signal: controller.signal,
+                taskMetadata: {
+                  ...failedRetryPlan.taskMetadata,
+                  shellPurpose: 'translation_planning_analysis',
+                  translationRetryStage: 'planning',
+                  clientSubmissionKey: buildTranslationRetrySubmissionKey({
+                    projectId: project.id,
+                    resultId: result.id,
+                    stage: 'planning',
+                  }),
+                },
+                publicBaseUrl,
+              }, sourceUrl, (jobId: string, providerTaskId?: string) => {
+                planningProviderTaskId = providerTaskId || planningProviderTaskId;
+                setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+                  ...task,
+                  backendJobId: jobId || task.backendJobId,
+                  progress: Math.max(task.progress || 0, 18),
+                } : task));
+                const planningIdentityResult: GeneratedResult = {
+                  ...latestFailedRetryResult,
+                  backendJobId: jobId || latestFailedRetryResult.backendJobId,
+                  translationPlanningTaskId: providerTaskId
+                    || latestFailedRetryResult.translationPlanningTaskId,
+                  translationRetryStage: 'planning',
+                };
+                const planningIdentityProject = setProjectResult(planningIdentityResult);
+                if (planningIdentityProject) {
+                  void persistFailedTranslationRetryState(planningIdentityProject, 'processing');
+                }
+              });
+              const planningText = planningResult.description;
+              const planningTaskId = planningResult.taskId || planningProviderTaskId || undefined;
+              const plannedResult: GeneratedResult = {
+                ...latestFailedRetryResult,
+                prompt: planningText || latestFailedRetryResult.prompt,
+                translationPlanningText: planningText || undefined,
+                translationPlanningTaskId: planningTaskId,
+                translationPlanningCreditsConsumed: planningResult.creditsConsumed,
+                creditsConsumed: sumTranslationRetryCredits(planningResult.creditsConsumed, undefined),
+                translationRetryStage: 'generation_pending',
+              };
+              const plannedProject = setProjectResult(plannedResult);
+              if (!plannedProject) throw new Error('重试结果已删除，已停止更新。');
+              await persistFailedTranslationRetryState(plannedProject, 'processing');
+              return {
+                ...planningResult,
+                taskId: planningTaskId,
+              };
+            },
+            buildPrompt: (planningText: string) => buildTranslationGenerationPrompt({
+              mode: translationRetrySnapshot.translationGenerationMode,
+              subFeatureLabel: translationSubFeatureLabel,
+              planningText,
+              params: effectiveRetryParams,
+              fileName: result.fileName,
+              relativePath: result.relativePath,
+              batchIndex: 1,
+              batchCount: 1,
+            }),
+            runGeneration: async (prompt: string) => {
+              const currentRetryResult = latestFailedRetryResult;
+              return runShellImageGeneration({
+                module: AppModuleObj.TRANSLATION,
+                subFeature,
+                prompt,
+                params: effectiveRetryParams,
+                materials: retryMaterials,
+                signal: controller.signal,
+                onJobCreated: (jobId: string, providerTaskId?: string) => {
+                  generationProviderTaskId = providerTaskId || generationProviderTaskId;
+                  setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+                    ...task,
+                    backendJobId: jobId || task.backendJobId,
+                    progress: Math.max(task.progress || 0, 35),
+                  } : task));
+                  const providerPendingResult: GeneratedResult = {
+                    ...latestFailedRetryResult,
+                    taskId: providerTaskId || latestFailedRetryResult.taskId,
+                    backendJobId: jobId || latestFailedRetryResult.backendJobId,
+                    error: undefined,
+                    translationRetryStage: 'generation',
+                  };
+                  const providerPendingProject = setProjectResult(providerPendingResult);
+                  if (providerPendingProject) {
+                    void persistFailedTranslationRetryState(providerPendingProject, 'processing');
+                  }
+                },
+                publicBaseUrl,
+                taskMetadata: {
+                  ...failedRetryPlan.taskMetadata,
+                  translationPlanningText: currentRetryResult.translationPlanningText,
+                  translationPlanningTaskId: currentRetryResult.translationPlanningTaskId,
+                  translationPlanningCreditsConsumed: currentRetryResult.translationPlanningCreditsConsumed,
+                  translationRetryStage: 'generation',
+                  clientSubmissionKey: buildTranslationRetrySubmissionKey({
+                    projectId: project.id,
+                    resultId: result.id,
+                    stage: 'generation',
+                    planningTaskId: currentRetryResult.translationPlanningTaskId,
+                  }),
+                },
+              });
+            },
+          });
+          const recoverableGeneration = {
+            ...pipelineResult,
+            taskId: pipelineResult.taskId || generationProviderTaskId,
+          };
+          const lifecycle = resolveFailedTranslationRetryLifecycle({
+            currentResult: latestFailedRetryResult,
+            generation: {
+              ...recoverableGeneration,
+              creditsConsumed: pipelineResult.generationCreditsConsumed,
+            },
+            recoverable: isRecoverableShellWorkflowResult(recoverableGeneration),
+          });
+          const managedLifecycleResultUrl = lifecycle.kind === 'success' && lifecycle.result.imageUrl
+            ? await resolveManagedTranslationResultUrl(
+                lifecycle.result.imageUrl,
+                result.relativePath || result.fileName || `${result.id}.png`,
+                controller.signal,
+              )
+            : lifecycle.result.imageUrl;
+          const lifecycleResult: GeneratedResult = {
+            ...lifecycle.result,
+            id: result.id,
+            imageUrl: managedLifecycleResultUrl,
+            prompt: pipelineResult.prompt || lifecycle.result.prompt,
+            model: String(snapshotParams.model || result.model || 'GPT Image 2'),
             aspectRatio: matchedRatio,
-            __workspacePreferences: JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences()),
-            __retryResultId: result.id,
-            __sourceFileName: result.fileName || '',
-            __sourceRelativePath: result.relativePath || '',
-          },
-          materials: {
-            product: [{
-              id: result.id,
-              type: 'product',
-              url: sourceUrl,
-              remoteUrl: sourceUrl,
-              fileName: result.fileName || result.relativePath || 'translation-source.png',
-              subFeature,
-            }],
-          },
-          signal: controller.signal,
-          onJobCreated: (jobId, providerTaskId) => {
-            setTasks((prev) => prev.map((task) => task.id === retryTaskId ? { ...task, backendJobId: jobId } : task));
-            const providerPendingResult: GeneratedResult = {
-              ...latestFailedRetryResult,
-              taskId: providerTaskId || latestFailedRetryResult.taskId,
-              backendJobId: jobId || latestFailedRetryResult.backendJobId,
-              error: undefined,
-            };
-            const providerPendingProject = setProjectResult(providerPendingResult);
-            if (providerPendingProject) {
-              void persistFailedTranslationRetryState(providerPendingProject, 'processing');
-            }
-          },
-          publicBaseUrl,
-        });
-        const lifecycle = resolveFailedTranslationRetryLifecycle({
-          currentResult: latestFailedRetryResult,
-          generation,
-          recoverable: isRecoverableShellWorkflowResult(generation),
-        });
-        const managedLifecycleResultUrl = lifecycle.kind === 'success' && lifecycle.result.imageUrl
-          ? await resolveManagedTranslationResultUrl(
-              lifecycle.result.imageUrl,
-              result.relativePath || result.fileName || `${result.id}.png`,
-              controller.signal,
-            )
-          : lifecycle.result.imageUrl;
-        const lifecycleResult: GeneratedResult = {
-          ...lifecycle.result,
-          id: result.id,
-          imageUrl: managedLifecycleResultUrl,
-          model: String(retryParams.model || result.model || 'GPT Image 2'),
-          aspectRatio: matchedRatio,
-        };
-        const lifecycleProject = setProjectResult(lifecycleResult);
-        if (!lifecycleProject) {
+            matchedAspectRatio: matchedRatio,
+            originalWidth: sourceDimensions?.width || result.originalWidth,
+            originalHeight: sourceDimensions?.height || result.originalHeight,
+            translationConfigSnapshot: translationRetrySnapshot,
+            translationPlanningText: pipelineResult.planningText
+              || lifecycle.result.translationPlanningText,
+            translationPlanningTaskId: pipelineResult.planningTaskId
+              || lifecycle.result.translationPlanningTaskId,
+            translationPlanningCreditsConsumed: pipelineResult.planningCreditsConsumed,
+            translationGenerationCreditsConsumed: pipelineResult.generationCreditsConsumed,
+            creditsConsumed: pipelineResult.creditsConsumed,
+            translationRetryStage: lifecycle.kind === 'success'
+              ? 'completed'
+              : lifecycle.kind === 'recoverable' ? 'generation' : 'error',
+          };
+          const lifecycleProject = setProjectResult(lifecycleResult);
+          if (!lifecycleProject) {
+            cleanupFailedTranslationRetry();
+            return;
+          }
+          if (lifecycle.kind === 'recoverable') {
+            await persistFailedTranslationRetryState(lifecycleProject, 'processing');
+            cleanupFailedTranslationRetry();
+            window.setTimeout(() => void hydrateShellJobs(), 800);
+            addToast('失败项重试已提交云端，结果待同步', 'info');
+            return;
+          }
+          if (lifecycle.kind === 'error') {
+            await persistFailedTranslationRetryState(lifecycleProject, 'error');
+            cleanupFailedTranslationRetry();
+            addToast(lifecycleResult.error || '重试失败', 'error');
+            return;
+          }
+          await persistFailedTranslationRetryState(lifecycleProject, 'completed');
           cleanupFailedTranslationRetry();
+          addToast('失败项已重试成功', 'success');
           return;
-        }
-        if (lifecycle.kind === 'recoverable') {
-          await persistFailedTranslationRetryState(lifecycleProject, 'processing');
-          setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
-          delete taskControllersRef.current[retryTaskId];
-          window.setTimeout(() => void hydrateShellJobs(), 800);
-          addToast('失败项重试已提交云端，结果待同步', 'info');
-          return;
-        }
-        if (lifecycle.kind === 'error') {
-          const failedResult: GeneratedResult = { ...lifecycleResult, status: 'error' };
-          await persistFailedTranslationRetryState(lifecycleProject, 'error');
-          setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
-          delete taskControllersRef.current[retryTaskId];
-          addToast(failedResult.error || '重试失败', 'error');
-          return;
-        }
-        await persistFailedTranslationRetryState(lifecycleProject, 'completed');
-        cleanupFailedTranslationRetry();
-        addToast('失败项已重试成功', 'success');
-        return;
         } catch (error) {
           if (isTranslationAssetMirrorScopeExpiredError(error)) {
             cleanupFailedTranslationRetry();
@@ -10305,8 +10506,13 @@ const AppContent: React.FC<{
           const failedResult: GeneratedResult = {
             ...lifecycle.result,
             id: result.id,
-            model: String(retryParams.model || result.model || 'GPT Image 2'),
+            model: String(snapshotParams.model || result.model || 'GPT Image 2'),
             aspectRatio: matchedRatio,
+            matchedAspectRatio: matchedRatio,
+            originalWidth: sourceDimensions?.width || result.originalWidth,
+            originalHeight: sourceDimensions?.height || result.originalHeight,
+            translationConfigSnapshot: translationRetrySnapshot,
+            translationRetryStage: 'error',
             status: 'error',
           };
           const failedProject = setProjectResult(failedResult);
@@ -10576,6 +10782,37 @@ const AppContent: React.FC<{
       endExclusiveAction(actionKey);
     }
   }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction, currentUser?.id, currentUser?.role, systemConfig?.featureRollouts?.productRestore, recordProductRestoreJobCreated, resolveManagedTranslationResultUrl]);
+
+  useEffect(() => {
+    if (!hasHydratedSharedData || translationRetryAutoResumeRunningRef.current) return;
+    const pendingResumes = projects.flatMap((project) => (
+      project.module === AppModuleObj.TRANSLATION
+        ? project.results
+            .filter((result) => (
+              result.status === 'error'
+              && result.translationRetryStage === 'generation_pending'
+              && Boolean(result.translationPlanningText)
+            ))
+            .map((result) => ({ project, result }))
+        : []
+    )).filter(({ project, result }) => {
+      const key = `${project.id}:${result.id}:${result.translationPlanningTaskId || 'planning'}`;
+      return !translationRetryAutoResumeKeysRef.current.has(key);
+    });
+    if (pendingResumes.length === 0) return;
+
+    translationRetryAutoResumeRunningRef.current = true;
+    void (async () => {
+      for (const { project, result } of pendingResumes) {
+        const key = `${project.id}:${result.id}:${result.translationPlanningTaskId || 'planning'}`;
+        if (translationRetryAutoResumeKeysRef.current.has(key)) continue;
+        translationRetryAutoResumeKeysRef.current.add(key);
+        await handleRegenerateResult(project.id, result.id);
+      }
+    })().finally(() => {
+      translationRetryAutoResumeRunningRef.current = false;
+    });
+  }, [handleRegenerateResult, hasHydratedSharedData, projects]);
 
   const handleTranslationRegionEdit = useCallback(async (
     projectId: string,

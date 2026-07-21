@@ -118,6 +118,7 @@ test('translation remove-text quick params hide target language and recommend au
   const translationExtendedParams = bottomInputBar.match(/if \(module === AppModuleObj\.TRANSLATION\) \{[\s\S]*?if \(module !== AppModuleObj\.ONE_CLICK\)/)?.[0] || '';
 
   assert.match(translationQuickParams, /\.\.\.\(isRemoveText \? \[\] : \[\{/);
+  assert.match(translationQuickParams, /options: isRemoveText \? \['AI直出'\] : \['AI直出', 'AI优化'\]/);
   assert.match(translationQuickParams, /key: 'translationScope'/);
   assert.ok(
     translationQuickParams.indexOf("key: 'translationGenerationMode'") < translationQuickParams.indexOf("key: 'translationScope'"),
@@ -146,7 +147,7 @@ test('translation integration exposes ai optimize mode and original-size generat
   const translationNormalizer = shellApp.match(/const normalizeTranslationParamsForGeneration[\s\S]*?^};/m)?.[0] || '';
 
   assert.match(translationQuickParams, /key: 'translationGenerationMode'/);
-  assert.match(translationQuickParams, /options: \['AI直出', 'AI优化'\]/);
+  assert.match(translationQuickParams, /options: isRemoveText \? \['AI直出'\] : \['AI直出', 'AI优化'\]/);
   assert.match(translationQuickParams, /defaultValue: 'AI直出'/);
   assert.ok(
     translationQuickParams.indexOf("key: 'translationGenerationMode'") < translationQuickParams.indexOf("key: 'lang'"),
@@ -163,7 +164,7 @@ test('translation integration exposes ai optimize mode and original-size generat
   assert.match(translationNormalizer, /translationScope: String\(params\.translationScope/);
   assert.match(translationNormalizer, /ratio: isOriginalSizeMode \? 'auto' : \(params\.ratio \|\| params\.aspectRatio \|\| defaults\.ratio\)/);
   assert.match(shellApp, /runShellTranslationPlanningAnalysis/);
-  assert.match(shellApp, /useTranslationPlanningAnalysis = \['AI优化', '策划分析'\]\.includes\(generationParams\.translationGenerationMode\)/);
+  assert.match(shellApp, /useTranslationPlanningAnalysis = targetSubFeature !== 'remove_text'[\s\S]*?\['AI优化', '策划分析'\]\.includes\(generationParams\.translationGenerationMode\)/);
   assert.match(translationRetryUtils, /所有替换文案必须逐字照抄 AI优化结果中右侧引号内的本地化文案/);
   assert.match(shellApp, /throw new Error\('原图尺寸读取失败，请重新上传素材后再生成。'\)/);
   assert.match(shellApp, /finalSize,/);
@@ -171,7 +172,7 @@ test('translation integration exposes ai optimize mode and original-size generat
   assert.match(shellApp, /translationConfigSnapshot/);
   assert.match(shellApp, /taskMetadata: translationTaskMetadata/);
   assert.match(workflow, /export const runShellTranslationPlanningAnalysis/);
-  assert.match(workflow, /const isTranslationAiOptimizeMode = \['AI优化', '策划分析'\]\.includes\(input\.params\.translationGenerationMode\)/);
+  assert.match(workflow, /const isTranslationAiOptimizeMode = input\.subFeature !== 'remove_text'[\s\S]*?\['AI优化', '策划分析'\]\.includes\(input\.params\.translationGenerationMode\)/);
   assert.match(workflow, /input\.module === AppModule\.TRANSLATION && config\.resolutionMode === 'original'[\s\S]*input\.taskMetadata\?\.finalSize/);
 });
 
