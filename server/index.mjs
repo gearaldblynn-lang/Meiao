@@ -2561,6 +2561,12 @@ const handleMediaTranscodeRequest = async ({ req, res, url, user }) => {
     if (Number.isFinite(contentLength) && contentLength > multipartBodyMaxBytes) {
       throw createMediaTranscodeError('media_input_too_large', '上传文件过大，无法进入转码流程');
     }
+    console.info('[media-transcode]', {
+      action: 'media_transcode_upload_started',
+      createdAt: Date.now(),
+      userId: user.id,
+      contentLength: Number.isFinite(contentLength) ? contentLength : 0,
+    });
     const formData = await readMultipartFormData(req, {
       maxBytes: multipartBodyMaxBytes,
     });

@@ -22,6 +22,16 @@ test('media transcode upload has a dedicated pre-parse size limit and conversion
   assert.match(source, /readBody\(req, \{ maxBytes: 64 \* 1024 \}\)/);
 });
 
+test('media transcode upload logs the authenticated owner before reading the request body', () => {
+  const handler = source.match(/const handleMediaTranscodeRequest = async[\s\S]*?\n\};/)?.[0] || '';
+  const startLog = handler.indexOf("action: 'media_transcode_upload_started'");
+  const bodyRead = handler.indexOf('readMultipartFormData(req');
+  assert.ok(startLog >= 0);
+  assert.ok(bodyRead > startLog);
+  assert.match(handler, /userId:\s*user\.id/);
+  assert.match(handler, /contentLength/);
+});
+
 test('media transcode result persistence shares the managed asset owner lifecycle fence', () => {
   const transcodeApi = source.match(/const mediaTranscodeApi = createMediaTranscodeApi\([\s\S]*?\n\}\);/)?.[0] || '';
   assert.match(transcodeApi, /withManagedAssetUserLock\(userId/);

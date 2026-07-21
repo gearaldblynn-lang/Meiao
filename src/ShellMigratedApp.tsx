@@ -4923,7 +4923,7 @@ const AppContent: React.FC<{
         subFeature: activeSubFeature,
       }));
       updateMediaTranscodeQueue((current) => [...current, ...queueItems]);
-      addToast(`已加入 ${queueItems.length} 个${type === 'referenceVideo' ? '视频' : '音频'}，请依次裁剪并转换`, 'info');
+      addToast(`已加入 ${queueItems.length} 个${type === 'referenceVideo' ? '视频' : '音频'}，请依次检查并按需处理`, 'info');
       return;
     }
     if (
@@ -5242,7 +5242,7 @@ const AppContent: React.FC<{
       frameRate: result.frameRate || undefined,
       originalWidth: result.width || undefined,
       originalHeight: result.height || undefined,
-      mediaTranscoded: true,
+      mediaTranscoded: result.transcoded,
       subFeature: queueItem.subFeature,
     };
     setMaterials((current) => {
@@ -5254,7 +5254,9 @@ const AppContent: React.FC<{
       return next;
     });
     updateMediaTranscodeQueue((current) => current.filter((item) => item.id !== queueItem.id));
-    addToast(`${queueItem.kind === 'video' ? '视频' : '音频'}已裁剪并转换为模型支持格式`, 'success');
+    addToast(result.transcoded
+      ? `${queueItem.kind === 'video' ? '视频' : '音频'}已裁剪并转换为模型支持格式`
+      : `${queueItem.kind === 'video' ? '视频' : '音频'}格式已兼容，已直接保存`, 'success');
   }, [addToast, updateMediaTranscodeQueue]);
 
   const handleMediaTranscodeCancel = useCallback(() => {

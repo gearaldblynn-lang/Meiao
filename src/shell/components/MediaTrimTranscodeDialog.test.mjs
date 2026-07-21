@@ -15,10 +15,16 @@ test('media trim dialog has a responsive preview and accessible two-thumb range'
 });
 
 test('media trim dialog exposes analysis, conversion, persistence, progress, and next actions', () => {
+  assert.match(source, /裁剪与格式检查/);
+  assert.match(source, /onUploadProgress/);
+  assert.match(source, /正在上传素材/);
+  assert.match(source, /正在读取媒体信息/);
   assert.match(source, /正在分析素材/);
   assert.match(source, /转换中/);
   assert.match(source, /保存素材中/);
   assert.match(source, /转换并继续/);
+  assert.match(source, /格式已兼容，将直接保存/);
+  assert.match(source, /使用原文件并继续/);
   assert.match(source, /aria-live="polite"/);
   assert.match(source, /role="progressbar"/);
 });

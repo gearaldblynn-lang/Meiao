@@ -63,7 +63,8 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
   const [dialogState, setDialogState] = useState<DialogState>('uploading');
   const [probe, setProbe] = useState<MediaTranscodeProbe | null>(null);
   const [selection, setSelection] = useState<[number, number]>([0, Math.min(15, remainingSeconds)]);
-  const [progress, setProgress] = useState(8);
+  const [progress, setProgress] = useState(0);
+  const [uploadComplete, setUploadComplete] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [analysisAttempt, setAnalysisAttempt] = useState(0);
   const mediaRef = useRef<HTMLMediaElement | null>(null);
@@ -73,17 +74,31 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
   const previewUrl = useMemo(() => URL.createObjectURL(item.file), [item.file]);
   const isBusy = dialogState === 'converting';
   const selectedSeconds = Math.max(0, selection[1] - selection[0]);
+  const keepsWholeSource = Boolean(probe)
+    && Math.abs(selection[0]) < 0.001
+    && Math.abs(selection[1] - Number(probe?.durationSeconds || 0)) < 0.001;
+  const canUseOriginal = Boolean(probe?.compatibleSource && keepsWholeSource);
 
   useEffect(() => {
     completedRef.current = false;
     sessionIdRef.current = '';
     setDialogState('uploading');
-    setProgress(8);
+    setProgress(0);
+    setUploadComplete(false);
     setErrorMessage('');
     const controller = new AbortController();
     activeRequestRef.current = controller;
 
-    void createMediaTranscodeSession({ file: item.file, kind: item.kind, signal: controller.signal })
+    void createMediaTranscodeSession({
+      file: item.file,
+      kind: item.kind,
+      signal: controller.signal,
+      onUploadProgress: ({ loaded, total, ratio }) => {
+        if (controller.signal.aborted) return;
+        setProgress(Math.max(1, Math.round(ratio * 100)));
+        if (total > 0 && loaded >= total) setUploadComplete(true);
+      },
+    })
       .then((nextProbe) => {
         if (controller.signal.aborted) return;
         if (!nextProbe.sessionId) throw new Error('服务端未返回媒体处理会话，请重试');
@@ -96,6 +111,7 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
         });
         setProbe(nextProbe);
         setSelection([initial.startSeconds, initial.endSeconds]);
+        setUploadComplete(true);
         setProgress(100);
         setDialogState('ready');
       })
@@ -230,11 +246,11 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
   };
 
   const statusText = dialogState === 'uploading'
-    ? '正在分析素材'
+    ? uploadComplete ? '正在分析素材 · 正在读取媒体信息' : '正在上传素材'
     : dialogState === 'converting'
-      ? progress < 68 ? '转换中' : '保存素材中'
+      ? canUseOriginal ? '保存素材中' : progress < 68 ? '转换中' : '保存素材中'
       : dialogState === 'completed'
-        ? '转换完成'
+        ? '处理完成'
         : dialogState === 'error'
           ? '处理失败'
           : '已完成分析，可选择保留范围';
@@ -260,7 +276,7 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
             <div className="flex items-center gap-2">
               <Scissors size={17} style={{ color: 'var(--accent)' }} />
               <h2 id="media-trim-title" className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                裁剪并转换{item.kind === 'video' ? '视频' : '音频'}
+                裁剪与格式检查{item.kind === 'video' ? '视频' : '音频'}
               </h2>
             </div>
             <p className="mt-1 truncate text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
@@ -333,7 +349,9 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
             {dialogState === 'uploading' && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: 'color-mix(in srgb, var(--bg-base) 82%, transparent)' }}>
                 <Loader2 className="animate-spin" size={24} style={{ color: 'var(--accent)' }} />
-                <span className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>正在分析素材</span>
+                <span className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  {statusText}{!uploadComplete && progress > 0 ? ` ${Math.round(progress)}%` : ''}
+                </span>
               </div>
             )}
           </div>
@@ -349,7 +367,9 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
                   {probe.width && probe.height ? <><span>·</span><span>{probe.width}×{probe.height}</span></> : null}
                 </div>
                 <span className="rounded-full px-2.5 py-1 text-[10px] font-semibold" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-                  将转为 {item.kind === 'video' ? 'MP4 · H.264 · 30 FPS' : 'MP3 · 44.1 kHz'}
+                  {canUseOriginal
+                    ? '格式已兼容，将直接保存'
+                    : `将转为 ${item.kind === 'video' ? 'MP4 · H.264 · 30 FPS' : 'MP3 · 44.1 kHz'}`}
                 </span>
               </div>
 
@@ -391,7 +411,7 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
             </div>
           )}
 
-          {(dialogState === 'converting' || dialogState === 'completed') && (
+          {(dialogState === 'uploading' || dialogState === 'converting' || dialogState === 'completed') && (
             <div className="mt-4" aria-live="polite">
               <div className="mb-2 flex items-center justify-between text-[11px]">
                 <span style={{ color: 'var(--text-secondary)' }}>{statusText}</span>
@@ -456,7 +476,7 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
               style={{ background: 'var(--accent)', color: '#fff' }}
             >
               {isBusy ? <Loader2 size={14} className="animate-spin" /> : <Scissors size={14} />}
-              {isBusy ? statusText : '转换并继续'}
+              {isBusy ? statusText : canUseOriginal ? '使用原文件并继续' : '转换并继续'}
             </button>
           )}
         </div>

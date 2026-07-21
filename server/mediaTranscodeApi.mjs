@@ -30,6 +30,9 @@ function publicSession(session) {
     fileName: session.fileName,
     profile: session.profile,
     state: session.state,
+    compatibleSource: Boolean(
+      session.probe && isMediaCompatibleForProfile(session.profile, session.probe)
+    ),
     ...publicProbeFields(session.probe),
   };
 }
@@ -110,7 +113,7 @@ export function createMediaTranscodeApi({
           ? {
             fileBuffer: await readSource(session.sourcePath),
             metadata: session.probe,
-            mimeType: 'video/mp4',
+            mimeType: session.kind === 'video' ? 'video/mp4' : 'audio/mpeg',
           }
           : await service.transcode({
             sessionId,

@@ -797,8 +797,8 @@ const getUploadAcceptForTarget = (target: string) => {
 const SEEDANCE_MEDIA_LIMIT_HINTS: Partial<Record<MaterialType, string>> = {
   product: '图片格式：JPEG、PNG、WEBP、BMP、TIFF、GIF。\n单张小于 30 MB；宽高 300–6000 px；宽高比 0.4–2.5；首尾帧与参考图合计最多 9 张。',
   scene: '图片格式：JPEG、PNG、WEBP、BMP、TIFF、GIF。\n单张小于 30 MB；宽高 300–6000 px；宽高比 0.4–2.5；首尾帧与参考图合计最多 9 张。',
-  referenceVideo: '视频格式：MP4、MOV。\n单个 2–15 秒，最多 3 个，总时长不超过 15 秒；480p/720p；宽高比 0.4–2.5；宽高 300–6000 px；总像素 409600–927408；单个不超过 50 MB；24–60 FPS。上传后建议统一裁剪转码。',
-  audio: '音频格式：WAV、MP3。\n单个 2–15 秒，最多 3 个，总时长不超过 15 秒；单个不超过 15 MB。上传后建议统一裁剪转码。',
+  referenceVideo: '视频格式：MP4、MOV。\n单个 2–15 秒，最多 3 个，总时长不超过 15 秒；480p/720p；宽高比 0.4–2.5；宽高 300–6000 px；总像素 409600–927408；单个不超过 50 MB；24–60 FPS。上传后会检查时长和编码，已兼容的完整素材不会重复转换。',
+  audio: '音频格式：WAV、MP3。\n单个 2–15 秒，最多 3 个，总时长不超过 15 秒；单个不超过 15 MB。上传后会检查时长和编码，已兼容的完整素材不会重复转换。',
 };
 
 const getVideoMediaLimitHints = (referenceVideoPolicy: {
@@ -808,7 +808,7 @@ const getVideoMediaLimitHints = (referenceVideoPolicy: {
   referenceVideoPolicy.requiresSeedancePreparation
     ? {
       ...SEEDANCE_MEDIA_LIMIT_HINTS,
-      referenceVideo: `视频格式：MP4、MOV。\n${referenceVideoPolicy.durationHint}\n480p/720p；宽高比 0.4–2.5；宽高 300–6000 px；总像素 409600–927408；单个不超过 50 MB；24–60 FPS。上传后会进入截取与转码。`,
+      referenceVideo: `视频格式：MP4、MOV。\n${referenceVideoPolicy.durationHint}\n480p/720p；宽高比 0.4–2.5；宽高 300–6000 px；总像素 409600–927408；单个不超过 50 MB；24–60 FPS。上传后会检查时长和编码，已兼容的完整素材不会重复转换。`,
     }
     : {
       ...SEEDANCE_MEDIA_LIMIT_HINTS,

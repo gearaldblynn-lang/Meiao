@@ -59,6 +59,22 @@ test('session creation probes the temporary source and does not persist an asset
   assert.equal(persisted, 0);
 });
 
+test('session creation tells the client when the whole source already matches Seedance', async () => {
+  const compatibleProbe = { ...canonicalProbe, kind: 'video', pixelFormat: 'yuv420p' };
+  const store = createFakeStore({ probe: compatibleProbe });
+  const api = createMediaTranscodeApi({
+    store,
+    service: { probe: async () => compatibleProbe },
+    persistAsset: async () => {},
+  });
+
+  const result = await api.createSession({
+    userId: 'u1', kind: 'video', fileName: 'source.mp4', fileBuffer: Buffer.from('source'),
+  });
+
+  assert.equal(result.compatibleSource, true);
+});
+
 test('conversion persists only the validated canonical output and removes the session', async () => {
   const store = createFakeStore();
   const persisted = [];
@@ -124,6 +140,57 @@ test('compatible subtitle source is persisted without FFmpeg and reports the fas
   assert.equal(result.transcoded, false);
   assert.equal(result.profile, 'subtitle_removal');
   assert.deepEqual(store.calls.remove, [session.id]);
+});
+
+test('compatible whole Seedance source is persisted without redundant FFmpeg conversion', async () => {
+  const store = createFakeStore({
+    fileName: 'source.mp4',
+    probe: { ...canonicalProbe, kind: 'video', pixelFormat: 'yuv420p' },
+  });
+  let transcodeCalls = 0;
+  const api = createMediaTranscodeApi({
+    store,
+    service: { transcode: async () => { transcodeCalls += 1; } },
+    readSource: async () => Buffer.from('already-compatible'),
+    persistAsset: async () => ({ assetId: 'asset-fast', fileUrl: '/api/assets/asset-fast' }),
+  });
+
+  const result = await api.convertSession({
+    userId: 'u1', sessionId: session.id, startSeconds: 0, endSeconds: 5, module: 'video',
+  });
+
+  assert.equal(transcodeCalls, 0);
+  assert.equal(result.transcoded, false);
+  assert.equal(result.profile, 'seedance_reference');
+  assert.deepEqual(store.calls.remove, [session.id]);
+});
+
+test('compatible short MP3 is persisted directly with the correct audio MIME type', async () => {
+  const audioProbe = {
+    kind: 'audio', durationSeconds: 13, formatNames: ['mp3'], audioCodec: 'mp3',
+    sizeBytes: 300_000, hasAudio: true,
+  };
+  const store = createFakeStore({ kind: 'audio', fileName: 'recording.mp3', probe: audioProbe });
+  let transcodeCalls = 0;
+  const persisted = [];
+  const api = createMediaTranscodeApi({
+    store,
+    service: { transcode: async () => { transcodeCalls += 1; } },
+    readSource: async () => Buffer.from('mp3-source'),
+    persistAsset: async (input) => {
+      persisted.push(input);
+      return { assetId: 'asset-audio', fileUrl: '/api/assets/asset-audio' };
+    },
+  });
+
+  const result = await api.convertSession({
+    userId: 'u1', sessionId: session.id, startSeconds: 0, endSeconds: 13, module: 'video',
+  });
+
+  assert.equal(transcodeCalls, 0);
+  assert.equal(result.transcoded, false);
+  assert.equal(result.mimeType, 'audio/mpeg');
+  assert.equal(persisted[0].mimeType, 'audio/mpeg');
 });
 
 test('incompatible subtitle MOV invokes FFmpeg with the stored profile', async () => {
