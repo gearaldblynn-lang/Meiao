@@ -23,7 +23,7 @@
   - 前端 `.test.mjs`(会 `import './xxx.ts'`)→ 必须加 `node --experimental-strip-types --test src/.../xxx.test.mjs`,否则 Node 报 `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`(文档里写的 `node --test` 漏了这个 flag)。
   - 全量:`find src -name "*.test.mjs" | xargs node --experimental-strip-types --test` / `find server -name "*.test.mjs" | xargs node --test`。
 
-## 3. 已诊断根因库 ★(持续维护,截至 2026-07-10 已记录至 #49)
+## 3. 已诊断根因库 ★(持续维护,截至 2026-07-21 已记录至 #76)
 
 > 🔗 本节是 Claude 与 Codex **共享的架构根因库主源**(单一真相)。Codex 通过 `AGENTS.md` 顶部指针 + `docs/agents/repeated-issues.md` 顶部指针读到这里。沉淀架构级根因写本节;`repeated-issues.md` 只留指针或记纯操作型问题,两边不抄全文以免漂移。
 
@@ -431,3 +431,8 @@
   根因:产品还原创建链路和三个真实 job 都正确携带 `module=retouch`、`payload.subFeature=product_restore` 与同一 `shellProjectId`；但 `normalizeJobSubFeature` 是产品还原上线前的旧白名单，retouch 只识别白底/背景，其他值一律返回 `original`。通用 job 恢复又只允许去字幕使用 `shellProjectId`，其余任务合成 `job-<backendJobId>`，因此两次产品还原结果被同时改成原图精修并拆成两张卡。旧 job 与自愈后的新项目再次水合时，还可能覆盖同一目标的较新结果。
   修复:建立统一 `module/subFeature` 结构化契约并接入 job 恢复、持久状态读取、页签筛选、前端持久化和服务端合并；仅凭产品还原专属 generation context、结果 scope 或 `:product_restore:` submission identity 自愈历史脏数据，并只在唯一 `proj-*` 身份成立时归并项目。所有带 `shellProjectId` 的媒体任务都回到创建时项目，未知 scope 不再静默落入默认页签；同一产品还原目标按 `createdAt` 保留较新结果。真实本地脏数据从两张错误卡收敛为一个 `product_restore` 项目，原图精修错误卡为 0。发布后公网与宿主机 health 均为绿色，关键源码哈希一致；云上当前活跃 state 无产品还原历史样本可回放，且浏览器 DOM 控制超时，因此保留 UI 观察项，不把技术验收写成页面验收。
   如何避免:**子功能归属是耐久业务身份，新增功能必须同时注册创建、job payload、读取恢复、筛选、持久化与服务端合并合同，不能在每层各写一套默认分支。结构化字段未知时必须显式拒绝或保留原值，不得回落到第一个页签；重试必须沿用创建时 `shellProjectId`，历史自愈只能使用功能专属耐久证据并配负例防止误改混合项目。**
+
+- **#76 ✅ 本地已修、待部署(2026-07-21)· 原创分镜在模型提交前调用未导入的 `getSegmentLabel`，所有结果卡同步失败**
+  根因:提交 9c6f487 为原创分镜提示词新增 `segmentSpec` 时，直接在 `videoStoryboardService.ts` 调用 `getSegmentLabel(index)`；该函数实际只作为 `videoStoryboardPlanning.ts` 的文件内常量存在，服务文件既未定义也未导入。`videoStoryboardService.ts` 顶部使用 `@ts-nocheck`，现有测试又只检查提示词源码片段，没有执行这条运行时拼接路径，因此类型检查、构建和旧测试全部放行。普通原创分镜进入 `buildScriptRequestPrompt` 后即在浏览器抛 `ReferenceError`，尚未创建内部任务或提交 KIE/Gemini；同次批量卡片因此一起显示 `Can't find variable: getSegmentLabel`。
+  修复:把已有 `getSegmentLabel` 作为 `videoStoryboardPlanning.ts` 的共享命名导出，并由 `videoStoryboardService.ts` 显式导入，保持分段命名只有一个实现。新增回归测试同时执行共享函数并锁定服务文件必须存在运行时 import，先复现导出为 `undefined`，修复后验证 `getSegmentLabel(0) === '分段一'` 且 import 合同成立。
+  如何避免:**`@ts-nocheck` 文件新增任何跨文件符号时，不能只靠源码包含测试或生产构建；必须有一个会执行共享导出的测试，并锁定调用文件的显式 import。提示词模板插值也是运行时代码，所有模板内函数调用都要进入回归路径，不能因“只是文案拼接”跳过符号解析验证。**
