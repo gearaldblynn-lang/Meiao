@@ -333,7 +333,20 @@ export function validateTranscodedOutput(kind, metadata, profile = 'seedance_ref
 
 export function isMediaCompatibleForProfile(profile, metadata = {}) {
   const normalizedProfile = normalizeMediaTranscodeProfile(profile);
-  if (normalizedProfile !== 'subtitle_removal') return false;
+  if (normalizedProfile === 'seedance_reference') {
+    const kind = metadata.kind === 'audio' ? 'audio' : metadata.kind === 'video' ? 'video' : '';
+    if (!kind) return false;
+    if (kind === 'video') {
+      const pixelFormat = String(metadata.pixelFormat || '').trim().toLowerCase();
+      if (pixelFormat !== 'yuv420p') return false;
+    }
+    try {
+      validateTranscodedOutput(kind, metadata, normalizedProfile);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   const formatNames = Array.isArray(metadata.formatNames)
     ? metadata.formatNames.map((item) => String(item).trim().toLowerCase())
     : [];

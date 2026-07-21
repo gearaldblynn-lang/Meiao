@@ -19,13 +19,15 @@ test('short-video audio and video uploads are intercepted before draft or legacy
   assert.match(uploadPolicySource, /mediaType !== 'referenceVideo' && mediaType !== 'audio'/);
   assert.match(uploadPolicySource, /if \(mediaType === 'audio'\) return true/);
   assert.match(shellSource, /MediaTrimTranscodeDialog/);
-  assert.match(shellSource, /mediaTranscoded: true/);
+  assert.match(shellSource, /mediaTranscoded: result\.transcoded/);
   assert.match(shellSource, /durationSeconds: result\.durationSeconds/);
 });
 
 test('upload choices expose complete Seedance image, video, and audio hints', () => {
   assert.match(bottomInputSource, /视频格式：MP4、MOV/);
   assert.match(bottomInputSource, /音频格式：WAV、MP3/);
+  assert.match(bottomInputSource, /已兼容的完整素材不会重复转换/);
+  assert.match(shellSource, /请依次检查并按需处理/);
   assert.match(bottomInputSource, /图片格式：JPEG、PNG、WEBP、BMP、TIFF、GIF/);
   assert.match(bottomInputSource, /总时长不超过 15 秒/);
   assert.match(bottomInputSource, /24–60 FPS/);

@@ -185,6 +185,63 @@ test('compatible H264 MP4 skips subtitle removal transcode', () => {
   }), false);
 });
 
+test('compatible short Seedance media can skip redundant FFmpeg conversion', () => {
+  assert.equal(isMediaCompatibleForProfile('seedance_reference', {
+    kind: 'video',
+    durationSeconds: 12,
+    sizeBytes: 2_000_000,
+    formatNames: ['mov', 'mp4'],
+    videoCodec: 'h264',
+    pixelFormat: 'yuv420p',
+    audioCodec: 'aac',
+    width: 720,
+    height: 1280,
+    frameRate: 30,
+  }), true);
+  assert.equal(isMediaCompatibleForProfile('seedance_reference', {
+    kind: 'audio',
+    durationSeconds: 12,
+    sizeBytes: 200_000,
+    formatNames: ['mp3'],
+    audioCodec: 'mp3',
+  }), true);
+});
+
+test('Seedance fast path rejects media that still needs trimming or normalization', () => {
+  assert.equal(isMediaCompatibleForProfile('seedance_reference', {
+    kind: 'video',
+    durationSeconds: 20,
+    sizeBytes: 2_000_000,
+    formatNames: ['mov', 'mp4'],
+    videoCodec: 'h264',
+    pixelFormat: 'yuv420p',
+    width: 720,
+    height: 1280,
+    frameRate: 30,
+  }), false);
+  assert.equal(isMediaCompatibleForProfile('seedance_reference', {
+    kind: 'video',
+    durationSeconds: 12,
+    sizeBytes: 2_000_000,
+    formatNames: ['mov', 'mp4'],
+    videoCodec: 'hevc',
+    pixelFormat: 'yuv420p',
+    width: 720,
+    height: 1280,
+    frameRate: 30,
+  }), false);
+  assert.equal(isMediaCompatibleForProfile('seedance_reference', {
+    kind: 'video',
+    durationSeconds: 12,
+    sizeBytes: 2_000_000,
+    formatNames: ['mov', 'mp4'],
+    videoCodec: 'h264',
+    width: 720,
+    height: 1280,
+    frameRate: 30,
+  }), false);
+});
+
 test('subtitle removal output validation ignores Seedance ratio, size and fps limits', () => {
   assert.doesNotThrow(() => validateTranscodedOutput('video', {
     durationSeconds: 600,

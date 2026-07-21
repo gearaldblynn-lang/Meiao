@@ -1062,3 +1062,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 新增统一 `createRuntimeId`，仅在 `randomUUID` 确实可调用且返回非空值时使用；缺失、非函数、抛错或空返回时改用时间戳、进程内序列和随机后缀生成非空且不重复的 ID。会话、翻译重试结果和区域修改版本全部改走该入口。
 - Regression check: `node --test src/utils/runtimeId.test.mjs`；`node --experimental-strip-types --test src/components/uiArchitecture.test.mjs src/modules/Translation/*.test.mjs src/adapters/shellDataAdapter.test.mjs src/adapters/shellPersistence.test.mjs src/utils/runtimeId.test.mjs`；`npm run verify`；`npm run doctor`。回归必须覆盖 API 缺失、非函数、调用抛错、空返回以及同毫秒同随机值的连续调用。
 - Avoid next time: 浏览器可选 API 必须用 `typeof ... === 'function'` 检查并提供确定性 fallback，不能只检查对象或属性是否存在。付费 provider canary 只能证明 provider 链路，不能替代重试、修改等真实 UI 提交入口的浏览器兼容验收；无法取得浏览器证据时必须明确标为未观察项。
+
+## 2026-07-21 - Media upload progress and format compatibility must be proved at separate boundaries
+
+- Symptom: 董丹丹上传 13 秒 MP3 后仍显示转换，长时间不完成；支持列表已写 MP3，用户无法分辨是在上传、探测还是 FFmpeg 转换。
+- Environment: Tencent Cloud production / short-video reference audio and video / Nginx -> Node multipart upload -> FFprobe/FFmpeg.
+- Root cause: `seedance_reference` 的兼容性函数固定返回 false，所以已合规 MP3/H.264 MP4 也重复转码。前端没有接入 XHR 已提供的上传进度；Nginx 默认缓存整个请求，50 MB/300 秒入口限制与应用 200 MiB/600 秒合同分裂；服务端又在读完 multipart 后才有第一条日志，导致上传阶段在用户、应用和日志三处都不可见。云上同文件的 15 秒 H.264 转码实测仅约 4.3 秒，故不是 FFmpeg 性能瓶颈。
+- Fix: 会话返回完整源文件兼容性；已合规且不需要裁剪的 MP3 和 H.264 MP4 直接保存，其他素材仍按需规范化。前端显示真实上传百分比和独立探测文案；已兼容时显示“使用原文件并继续”。应用在读取 request body 前记录 owner/content-length；Nginx 为 `/api/media-transcodes/` 单独配置 `proxy_request_buffering off`、203m 和 610s。
+- Regression check: 兼容 13 秒 MP3 和完整 H.264/yuv420p MP4 的 FFmpeg 调用次数必须为 0；长于 15 秒、HEVC、非 yuv420p 或用户改动裁剪区间时必须仍转换。同时锁定 `onUploadProgress`、上传起点日志和三层超时/容量对齐；生产验证不调用付费 provider。
+- Avoid next time: 上传支持格式不等于每次都要转码；先用 FFprobe 证明是否需要改字节，再决定快路径或 FFmpeg。排查“长时间转换”必须分别查浏览器上传、反代缓存、multipart 读取、FFprobe、FFmpeg 和持久化，不能用一条模拟进度把全链路统称为转码。

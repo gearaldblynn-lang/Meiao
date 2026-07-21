@@ -10,6 +10,7 @@ export type MediaTranscodeProbe = {
   kind: MediaTranscodeKind;
   profile: MediaTranscodeProfile;
   fileName: string;
+  compatibleSource: boolean;
   durationSeconds: number;
   formatNames: string[];
   videoCodec?: string | null;
