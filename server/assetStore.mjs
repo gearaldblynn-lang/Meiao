@@ -8,7 +8,10 @@ import { inferExtensionFromMimeType, parseDataUrlPayload } from './providerAsset
 import { enqueueAssetCleanupTask, ensureAssetLifecycleSchema } from './assetLifecycleStore.mjs';
 import { buildCosImageObjectKey, putTencentCosImage } from './tencentCosImageStore.mjs';
 import { appendManagedAssetAccessKey } from './managedAssetAccessKey.mjs';
-import { resolveManagedImageUpload } from './managedImageValidation.mjs';
+import {
+  getManagedImageFileExtension,
+  resolveManagedImageUpload,
+} from './managedImageValidation.mjs';
 import {
   normalizeManagedImageUploadMode,
   resolveLocalManagedImageUpload,
@@ -283,6 +286,16 @@ export const sanitizeAssetName = (value) => {
   const safeBase = base.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || 'upload';
   const safeExt = ext.replace(/[^.a-zA-Z0-9]/g, '').slice(0, 16);
   return `${safeBase}${safeExt}`;
+};
+
+export const normalizeManagedImageAssetName = (value, mimeType) => {
+  const safeName = sanitizeAssetName(value);
+  const trustedExtension = getManagedImageFileExtension(mimeType);
+  if (!trustedExtension) return safeName;
+  const currentExtension = path.extname(safeName);
+  return currentExtension
+    ? `${safeName.slice(0, -currentExtension.length)}${trustedExtension}`
+    : `${safeName}${trustedExtension}`;
 };
 
 export const buildAssetPublicPath = (assetId, originalName = '') => {
@@ -839,6 +852,9 @@ export const persistUploadedAssetBuffer = async ({
     ? resolveManagedImageUpload({ fileBuffer, mimeType: normalizedMimeType, env })
     : { isImage: false, mimeType: normalizedMimeType };
   normalizedMimeType = managedImage.mimeType;
+  const normalizedOriginalName = managedImage.isImage
+    ? normalizeManagedImageAssetName(originalName, normalizedMimeType)
+    : originalName;
   if (!managedImage.isImage) {
     return persistLocal({
       pool,
@@ -846,7 +862,7 @@ export const persistUploadedAssetBuffer = async ({
       userId,
       module,
       assetType,
-      originalName,
+      originalName: normalizedOriginalName,
       mimeType: normalizedMimeType,
       fileBuffer,
       width,
@@ -865,7 +881,7 @@ export const persistUploadedAssetBuffer = async ({
       userId,
       module,
       assetType,
-      originalName,
+      originalName: normalizedOriginalName,
       mimeType: normalizedMimeType,
       fileBuffer,
       width,
@@ -877,7 +893,7 @@ export const persistUploadedAssetBuffer = async ({
 
   const createdAt = now();
   const id = randomBytes(12).toString('hex');
-  const safeName = sanitizeAssetName(originalName);
+  const safeName = sanitizeAssetName(normalizedOriginalName);
   const storageKey = buildCosImageObjectKey({
     userId,
     assetType,

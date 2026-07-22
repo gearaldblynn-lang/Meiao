@@ -669,6 +669,44 @@ test('managed source images declared as octet-stream are sniffed and still route
   assert.equal(localWrites, 0);
 });
 
+test('managed source images normalize a conflicting browser image MIME and file extension from trusted bytes', async () => {
+  const created = [];
+  const uploads = [];
+  const record = await persistUploadedAssetBuffer({
+    publicBaseUrl: 'https://meiao.example.com',
+    userId: 'user-1',
+    assetType: 'source',
+    originalName: 'catalog.jpg',
+    mimeType: 'image/jpeg',
+    fileBuffer: PNG_FILE_BUFFER,
+    env: {
+      MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos',
+      MEIAO_IMAGE_COS_BUCKET: 'meiao-managed-images-1406860462',
+      MEIAO_IMAGE_COS_REGION: 'ap-guangzhou',
+      MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'test-managed-asset-secret-32-bytes',
+    },
+    deps: {
+      createRecord: async (_pool, value) => {
+        created.push(value);
+        return value;
+      },
+      markStatus: async () => {},
+      putCos: async (payload) => uploads.push(payload),
+      enqueueCleanup: async () => { throw new Error('cleanup must not be enqueued'); },
+      persistLocal: async () => { throw new Error('local fallback must not run'); },
+    },
+  });
+
+  assert.equal(created.length, 1);
+  assert.equal(record.mimeType, 'image/png');
+  assert.equal(record.originalName, 'catalog.png');
+  assert.match(record.storageKey, /\/catalog\.png$/);
+  assert.match(new URL(record.publicUrl).pathname, /\/catalog\.png$/);
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].mimeType, 'image/png');
+  assert.match(uploads[0].storageKey, /\/catalog\.png$/);
+});
+
 test('managed source images cannot disguise their bytes as another non-image MIME', async () => {
   let cosWrites = 0;
   let localWrites = 0;

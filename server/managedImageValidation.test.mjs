@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   getManagedImageMaxBytes,
   inspectManagedImageMultipartPrefix,
+  resolveManagedImageUpload,
   validateManagedImageUpload,
 } from './managedImageValidation.mjs';
 
@@ -22,6 +23,19 @@ test('managed image upload accepts supported MIME values only when the file sign
   assert.throws(
     () => validateManagedImageUpload({ fileBuffer: jpeg, mimeType: 'image/png' }),
     (error) => error?.code === 'managed_image_mime_mismatch' && error?.statusCode === 400,
+  );
+});
+
+test('managed image resolution trusts supported image bytes over a conflicting browser image MIME', () => {
+  assert.deepEqual(
+    resolveManagedImageUpload({ fileBuffer: webp, mimeType: 'image/jpeg' }),
+    {
+      isImage: true,
+      mimeType: 'image/webp',
+      detectedMimeType: 'image/webp',
+      declaredMimeType: 'image/jpeg',
+      mimeTypeNormalized: true,
+    },
   );
 });
 

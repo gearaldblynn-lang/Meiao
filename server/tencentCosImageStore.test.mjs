@@ -41,6 +41,18 @@ test('buildCosImageObjectKey keeps untrusted values inside the managed image pre
   assert.doesNotMatch(key, /\.\.|root|客户|\\/);
 });
 
+test('buildCosImageObjectKey uses the trusted MIME extension instead of a conflicting client filename', () => {
+  const key = buildCosImageObjectKey({
+    userId: 'user-1',
+    assetType: 'source',
+    assetId: 'asset-1',
+    fileName: 'catalog.jpg',
+    mimeType: 'image/webp',
+  });
+
+  assert.match(key, /\/catalog\.webp$/);
+});
+
 test('putTencentCosImage retries the same object key and returns sanitized metadata', async () => {
   const calls = [];
   const sleeps = [];
