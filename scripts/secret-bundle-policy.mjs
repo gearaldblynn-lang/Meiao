@@ -29,29 +29,28 @@ const PROVIDER_KEYS = new Set([
 const KEY_RE = /^[A-Z][A-Z0-9_]*$/;
 const PLACEHOLDER_RE = /^(?:<[^>]+>|sk-?x{4,}|change[_-]?me.*|your[_-].*|example.*)$/i;
 
+function validateDecodedValue(value, lineNumber) {
+  if (value.includes('\0')) throw new Error(`dotenv_nul_byte:${lineNumber}`);
+  if (value.includes('\n') || value.includes('\r')) {
+    throw new Error(`dotenv_multiline_value:${lineNumber}`);
+  }
+  return value;
+}
+
 function decodeValue(raw, lineNumber) {
   const value = raw.trim();
   if (!value) return '';
   if (value.startsWith('"')) {
     if (!value.endsWith('"')) throw new Error(`dotenv_unclosed_quote:${lineNumber}`);
     const decoded = JSON.parse(value);
-    if (decoded.includes('\n') || decoded.includes('\r')) {
-      throw new Error(`dotenv_multiline_value:${lineNumber}`);
-    }
-    return decoded;
+    return validateDecodedValue(decoded, lineNumber);
   }
   if (value.startsWith("'")) {
     if (!value.endsWith("'")) throw new Error(`dotenv_unclosed_quote:${lineNumber}`);
     const decoded = value.slice(1, -1);
-    if (decoded.includes('\n') || decoded.includes('\r')) {
-      throw new Error(`dotenv_multiline_value:${lineNumber}`);
-    }
-    return decoded;
+    return validateDecodedValue(decoded, lineNumber);
   }
-  if (value.includes('\n') || value.includes('\r')) {
-    throw new Error(`dotenv_multiline_value:${lineNumber}`);
-  }
-  return value;
+  return validateDecodedValue(value, lineNumber);
 }
 
 export function parseDotenvText(text) {
@@ -75,7 +74,7 @@ export function parseDotenvText(text) {
 }
 
 export function validateFriendSecretEntries(entries) {
-  const reasons = {};
+  const reasons = Object.create(null);
   for (const [key, value] of entries) {
     if (FRIEND_SECRET_FORBIDDEN.has(key)) reasons[key] = 'forbidden_key';
     else if (!FRIEND_SECRET_ALLOWLIST.has(key)) reasons[key] = 'unknown_key';

@@ -27,6 +27,17 @@ test('friend bundle rejects production infrastructure and unknown keys', () => {
   }
 });
 
+test('friend bundle rejects a prototype-named unknown key deterministically', () => {
+  const result = validateFriendSecretEntries(new Map([
+    ['KIE_API_KEY', 'unit-test-kie-credential'],
+    ['__proto__', 'unit-test-sensitive-value'],
+  ]));
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.rejectedKeys, ['__proto__']);
+  assert.equal(Object.hasOwn(result.reasons, '__proto__'), true);
+  assert.equal(result.reasons.__proto__, 'unknown_key');
+});
+
 test('friend bundle requires at least one provider credential', () => {
   const result = validateFriendSecretEntries(new Map([
     ['MEIAO_COS_BUCKET', 'unit-test-bucket'],
@@ -45,4 +56,8 @@ test('friend bundle rejects visibly truncated sensitive values', () => {
 test('dotenv parsing rejects conflicting duplicate keys and multiline values', () => {
   assert.throws(() => parseDotenvText('KIE_API_KEY=unit-test-a\nKIE_API_KEY=unit-test-b'));
   assert.throws(() => parseDotenvText('KIE_API_KEY="line1\nline2"'));
+});
+
+test('dotenv parsing rejects NUL decoded from a double-quoted Unicode escape', () => {
+  assert.throws(() => parseDotenvText('KIE_API_KEY="unit-test-\\u0000credential"'));
 });
