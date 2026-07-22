@@ -569,8 +569,9 @@ test('scanner reports supported credential rules without exposing values', async
     'github.txt': 'ghp_' + 'D'.repeat(36),
     'slack.txt': 'xoxb-' + '1'.repeat(12) + '-' + 'E'.repeat(24),
     'provider.txt': 'sk-' + 'F'.repeat(40),
-    'url.txt': 'https://example.invalid/redacted
+    'url.txt': ['mysql://fixture-user', 'fixture-password@db.invalid/app'].join(':'),
     'assignment.txt': 'apiKey = "' + 'G7h8J9k0Lm1N2p3Q4r5S6t7U8v9W0xY1' + '"',
+    'dotenv.txt': 'SOME_SECRET=' + 'H8i9J0k1Lm2N3p4Q5r6S7t8U9v0W1xY2',
   };
   const result = scan(await repository(values));
   assert.equal(result.status, 1);
@@ -579,7 +580,16 @@ test('scanner reports supported credential rules without exposing values', async
   for (const finding of report.findings) {
     assert.deepEqual(Object.keys(finding).sort(), ['file', 'length', 'line', 'rule']);
   }
-  for (const value of Object.values(values)) assert.equal(result.stdout.includes(value), false);
+  for (const value of Object.values(values)) {
+    assert.equal(result.stdout.includes(value), false);
+    assert.equal(result.stderr.includes(value), false);
+  }
+});
+
+test('scanner rejects unknown CLI arguments before reading the repository', async () => {
+  const result = spawnSync(process.execPath, [scanner, '--root', '/does/not/exist', '--token', 'fixture-argv-secret'], { encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.equal((result.stdout + result.stderr).includes('fixture-argv-secret'), false);
 });
 
 test('scanner accepts only the exact synthetic fixtures and placeholders', async () => {
@@ -604,17 +614,20 @@ Expected: FAIL because the scanner does not exist.
 
 - [ ] **Step 3: Implement the scanner**
 
-Read tracked paths via `git ls-files -z`; skip binary blobs after detecting NUL bytes. Use exact regex rules plus Shannon entropy for sensitive assignments. Never include the matched value or a value-derived hash in output. Test exceptions require an exact relative path and exact clearly synthetic value; no directory-wide exclusions.
+Parse argv strictly as either no arguments or exactly `--root ABSOLUTE_PATH`, rejecting unknown/duplicate/missing flags without echoing values. Read tracked paths via `git ls-files -z`; for each path use `lstat`, read regular-file worktree bytes, read a symlink's link text without following it outside the repository, and reject unsupported file types. Skip binary blobs after detecting NUL bytes. Use exact regex rules plus Shannon entropy for quoted and unquoted sensitive assignments, including dotenv/YAML forms. Never include the matched value or a value-derived hash in output. Test exceptions require an exact relative path and exact clearly synthetic value; no directory-wide exclusions.
 
 Implement the scanner with this structure:
 
 ```js
-import { readFile, realpath } from 'node:fs/promises';
+import { lstat, readFile, readlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const rootFlag = process.argv.indexOf('--root');
-const root = await realpath(rootFlag >= 0 ? process.argv[rootFlag + 1] : process.cwd());
+const rawArgs = process.argv.slice(2);
+if (!(rawArgs.length === 0 || (rawArgs.length === 2 && rawArgs[0] === '--root' && path.isAbsolute(rawArgs[1])))) {
+  throw new Error('usage: check-tracked-secrets [--root ABSOLUTE_PATH]');
+}
+const root = await realpath(rawArgs.length ? rawArgs[1] : process.cwd());
 const tracked = spawnSync('git', ['ls-files', '-z'], { cwd: root });
 if (tracked.status !== 0) throw new Error('git_ls_files_failed');
 
@@ -633,7 +646,7 @@ const rules = [
   ['provider_token', /\bsk-[A-Za-z0-9_-]{20,}\b/g],
   ['credential_url', /\b(?:mysql|postgres(?:ql)?|mongodb(?:\+srv)?):\/\/[^\s:@/]+:[^\s@/]+@[^\s]+/g],
 ];
-const assignment = /\b(?:api[_-]?key|secret|token|password)\b\s*[:=]\s*["']([^"'\r\n]{20,})["']/gi;
+const assignment = /\b(?:[A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*|api[_-]?key|secret|token|password)\b\s*[:=]\s*(?:["']([^"'\r\n]{20,})["']|([^\s#,"']{20,}))/gi;
 
 function entropy(value) {
   const counts = new Map();
@@ -646,7 +659,13 @@ function entropy(value) {
 
 const findings = [];
 for (const file of tracked.stdout.toString('utf8').split('\0').filter(Boolean)) {
-  const bytes = await readFile(path.join(root, file));
+  const absolute = path.join(root, file);
+  const stats = await lstat(absolute);
+  const bytes = stats.isSymbolicLink()
+    ? Buffer.from(await readlink(absolute), 'utf8')
+    : stats.isFile()
+      ? await readFile(absolute)
+      : (() => { throw new Error(`unsupported_tracked_file_type:${file}`); })();
   if (bytes.includes(0)) continue;
   for (const [lineIndex, line] of bytes.toString('utf8').split(/\r?\n/).entries()) {
     for (const [rule, pattern] of rules) {
@@ -658,7 +677,7 @@ for (const file of tracked.stdout.toString('utf8').split('\0').filter(Boolean)) 
     }
     assignment.lastIndex = 0;
     for (const match of line.matchAll(assignment)) {
-      const value = match[1];
+      const value = match[1] || match[2];
       if (exactSyntheticAllowlist.get(file)?.has(value)) continue;
       if (new Set(value).size >= 10 && entropy(value) >= 3.5) {
         findings.push({ file, line: lineIndex + 1, rule: 'high_entropy_assignment', length: value.length });
