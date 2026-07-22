@@ -36,7 +36,12 @@ test('storyboard provider states map to one board-state contract', async () => {
 });
 
 test('storyboard project and shell status never treat pending boards as completed', async () => {
-  const { deriveStoryboardProjectStatus, toStoryboardShellResultStatus } = await loadHelper();
+  const {
+    deriveStoryboardProjectStatus,
+    getStoryboardCardSegmentCount,
+    toStoryboardShellProjectStatus,
+    toStoryboardShellResultStatus,
+  } = await loadHelper();
 
   assert.equal(deriveStoryboardProjectStatus([
     { status: 'completed', imageUrl: '/first.png' },
@@ -55,6 +60,18 @@ test('storyboard project and shell status never treat pending boards as complete
   assert.equal(toStoryboardShellResultStatus({ status: 'generating' }), 'generating');
   assert.equal(toStoryboardShellResultStatus({ status: 'completed', imageUrl: '/board.png' }), 'completed');
   assert.equal(toStoryboardShellResultStatus({ status: 'failed' }), 'error');
+
+  assert.equal(toStoryboardShellProjectStatus('pending'), 'planning');
+  assert.equal(toStoryboardShellProjectStatus('scripting'), 'generating');
+  assert.equal(toStoryboardShellProjectStatus('awaiting_image_confirmation'), 'planning');
+  assert.equal(toStoryboardShellProjectStatus('imaging'), 'generating');
+  assert.equal(toStoryboardShellProjectStatus('completed'), 'completed');
+  assert.equal(toStoryboardShellProjectStatus('failed'), 'error');
+
+  assert.equal(getStoryboardCardSegmentCount({
+    results: [],
+    storyboardSourceProject: { boards: [{ id: 'board-1' }, { id: 'board-2' }] },
+  }), 2, 'cold hydration must count durable storyboard boards even before image jobs exist');
 });
 
 test('storyboard confirmation wins over stale generating state while real imaging stays active', async () => {
@@ -231,7 +248,9 @@ test('recovered storyboard merge preserves local edits and only advances matchin
 test('all storyboard image entry points consume the shared status mapper', () => {
   const shellSource = readFileSync(new URL('../../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
   const videoModuleSource = readFileSync(new URL('./VideoModule.tsx', import.meta.url), 'utf8');
+  const shellAdapterSource = readFileSync(new URL('../../../adapters/shellDataAdapter.ts', import.meta.url), 'utf8');
   const projectCardSource = readFileSync(new URL('../../components/ProjectCard.tsx', import.meta.url), 'utf8');
+  const declarationSource = readFileSync(new URL('./storyboardGenerationState.d.mts', import.meta.url), 'utf8');
   const initialBlock = shellSource.match(/if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'storyboard'\) \{[\s\S]*?if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'diagnosis'\) \{/)?.[0] || '';
   const regenerateBlock = shellSource.match(/const handleStoryboardRegenerateResult = useCallback\(async \([\s\S]*?const handleConfirmStoryboardImaging =/)?.[0] || '';
   const confirmBlock = shellSource.match(/const handleConfirmStoryboardImaging = useCallback\(async \([\s\S]*?const handleRegenerateResult =/)?.[0] || '';
@@ -242,7 +261,14 @@ test('all storyboard image entry points consume the shared status mapper', () =>
     assert.match(block, /deriveStoryboardProjectStatus\(/);
   });
   assert.match(videoModuleSource, /toStoryboardShellResultStatus\(board\)/);
+  assert.match(videoModuleSource, /toStoryboardShellProjectStatus\(project\.status\)/);
+  assert.match(shellAdapterSource, /toStoryboardShellProjectStatus\(project\.status\)/);
   assert.doesNotMatch(videoModuleSource, /board\.status === 'failed' \? 'error' : board\.status === 'generating' \? 'generating' : 'completed'/);
+  assert.doesNotMatch(videoModuleSource, /project\.status === 'completed' \? 'completed'/);
+  assert.match(projectCardSource, /getStoryboardCardSegmentCount\(project\)/);
+  assert.match(declarationSource, /toStoryboardShellResultStatus[\s\S]*'planning'/);
+  assert.match(declarationSource, /toStoryboardShellProjectStatus/);
+  assert.match(declarationSource, /getStoryboardCardSegmentCount/);
   assert.match(projectCardSource, /分镜脚本已完成/);
   assert.match(projectCardSource, /点击详情确认生图/);
 });

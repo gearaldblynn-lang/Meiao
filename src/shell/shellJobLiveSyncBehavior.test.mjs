@@ -101,14 +101,14 @@ test('job backfill does not fan out requests for terminal history outside the re
 test('result contracts preserve retry-waiting child jobs even without a local task row', () => {
   assert.match(
     shellSource,
-    /status: 'completed' \| 'generating' \| 'retry_waiting' \| 'error'/,
+    /status: 'planning' \| 'completed' \| 'generating' \| 'retry_waiting' \| 'error'/,
   );
   assert.match(
     shellScopeFiltersSource,
-    /status: 'completed' \| 'generating' \| 'retry_waiting' \| 'error'/,
+    /status: 'planning' \| 'completed' \| 'generating' \| 'retry_waiting' \| 'error'/,
   );
   assert.match(
     shellPersistenceSource,
-    /status: 'completed' \| 'generating' \| 'retry_waiting' \| 'error'/,
+    /status: 'planning' \| 'completed' \| 'generating' \| 'retry_waiting' \| 'error'/,
   );
 });

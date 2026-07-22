@@ -209,3 +209,21 @@ export const toStoryboardShellResultStatus = (board = {}) => {
   if (board.status === 'pending') return 'planning';
   return 'generating';
 };
+
+export const isStoryboardAwaitingImageConfirmation = (status) => (
+  String(status || '') === 'awaiting_image_confirmation'
+);
+
+export const toStoryboardShellProjectStatus = (status) => {
+  if (status === 'completed') return 'completed';
+  if (status === 'failed') return 'error';
+  if (status === 'scripting' || status === 'imaging') return 'generating';
+  return 'planning';
+};
+
+export const getStoryboardCardSegmentCount = (project = {}) => Math.max(
+  Array.isArray(project.results) ? project.results.length : 0,
+  Array.isArray(project.storyboardSourceProject?.boards)
+    ? project.storyboardSourceProject.boards.length
+    : 0,
+);

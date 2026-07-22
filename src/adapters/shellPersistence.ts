@@ -56,7 +56,7 @@ type ShellResult = {
   prompt: string;
   model: string;
   aspectRatio: string;
-  status: 'completed' | 'generating' | 'retry_waiting' | 'error';
+  status: 'planning' | 'completed' | 'generating' | 'retry_waiting' | 'error';
   createdAt: number;
   module: AppModule;
   subFeature?: string;
@@ -641,7 +641,13 @@ const buildSchemeFromResult = (project: ShellProject, result: ShellResult, index
     uiTitle: project.results.length > 1 ? `${project.name} ${index + 1}` : project.name,
     originalContent: prompt,
     editedContent: prompt,
-    status: result.status === 'error' ? 'error' : result.status === 'generating' ? 'generating' : 'completed',
+    status: result.status === 'error'
+      ? 'error'
+      : result.status === 'planning'
+        ? 'pending'
+        : result.status === 'generating' || result.status === 'retry_waiting'
+          ? 'generating'
+          : 'completed',
     selected: true,
     resultUrl,
     error: result.status === 'error' ? prompt : undefined,

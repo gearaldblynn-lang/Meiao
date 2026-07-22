@@ -1350,7 +1350,7 @@ test('video workspace keeps the shell UI while migrating storyboard and diagnosi
   assert.match(projectCard, /失败原因/);
   assert.match(projectCard, /project\.status === 'error' && project\.error/);
   assert.match(projectCard, /storyboardProjectStatus\?:/);
-  assert.match(projectCard, /storyboardProjectStatus === 'awaiting_image_confirmation'/);
+  assert.match(projectCard, /isStoryboardAwaitingImageConfirmationStatus\(project\.storyboardProjectStatus\)/);
   assert.match(projectCard, /storyboardRevisionDialog/);
   assert.match(shellApp, /handleStoryboardRegenerateResult/);
   assert.match(shellApp, /persistVideoMemoryToSharedState/);
@@ -1361,8 +1361,8 @@ test('video workspace keeps the shell UI while migrating storyboard and diagnosi
   assert.match(shellApp, /formatVideoStoryboardFailureMessage/);
   assert.match(shellApp, /storyboardFailureStep = '分镜脚本生成'/);
   assert.match(shellApp, /status: 'failed'[\s\S]*error: failureMessage/);
-  assert.match(videoModule, /project\.status === 'pending' \? 'generating'/);
-  assert.match(videoModule, /project\.status === 'awaiting_image_confirmation' \? 'planning'/);
+  assert.match(videoModule, /toStoryboardShellProjectStatus\(project\.status\)/);
+  assert.doesNotMatch(videoModule, /project\.status === 'pending' \? 'generating'/);
   assert.match(projectCard, /确认生图/);
   assert.match(videoModule, /onConfirmStoryboardImaging/);
   assert.match(projectCard, /等待统一确认生图/);

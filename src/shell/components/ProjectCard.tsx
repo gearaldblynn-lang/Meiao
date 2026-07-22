@@ -36,6 +36,10 @@ import { useToast } from './ToastSystem';
 import ProductRestoreAnalysisPanel, { ProductRestoreResultCreditBadge } from '../modules/Retouch/ProductRestoreAnalysisPanel';
 import SubtitleComparisonPlayer from './SubtitleComparisonPlayer';
 import { getSubtitleRemovalRetryDecision } from '../../utils/subtitleRemovalRetrySafety.mjs';
+import {
+  getStoryboardCardSegmentCount,
+  isStoryboardAwaitingImageConfirmation as isStoryboardAwaitingImageConfirmationStatus,
+} from '../modules/Video/storyboardGenerationState.mjs';
 import { resolveProjectCardActivity } from './projectCardActivity.mjs';
 import {
   getProductRestoreAnalysisCreditSummary,
@@ -671,7 +675,7 @@ const ProjectCard: React.FC<Props> = ({
   const isResultActivelyGenerating = (result: GeneratedResult) => (
     result.status === 'generating'
     && !isCompletedMediaResult(result)
-    && !(isStoryboardProject && project.storyboardProjectStatus === 'awaiting_image_confirmation')
+    && !(isStoryboardProject && isStoryboardAwaitingImageConfirmationStatus(project.storyboardProjectStatus))
     && (resultHasVisibleTaskId(result) || project.status === 'generating')
   );
   const getResultCancelTarget = (result: GeneratedResult, targetProject: Project) => (
@@ -781,7 +785,9 @@ const ProjectCard: React.FC<Props> = ({
   const isVideoGenerationProject = project.module === 'video' && project.subFeature === 'generation';
   const allImageUrls = lightboxItems.map((item) => item.url);
   const isDiagnosisReport = project.module === 'video' && project.subFeature === 'diagnosis';
-  const isStoryboardAwaitingImageConfirmation = isStoryboardProject && project.storyboardProjectStatus === 'awaiting_image_confirmation';
+  const isStoryboardAwaitingImageConfirmation = isStoryboardProject
+    && isStoryboardAwaitingImageConfirmationStatus(project.storyboardProjectStatus);
+  const storyboardCardSegmentCount = getStoryboardCardSegmentCount(project);
   const isCopyTextReport = project.module === 'buyer_show' && project.subFeature === 'copy';
   const isTextReport = isDiagnosisReport || isCopyTextReport;
   const buyerShowEvaluationText = project.results
@@ -1427,7 +1433,7 @@ const ProjectCard: React.FC<Props> = ({
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center" style={{ color: 'var(--text-tertiary)' }}>
                 <Sparkles size={22} style={{ color: 'var(--accent)' }} />
                 <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>分镜脚本已完成</span>
-                <span className="text-[11px] leading-5">已生成 {project.results.length} 个分段，点击详情确认生图</span>
+                <span className="text-[11px] leading-5">已生成 {storyboardCardSegmentCount} 个分段，点击详情确认生图</span>
               </div>
             ) : hasResults ? renderMedia(previewResult, `h-full w-full object-cover ${isPreviewVideoResult ? '' : 'transition-transform duration-300 group-hover:scale-[1.03]'}`, { videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowIndicator: true, videoAutoLoadWhenVisible: true }) : hasPlans ? (
               <div className="flex h-full flex-col justify-between p-4" style={{ color: 'var(--text-secondary)' }}>
@@ -1824,7 +1830,7 @@ const ProjectCard: React.FC<Props> = ({
                       </p>
                     </div>
                     <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
-                      {project.results.length} 段
+                      {storyboardCardSegmentCount} 段
                     </span>
                   </div>
                   <div className="grid gap-3 xl:grid-cols-2">

@@ -1,3 +1,5 @@
+import { isStoryboardAwaitingImageConfirmation } from '../modules/Video/storyboardGenerationState.mjs';
+
 /**
  * @param {{
  *   projectStatus?: 'planning' | 'generating' | 'completed' | 'error',
@@ -18,7 +20,7 @@ export const resolveProjectCardActivity = ({
   hasPendingProductRestoreSync = false,
   hasResults,
 } = {}) => {
-  const isAwaitingStoryboardConfirmation = storyboardProjectStatus === 'awaiting_image_confirmation';
+  const isAwaitingStoryboardConfirmation = isStoryboardAwaitingImageConfirmation(storyboardProjectStatus);
   const isProjectActivelyGenerating = !isAwaitingStoryboardConfirmation
     && projectStatus === 'generating'
     && (

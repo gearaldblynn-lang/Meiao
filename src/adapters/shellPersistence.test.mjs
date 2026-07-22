@@ -377,6 +377,35 @@ test('shell data hydration treats providerTaskId as the visible kie task id', ()
   assert.equal(snapshot.projects[0].results[0].taskId, 'kie-provider-visible-id');
 });
 
+test('shell data hydration preserves planned results instead of silently completing them', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'planned-result-project',
+      name: '待确认结果项目',
+      module: 'video',
+      subFeature: 'storyboard',
+      status: 'planning',
+      createdAt: 1784690000000,
+      results: [{
+        id: 'planned-board-result',
+        imageUrl: '',
+        prompt: '待确认分镜',
+        model: 'gpt-image-2',
+        aspectRatio: '9:16',
+        status: 'planning',
+        createdAt: 1784690000000,
+        module: 'video',
+        subFeature: 'storyboard',
+      }],
+      taskCount: 1,
+      completedCount: 0,
+    }],
+  }, []);
+
+  assert.equal(snapshot.projects[0]?.results[0]?.status, 'planning');
+  assert.equal(snapshot.projects[0]?.completedCount, 0);
+});
+
 test('shell persistence writes generated one-click projects to the matching subfeature branch', () => {
   const state = buildPersistedAppState({
     oneClickMemory: {
@@ -467,6 +496,43 @@ test('shell persistence does not nest one-click branch history inside each saved
   assert.ok(savedProject);
   assert.equal(Object.hasOwn(savedProject, 'projects'), false);
   assert.equal(nextState.oneClickMemory.firstImage.projects.length, 2);
+});
+
+test('shell persistence keeps planned child results pending instead of completing them', () => {
+  const state = buildPersistedAppState({
+    oneClickMemory: {
+      firstImage: { projects: [] },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  });
+
+  const nextState = upsertOneClickProjectIntoPersistedState(state, {
+    id: 'planned-child-project',
+    name: '待确认子结果',
+    module: 'one_click',
+    status: 'planning',
+    createdAt: 1784690000000,
+    results: [{
+      id: 'planned-child-result',
+      imageUrl: '',
+      prompt: '待确认方案',
+      model: 'gpt-image-2',
+      aspectRatio: '1:1',
+      status: 'planning',
+      createdAt: 1784690000000,
+      module: 'one_click',
+      subFeature: 'first_image',
+    }],
+    taskCount: 1,
+    completedCount: 0,
+    subFeature: 'first_image',
+  });
+
+  const saved = nextState.oneClickMemory.firstImage.projects.find((project) => project.id === 'planned-child-project');
+  assert.equal(saved?.schemes[0]?.status, 'pending');
+  assert.equal(saved?.schemes[0]?.resultUrl, undefined);
 });
 
 test('shell persistence preserves planning credits and generated kie task ids in one-click branches', () => {

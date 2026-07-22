@@ -4,7 +4,10 @@ import ProjectListView from '../../components/ProjectListView';
 import type { GeneratedResult, Project, SubFeatureOption, Task } from '../../../ShellMigratedApp';
 import type { SubtitleRemovalSourceDraft, VideoPersistentState, VideoStoryboardProject } from '../../../types';
 import { buildDiagnosisReportText, hasDiagnosisReportContent } from '../../../modules/Video/videoDiagnosisUtils.mjs';
-import { toStoryboardShellResultStatus } from './storyboardGenerationState.mjs';
+import {
+  toStoryboardShellProjectStatus,
+  toStoryboardShellResultStatus,
+} from './storyboardGenerationState.mjs';
 import SubtitleRemovalWorkspace, {
   type SubtitleRemovalBatchLimits,
   type SubtitleRemovalSubmitInput,
@@ -86,12 +89,7 @@ const toStoryboardCards = (items: VideoStoryboardProject[]): Project[] => items.
       storyboardImageVersions,
     };
   });
-  const status: Project['status'] =
-    project.status === 'completed' ? 'completed'
-      : project.status === 'failed' ? 'error'
-        : project.status === 'pending' ? 'generating'
-          : project.status === 'awaiting_image_confirmation' ? 'planning'
-          : 'generating';
+  const status = toStoryboardShellProjectStatus(project.status) as Project['status'];
 
   return {
     id: project.id,
