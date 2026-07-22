@@ -57,7 +57,8 @@ test('friend bundle rejects production infrastructure and unknown keys', () => {
   for (const key of ['MEIAO_DB_PASSWORD', 'MEIAO_ADMIN_PASSWORD', 'SSH_PRIVATE_KEY', 'UNKNOWN_TOKEN']) {
     const result = validateFriendSecretEntries(new Map([[key, 'unit-test-sensitive-value']]));
     assert.equal(result.ok, false);
-    assert.deepEqual(result.rejectedKeys, [key]);
+    assert.deepEqual(result.rejectedKeys, [key, '__bundle__'].sort());
+    assert.equal(result.reasons.__bundle__, 'provider_credential_required');
   }
 });
 
