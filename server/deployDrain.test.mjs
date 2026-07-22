@@ -4,11 +4,28 @@ import { readFileSync } from 'node:fs';
 
 import {
   assertDeployRequestAllowed,
+  beginDeployRequestTracking,
   createDeployDrainError,
+  getDeployRequestSnapshot,
   isDeployDrainActive,
   resolveDeployDrainFile,
   shouldGuardDeployRequest,
 } from './deployDrain.mjs';
+
+test('deployment request tracker counts guarded writes and releases idempotently', () => {
+  const finish = beginDeployRequestTracking({ pathname: '/api/jobs', method: 'POST' });
+  assert.equal(getDeployRequestSnapshot().activeWriteRequests, 1);
+  finish();
+  finish();
+  assert.equal(getDeployRequestSnapshot().activeWriteRequests, 0);
+});
+
+test('deployment request tracker does not count read-only traffic', () => {
+  const finish = beginDeployRequestTracking({ pathname: '/api/health', method: 'GET' });
+  assert.equal(getDeployRequestSnapshot().activeWriteRequests, 0);
+  finish();
+  assert.equal(getDeployRequestSnapshot().activeWriteRequests, 0);
+});
 
 test('deployment drain uses an env path and treats a fresh marker as active', () => {
   const env = { MEIAO_DEPLOY_DRAIN_FILE: '/tmp/custom-meiao-drain' };
@@ -77,6 +94,9 @@ test('the real request dispatcher applies the route-aware drain admission before
   const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
   const dispatcher = source.match(/const server = createServer\([\s\S]*?bootstrap\(\)/)?.[0] || '';
   assert.match(dispatcher, /assertDeployRequestAllowed\(\{ pathname: url\.pathname, method: req\.method \}\)/);
+  assert.match(dispatcher, /beginDeployRequestTracking\(\{\s+pathname: url\.pathname,\s+method: req\.method,\s+\}\)/);
+  assert.match(dispatcher, /finally \{\s+finishDeployRequestTracking\(\);\s+\}/);
+  assert.ok(dispatcher.indexOf('beginDeployRequestTracking') < dispatcher.indexOf('assertDeployRequestAllowed'));
   assert.ok(dispatcher.indexOf('assertDeployRequestAllowed') < dispatcher.indexOf('if (shouldUseMysql)'));
 });
 

@@ -95,7 +95,7 @@ test('deploy_tencent blocks releases with high severity dependency vulnerabiliti
   assert.match(source, /run_security_audit_with_retry\n/);
 });
 
-test('deploy_tencent refuses to restart while cloud jobs are running', () => {
+test('deploy_tencent refuses to reload while cloud jobs are running', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
 
   const initialReadinessIndex = source.indexOf('\nrun_remote_deploy_readiness\n');
@@ -103,14 +103,14 @@ test('deploy_tencent refuses to restart while cloud jobs are running', () => {
   const finalReadinessIndex = source.lastIndexOf('node scripts/check-deploy-readiness.mjs');
   const finalEnvGuardIndex = source.lastIndexOf("if [ ! -f '.env.server' ]");
   const finalEnvLoadIndex = source.lastIndexOf('source .env.server');
-  const restartIndex = source.indexOf('pm2 restart meiao-internal --update-env');
+  const reloadIndex = source.indexOf('pm2 startOrReload ecosystem.config.cjs --update-env');
 
   assert.ok(initialReadinessIndex >= 0, 'deploy must define and invoke the cloud readiness preflight');
   assert.ok(initialReadinessIndex < archiveIndex, 'initial readiness must run before uploading or replacing code');
   assert.ok(finalReadinessIndex >= 0, 'deploy must recheck readiness after the remote build');
   assert.ok(finalEnvGuardIndex < finalReadinessIndex, 'final readiness must verify .env.server first');
   assert.ok(finalEnvLoadIndex < finalReadinessIndex, 'final readiness must load database settings first');
-  assert.ok(finalReadinessIndex < restartIndex, 'final readiness must run immediately before PM2 restart');
+  assert.ok(finalReadinessIndex < reloadIndex, 'final readiness must run before PM2 reload');
   assert.match(source, /MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS/);
 });
 
@@ -178,32 +178,32 @@ test('deploy_tencent re-verifies mutex ownership before remote mutation and cuto
   assert.ok(ownerChecks.at(-1) < cutoverIndex);
 });
 
-test('deploy_tencent uses a bootstrap network drain before the lock holder stops the old process', () => {
+test('deploy_tencent drains writes and releases the job lock before ready-gated reload', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
-  const lockHolderSource = readFileSync(new URL('./hold-deploy-drain.mjs', import.meta.url), 'utf8');
-  const networkIndex = source.indexOf('node scripts/backend-network-drain.mjs enter');
   const markerIndex = source.indexOf('\n    write_owned_deploy_marker\n');
-  const bootstrapLockIndex = source.indexOf('node scripts/hold-deploy-drain.mjs');
-  const stoppedAckIndex = source.indexOf('--stopped-file');
-  const restartIndex = source.indexOf('pm2 restart meiao-internal --update-env');
-  const networkReleaseIndex = source.indexOf('\n    disable_network_drain\n', restartIndex);
-  const healthIndex = source.indexOf('/api/health');
+  const drainedIndex = source.indexOf('node scripts/assert-deploy-health.mjs --drained');
+  const lockIndex = source.indexOf('node scripts/hold-deploy-job-lock.mjs');
+  const lockReleaseIndex = source.indexOf('touch \\"\\$DRAIN_RELEASE_FILE\\"', lockIndex);
+  const lockWaitIndex = source.indexOf('wait \\"\\$DRAIN_PID\\"', lockReleaseIndex);
+  const reloadIndex = source.indexOf('pm2 startOrReload ecosystem.config.cjs --update-env');
+  const healthIndex = source.indexOf('node scripts/assert-deploy-health.mjs --release-id', reloadIndex);
   const cleanupIndex = source.lastIndexOf('\n    remove_owned_deploy_marker\n');
 
-  assert.ok(networkIndex >= 0, 'bootstrap drain must block NEW backend connections');
-  assert.ok(networkIndex < markerIndex, 'network gate must protect the old marker-unaware process first');
   assert.ok(markerIndex >= 0, 'deploy must create the application-visible drain marker');
-  assert.ok(bootstrapLockIndex > markerIndex, 'bootstrap DB lock must follow the marker');
-  assert.ok(stoppedAckIndex > bootstrapLockIndex, 'deploy must wait for the lock holder stopped acknowledgement');
-  assert.match(lockHolderSource, /stopOldProcessWithLockVerification/);
-  assert.match(lockHolderSource, /SELECT 1 AS lock_session_alive/);
-  assert.ok(restartIndex > stoppedAckIndex, 'new process starts only after the lock holder acknowledges stop');
-  assert.ok(networkReleaseIndex > restartIndex, 'network gate remains until marker-aware code starts');
-  assert.ok(networkReleaseIndex < healthIndex, 'network gate opens only to run health while marker remains');
-  assert.ok(healthIndex > restartIndex, 'drain remains active until health is checked');
+  assert.ok(drainedIndex > markerIndex, 'write drain proof must follow the marker');
+  assert.ok(lockIndex > drainedIndex, 'the final DB barrier must follow in-flight write drain');
+  assert.ok(lockReleaseIndex > lockIndex && lockWaitIndex > lockReleaseIndex);
+  assert.ok(reloadIndex > lockWaitIndex, 'the table lock must be released before bootstrap');
+  assert.ok(healthIndex > reloadIndex, 'the expected release must be checked after reload');
   assert.ok(cleanupIndex > healthIndex, 'drain marker is removed only after health passes');
+  assert.match(source, /MEIAO_RELEASE_ID/);
+  assert.match(source, /\^\[A-Za-z0-9\._-\]\+\$/);
   assert.match(source, /DRAIN_CLEANUP_ARMED=1/);
   assert.match(source, /MEIAO_DEPLOY_DRAIN_FILE/);
+  assert.doesNotMatch(source, /node scripts\/backend-network-drain\.mjs enter/);
+  assert.doesNotMatch(source, /pm2 stop meiao-internal/);
+  assert.doesNotMatch(source, /pm2 restart meiao-internal/);
+  assert.doesNotMatch(source, /node scripts\/hold-deploy-drain\.mjs/);
 });
 
 test('deploy_tencent proves managed image COS readiness before entering the drain', () => {
@@ -213,51 +213,42 @@ test('deploy_tencent proves managed image COS readiness before entering the drai
   const finalReadinessIndex = source.indexOf(
     "MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs",
   );
-  const networkDrainIndex = source.indexOf('node scripts/backend-network-drain.mjs enter');
+  const markerIndex = source.indexOf('\n    write_owned_deploy_marker\n');
 
   assert.ok(buildIndex >= 0, 'remote build must exist');
   assert.ok(probeIndex > buildIndex, 'COS probe must run after the new source is installed and built');
   assert.ok(finalReadinessIndex > probeIndex, 'job readiness must be rechecked after the COS probe');
-  assert.ok(networkDrainIndex > finalReadinessIndex, 'COS probe must pass before any network drain');
+  assert.ok(markerIndex > finalReadinessIndex, 'COS probe and readiness must pass before the marker');
 });
 
-test('deploy_tencent keeps the drain on failed health until the new process is verified stopped', () => {
+test('deploy_tencent cleanup never stops the last process and restores static assets on failed release health', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const ownershipSource = readFileSync(new URL('./deploy-ownership.mjs', import.meta.url), 'utf8');
-  const cleanup = source.match(/cleanup_deploy_drain\(\) \{[\s\S]*?\n    \}/)?.[0] || '';
+  const cleanup = source.match(/cleanup_deploy_reload\(\) \{[\s\S]*?\n    \}/)?.[0] || '';
 
-  assert.match(cleanup, /NEW_PROCESS_STARTED/);
   assert.match(cleanup, /HEALTH_READY/);
-  assert.match(cleanup, /enable_network_drain \|\| true/);
-  assert.match(cleanup, /pm2 stop meiao-internal/);
-  assert.match(cleanup, /pm2 pid meiao-internal/);
-  assert.doesNotMatch(cleanup, /pm2 pid meiao-internal[^\n]*\|\| true/);
-  assert.match(cleanup, /if PM2_PID_OUTPUT=\\\$\(pm2 pid meiao-internal/);
-  assert.match(cleanup, /pm2-stopped/);
-  assert.match(cleanup, /OLD_PROCESS_STOPPED/);
+  assert.match(cleanup, /assert-deploy-health\.mjs --release-id/);
+  assert.match(cleanup, /dist-prev/);
+  assert.match(cleanup, /assert-deploy-health\.mjs/);
   assert.match(cleanup, /retain_deploy_drain/);
+  assert.match(cleanup, /remove_owned_deploy_marker/);
+  assert.doesNotMatch(cleanup, /pm2 (?:stop|restart)/);
+  assert.doesNotMatch(cleanup, /backend-network-drain/);
   assert.match(source, /retain-manual/);
   assert.match(ownershipSource, /writeFileSync\(markerFile, 'manual\\n', \{ flag: 'wx'/);
-  assert.match(cleanup, /服务已停止/);
-  assert.match(cleanup, /node scripts\/deploy-lifecycle\.mjs/);
-  assert.match(cleanup, /RELEASE_DRAIN/);
-  assert.match(cleanup, /if \[ \\"\\\$RELEASE_DRAIN\\" = '1' \]/);
   assert.match(cleanup, /保留维护门禁/);
 });
 
-test('deploy_tencent retains gates when old-process stop was attempted but stop or pid proof failed', () => {
+test('deploy_tencent always joins the job lock holder before starting PM2', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
-  const cleanup = source.match(/cleanup_deploy_drain\(\) \{[\s\S]*?\n    \}/)?.[0] || '';
-  const helperStart = source.indexOf('node scripts/hold-deploy-drain.mjs');
-  const stopAttemptedArgIndex = source.indexOf('--stop-attempted-file', helperStart);
-  const stoppedArgIndex = source.indexOf('--stopped-file', helperStart);
+  const helperStart = source.indexOf('node scripts/hold-deploy-job-lock.mjs');
+  const releaseIndex = source.indexOf('touch \\"\\$DRAIN_RELEASE_FILE\\"', helperStart);
+  const waitIndex = source.indexOf('wait \\"\\$DRAIN_PID\\"', releaseIndex);
+  const reloadIndex = source.indexOf('pm2 startOrReload ecosystem.config.cjs --update-env');
 
-  assert.match(source, /DRAIN_STOP_ATTEMPTED_FILE/);
-  assert.ok(stopAttemptedArgIndex > helperStart && stopAttemptedArgIndex < stoppedArgIndex);
-  assert.match(cleanup, /if \[ -f \\"\\\$DRAIN_STOP_ATTEMPTED_FILE\\" \]; then OLD_PROCESS_STOP_ATTEMPTED=1; fi/);
-  assert.match(cleanup, /\\"\\\$OLD_PROCESS_STOPPED\\" \\"\\\$OLD_PROCESS_STOP_ATTEMPTED\\"/);
-  assert.match(cleanup, /停机尝试已登记但状态未核实/);
-  assert.doesNotMatch(cleanup, /OLD_PROCESS_STOP_ATTEMPTED=1; OLD_PROCESS_STOPPED=1/);
+  assert.ok(helperStart >= 0 && releaseIndex > helperStart);
+  assert.ok(waitIndex > releaseIndex && reloadIndex > waitIndex);
+  assert.doesNotMatch(source, /DRAIN_STOP_ATTEMPTED_FILE|DRAIN_STOPPED_FILE/);
 });
 
 test('deploy_tencent writes and removes active drain markers only for its owner token', () => {
@@ -277,7 +268,7 @@ test('deploy_tencent releases a mutation-started mutex only after remote cleanup
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const mutationIndex = source.indexOf('REMOTE_MUTATION_STARTED=1');
   const remoteTrapIndex = source.indexOf('trap finish_remote_mutation EXIT');
-  const cleanupIndex = source.indexOf('cleanup_deploy_drain', source.indexOf('finish_remote_mutation()'));
+  const cleanupIndex = source.indexOf('cleanup_deploy_reload', source.indexOf('finish_remote_mutation()'));
   const childCheckIndex = source.indexOf('kill -0 \\"\\$DRAIN_CHILD_PID\\"', cleanupIndex);
   const completionIndex = source.indexOf('complete-mutation', childCheckIndex);
 
@@ -289,35 +280,28 @@ test('deploy_tencent releases a mutation-started mutex only after remote cleanup
   assert.match(source, /DRAIN_CHILD_PID=\\\$DRAIN_PID/);
 });
 
-test('retain failure makes real remote cleanup fail and prevents completion proof', () => {
+test('retain failure makes remote reload cleanup fail and prevents completion proof', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const tempDir = mkdtempSync(join(tmpdir(), 'meiao-deploy-cleanup-'));
   const completionLog = join(tempDir, 'completion.log');
   const finishFunction = extractRemoteShellFunction(source, 'finish_remote_mutation');
-  const cleanupFunction = extractRemoteShellFunction(source, 'cleanup_deploy_drain');
+  const cleanupFunction = extractRemoteShellFunction(source, 'cleanup_deploy_reload');
   assert.doesNotMatch(cleanupFunction, /retain_deploy_drain\s*\|\|\s*true/);
   const shell = `
 ${finishFunction}
 ${cleanupFunction}
 retain_deploy_drain() { return 7; }
-node() {
-  case "$*" in
-    *"deploy-lifecycle.mjs cleanup"*) printf 'retain\\n'; return 0 ;;
-    *"complete-mutation"*) printf 'called\\n' > "$COMPLETION_LOG"; return 0 ;;
-    *) return 0 ;;
-  esac
-}
+node() { case "$*" in *"complete-mutation"*) printf 'called\\n' > "$COMPLETION_LOG"; return 0 ;; *) return 0 ;; esac; }
+curl() { return 1; }
 CLEANUP_RUNNING=0
 DRAIN_CLEANUP_ARMED=1
 DRAIN_CHILD_PID=''
 DRAIN_PID=''
-DRAIN_STOP_ATTEMPTED_FILE="$TEMP_DIR/stop-attempted"
-DRAIN_STOPPED_FILE="$TEMP_DIR/stopped"
-OLD_PROCESS_STOPPED=0
-OLD_PROCESS_STOP_ATTEMPTED=0
-NEW_PROCESS_STARTED=0
+DRAIN_READY_FILE="$TEMP_DIR/ready"
+DRAIN_RELEASE_FILE="$TEMP_DIR/release"
+DRAIN_MARKER_CREATED=1
+DIST_SWITCHED=0
 HEALTH_READY=0
-NEW_PROCESS_STOPPED=0
 true
 finish_remote_mutation
 `;

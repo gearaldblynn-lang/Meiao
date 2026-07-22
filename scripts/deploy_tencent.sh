@@ -13,12 +13,22 @@ REMOTE_FFMPEG_BIN="${MEIAO_REMOTE_FFMPEG_BIN:-/opt/meiao/bin/ffmpeg}"
 REMOTE_TMP_DIR="/tmp/meiao-deploy-$$"
 REMOTE_DEPLOY_MUTEX_DIR="/tmp/meiao-deploy-mutex"
 DEPLOY_OWNER_TOKEN="meiao-deploy-$(date +%s)-$$-${RANDOM}"
+DEPLOY_RELEASE_ID="${MEIAO_RELEASE_ID:-meiao-$(date +%Y%m%d%H%M%S)-$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD)}"
 REMOTE_DEPLOY_MUTEX_HELD=0
 REMOTE_MUTATION_STARTED=0
 DEPLOY_ALLOW_ACTIVE_JOBS="${MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS:-0}"
+DEPLOY_WRITE_DRAIN_ATTEMPTS="${MEIAO_DEPLOY_WRITE_DRAIN_ATTEMPTS:-120}"
+DEPLOY_HEALTH_ATTEMPTS="${MEIAO_DEPLOY_HEALTH_ATTEMPTS:-60}"
 
 if [[ "$DEPLOY_ALLOW_ACTIVE_JOBS" != "1" ]]; then
   DEPLOY_ALLOW_ACTIVE_JOBS="0"
+fi
+
+if [[ ! "$DEPLOY_WRITE_DRAIN_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then DEPLOY_WRITE_DRAIN_ATTEMPTS=120; fi
+if [[ ! "$DEPLOY_HEALTH_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then DEPLOY_HEALTH_ATTEMPTS=60; fi
+if [[ ! "$DEPLOY_RELEASE_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "MEIAO_RELEASE_ID 只允许字母、数字、点、下划线和连字符。"
+  exit 1
 fi
 
 if [[ "${MEIAO_CODE_REVIEW_CONFIRMED:-}" != "1" ]]; then
@@ -42,7 +52,7 @@ acquire_remote_deploy_mutex() {
     < "$ROOT_DIR/scripts/deploy-ownership.mjs"
   REMOTE_DEPLOY_MUTEX_HELD=1
   ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "
-    set -e
+    set -euo pipefail
     HELPER_TEMP='$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs.tmp'
     trap 'rm -f "\$HELPER_TEMP"' EXIT
     umask 077
@@ -128,7 +138,7 @@ tar \
   --exclude='*/._*' \
   -czf - \
   -C "$ROOT_DIR" . | ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "
-    set -e
+    set -eo pipefail
     DRAIN_PID=''
     DRAIN_CHILD_PID=''
     DRAIN_CLEANUP_ARMED=0
@@ -137,17 +147,17 @@ tar \
       REMOTE_CLEANUP_FAILED=0
       trap - EXIT INT TERM
       set +e
-      if [ \"\$DRAIN_CLEANUP_ARMED\" = '1' ] && type cleanup_deploy_drain >/dev/null 2>&1; then
-        if ! cleanup_deploy_drain; then
+      if [ \"\$DRAIN_CLEANUP_ARMED\" = '1' ] && type cleanup_deploy_reload >/dev/null 2>&1; then
+        if ! cleanup_deploy_reload; then
           REMOTE_CLEANUP_FAILED=1
           REMOTE_EXIT_STATUS=2
         fi
       fi
       if [ -n \"\$DRAIN_CHILD_PID\" ] && kill -0 \"\$DRAIN_CHILD_PID\" >/dev/null 2>&1; then
-        echo '部署 drain 子进程仍在运行，拒绝写入远端完成证明。' >&2
+        echo '部署任务锁子进程仍在运行，拒绝写入远端完成证明。' >&2
         REMOTE_EXIT_STATUS=2
       elif [ \"\$REMOTE_CLEANUP_FAILED\" = '1' ]; then
-        echo '部署 drain 清理失败，拒绝写入远端完成证明。' >&2
+        echo '部署 reload 清理失败，拒绝写入远端完成证明。' >&2
       else
         node '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs' complete-mutation \
           --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN'
@@ -231,41 +241,17 @@ tar \
     npm run probe:managed-image-cos
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs
 
-    # 首发时旧进程不认识 marker。先用 iptables 拒绝新的 Nginx/直连 3100 连接，
-    # 等已有连接连续为零，再由 MySQL 持锁助手复查 running=0 并停止旧 PM2。
-    # 新进程启动后才开放网络做 health，此时 marker 仍会拒绝所有写请求并暂停 worker。
+    # marker 先拒绝新写请求并暂停 worker。等旧进程报告在途写请求为 0 后，
+    # MySQL 表锁只做最终 running=0 复查，必须在 PM2 reload 前释放，避免新进程 bootstrap 死锁。
     DRAIN_MARKER_FILE=\"\${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}\"
     DRAIN_READY_FILE=\"/tmp/meiao-deploy-drain-ready-\$\$\"
-    DRAIN_STOP_ATTEMPTED_FILE=\"/tmp/meiao-deploy-drain-stop-attempted-\$\$\"
-    DRAIN_STOPPED_FILE=\"/tmp/meiao-deploy-drain-stopped-\$\$\"
     DRAIN_RELEASE_FILE=\"/tmp/meiao-deploy-drain-release-\$\$\"
-    DRAIN_NETWORK_STATE_FILE=\"/tmp/meiao-deploy-network-drain-\$\$.json\"
-    DRAIN_NETWORK_COMMENT=\"meiao-deploy-\$\$\"
     DRAIN_PID=''
-    NETWORK_DRAIN_ACTIVE=0
-    OLD_PROCESS_STOP_ATTEMPTED=0
-    OLD_PROCESS_STOPPED=0
-    NEW_PROCESS_STARTED=0
-    NEW_PROCESS_STOPPED=0
+    DRAIN_MARKER_CREATED=0
+    DIST_SWITCHED=0
+    HAD_PREVIOUS_DIST=0
     HEALTH_READY=0
     CLEANUP_RUNNING=0
-
-    enable_network_drain() {
-      if [ \"\$NETWORK_DRAIN_ACTIVE\" = '1' ]; then return 0; fi
-      node scripts/backend-network-drain.mjs enter \
-        --state-file \"\$DRAIN_NETWORK_STATE_FILE\" \
-        --comment \"\$DRAIN_NETWORK_COMMENT\"
-      NETWORK_DRAIN_ACTIVE=1
-    }
-
-    disable_network_drain() {
-      if [ ! -f \"\$DRAIN_NETWORK_STATE_FILE\" ]; then
-        NETWORK_DRAIN_ACTIVE=0
-        return 0
-      fi
-      node scripts/backend-network-drain.mjs exit --state-file \"\$DRAIN_NETWORK_STATE_FILE\"
-      NETWORK_DRAIN_ACTIVE=0
-    }
 
     write_owned_deploy_marker() {
       node '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs' create-marker \
@@ -284,72 +270,67 @@ tar \
         --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN' \
         --marker-file \"\$DRAIN_MARKER_FILE\" || return 1
       echo '部署门禁已进入 manual 状态；不得直接删除 marker。'
-      echo \"网络规则状态：\$DRAIN_NETWORK_STATE_FILE\"
-      echo '安全恢复：先确认/启动 PM2，保留 marker 时精确清理网络规则，通过 health+worker 检查后才删除 marker。'
+      echo '安全恢复：先确认 PM2 至少一个健康实例，通过 health+worker 检查后才删除 marker。'
     }
 
-    cleanup_deploy_drain() {
+    cleanup_deploy_reload() {
       if [ \"\$CLEANUP_RUNNING\" = '1' ]; then return; fi
       CLEANUP_RUNNING=1
       set +e
+      CLEANUP_FAILED=0
       if [ -n \"\$DRAIN_CHILD_PID\" ]; then
         if kill -0 \"\$DRAIN_CHILD_PID\" >/dev/null 2>&1; then
           touch \"\$DRAIN_RELEASE_FILE\" || true
         fi
         wait \"\$DRAIN_CHILD_PID\" || true
         if kill -0 \"\$DRAIN_CHILD_PID\" >/dev/null 2>&1; then
-          echo '部署 drain 子进程未退出，保留所有门禁和 mutex。' >&2
+          echo '部署任务锁子进程未退出，保留所有门禁和 mutex。' >&2
           return 2
         fi
       fi
       DRAIN_PID=''
       DRAIN_CHILD_PID=''
-      if [ -f \"\$DRAIN_STOP_ATTEMPTED_FILE\" ]; then OLD_PROCESS_STOP_ATTEMPTED=1; fi
-      if [ -f \"\$DRAIN_STOPPED_FILE\" ]; then OLD_PROCESS_STOPPED=1; fi
+      rm -f \"\$DRAIN_READY_FILE\" \"\$DRAIN_RELEASE_FILE\"
 
-      if [ \"\$NEW_PROCESS_STARTED\" = '1' ] && [ \"\$HEALTH_READY\" != '1' ]; then
-        enable_network_drain || true
-        pm2 stop meiao-internal || true
-        if PM2_PID_OUTPUT=\$(pm2 pid meiao-internal 2>/dev/null); then
-          if node scripts/deploy-lifecycle.mjs pm2-stopped \"\$PM2_PID_OUTPUT\"; then
-            NEW_PROCESS_STOPPED=1
-          fi
-        else
-          echo '无法读取 PM2 停机状态，不释放部署门禁。'
+      if [ \"\$HEALTH_READY\" != '1' ]; then
+        if curl -fsS http://127.0.0.1:3100/api/health | node scripts/assert-deploy-health.mjs --release-id '$DEPLOY_RELEASE_ID'; then
+          HEALTH_READY=1
         fi
       fi
+      if [ \"\$HEALTH_READY\" != '1' ] && [ \"\$DIST_SWITCHED\" = '1' ] && [ \"\$HAD_PREVIOUS_DIST\" = '1' ]; then
+        rm -rf dist-failed
+        if [ -d dist ]; then mv dist dist-failed || CLEANUP_FAILED=1; fi
+        if [ -d dist-prev ]; then
+          mv dist-prev dist || CLEANUP_FAILED=1
+        else
+          echo '静态资源回滚失败：dist-prev 不存在。' >&2
+          CLEANUP_FAILED=1
+        fi
+        rm -rf dist-failed
+        DIST_SWITCHED=0
+      fi
 
-      RELEASE_DRAIN=0
-      CLEANUP_DECISION=\$(node scripts/deploy-lifecycle.mjs cleanup \
-        \"\$OLD_PROCESS_STOPPED\" \"\$OLD_PROCESS_STOP_ATTEMPTED\" \
-        \"\$NEW_PROCESS_STARTED\" \"\$HEALTH_READY\" \"\$NEW_PROCESS_STOPPED\" \
-        2>/dev/null || echo retain)
-      if [ \"\$CLEANUP_DECISION\" = 'release' ]; then RELEASE_DRAIN=1; fi
-      if [ \"\$RELEASE_DRAIN\" = '1' ]; then
-        if disable_network_drain && remove_owned_deploy_marker; then
-          rm -f \"\$DRAIN_READY_FILE\" \"\$DRAIN_STOP_ATTEMPTED_FILE\" \"\$DRAIN_STOPPED_FILE\" \
-            \"\$DRAIN_RELEASE_FILE\" \
-            \"\$DRAIN_NETWORK_STATE_FILE\"
+      SERVICE_HEALTHY=0
+      if curl -fsS http://127.0.0.1:3100/api/health | node scripts/assert-deploy-health.mjs; then
+        SERVICE_HEALTHY=1
+      fi
+      if [ \"\$DRAIN_MARKER_CREATED\" = '1' ]; then
+        if [ \"\$HEALTH_READY\" = '1' ] || [ \"\$SERVICE_HEALTHY\" = '1' ]; then
+          if remove_owned_deploy_marker; then
+            DRAIN_MARKER_CREATED=0
+          else
+            CLEANUP_FAILED=1
+          fi
         else
           if ! retain_deploy_drain; then
             echo '维护门禁持久化失败，拒绝确认远端清理完成。' >&2
             return 2
           fi
-          echo '网络门禁清理失败，保留维护门禁等待人工处理。'
-        fi
-      else
-        if ! retain_deploy_drain; then
-          echo '维护门禁持久化失败，拒绝确认远端清理完成。' >&2
-          return 2
-        fi
-        if [ \"\$OLD_PROCESS_STOPPED\" = '1' ] && [ \"\$NEW_PROCESS_STARTED\" != '1' ]; then
-          echo '严重：旧服务已停止且新服务未启动，当前服务已停止；必须按恢复流程人工处理。'
-        elif [ \"\$OLD_PROCESS_STOP_ATTEMPTED\" = '1' ] && [ \"\$NEW_PROCESS_STARTED\" != '1' ]; then
-          echo '严重：旧服务停机尝试已登记但状态未核实，且新服务未启动；服务可能已停止，必须人工恢复。'
-        else
-          echo '新进程未确认停止，保留维护门禁和 marker 等待人工处理。'
+          echo '当前没有已确认健康的 PM2 实例，保留维护门禁等待人工处理。'
         fi
       fi
+      rm -rf '$REMOTE_TMP_DIR'
+      if [ \"\$CLEANUP_FAILED\" = '1' ]; then return 2; fi
     }
     if [ -e \"\$DRAIN_MARKER_FILE\" ]; then
       echo '检测到残留部署 marker（包括空文件），禁止开始新发布。'
@@ -357,61 +338,63 @@ tar \
     fi
     DRAIN_CLEANUP_ARMED=1
 
-    enable_network_drain
     write_owned_deploy_marker
+    DRAIN_MARKER_CREATED=1
+    WRITES_DRAINED=0
+    for attempt in \$(seq 1 '$DEPLOY_WRITE_DRAIN_ATTEMPTS'); do
+      if curl -fsS http://127.0.0.1:3100/api/health | node scripts/assert-deploy-health.mjs --drained; then
+        WRITES_DRAINED=1
+        break
+      fi
+      sleep 0.5
+    done
+    if [ \"\$WRITES_DRAINED\" != '1' ]; then
+      echo '在途写请求未在限时内清零，未执行 PM2 reload。'
+      exit 2
+    fi
+
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' \
-      node scripts/hold-deploy-drain.mjs \
+      node scripts/hold-deploy-job-lock.mjs \
         --ready-file \"\$DRAIN_READY_FILE\" \
-        --stop-attempted-file \"\$DRAIN_STOP_ATTEMPTED_FILE\" \
-        --stopped-file \"\$DRAIN_STOPPED_FILE\" \
         --release-file \"\$DRAIN_RELEASE_FILE\" &
     DRAIN_PID=\$!
     DRAIN_CHILD_PID=\$DRAIN_PID
     for attempt in \$(seq 1 300); do
-      if [ -f \"\$DRAIN_STOPPED_FILE\" ]; then break; fi
+      if [ -f \"\$DRAIN_READY_FILE\" ]; then break; fi
       if ! kill -0 \"\$DRAIN_PID\" >/dev/null 2>&1; then
         wait \"\$DRAIN_PID\"
         exit 2
       fi
       sleep 0.2
     done
-    if [ ! -f \"\$DRAIN_READY_FILE\" ] || [ ! -f \"\$DRAIN_STOPPED_FILE\" ]; then
-      echo '部署 drain 停机握手超时，已停止发布。'
+    if [ ! -f \"\$DRAIN_READY_FILE\" ]; then
+      echo '部署任务锁握手超时，已停止发布。'
       exit 2
     fi
     cat \"\$DRAIN_READY_FILE\"
-    PM2_APP_EXISTS=\$(cat \"\$DRAIN_STOPPED_FILE\")
-    OLD_PROCESS_STOP_ATTEMPTED=1
-    OLD_PROCESS_STOPPED=1
 
-    assert_remote_deploy_mutex_owner
-    # 原子切换:两次 rename,静态服务零断档
-    rm -rf dist-prev
-    if [ -d dist ]; then mv dist dist-prev; fi
-    mv dist-next dist
-    rm -rf dist-prev '$REMOTE_TMP_DIR'
-
-    # stopped ack 只会在同一 MySQL 持锁会话验证 PM2 已停后产生。
+    # marker 已拦住新写请求，且在途写请求已清零；表锁完成最终复查后必须先释放。
     touch \"\$DRAIN_RELEASE_FILE\"
     wait \"\$DRAIN_PID\"
     DRAIN_PID=''
     DRAIN_CHILD_PID=''
-    rm -f \"\$DRAIN_READY_FILE\" \"\$DRAIN_STOP_ATTEMPTED_FILE\" \
-      \"\$DRAIN_STOPPED_FILE\" \"\$DRAIN_RELEASE_FILE\"
+    rm -f \"\$DRAIN_READY_FILE\" \"\$DRAIN_RELEASE_FILE\"
 
-    # start/restart 即使返回失败也可能已经拉起子进程，先进入必须验证停机的清理状态。
-    NEW_PROCESS_STARTED=1
-    if [ \"\$PM2_APP_EXISTS\" = '1' ]; then
-      pm2 restart meiao-internal --update-env
-    else
-      pm2 start ecosystem.config.cjs
+    assert_remote_deploy_mutex_owner
+    # 原子切换:两次 rename,静态服务零断档
+    rm -rf dist-prev
+    if [ -d dist ]; then
+      mv dist dist-prev
+      HAD_PREVIOUS_DIST=1
     fi
+    mv dist-next dist
+    DIST_SWITCHED=1
 
-    # 新代码已识别 marker，可恢复 GET/health 流量；写请求与 worker 仍保持 drain。
-    disable_network_drain
+    export MEIAO_RELEASE_ID='$DEPLOY_RELEASE_ID'
+    pm2 startOrReload ecosystem.config.cjs --update-env
 
-    for attempt in \$(seq 1 30); do
-      if curl -fsS http://127.0.0.1:3100/api/health | node scripts/assert-deploy-health.mjs; then
+    for attempt in \$(seq 1 '$DEPLOY_HEALTH_ATTEMPTS'); do
+      if curl -fsS http://127.0.0.1:3100/api/health | node scripts/assert-deploy-health.mjs --release-id '$DEPLOY_RELEASE_ID'; then
         HEALTH_READY=1
         break
       fi
@@ -423,8 +406,10 @@ tar \
     fi
 
     pm2 save
-    rm -f \"\$DRAIN_NETWORK_STATE_FILE\"
     remove_owned_deploy_marker
+    DRAIN_MARKER_CREATED=0
+    rm -rf dist-prev '$REMOTE_TMP_DIR'
+    DIST_SWITCHED=0
     DRAIN_CLEANUP_ARMED=0
   "
 

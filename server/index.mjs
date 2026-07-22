@@ -107,7 +107,11 @@ import {
   requestLocalRetryJob,
   resolveLocalSubmissionUnknownJob,
 } from './localJobStore.mjs';
-import { assertDeployRequestAllowed } from './deployDrain.mjs';
+import {
+  assertDeployRequestAllowed,
+  beginDeployRequestTracking,
+  getDeployRequestSnapshot,
+} from './deployDrain.mjs';
 import {
   createGracefulShutdown,
   getProcessReleaseIdentity,
@@ -17411,6 +17415,10 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  const finishDeployRequestTracking = beginDeployRequestTracking({
+    pathname: url.pathname,
+    method: req.method,
+  });
   try {
     assertDeployRequestAllowed({ pathname: url.pathname, method: req.method });
 
@@ -17428,6 +17436,7 @@ const server = createServer(async (req, res) => {
       json(res, 200, {
         ok: true,
         release: processRelease,
+        deployment: getDeployRequestSnapshot(),
         mode: shouldUseMysql ? 'internal-mysql-v1' : 'internal-v1',
         taskEngine,
         worker,
@@ -17539,6 +17548,8 @@ const server = createServer(async (req, res) => {
       return;
     }
     json(res, 500, { message: '服务端处理失败。', detail: error.message });
+  } finally {
+    finishDeployRequestTracking();
   }
 });
 

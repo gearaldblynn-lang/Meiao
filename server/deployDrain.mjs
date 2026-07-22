@@ -2,6 +2,7 @@ import { readFileSync, statSync } from 'node:fs';
 
 const DEFAULT_DRAIN_FILE = '/tmp/meiao-deploy-drain';
 const DEFAULT_DRAIN_MAX_AGE_MS = 10 * 60 * 1000;
+let activeWriteRequests = 0;
 
 const resolveDrainMaxAgeMs = (env = process.env) => {
   const parsed = Number(env.MEIAO_DEPLOY_DRAIN_MAX_AGE_MS);
@@ -55,3 +56,19 @@ export const assertDeployRequestAllowed = ({ pathname, method, drainOptions } = 
   if (!shouldGuardDeployRequest({ pathname, method })) return;
   assertJobSubmissionAllowed(drainOptions);
 };
+
+export const beginDeployRequestTracking = ({ pathname, method } = {}) => {
+  if (!shouldGuardDeployRequest({ pathname, method })) return () => {};
+  activeWriteRequests += 1;
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    activeWriteRequests = Math.max(0, activeWriteRequests - 1);
+  };
+};
+
+export const getDeployRequestSnapshot = (drainOptions) => ({
+  active: isDeployDrainActive(drainOptions),
+  activeWriteRequests,
+});

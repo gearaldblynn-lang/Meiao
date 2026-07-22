@@ -20,3 +20,19 @@ test('release identity remains optional for non-deploy health consumers', () => 
   const { release: _release, ...legacyHealth } = healthy;
   assert.equal(isDeployHealthReady(legacyHealth), true);
 });
+
+test('drained-write check requires an active marker and zero in-flight writes', () => {
+  const drainedHealth = {
+    ...healthy,
+    deployment: { active: true, activeWriteRequests: 0 },
+  };
+  assert.equal(isDeployHealthReady(drainedHealth, { requireDrainedWrites: true }), true);
+  assert.equal(isDeployHealthReady({
+    ...drainedHealth,
+    deployment: { active: true, activeWriteRequests: 1 },
+  }, { requireDrainedWrites: true }), false);
+  assert.equal(isDeployHealthReady({
+    ...drainedHealth,
+    deployment: { active: false, activeWriteRequests: 0 },
+  }, { requireDrainedWrites: true }), false);
+});
