@@ -70,6 +70,88 @@ test('scanner rejects noncanonical CLI arguments before reading the repository',
   }
 });
 
+test('scanner refuses nested repository roots for explicit and default root scans', async (t) => {
+  const root = await repository({
+    'outside.txt': 'sk-' + 'R'.repeat(40),
+    'nested/ordinary.txt': 'ordinary text',
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const nested = path.join(root, 'nested');
+
+  for (const result of [
+    scan(nested),
+    spawnSync(process.execPath, [scanner], { cwd: nested, encoding: 'utf8' }),
+  ]) {
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+  }
+});
+
+test('scanner covers static JS TS JSON YAML and dotenv values but skips dynamic member expressions', async (t) => {
+  const values = [
+    'J8k9L0m1N2p3Q4r5S6t7U8v9W0xY1zA2',
+    'K9l0M1n2P3q4R5s6T7u8V9w0X1y2Z3a4',
+    'L0m1N2p3Q4r5S6t7U8v9W0x1Y2z3A4b5',
+    'M1n2P3q4R5s6T7u8V9w0X1y2Z3a4B5c6',
+    'N2p3Q4r5S6t7U8v9W0x1Y2z3A4b5C6d7',
+  ];
+  const root = await repository({
+    'config.mjs': `const x = {\n  apiKey: ${JSON.stringify(values[0])},\n  dynamicToken: process.env.RUNTIME_TOKEN,\n};`,
+    'config.ts': `token = ${JSON.stringify(values[1])};`,
+    'config.json': `{\n  "password": ${JSON.stringify(values[2])},\n  "ordinary": "text"\n}`,
+    'config.yaml': `secret: ${values[3]}`,
+    '.env': `SOME_SECRET=${values[4]}`,
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const result = scan(root);
+  assert.equal(result.status, 1);
+  assert.equal(report(result).findings.length, values.length);
+});
+
+test('scanner never emits a matched value embedded in its tracked filename', async (t) => {
+  const value = 'sk-' + 'P'.repeat(40);
+  const root = await repository({ [`prefix-${value}-suffix.txt`]: value });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const result = scan(root);
+  assert.equal(result.status, 1);
+  assert.equal((result.stdout + result.stderr).includes(value), false);
+  assert.deepEqual(report(result).findings, [{
+    file: 'prefix-[redacted]-suffix.txt',
+    line: 1,
+    rule: 'provider_token',
+    length: value.length,
+  }]);
+});
+
+test('snapshot comparison includes ctime and symlink reads verify the link twice', async () => {
+  const { readTrackedBytes, sameSnapshot } = await import('./check-tracked-secrets.mjs');
+  const before = {
+    dev: 1n,
+    ino: 2n,
+    size: 6n,
+    mtimeNs: 3n,
+    ctimeNs: 4n,
+    isFile: () => false,
+    isSymbolicLink: () => true,
+  };
+  const after = { ...before, ctimeNs: 5n };
+  assert.equal(sameSnapshot(before, after), false);
+
+  const snapshots = [before, after];
+  let lstatCalls = 0;
+  await assert.rejects(readTrackedBytes('/tracked-link', {
+    lstat: async () => {
+      lstatCalls += 1;
+      return snapshots.shift();
+    },
+    open: async () => assert.fail('symlink must not be opened'),
+    readlink: async () => Buffer.from('target'),
+  }));
+  assert.equal(lstatCalls, 2);
+});
+
 test('scanner accepts only the exact synthetic fixtures and placeholders', async (t) => {
   const root = await repository({
     'fixtures/allowed-secrets.txt': [
@@ -89,12 +171,42 @@ test('scanner skips shell-expanded assignments and unquoted JavaScript identifie
   const root = await repository({
     'deploy.sh': 'DEPLOY_OWNER_TOKEN="$(date +%s)-$$-${RANDOM}-$(hostname)"',
     'config.mjs': 'apiKeyMasked: openaiCompatibleRuntimeCredentialReference',
+    'example.md': 'maxTokens: runtimeConfig.maxOutputTokens,',
   });
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const result = scan(root);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(report(result), { findings: [] });
+});
+
+test('scanner allows additional synthetic fixtures only at their exact paths', async (t) => {
+  const managedAssetFixture = 'new-managed-asset-secret-32-bytes';
+  const strippedProviderFixture = 'sk-should-never-leak';
+  const root = await repository({
+    'server/managedAssetAccessKey.test.mjs': `MEIAO_MANAGED_ASSET_ACCESS_SECRET: '${managedAssetFixture}',`,
+    'server/smartFactoryConfigStore.test.mjs': `apiKey: '${strippedProviderFixture}',`,
+    'fixtures/managed-asset-copy.txt': `SOME_SECRET=${managedAssetFixture}`,
+    'fixtures/provider-copy.txt': `API_KEY=${strippedProviderFixture}`,
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const result = scan(root);
+  assert.equal(result.status, 1);
+  assert.deepEqual(report(result).findings, [
+    {
+      file: 'fixtures/managed-asset-copy.txt',
+      line: 1,
+      rule: 'high_entropy_assignment',
+      length: managedAssetFixture.length,
+    },
+    {
+      file: 'fixtures/provider-copy.txt',
+      line: 1,
+      rule: 'high_entropy_assignment',
+      length: strippedProviderFixture.length,
+    },
+  ]);
 });
 
 test('scanner allows the model-provider synthetic fixture only at its exact path', async (t) => {

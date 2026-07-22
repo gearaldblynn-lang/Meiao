@@ -2,8 +2,11 @@ import { constants } from 'node:fs';
 import { lstat, open, readlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const modelProviderSyntheticFixture = ['sk', 'raw', 'should', 'never', 'return'].join('-');
+const managedAssetSyntheticFixture = ['new', 'managed', 'asset', 'secret', '32', 'bytes'].join('-');
+const strippedProviderSyntheticFixture = ['sk', 'should', 'never', 'leak'].join('-');
 
 const exactSyntheticAllowlist = new Map([
   ['fixtures/allowed-secrets.txt', new Set([
@@ -13,6 +16,12 @@ const exactSyntheticAllowlist = new Map([
   ])],
   ['server/modelProviderRegistry.test.mjs', new Set([
     modelProviderSyntheticFixture,
+  ])],
+  ['server/managedAssetAccessKey.test.mjs', new Set([
+    managedAssetSyntheticFixture,
+  ])],
+  ['server/smartFactoryConfigStore.test.mjs', new Set([
+    strippedProviderSyntheticFixture,
   ])],
 ]);
 
@@ -27,7 +36,11 @@ const rules = [
   ['credential_url', /\b(?:mysql|postgres(?:ql)?|mongodb(?:\+srv)?):\/\/[^\s:@/]+:[^\s@/]+@[^\s]+/g],
 ];
 
-const assignment = /^\s*(?:-\s+)?(?:export\s+)?(["']?)(?:[A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*|api[_-]?key|secret|token|password)\1\s*[:=]\s*(?:["']([A-Za-z0-9_+./:@=-]{20,})["']|([A-Za-z0-9_+./:@=-]{20,}))(?:\s+#.*)?\s*$/gi;
+const assignment = /^\s*(?:-\s+)?(?:export\s+)?(["']?)(?:[A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*|api[_-]?key|secret|token|password)\1\s*[:=]\s*(?:["']([A-Za-z0-9_+./:@=-]{20,})["']|([A-Za-z0-9_+./:@=?-]{20,}))(?:\s*[,;])?(?:\s+#.*)?\s*$/gi;
+const javascriptExtensions = new Set(['.js', '.cjs', '.mjs', '.jsx', '.ts', '.tsx']);
+const javascriptIdentifierReference = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const javascriptMemberReference = /^[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\?\.|\.)[A-Za-z_$][A-Za-z0-9_$]*|\[(?:\d+|[A-Za-z_$][A-Za-z0-9_$]*|["'][^"'\r\n]+["'])\])+$/;
+const defaultReadOperations = { lstat, open, readlink };
 
 function scanFailure() {
   return new Error('secret_scan_failed');
@@ -49,11 +62,21 @@ function isDirectCredentialValue(value) {
   });
 }
 
-function isUnquotedJavaScriptIdentifier(file, value, isUnquoted) {
-  const extension = path.extname(file).toLowerCase();
+function isUnquotedJavaScriptDynamicReference(file, value, isUnquoted) {
   return isUnquoted
-    && new Set(['.js', '.cjs', '.mjs', '.jsx', '.ts', '.tsx']).has(extension)
-    && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value);
+    && (
+      javascriptMemberReference.test(value)
+      || (
+        javascriptExtensions.has(path.extname(file).toLowerCase())
+        && javascriptIdentifierReference.test(value)
+      )
+    );
+}
+
+function sanitizeFindingPath(file, matchedValue) {
+  return file.includes(matchedValue)
+    ? file.split(matchedValue).join('[redacted]')
+    : file;
 }
 
 function isTrackedPathInsideRoot(root, file) {
@@ -62,27 +85,37 @@ function isTrackedPathInsideRoot(root, file) {
   return relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
 
-function sameSnapshot(left, right) {
+export function sameSnapshot(left, right) {
   return left.dev === right.dev
     && left.ino === right.ino
     && left.size === right.size
-    && left.mtimeNs === right.mtimeNs;
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
 }
 
-async function readTrackedBytes(absolute) {
-  const pathBefore = await lstat(absolute, { bigint: true });
+export async function readTrackedBytes(absolute, operations = defaultReadOperations) {
+  const pathBefore = await operations.lstat(absolute, { bigint: true });
   if (pathBefore.isSymbolicLink()) {
-    return Buffer.from(await readlink(absolute), 'utf8');
+    const bytes = await operations.readlink(absolute, { encoding: 'buffer' });
+    const pathAfter = await operations.lstat(absolute, { bigint: true });
+    if (
+      !pathAfter.isSymbolicLink()
+      || !sameSnapshot(pathBefore, pathAfter)
+      || BigInt(bytes.byteLength) !== pathAfter.size
+    ) {
+      throw scanFailure();
+    }
+    return bytes;
   }
   if (!pathBefore.isFile()) throw scanFailure();
 
-  const handle = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+  const handle = await operations.open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
   try {
     const before = await handle.stat({ bigint: true });
     if (!before.isFile() || !sameSnapshot(pathBefore, before)) throw scanFailure();
     const bytes = await handle.readFile();
     const after = await handle.stat({ bigint: true });
-    const pathAfter = await lstat(absolute, { bigint: true });
+    const pathAfter = await operations.lstat(absolute, { bigint: true });
     if (
       !pathAfter.isFile()
       || !sameSnapshot(before, after)
@@ -107,6 +140,14 @@ function parseRoot(rawArgs) {
 
 async function main() {
   const root = await realpath(parseRoot(process.argv.slice(2)));
+  const topLevelResult = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  if (topLevelResult.error || topLevelResult.status !== 0) throw scanFailure();
+  const topLevel = await realpath(topLevelResult.stdout.trim());
+  if (topLevel !== root) throw scanFailure();
+
   const tracked = spawnSync('git', ['ls-files', '-z'], { cwd: root });
   if (tracked.error || tracked.status !== 0) throw scanFailure();
 
@@ -121,16 +162,26 @@ async function main() {
         pattern.lastIndex = 0;
         for (const match of line.matchAll(pattern)) {
           if (exactSyntheticAllowlist.get(file)?.has(match[0])) continue;
-          findings.push({ file, line: lineIndex + 1, rule, length: match[0].length });
+          findings.push({
+            file: sanitizeFindingPath(file, match[0]),
+            line: lineIndex + 1,
+            rule,
+            length: match[0].length,
+          });
         }
       }
       assignment.lastIndex = 0;
       for (const match of line.matchAll(assignment)) {
         const value = match[2] || match[3];
         if (exactSyntheticAllowlist.get(file)?.has(value)) continue;
-        if (isUnquotedJavaScriptIdentifier(file, value, Boolean(match[3]))) continue;
+        if (isUnquotedJavaScriptDynamicReference(file, value, Boolean(match[3]))) continue;
         if (!isDirectCredentialValue(value) && new Set(value).size >= 10 && entropy(value) >= 3.5) {
-          findings.push({ file, line: lineIndex + 1, rule: 'high_entropy_assignment', length: value.length });
+          findings.push({
+            file: sanitizeFindingPath(file, value),
+            line: lineIndex + 1,
+            rule: 'high_entropy_assignment',
+            length: value.length,
+          });
         }
       }
     }
@@ -143,9 +194,11 @@ async function main() {
   if (findings.length) process.exitCode = 1;
 }
 
-try {
-  await main();
-} catch {
-  process.stderr.write('secret_scan_failed\n');
-  process.exitCode = 1;
+if (path.resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {
+  try {
+    await main();
+  } catch {
+    process.stderr.write('secret_scan_failed\n');
+    process.exitCode = 1;
+  }
 }
