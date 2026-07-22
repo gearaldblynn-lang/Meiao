@@ -85,6 +85,36 @@ test('scanner accepts only the exact synthetic fixtures and placeholders', async
   assert.deepEqual(report(result), { findings: [] });
 });
 
+test('scanner skips shell-expanded assignments and unquoted JavaScript identifier references', async (t) => {
+  const root = await repository({
+    'deploy.sh': 'DEPLOY_OWNER_TOKEN="$(date +%s)-$$-${RANDOM}-$(hostname)"',
+    'config.mjs': 'apiKeyMasked: openaiCompatibleRuntimeCredentialReference',
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const result = scan(root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(report(result), { findings: [] });
+});
+
+test('scanner allows the model-provider synthetic fixture only at its exact path', async (t) => {
+  const syntheticProviderFixture = ['sk', 'raw', 'should', 'never', 'return'].join('-');
+  const root = await repository({
+    'server/modelProviderRegistry.test.mjs': `apiKey: ${syntheticProviderFixture}`,
+    'fixtures/not-allowed.txt': `API_KEY=${syntheticProviderFixture}`,
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const result = scan(root);
+  assert.equal(result.status, 1);
+  assert.deepEqual(report(result).findings, [{
+    file: 'fixtures/not-allowed.txt',
+    line: 1,
+    rule: 'provider_token',
+    length: syntheticProviderFixture.length,
+  }]);
+});
+
 test('scanner reads tracked symlink text without following its target', async (t) => {
   const root = await repository({ 'tracked.txt': 'ordinary text' });
   const outside = await mkdtemp(path.join(os.tmpdir(), 'meiao-secret-outside-'));

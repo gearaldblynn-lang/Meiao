@@ -3,11 +3,16 @@ import { lstat, open, readlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+const modelProviderSyntheticFixture = ['sk', 'raw', 'should', 'never', 'return'].join('-');
+
 const exactSyntheticAllowlist = new Map([
   ['fixtures/allowed-secrets.txt', new Set([
     'sk-test',
     'sk-xxxx',
     'unit-test-provider-credential',
+  ])],
+  ['server/modelProviderRegistry.test.mjs', new Set([
+    modelProviderSyntheticFixture,
   ])],
 ]);
 
@@ -22,7 +27,7 @@ const rules = [
   ['credential_url', /\b(?:mysql|postgres(?:ql)?|mongodb(?:\+srv)?):\/\/[^\s:@/]+:[^\s@/]+@[^\s]+/g],
 ];
 
-const assignment = /^\s*(?:-\s+)?(?:export\s+)?["']?(?:[A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*|api[_-]?key|secret|token|password)["']?\s*[:=]\s*(?:["']([^"'\r\n]{20,})["']|([A-Za-z0-9_+./:@-]{20,}))(?:\s+#.*)?\s*$/gi;
+const assignment = /^\s*(?:-\s+)?(?:export\s+)?(["']?)(?:[A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*|api[_-]?key|secret|token|password)\1\s*[:=]\s*(?:["']([A-Za-z0-9_+./:@=-]{20,})["']|([A-Za-z0-9_+./:@=-]{20,}))(?:\s+#.*)?\s*$/gi;
 
 function scanFailure() {
   return new Error('secret_scan_failed');
@@ -42,6 +47,13 @@ function isDirectCredentialValue(value) {
     pattern.lastIndex = 0;
     return [...value.matchAll(pattern)].some((match) => match[0] === value);
   });
+}
+
+function isUnquotedJavaScriptIdentifier(file, value, isUnquoted) {
+  const extension = path.extname(file).toLowerCase();
+  return isUnquoted
+    && new Set(['.js', '.cjs', '.mjs', '.jsx', '.ts', '.tsx']).has(extension)
+    && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value);
 }
 
 function isTrackedPathInsideRoot(root, file) {
@@ -114,8 +126,9 @@ async function main() {
       }
       assignment.lastIndex = 0;
       for (const match of line.matchAll(assignment)) {
-        const value = match[1] || match[2];
+        const value = match[2] || match[3];
         if (exactSyntheticAllowlist.get(file)?.has(value)) continue;
+        if (isUnquotedJavaScriptIdentifier(file, value, Boolean(match[3]))) continue;
         if (!isDirectCredentialValue(value) && new Set(value).size >= 10 && entropy(value) >= 3.5) {
           findings.push({ file, line: lineIndex + 1, rule: 'high_entropy_assignment', length: value.length });
         }
