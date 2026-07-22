@@ -615,10 +615,24 @@ test('scanner covers JS and JSON quoted literals but skips dynamic member expres
 
 test('scanner never emits a matched value embedded in its tracked filename', async () => {
   const value = 'sk-' + 'P'.repeat(40);
-  const root = await repository({ [`prefix-${value}.txt`]: value });
+  const secondValue = 'sk-' + 'Q'.repeat(40);
+  const root = await repository({ [`prefix-${value}.txt`]: `${value}\n${secondValue}` });
   const result = scan(root);
   assert.equal(result.status, 1);
   assert.equal((result.stdout + result.stderr).includes(value), false);
+});
+
+test('member-expression exclusion is JS-family only and never hides dotenv values', async () => {
+  const dottedStatic = 'credential.segment.with9mixed8entropy7value6';
+  const root = await repository({
+    '.env': `SOME_SECRET=${dottedStatic}`,
+    'config.mjs': 'const x = { apiKey: process.env.RUNTIME_TOKEN };',
+  });
+  const result = scan(root);
+  assert.equal(result.status, 1);
+  assert.deepEqual(JSON.parse(result.stdout).findings, [{
+    file: '.env', line: 1, rule: 'high_entropy_assignment', length: dottedStatic.length,
+  }]);
 });
 
 test('scanner accepts only the exact synthetic fixtures and placeholders', async () => {
@@ -643,7 +657,7 @@ Expected: FAIL because the scanner does not exist.
 
 - [ ] **Step 3: Implement the scanner**
 
-Parse argv strictly as either no arguments or exactly `--root ABSOLUTE_PATH`, rejecting unknown/duplicate/missing flags without echoing values. Resolve `git rev-parse --show-toplevel` and require the requested/root cwd canonical path to equal that top-level path; a subdirectory is an error, never a partial scan. Read tracked paths via `git ls-files -z`; for each path use `lstat`, read regular-file worktree bytes, read a symlink's link text without following it outside the repository, and reject unsupported file types. Compare device, inode, size, nanosecond mtime, and nanosecond ctime before/after every regular-file and symlink read. Skip NUL-containing binary blobs. Use exact regex rules plus Shannon entropy for quoted and unquoted sensitive assignments across dotenv, YAML, JS/TS, and JSON, accepting ordinary trailing comma/semicolon syntax while excluding unquoted identifier/member-expression references such as `process.env.RUNTIME_TOKEN`. Never include the matched value or a value-derived hash in output; if a tracked filename contains the same matched value, replace that substring with `[redacted]` before storing the finding. Test exceptions require an exact relative path and exact clearly synthetic value; no directory-wide exclusions.
+Parse argv strictly as either no arguments or exactly `--root ABSOLUTE_PATH`, rejecting unknown/duplicate/missing flags without echoing values. Resolve `git rev-parse --show-toplevel` and require the requested/root cwd canonical path to equal that top-level path; a subdirectory is an error, never a partial scan. Read tracked paths via `git ls-files -z`; for each path use `lstat`, read regular-file worktree bytes, read a symlink's link text without following it outside the repository, and reject unsupported file types. Compare device, inode, size, nanosecond mtime, and nanosecond ctime before/after every regular-file and symlink read. Skip NUL-containing binary blobs. Use exact regex rules plus Shannon entropy for quoted and unquoted sensitive assignments across dotenv, YAML, JS/TS, and JSON, accepting ordinary trailing comma/semicolon syntax. Exclude identifier/member-expression references such as `process.env.RUNTIME_TOKEN` only in JS-family files; documentation examples require separately declared exact path+exact value synthetic exceptions, and dotted dotenv/YAML values remain scanned. Never include the matched value or a value-derived hash in output. Collect every raw match for one file first, replace the union of all matched-value substrings in one canonical reported path, then attach that same safe path to every finding from the file. Test exceptions require an exact relative path and exact clearly synthetic value; no directory-wide exclusions.
 
 Implement the scanner with this structure:
 
@@ -692,6 +706,7 @@ function entropy(value) {
 
 const findings = [];
 for (const file of tracked.stdout.toString('utf8').split('\0').filter(Boolean)) {
+  const fileFindings = [];
   const absolute = path.join(root, file);
   const stats = await lstat(absolute);
   const bytes = stats.isSymbolicLink()
@@ -705,8 +720,7 @@ for (const file of tracked.stdout.toString('utf8').split('\0').filter(Boolean)) 
       pattern.lastIndex = 0;
       for (const match of line.matchAll(pattern)) {
         if (exactSyntheticAllowlist.get(file)?.has(match[0])) continue;
-        const safeFile = file.includes(match[0]) ? file.split(match[0]).join('[redacted]') : file;
-        findings.push({ file: safeFile, line: lineIndex + 1, rule, length: match[0].length });
+        fileFindings.push({ line: lineIndex + 1, rule, length: match[0].length, matchedValue: match[0] });
       }
     }
     assignment.lastIndex = 0;
@@ -714,10 +728,13 @@ for (const file of tracked.stdout.toString('utf8').split('\0').filter(Boolean)) 
       const value = match[1] || match[2];
       if (exactSyntheticAllowlist.get(file)?.has(value)) continue;
       if (new Set(value).size >= 10 && entropy(value) >= 3.5) {
-        findings.push({ file, line: lineIndex + 1, rule: 'high_entropy_assignment', length: value.length });
+        fileFindings.push({ line: lineIndex + 1, rule: 'high_entropy_assignment', length: value.length, matchedValue: value });
       }
     }
   }
+  const safeFile = [...new Set(fileFindings.map(({ matchedValue }) => matchedValue))]
+    .reduce((current, value) => current.split(value).join('[redacted]'), file);
+  findings.push(...fileFindings.map(({ matchedValue, ...finding }) => ({ ...finding, file: safeFile })));
 }
 findings.sort((left, right) => left.file.localeCompare(right.file) || left.line - right.line || left.rule.localeCompare(right.rule));
 console.log(JSON.stringify({ findings }));
