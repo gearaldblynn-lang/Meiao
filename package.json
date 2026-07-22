@@ -19,6 +19,7 @@
     "status": "node scripts/project-status.mjs",
     "status:write": "node scripts/project-status.mjs --write",
     "security:audit": "npm audit --audit-level=high --omit=dev",
+    "security:secrets": "node scripts/check-tracked-secrets.mjs",
     "secrets:export": "node scripts/export-friend-secret-bundle.mjs",
     "secrets:import": "node scripts/import-secret-bundle.mjs",
     "probe:media-transcode": "node scripts/probe-media-transcode.mjs",
