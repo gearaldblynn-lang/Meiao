@@ -4,7 +4,7 @@
 
 **Goal:** Replace stop/start deployment with a PM2 ready-gated graceful reload so public GET traffic sees zero 502 while paid-task writes remain fail-closed.
 
-**Architecture:** Keep the current single combined API/Temporal process, run one PM2 cluster instance, and hold the existing deploy marker plus MySQL job-table lock across reload. A focused process-lifecycle module owns ready signalling and idempotent shutdown; a focused deploy lock helper owns the MySQL lock without stopping PM2.
+**Architecture:** Keep the current single combined API/Temporal process and run one PM2 cluster instance. Hold the deploy marker across reload, wait for tracked writes to drain, and use the MySQL job-table lock only as a final pre-reload barrier; a focused process-lifecycle module owns ready signalling and idempotent shutdown.
 
 **Tech Stack:** Node.js ESM, native HTTP, PM2 cluster mode, Bash, MySQL 8, Node test runner.
 
@@ -158,7 +158,7 @@ Expected: all tests PASS, including the preserved legacy emergency helper tests.
 
 ```bash
 git add scripts/hold-deploy-job-lock.mjs scripts/hold-deploy-job-lock.test.mjs
-git commit -m "feat(deploy): hold job lock across graceful reload"
+git commit -m "feat(deploy): add non-stopping job lock barrier"
 ```
 
 ### Task 4: Replace stop/start release path with fail-safe reload
