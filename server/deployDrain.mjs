@@ -28,7 +28,7 @@ export const isDeployDrainActive = ({
       if (error?.code !== 'ENOENT') throw error;
     }
     const marker = stat(drainFile);
-    if (markerState === 'manual') return true;
+    if (markerState) return true;
     return now() - Number(marker?.mtimeMs || 0) <= resolveDrainMaxAgeMs(env);
   } catch (error) {
     if (error?.code === 'ENOENT') return false;
@@ -40,6 +40,7 @@ export const createDeployDrainError = () => {
   const error = new Error('系统发布中，暂时停止提交新任务，请稍后重试。');
   error.code = 'job_submissions_paused';
   error.statusCode = 503;
+  error.retryable = true;
   return error;
 };
 

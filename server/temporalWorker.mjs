@@ -16,6 +16,7 @@ import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, recordJobEvent } from './taskPlatform.mjs';
 import { isDeployDrainActive } from './deployDrain.mjs';
+import { runWithDeployJobClaimLock } from './deployClaimLock.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -351,12 +352,21 @@ export const createMysqlTemporalActivities = ({
     }
 
     const claimedAt = now();
-    const [claimResult] = await pool.query(
-      `UPDATE internal_jobs
-       SET status = 'running', started_at = ?, updated_at = ?, error_code = NULL, error_message = NULL, error_detail = NULL
-       WHERE id = ? AND status IN ('queued', 'retry_waiting', 'running')`,
-      [claimedAt, claimedAt, currentJob.id]
-    );
+    const claimAttempt = await runWithDeployJobClaimLock({
+      pool,
+      isExecutionPaused,
+      claim: (connection) => connection.query(
+        `UPDATE internal_jobs
+         SET status = 'running', started_at = ?, updated_at = ?, error_code = NULL, error_message = NULL, error_detail = NULL
+         WHERE id = ? AND status IN ('queued', 'retry_waiting', 'running')`,
+        [claimedAt, claimedAt, currentJob.id],
+      ),
+    });
+    if (claimAttempt.paused) {
+      const latestJob = await getJobById(pool, currentJob.id);
+      return toActivityResult(latestJob || currentJob);
+    }
+    const [claimResult] = claimAttempt.value;
 
     if (!claimResult?.affectedRows) {
       const latestJob = await getJobById(pool, currentJob.id);

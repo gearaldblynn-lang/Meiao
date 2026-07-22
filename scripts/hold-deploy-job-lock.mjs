@@ -2,8 +2,11 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import mysql from 'mysql2/promise';
 
-import { getDeployDbConfig } from './check-deploy-readiness.mjs';
-import { acquireBootstrapJobTableLock } from './hold-deploy-drain.mjs';
+import { getDeployDbConfig, summarizeRunningJobs } from './check-deploy-readiness.mjs';
+import {
+  acquireDeployJobClaimLock,
+  releaseDeployJobClaimLock,
+} from '../server/deployClaimLock.mjs';
 
 const defaultSleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -14,8 +17,23 @@ export const holdDeployJobTableLock = async ({
   isReleased,
   sleep = defaultSleep,
 }) => {
+  let acquired = false;
   try {
-    const result = await acquireBootstrapJobTableLock({ connection, env });
+    await acquireDeployJobClaimLock({ connection, env });
+    acquired = true;
+    const [rows] = await connection.query(
+      `SELECT task_type, provider, provider_task_id, started_at
+       FROM internal_jobs
+       WHERE status = 'running'
+       ORDER BY started_at ASC`,
+    );
+    const summary = summarizeRunningJobs(rows);
+    const override = String(env.MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS || '') === '1';
+    const result = {
+      ready: summary.runningCount === 0 || override,
+      override,
+      ...summary,
+    };
     if (!result.ready) {
       const error = new Error('部署已拦截：云上仍有运行中任务。');
       error.code = 'deploy_active_jobs';
@@ -29,7 +47,9 @@ export const holdDeployJobTableLock = async ({
     }
     return result;
   } finally {
-    await connection.query('UNLOCK TABLES').catch(() => null);
+    if (acquired) {
+      await releaseDeployJobClaimLock({ connection, env }).catch(() => null);
+    }
     await connection.end().catch(() => null);
   }
 };

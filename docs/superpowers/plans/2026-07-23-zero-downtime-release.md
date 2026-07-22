@@ -4,7 +4,7 @@
 
 **Goal:** Replace stop/start deployment with a PM2 ready-gated graceful reload so public GET traffic sees zero 502 while paid-task writes remain fail-closed.
 
-**Architecture:** Keep the current single combined API/Temporal process and run one PM2 cluster instance. Hold the deploy marker across reload, wait for tracked writes to drain, and use the MySQL job-table lock only as a final pre-reload barrier; a focused process-lifecycle module owns ready signalling and idempotent shutdown.
+**Architecture:** Keep the current single combined API/Temporal process and run one PM2 cluster instance. Hold the deploy marker across reload, wait for tracked writes to drain, and serialize every MySQL job claim with the same MySQL named lock used by the final deploy barrier; a focused process-lifecycle module owns ready signalling and idempotent shutdown.
 
 **Tech Stack:** Node.js ESM, native HTTP, PM2 cluster mode, Bash, MySQL 8, Node test runner.
 
@@ -117,24 +117,29 @@ git add ecosystem.config.cjs server/index.mjs server/pm2Contract.test.mjs script
 git commit -m "feat(deploy): define pm2 graceful reload contract"
 ```
 
-### Task 3: MySQL lock holder without process stop
+### Task 3: MySQL named-lock claim protocol without process stop
 
 **Files:**
 - Create: `scripts/hold-deploy-job-lock.mjs`
 - Create: `scripts/hold-deploy-job-lock.test.mjs`
+- Create: `server/deployClaimLock.mjs`
+- Create: `server/deployClaimLock.test.mjs`
+- Modify: `server/jobManager.mjs`
+- Modify: `server/temporalWorker.mjs`
 - Reuse: `scripts/check-deploy-readiness.mjs`
 
 **Interfaces:**
 - Produces CLI: `node scripts/hold-deploy-job-lock.mjs --ready-file <path> --release-file <path>`.
 - Ready file contains the existing `summarizeRunningJobs` JSON.
-- The helper holds `LOCK TABLES internal_jobs WRITE` until the release file exists, then always unlocks and closes its connection. The release file must be written before PM2 reload so bootstrap cannot deadlock on `internal_jobs`.
+- Classic and Temporal MySQL claim paths acquire the shared named lock, recheck the deploy marker after acquiring it, then perform the conditional `queued/retry_waiting -> running` update on that same connection.
+- The deploy helper acquires the identical named lock, checks `runningCount=0`, waits for the release file, then releases the lock and closes its connection before PM2 reload.
 
 - [ ] **Step 1: Write failing lock-holder tests**
 
-Cover lock-before-query ordering, fail-closed behavior with a running job, ready acknowledgement before waiting, release-file completion, and `UNLOCK TABLES` in `finally`.
+Cover named-lock-before-query ordering, fail-closed behavior with a running job, ready acknowledgement before waiting, release-file completion, and named-lock release in `finally`. Add a deterministic race test: a worker passes its initial marker check, waits behind the deploy lock, then must recheck the now-active marker and skip claim after the deploy lock releases.
 
 ```js
-assert.deepEqual(events.slice(0, 2), ['LOCK TABLES internal_jobs WRITE', 'SELECT running jobs']);
+assert.deepEqual(events.slice(0, 2), ['SELECT GET_LOCK', 'SELECT running jobs']);
 assert.equal(result.ready, true);
 ```
 
@@ -146,18 +151,18 @@ Expected: FAIL because the helper does not exist.
 
 - [ ] **Step 3: Implement the lock holder**
 
-Reuse `getDeployDbConfig` and `summarizeRunningJobs`; do not import or call a PM2 process manager. Use 250 ms release polling and a connection liveness query while waiting.
+Reuse `getDeployDbConfig` and `summarizeRunningJobs`; do not import or call a PM2 process manager. Use 250 ms release polling and a connection liveness query while waiting. Keep the lock name a code constant so worker and deploy cannot drift through different environment values; make only the bounded wait timeout configurable.
 
 - [ ] **Step 4: Verify GREEN**
 
-Run: `node --test scripts/hold-deploy-job-lock.test.mjs scripts/hold-deploy-drain.test.mjs scripts/deploy-readiness.test.mjs`
+Run: `node --test server/deployClaimLock.test.mjs server/jobManager.test.mjs server/temporalWorker.test.mjs scripts/hold-deploy-job-lock.test.mjs scripts/hold-deploy-drain.test.mjs scripts/deploy-readiness.test.mjs`
 
 Expected: all tests PASS, including the preserved legacy emergency helper tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/hold-deploy-job-lock.mjs scripts/hold-deploy-job-lock.test.mjs
+git add server/deployClaimLock.mjs server/deployClaimLock.test.mjs server/jobManager.mjs server/temporalWorker.mjs scripts/hold-deploy-job-lock.mjs scripts/hold-deploy-job-lock.test.mjs
 git commit -m "feat(deploy): add non-stopping job lock barrier"
 ```
 
@@ -174,11 +179,11 @@ git commit -m "feat(deploy): add non-stopping job lock barrier"
 
 **Interfaces:**
 - Consumes: Task 2 expected release health check and Task 3 lock-holder CLI.
-- Produces release sequence: marker → active writes zero → DB lock/final running check → lock release → atomic dist swap → `pm2 startOrReload` → expected-release health → marker removal.
+- Produces release sequence: marker → active writes zero → shared claim lock/final running check → lock release → atomic dist swap → `pm2 startOrReload` → expected-release health → marker removal.
 
 - [ ] **Step 1: Rewrite deployment contract tests first**
 
-First add failing request-tracker tests proving guarded writes increment before admission and decrement in `finally`, while GET is not counted. Then make source-level tests require an `activeWriteRequests === 0` health gate, `hold-deploy-job-lock.mjs`, release of the table lock before PM2, `MEIAO_RELEASE_ID`, `pm2 startOrReload ecosystem.config.cjs --update-env`, and expected-release health. Assert the normal remote payload contains no invocation of `backend-network-drain.mjs enter`, `pm2 stop meiao-internal`, `pm2 restart meiao-internal`, or `hold-deploy-drain.mjs`.
+First add failing request-tracker tests proving guarded writes increment before admission and decrement in `finally`, while GET is not counted. Then make source-level tests require an `activeWriteRequests === 0` health gate, `hold-deploy-job-lock.mjs`, release of the shared claim lock before PM2, `MEIAO_RELEASE_ID`, `pm2 startOrReload ecosystem.config.cjs --update-env`, and expected-release health. Assert the normal remote payload contains no invocation of `backend-network-drain.mjs enter`, `pm2 stop meiao-internal`, `pm2 restart meiao-internal`, or `hold-deploy-drain.mjs`.
 
 ```js
 assert.match(source, /pm2 startOrReload ecosystem\.config\.cjs --update-env/);
@@ -193,7 +198,7 @@ Expected: FAIL because the current script deliberately drains the network and st
 
 - [ ] **Step 3: Implement the reload sequence and cleanup state machine**
 
-Track guarded writes in `server/deployDrain.mjs`, wrap the real dispatcher in `try/finally`, and expose the count in health. Generate a unique release ID locally and pass it into remote PM2 environment. After the marker, wait for the count to remain zero, start the job-lock helper for the final running check, then release and join it before PM2 starts. Retain `dist-prev` until expected-release health passes. On failure, restore `dist-prev` when it exists; if any healthy PM2 instance remains, remove only the owned marker after restoring assets, otherwise retain the marker as `manual`. Never issue a stop command from automated cleanup.
+Track guarded writes in `server/deployDrain.mjs`, wrap the real dispatcher in `try/finally`, and expose the count in health. Generate a unique release ID locally and pass it into remote PM2 environment. After the marker, wait for the count to remain zero, start the shared-claim-lock helper for the final running check, then release and join it before PM2 starts. Retain `dist-prev` until expected-release health passes. On failure, restore `dist-prev` when it exists, but remove the marker only if the exact new release is healthy. If only the old in-memory process is healthy, convert the marker to indefinite `manual` and retain the mutex because source/config/dependencies on disk already belong to the unverified release. Never issue a stop command from automated cleanup.
 
 - [ ] **Step 4: Verify GREEN and all deploy safety tests**
 

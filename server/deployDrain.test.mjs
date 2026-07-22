@@ -37,11 +37,21 @@ test('deployment drain uses an env path and treats a fresh marker as active', ()
   }), true);
 });
 
-test('deployment drain expires a stale marker instead of wedging submissions forever', () => {
+test('deployment drain keeps an owned stale marker active until owner-checked cleanup', () => {
   assert.equal(isDeployDrainActive({
     env: { MEIAO_DEPLOY_DRAIN_MAX_AGE_MS: '1000' },
     now: () => 10_000,
     stat: () => ({ mtimeMs: 8_000 }),
+    readFile: () => 'meiao-deploy-owner-token\n',
+  }), true);
+});
+
+test('deployment drain expires only a legacy empty stale marker', () => {
+  assert.equal(isDeployDrainActive({
+    env: { MEIAO_DEPLOY_DRAIN_MAX_AGE_MS: '1000' },
+    now: () => 10_000,
+    stat: () => ({ mtimeMs: 8_000 }),
+    readFile: () => '',
   }), false);
   assert.equal(isDeployDrainActive({
     env: {},
@@ -62,7 +72,16 @@ test('deployment drain exposes a retryable 503 job submission error', () => {
   const error = createDeployDrainError();
   assert.equal(error.code, 'job_submissions_paused');
   assert.equal(error.statusCode, 503);
+  assert.equal(error.retryable, true);
   assert.match(error.message, /系统发布中/);
+});
+
+test('server exposes deployment pause as retryable JSON', () => {
+  const serverSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const jobErrorHandler = serverSource.match(
+    /if \(error\?\.statusCode && error\?\.code && \/\^\(job_\|video_feature_\)\/[\s\S]*?\n    \}/,
+  )?.[0] || '';
+  assert.match(jobErrorHandler, /retryable: error\.retryable === true/);
 });
 
 test('deployment drain guards concrete synchronous provider route categories', () => {

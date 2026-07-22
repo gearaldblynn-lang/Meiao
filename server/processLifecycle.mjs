@@ -12,6 +12,21 @@ export const getProcessReleaseIdentity = ({
   startedAt,
 });
 
+export const resolveServerListenConfig = ({ env = process.env } = {}) => {
+  const port = Number(env.PORT || 3100);
+  const host = String(env.MEIAO_BIND_HOST || '0.0.0.0').trim() || '0.0.0.0';
+  if (
+    String(env.NODE_ENV || '').trim() === 'production'
+    && port === 3101
+    && !['127.0.0.1', '::1'].includes(host)
+  ) {
+    const error = new Error('生产迁移候选进程必须只监听回环地址。');
+    error.code = 'migration_candidate_public_bind_forbidden';
+    throw error;
+  }
+  return { port, host };
+};
+
 export const listenAndNotifyReady = ({
   server,
   port,

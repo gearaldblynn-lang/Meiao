@@ -236,7 +236,23 @@ test('deploy_tencent cleanup never stops the last process and restores static as
   assert.doesNotMatch(cleanup, /backend-network-drain/);
   assert.match(source, /retain-manual/);
   assert.match(ownershipSource, /writeFileSync\(markerFile, 'manual\\n', \{ flag: 'wx'/);
-  assert.match(cleanup, /保留维护门禁/);
+  assert.match(cleanup, /保留 manual marker/);
+});
+
+test('failed exact-release health retains a manual marker even when the old process is healthy', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const cleanupStart = source.indexOf('cleanup_deploy_reload() {');
+  const cleanupEnd = source.indexOf('\n    if [ -e \\"\\$DRAIN_MARKER_FILE\\" ]', cleanupStart);
+  const cleanup = source.slice(cleanupStart, cleanupEnd);
+  const exactHealthBranchIndex = cleanup.indexOf(`if [ \\"\\$HEALTH_READY\\" = '1' ]; then`);
+  const markerRemovalIndex = cleanup.indexOf('remove_owned_deploy_marker', exactHealthBranchIndex);
+  const manualRetainIndex = cleanup.indexOf('retain_deploy_drain', markerRemovalIndex);
+
+  assert.doesNotMatch(cleanup, /HEALTH_READY.*\|\|.*SERVICE_HEALTHY/);
+  assert.ok(exactHealthBranchIndex >= 0, 'marker removal must require exact release health');
+  assert.ok(markerRemovalIndex > exactHealthBranchIndex, 'exact release health may remove its owner marker');
+  assert.ok(manualRetainIndex > markerRemovalIndex, 'failed exact release health must retain a manual marker');
+  assert.match(cleanup, /SERVICE_HEALTHY[\s\S]*manual marker/);
 });
 
 test('deploy_tencent always joins the job lock holder before starting PM2', () => {

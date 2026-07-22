@@ -99,7 +99,12 @@ test('classic mysql worker settles provider-completed rejected output and persis
     if (camel) row[camel] = value;
   };
   const pool = {
+    async getConnection() {
+      return { query: this.query.bind(this), release() {} };
+    },
     async query(sql, params = []) {
+      if (/SELECT GET_LOCK/.test(sql)) return [[{ acquired: 1 }]];
+      if (/SELECT RELEASE_LOCK/.test(sql)) return [[{ released: 1 }]];
       if (/SELECT \*\s+FROM internal_jobs\s+WHERE status = 'running'/.test(sql)) return [[]];
       if (/SELECT \* FROM internal_jobs\s+WHERE status IN \('queued', 'retry_waiting'\)/.test(sql)) {
         return [row.status === 'queued' ? [row] : []];

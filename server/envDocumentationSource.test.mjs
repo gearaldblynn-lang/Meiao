@@ -127,6 +127,13 @@ test('结果素材下载重试旋钮同步到模板、总览和云上部署文�
   }
 });
 
+test('部署任务 claim 锁超时同步到模板、总览和云上部署文档', () => {
+  const key = 'MEIAO_DEPLOY_JOB_CLAIM_LOCK_TIMEOUT_SECONDS';
+  assert.match(envExample, new RegExp(key));
+  assert.match(projectOverview, new RegExp(key));
+  assert.match(deployDoc, new RegExp(key));
+});
+
 test('音视频裁剪转码配置同步到模板、总览和云上部署文档', () => {
   const requiredKeys = [
     'MEIAO_MEDIA_TRANSCODE_ENABLED',

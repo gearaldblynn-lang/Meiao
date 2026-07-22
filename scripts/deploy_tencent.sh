@@ -315,7 +315,7 @@ tar \
         SERVICE_HEALTHY=1
       fi
       if [ \"\$DRAIN_MARKER_CREATED\" = '1' ]; then
-        if [ \"\$HEALTH_READY\" = '1' ] || [ \"\$SERVICE_HEALTHY\" = '1' ]; then
+        if [ \"\$HEALTH_READY\" = '1' ]; then
           if remove_owned_deploy_marker; then
             DRAIN_MARKER_CREATED=0
           else
@@ -326,7 +326,12 @@ tar \
             echo '维护门禁持久化失败，拒绝确认远端清理完成。' >&2
             return 2
           fi
-          echo '当前没有已确认健康的 PM2 实例，保留维护门禁等待人工处理。'
+          if [ \"\$SERVICE_HEALTHY\" = '1' ]; then
+            echo '旧 release 仍可读，但新 release 未通过精确 health；保留 manual marker 与 mutex，禁止新写入并等待人工恢复。'
+          else
+            echo '当前没有已确认健康的 PM2 实例，保留 manual marker 与 mutex 等待人工处理。'
+          fi
+          CLEANUP_FAILED=1
         fi
       fi
       rm -rf '$REMOTE_TMP_DIR'
@@ -373,7 +378,8 @@ tar \
     fi
     cat \"\$DRAIN_READY_FILE\"
 
-    # marker 已拦住新写请求，且在途写请求已清零；表锁完成最终复查后必须先释放。
+    # marker 已拦住新写请求，且在途写请求已清零。命名锁与所有 worker claim
+    # 共用同一串行协议：锁内复查 running=0，等锁 worker 获锁后会重查 marker 并放弃 claim。
     touch \"\$DRAIN_RELEASE_FILE\"
     wait \"\$DRAIN_PID\"
     DRAIN_PID=''

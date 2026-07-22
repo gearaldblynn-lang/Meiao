@@ -117,6 +117,7 @@ import {
   getProcessReleaseIdentity,
   listenAndNotifyReady,
   registerProcessShutdown,
+  resolveServerListenConfig,
 } from './processLifecycle.mjs';
 import { createAuthorizedProviderRecovery } from './jobRecoveryService.mjs';
 import { executeProviderJob, uploadAssetViaKieStream } from './providerGateway.mjs';
@@ -270,8 +271,7 @@ configureServerNetworkRuntime(process.env);
 const dataDir = path.join(__dirname, 'data');
 const storePath = path.join(dataDir, 'internal-store.json');
 const distDir = path.join(__dirname, '..', 'dist');
-const PORT = Number(process.env.PORT || 3100);
-const BIND_HOST = String(process.env.MEIAO_BIND_HOST || '0.0.0.0').trim() || '0.0.0.0';
+const { port: PORT, host: BIND_HOST } = resolveServerListenConfig();
 const processRelease = getProcessReleaseIdentity();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const ASSET_RETENTION_MS = 1000 * 60 * 60 * 24 * 3;
@@ -17521,6 +17521,7 @@ const server = createServer(async (req, res) => {
       json(res, error.statusCode, {
         message: error.message || '任务提交被服务端拒绝。',
         code: error.code,
+        retryable: error.retryable === true,
       });
       return;
     }

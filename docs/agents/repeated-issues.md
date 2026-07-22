@@ -26,8 +26,8 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Symptom: 官网今天多次在发布期间返回 502，恢复后过一会又出现；日志中可对应到 PM2 `STOPPED -> RUNNING` 空窗。
 - Environment: Tencent Cloud production / Nginx single upstream `127.0.0.1:3100` / PM2 one process / release path.
 - Root cause: 旧发布脚本在新进程 ready 前先 `pm2 stop` 唯一后端，Nginx 必然暂时无上游；这不是 provider、内存或磁盘故障。架构级根因见 `CLAUDE.md` #79，诊断指纹为 `deploy:single_upstream_stop_start:public_502`。
-- Fix: 正式进程改为单实例 `cluster + wait_ready`，服务只在完成 bootstrap 与 HTTP listen 后发 ready，退出时优雅关闭 worker/Temporal/HTTP/连接池。发布先 drain 写请求与任务，再 `pm2 startOrReload`，并用精确 release health 收敛；正常路径不再 stop/restart 唯一进程或操作 iptables。
-- Regression check: `server/processLifecycle.test.mjs`、`server/pm2Contract.test.mjs`、`scripts/deploy_tencent.test.mjs`、`scripts/assert-deploy-health.test.mjs`、`server/deployDrain.test.mjs` 锁定 ready/优雅退出/cluster/release 身份/写请求排空与禁止 stop-start。
+- Fix: 正式进程改为单实例 `cluster + wait_ready`，服务只在完成 bootstrap 与 HTTP listen 后发 ready，退出时优雅关闭 worker/Temporal/HTTP/连接池。发布先 drain 写请求与任务，所有 MySQL worker claim 与部署最终屏障共用同一命名锁并在获锁后重查 marker，再 `pm2 startOrReload`，并用精确 release health 收敛；正常路径不再 stop/restart 唯一进程或操作 iptables。新 release 未通过时即使旧进程仍健康，也保留 `manual` marker 与 mutex，不让未验证的盘上代码在重启后接受写入。
+- Regression check: `server/processLifecycle.test.mjs`、`server/pm2Contract.test.mjs`、`server/deployClaimLock.test.mjs`、`scripts/deploy_tencent.test.mjs`、`scripts/assert-deploy-health.test.mjs`、`server/deployDrain.test.mjs` 锁定 ready/优雅退出/cluster/release 身份/写请求排空、claim 竞态与禁止 stop-start。
 - Avoid next time: 发布时序是公网可用性合同。单上游不得在候选实例 ready 前停止；验收必须连续探测公网状态码并核对 release ID，不能只在发布结束后看一次 health。
 
 ## 2026-07-22 - Managed image validation must trust bytes, not browser MIME labels

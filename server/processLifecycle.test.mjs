@@ -6,7 +6,20 @@ import {
   createGracefulShutdown,
   listenAndNotifyReady,
   registerProcessShutdown,
+  resolveServerListenConfig,
 } from './processLifecycle.mjs';
+
+test('production migration candidate is forced to loopback', () => {
+  assert.deepEqual(resolveServerListenConfig({
+    env: { NODE_ENV: 'production', PORT: '3101', MEIAO_BIND_HOST: '127.0.0.1' },
+  }), { port: 3101, host: '127.0.0.1' });
+  assert.throws(
+    () => resolveServerListenConfig({
+      env: { NODE_ENV: 'production', PORT: '3101', MEIAO_BIND_HOST: '0.0.0.0' },
+    }),
+    (error) => error?.code === 'migration_candidate_public_bind_forbidden',
+  );
+});
 
 test('listenAndNotifyReady reports ready only after the server is listening', async () => {
   const events = [];

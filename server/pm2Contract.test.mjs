@@ -27,6 +27,6 @@ test('server health exposes immutable release identity', () => {
 test('server bind host is configurable for loopback-only migration candidates', () => {
   const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
 
-  assert.match(source, /const BIND_HOST = String\(process\.env\.MEIAO_BIND_HOST \|\| '0\.0\.0\.0'\)\.trim\(\) \|\| '0\.0\.0\.0'/);
+  assert.match(source, /const \{ port: PORT, host: BIND_HOST \} = resolveServerListenConfig\(\)/);
   assert.match(source, /listenAndNotifyReady\(\{ server, port: PORT, host: BIND_HOST \}\)/);
 });

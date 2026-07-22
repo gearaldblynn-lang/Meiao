@@ -252,7 +252,12 @@ const createMysqlHarness = (initialJob, options = {}) => {
     state.job[toCamel(column)] = value;
   };
   const pool = {
+    async getConnection() {
+      return { query: this.query.bind(this), release() {} };
+    },
     async query(sql, params = []) {
+      if (/SELECT GET_LOCK/.test(sql)) return [[{ acquired: 1 }]];
+      if (/SELECT RELEASE_LOCK/.test(sql)) return [[{ released: 1 }]];
       if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1/.test(sql)) {
         return [[state.job]];
       }

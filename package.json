@@ -13,6 +13,7 @@
     "test:server": "node scripts/run-test-suite.mjs server",
     "test:frontend": "node scripts/run-test-suite.mjs frontend",
     "test:scripts": "node scripts/run-test-suite.mjs scripts",
+    "test:pm2-reload": "node scripts/test-pm2-graceful-reload.mjs",
     "build": "tsc -b && vite build",
     "lint": "tsc -b && node scripts/run-eslint-budget.mjs",
     "verify": "npm run lint && npm test && npm run build",

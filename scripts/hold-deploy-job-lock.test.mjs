@@ -6,12 +6,18 @@ import { holdDeployJobTableLock } from './hold-deploy-job-lock.mjs';
 const createConnection = ({ runningRows = [], events }) => ({
   async query(sql) {
     const normalized = String(sql).replace(/\s+/g, ' ').trim();
-    if (normalized === 'LOCK TABLES internal_jobs WRITE') events.push('lock');
+    if (normalized.startsWith('SELECT GET_LOCK')) {
+      events.push('lock');
+      return [[{ acquired: 1 }]];
+    }
     else if (normalized.startsWith('SELECT task_type')) {
       events.push('query-running');
       return [runningRows];
     } else if (normalized === 'SELECT 1 AS lock_session_alive') events.push('liveness');
-    else if (normalized === 'UNLOCK TABLES') events.push('unlock');
+    else if (normalized.startsWith('SELECT RELEASE_LOCK')) {
+      events.push('unlock');
+      return [[{ released: 1 }]];
+    }
     return [[]];
   },
   async end() {

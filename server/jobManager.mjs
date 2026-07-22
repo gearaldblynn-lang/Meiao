@@ -5,6 +5,7 @@ import { canRecoverProviderTaskById, KIE_RECOVERY_SOURCE_TASK_TYPES } from './jo
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import { isDeployDrainActive } from './deployDrain.mjs';
+import { runWithDeployJobClaimLock } from './deployClaimLock.mjs';
 
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
@@ -1508,12 +1509,18 @@ export const createJobWorker = ({
         if (activeControllers.has(job.id)) continue;
 
         const claimedAt = now();
-        const [result] = await pool.query(
-          `UPDATE internal_jobs
-           SET status = 'running', started_at = ?, updated_at = ?, error_code = NULL, error_message = NULL, error_detail = NULL
-           WHERE id = ? AND status IN ('queued', 'retry_waiting')`,
-          [claimedAt, claimedAt, job.id]
-        );
+        const claimAttempt = await runWithDeployJobClaimLock({
+          pool,
+          isExecutionPaused,
+          claim: (connection) => connection.query(
+            `UPDATE internal_jobs
+             SET status = 'running', started_at = ?, updated_at = ?, error_code = NULL, error_message = NULL, error_detail = NULL
+             WHERE id = ? AND status IN ('queued', 'retry_waiting')`,
+            [claimedAt, claimedAt, job.id],
+          ),
+        });
+        if (claimAttempt.paused) break;
+        const [result] = claimAttempt.value;
 
         if (!result?.affectedRows) continue;
 

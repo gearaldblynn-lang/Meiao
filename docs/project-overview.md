@@ -119,6 +119,7 @@ npm run dev
 - `MEIAO_JOB_MAX_CONCURRENCY`
 - `MEIAO_PRODUCT_RESTORE_ROLLOUT`：`off` 禁止新建产品还原任务，`admin` 仅允许管理员新建，`all` 允许所有已登录用户新建；默认和非法值均为 `off`，不影响历史项目可见性。当前功能仍是仅本地状态。
 - `MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS`：默认 `10`；同用户、同语义付费任务的跨进程提交锁等待上限。去重、积分预留与 job 创建在同一 MySQL 事务内完成。
+- `MEIAO_DEPLOY_JOB_CLAIM_LOCK_TIMEOUT_SECONDS`：默认 `10`，限制 worker 领取任务与部署最终屏障共用 MySQL 命名锁的等待时间；锁名为代码常量，不允许用环境变量分裂 worker/部署协议。
 - `MEIAO_PROVIDERLESS_RUNNING_STALE_MS`：默认代码兜底为 15 分钟；云上建议 `300000`。外部付费任务到期会进入 `provider_submission_unknown`，释放并发但不自动重提或退积分预留；内部幂等任务可安全回到 `retry_waiting`。
 - `MEIAO_SUBMITTED_RUNNING_STALE_MS`：默认 `21600000`（6 小时）；只有存在真实上游 ID 查询路径的任务才回到 `retry_waiting` 复查旧结果，不可查询的 chat response ID 停止自动恢复。
 - `MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES`：默认 `2`；只用于已记录 providerTaskId 的旧任务查询/结果下载，不用于重提 create/chat POST。
@@ -250,6 +251,6 @@ node --test src/modules/XhsCover/xhsCoverUtils.test.mjs
 - 腾讯云目录：`/www/wwwroot/meiao-internal`
 - PM2 进程：`meiao-internal`
 - 发布脚本：`./scripts/deploy_tencent.sh`
-- 发布切换：PM2 固定使用单实例 `cluster + wait_ready`，脚本先写 drain marker 暂停 API 写入和 worker，等待存量写请求与运行任务归零，再用短时 `internal_jobs` 表锁作最终零任务屏障。释放表锁后执行 `pm2 startOrReload`，新进程发出 ready 且精确 release health 通过后才移除 marker；正常路径不再停止唯一进程，也不操作 `iptables`。`manual` marker 代表必须人工恢复且不会过期。
+- 发布切换：PM2 固定使用单实例 `cluster + wait_ready`，脚本先写 drain marker 暂停 API 写入和 worker，等待存量写请求与运行任务归零。所有 MySQL worker claim 与部署最终检查共用同一命名锁：worker 获锁后必须重查 marker，从而关闭“先检查、后等锁、释锁后抢跑 claim”竞态。释放屏障后执行 `pm2 startOrReload`，新进程发出 ready 且精确 release health 通过后才移除 marker；正常路径不再停止唯一进程，也不操作 `iptables`。带 owner 或 `manual` 的 marker 不会过期，只能由精确 release health 后的 owner 清理或人工恢复。
 
 GitHub 主要是备份和历史留档，不会自动更新线上服务。线上事实以腾讯云服务器目录和 PM2 进程为准。
