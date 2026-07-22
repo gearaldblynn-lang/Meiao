@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -10,6 +11,10 @@ const rootDir = path.resolve(__dirname, '..');
 const appName = `meiao-pm2-reload-test-${process.pid}`;
 const port = 32_000 + (process.pid % 1_000);
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const isCommandAvailable = (command) => String(process.env.PATH || '')
+  .split(path.delimiter)
+  .some((directory) => directory && existsSync(path.join(directory, command)));
 
 const run = (command, args, { cwd = rootDir, env = process.env } = {}) => new Promise((resolve, reject) => {
   const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -26,7 +31,7 @@ const run = (command, args, { cwd = rootDir, env = process.env } = {}) => new Pr
 
 const createPm2Runner = (pm2Home) => {
   const env = { ...process.env, PM2_HOME: pm2Home };
-  if (process.env.MEIAO_PM2_USE_NPM_EXEC === '1') {
+  if (process.env.MEIAO_PM2_USE_NPM_EXEC === '1' || !isCommandAvailable(process.env.MEIAO_PM2_BIN || 'pm2')) {
     return (args, extraEnv = {}) => run(
       'npm',
       ['exec', '--yes', '--package=pm2@6.0.13', '--', 'pm2', ...args],

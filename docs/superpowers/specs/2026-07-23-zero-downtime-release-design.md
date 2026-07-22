@@ -42,7 +42,7 @@
 
 ## 兼容性与首次迁移
 
-首次上线前的旧进程具备 marker 门禁，但尚未暴露在途写请求数，不得假装它已具备日常平滑 reload 合同。首次迁移使用一次性本机候选端口：新代码在 3101 完成 bootstrap/health，Nginx 原子切到候选进程保持 GET，再把正式 `meiao-internal` 迁移到 3100 cluster，健康后将 Nginx 切回 3100 并移除候选进程。生产进程对 `PORT=3101` 强制校验 `MEIAO_BIND_HOST` 必须是 `127.0.0.1`/`::1`，不能只靠运维文档。全程 marker 保护写请求，每次 Nginx 切换前都必须真实 health 通过，且必须备份并可原子恢复原 Nginx 配置。若任何一步不满足，停止迁移，不退化回先停后启。
+首次上线前的旧进程具备 marker 门禁，但尚未暴露在途写请求数，也不参与新命名锁 claim 协议，不得假装它已具备日常平滑 reload 合同。首次迁移使用一次性本机候选端口：新代码在 marker 保护下于 3101 完成 bootstrap/health，Nginx 原子切到候选进程保持 GET，等旧 3100 连接排空。随后在一条独占 MySQL 连接持有 `internal_jobs WRITE` 表锁、且复查 `running=0` 时停止旧 fork，确认旧 PID 已退出后才释放表锁，使任何在 marker 生效前已通过检查的旧 worker 不可能在释锁后继续 claim。此时公网已由候选进程服务，因此停止旧 fork 不会产生 502。再把正式 `meiao-internal` 迁移到 3100 cluster，健康后将 Nginx 切回 3100 并移除候选进程。生产进程对 `PORT=3101` 强制校验 `MEIAO_BIND_HOST` 必须是 `127.0.0.1`/`::1`，不能只靠运维文档。全程 marker 保护写请求，每次 Nginx 切换前都必须真实 health 通过，且必须备份并可原子恢复原 Nginx 配置。若任何一步不满足，停止迁移，不退化回先停后启。
 
 ## 测试和验收
 

@@ -306,7 +306,7 @@ dist 原子切换后执行 `pm2 startOrReload ecosystem.config.cjs --update-env`
 
 ### 旧 fork 进程首次迁移
 
-2026-07-23 以前的旧进程无 `deployment.activeWriteRequests` 指标，标准脚本会安全拒绝，不允许猜测存量写请求已归零。仅首次迁移使用一次性候选切换：新版候选必须以 `MEIAO_BIND_HOST=127.0.0.1 PORT=3101` 启动，通过精确 release health 后才备份 Nginx vhost、把所有正式回源从 3100 改到 3101，经 `nginx -t` 后 reload。公网连续探测无 502 后，再把正式 `meiao-internal` 迁移为 ecosystem 的 cluster/wait_ready 合同，确认 3100 新 release 健康；最后将 Nginx 切回 3100、再次连续探测，才删除 3101 候选。任一候选/health/Nginx 校验失败都保留当前健康上游并恢复 vhost 备份；候选端口禁止监听 `0.0.0.0`。此流程只用一次，迁移完成后所有后续发布均走标准脚本。
+2026-07-23 以前的旧进程无 `deployment.activeWriteRequests` 指标，也尚未参与新的 MySQL 命名锁 claim 协议；标准脚本会安全拒绝，不允许猜测存量写请求已归零。仅首次迁移使用一次性候选切换：先创建不过期 marker，新版候选必须以 `MEIAO_BIND_HOST=127.0.0.1 PORT=3101` 启动，通过精确 release health 后才备份 Nginx vhost、把所有正式回源从 3100 改到 3101，经 `nginx -t` 后 reload。公网连续探测无 502，且 3100 旧进程已有连接排空后，用一条独占 MySQL 连接执行 `LOCK TABLES internal_jobs WRITE`、复查 `running=0`，并在该表锁仍持有时停止旧 fork，严格确认旧 PID 已退出后才 `UNLOCK TABLES`。这个特殊步骤只用来销毁“旧 worker 已通过 marker 检查、正在表锁后排队”的最后竞态；公网此时已由 3101 候选服务，不会形成无上游。然后把正式 `meiao-internal` 迁移为 ecosystem 的 cluster/wait_ready 合同，确认 3100 新 release 健康；最后将 Nginx 切回 3100、再次连续探测，才删除 3101 候选与 marker。任一候选/health/Nginx 校验失败都保留当前健康上游并恢复 vhost 备份；候选端口非回环绑定会被服务端直接拒绝启动。此流程只用一次，迁移完成后所有后续发布均走标准脚本。
 
 ### 部署互斥锁残留恢复
 
