@@ -17,6 +17,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Environment: cloud production / local development / local backup / GitHub comparison
 - Root cause:
 - Fix:
+## 2026-07-22 - Managed image validation must trust bytes, not browser MIME labels
+
+- Symptom: 多个账号上传 `.jpg` 素材时集中出现“图片类型与文件内容不一致”，项目在策划/生图前失败；同一素材会让连续新项目重复报错。
+- Environment: Tencent Cloud production / one-click first image and all managed source-image uploads / multipart upload before provider submission.
+- Root cause: 服务端已经从文件魔数识别出受支持的 WEBP/PNG，却又要求浏览器声明的 `image/jpeg` 与检测结果完全一致。合法但扩展名或客户端 MIME 不准确的图片因此在 `asset_upload` 阶段被拒绝；架构级根因见 `CLAUDE.md` #78。
+- Fix: 受支持图片以真实字节类型为准并规范化 MIME、素材文件名、COS 对象键和 `Content-Type`；明确非图片声明、未知签名和不受支持格式继续拒绝。
+- Regression check: `server/managedImageValidation.test.mjs` 覆盖 WEBP 字节 + JPEG 声明；`server/assetStore.test.mjs` 覆盖 PNG 字节 + `.jpg` 到完整资产/COS `.png`；`server/tencentCosImageStore.test.mjs` 锁定对象键采用可信 MIME 扩展名，并保留非图片伪装负例。
+- Avoid next time: 浏览器 MIME 与扩展名不能充当图片真实性证据。所有上传入口必须复用同一字节嗅探合同，且持久化 MIME、扩展名与存储对象必须一次性归一化，不能只放宽校验而留下错误元数据。
+
 ## Standing Lessons
 
 ## 2026-07-17 - 项目卡子功能归属必须使用统一结构化契约

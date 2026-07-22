@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import COS from 'cos-nodejs-sdk-v5';
-import { validateManagedImageUpload } from './managedImageValidation.mjs';
+import {
+  getManagedImageFileExtension,
+  validateManagedImageUpload,
+} from './managedImageValidation.mjs';
 
 const IMAGE_KEY_PREFIX = 'managed-images/users/';
 const DEFAULT_BROWSER_URL_TTL_SECONDS = 300;
@@ -70,21 +73,15 @@ const sleepWithSignal = (milliseconds, signal) => new Promise((resolve, reject) 
   else signal.addEventListener('abort', handleAbort, { once: true });
 });
 
-const imageExtensionFromMimeType = (mimeType = '') => {
-  const normalized = String(mimeType || '').trim().toLowerCase();
-  if (normalized === 'image/png') return '.png';
-  if (normalized === 'image/webp') return '.webp';
-  if (normalized === 'image/gif') return '.gif';
-  if (normalized === 'image/avif') return '.avif';
-  return '.jpg';
-};
-
 const sanitizeImageFileName = (fileName, mimeType) => {
   const normalized = String(fileName || '').trim();
   const requestedExtension = path.extname(normalized).toLowerCase();
-  const extension = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif'].includes(requestedExtension)
-    ? (requestedExtension === '.jpeg' ? '.jpg' : requestedExtension)
-    : imageExtensionFromMimeType(mimeType);
+  const trustedExtension = getManagedImageFileExtension(mimeType);
+  const extension = trustedExtension || (
+    ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif', '.heic'].includes(requestedExtension)
+      ? (requestedExtension === '.jpeg' ? '.jpg' : requestedExtension)
+      : '.jpg'
+  );
   const baseName = path.basename(normalized);
   const rawStem = requestedExtension
     ? baseName.slice(0, -requestedExtension.length)

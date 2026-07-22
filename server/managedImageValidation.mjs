@@ -2,6 +2,17 @@ const DEFAULT_MANAGED_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 const MIN_MANAGED_IMAGE_MAX_BYTES = 1024 * 1024;
 const MAX_MANAGED_IMAGE_MAX_BYTES = 100 * 1024 * 1024;
 
+const MANAGED_IMAGE_FILE_EXTENSIONS = new Map([
+  ['image/png', '.png'],
+  ['image/jpeg', '.jpg'],
+  ['image/gif', '.gif'],
+  ['image/webp', '.webp'],
+  ['image/bmp', '.bmp'],
+  ['image/avif', '.avif'],
+  ['image/heic', '.heic'],
+  ['image/heif', '.heic'],
+]);
+
 const createValidationError = (code, message, statusCode = 400) => {
   const error = new Error(message);
   error.code = code;
@@ -17,6 +28,10 @@ const normalizeMimeType = (value) => {
   if (mimeType === 'image/x-ms-bmp') return 'image/bmp';
   return mimeType;
 };
+
+export const getManagedImageFileExtension = (mimeType) => (
+  MANAGED_IMAGE_FILE_EXTENSIONS.get(normalizeMimeType(mimeType)) || ''
+);
 
 const startsWithBytes = (buffer, bytes) => (
   buffer.length >= bytes.length && bytes.every((value, index) => buffer[index] === value)
@@ -147,10 +162,16 @@ export const resolveManagedImageUpload = ({ fileBuffer, mimeType, env = process.
   // bytes; a conflicting specific non-image declaration is rejected.
   validateManagedImageUpload({ fileBuffer: buffer, mimeType: detectedMimeType, env });
   if (!declaredMimeType.startsWith('image/') && declaredMimeType !== 'application/octet-stream') {
-    throw createValidationError('managed_image_mime_mismatch', '图片类型与文件内容不一致');
+    const error = createValidationError('managed_image_mime_mismatch', '图片类型与文件内容不一致');
+    error.declaredMimeType = declaredMimeType;
+    error.detectedMimeType = detectedMimeType;
+    throw error;
   }
-  if (declaredMimeType.startsWith('image/')) {
-    validateManagedImageUpload({ fileBuffer: buffer, mimeType: declaredMimeType, env });
-  }
-  return { isImage: true, mimeType: detectedMimeType, detectedMimeType };
+  return {
+    isImage: true,
+    mimeType: detectedMimeType,
+    detectedMimeType,
+    declaredMimeType,
+    mimeTypeNormalized: declaredMimeType !== detectedMimeType,
+  };
 };

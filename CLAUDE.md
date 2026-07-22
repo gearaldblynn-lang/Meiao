@@ -441,3 +441,8 @@
   根因:董丹丹反馈 13 秒 MP3 长时间“还在转”，但近期无任何属于该账号的 `media_transcode_session_created`，断点在应用完整读取 multipart/FFprobe 之前。前端未使用已有 `onUploadProgress`，而且只显示模拟转换进度；Nginx 默认先缓存完整请求，全局 `client_max_body_size=50m` / 300 秒超时又与应用 200 MiB / 600 秒合同不一致。同时 `isMediaCompatibleForProfile` 对所有 `seedance_reference` 固定返回 false，导致时长、容器、编码已符合的 MP3/H.264 MP4 也必然进入 FFmpeg。云上用董丹丹同一条 28 秒 H.264 源视频做 15 秒非付费转码仅用 4.3 秒，排除 FFmpeg 本身长时间卡住。
   修复:会话探测返回 `compatibleSource`，完整保留且已符合 2–15 秒、大小、MP3 或 H.264 MP4/yuv420p/尺寸/帧率合同时直接持久化原文件，不调 FFmpeg；超时长、裁剪过范围、MOV/HEVC/非标准 MP3 才按需规范化。前端显示真实上传百分比，分开“正在上传”“正在读取媒体信息”和“转换/保存”；已兼容素材明确显示“使用原文件并继续”。应用在读取请求体前记录 owner/content-length 起点；生产 `/api/media-transcodes/` 需单独关闭 `proxy_request_buffering`，并将入口大小/超时与应用合同对齐。
   如何避免:**“支持上传”、“模型最终格式”和“是否需要转码”是三个不同合同；不能用配置名或文案默认全部转码。大文件接口必须对齐浏览器、反代和应用三层大小/超时，并在读 body 前留下起点证据。回归必须同时锁定短 MP3 不调 FFmpeg、标准 H.264 不调 FFmpeg、长视频/HEVC 仍要转换，以及上传真实进度。**
+
+- **#78 ✅ 已修(2026-07-22)· 浏览器声明的图片 MIME 与真实字节不一致，合法图片在 provider 提交前被批量拒绝**
+  根因:托管图片上传先按文件魔数识别 PNG/JPEG/WEBP 等真实类型，随后又要求浏览器 multipart 声明的 `Content-Type` 与真实类型完全相等。用户从平台下载或仅改扩展名的图片常出现“文件名 `.jpg`、浏览器声明 `image/jpeg`、真实字节为 WEBP/PNG”，这些仍是受支持且可安全解析的图片，却在 `asset_upload` 阶段被误判为“图片类型与文件内容不一致”，尚未创建 provider 任务。生产自 7 月 18 日起共观察到 41 次、涉及 5 个账号；同一张坏本地素材会让连续项目重复失败。
+  修复:图片安全边界改为以文件魔数为可信来源：真实字节属于受支持图片时，允许浏览器声明的另一种 `image/*` 类型并规范化为检测 MIME；明确声明为非图片且不是 `application/octet-stream` 时仍拒绝，无法识别或不受支持的字节仍 fail closed。素材记录、COS `Content-Type`、对象键和公开文件名统一使用检测 MIME 对应的规范扩展名，避免内容、元数据与 URL 再次漂移。
+  如何避免:**上传验收必须把“安全识别”和“客户端元数据一致性”分开：安全只信任真实字节，客户端 MIME/扩展名只能作为提示。回归矩阵至少包含 JPEG 名称承载 WEBP/PNG 的合法归一化、非图片伪装、未知签名、容量上限和 COS 扩展名；排查时先确认错误发生在素材上传还是 provider job，`providerTaskId=null` 不应被归因于上游出图不稳定。**
