@@ -23,13 +23,35 @@ const CHINESE_NUMERALS = ['一', '二', '三', '四', '五', '六', '七', '八'
 
 export const getSegmentLabel = (index: number) => `分段${CHINESE_NUMERALS[index] || index + 1}`;
 
-const extractStoryboardCells = (text = '', panelCount = 9) => {
+const isViralSplitConfig = (config: VideoStoryboardConfig) => config.videoGenerationMode === 'viral_split';
+
+const getFallbackStoryboardCell = (config: VideoStoryboardConfig, index: number) => (
+  isViralSplitConfig(config)
+    ? `参考视频中第${index + 1}个关键镜头的通用结构，结合当前商品原创改编，并保持商品、人物、环境和光影连续一致。`
+    : `原创画面第${index + 1}个镜头，围绕用户脚本文案和当前商品信息设计具体画面，并保持商品、人物、环境和光影连续一致。`
+);
+
+const normalizeModeSpecificText = (
+  value: unknown,
+  config: VideoStoryboardConfig,
+  fallback: string,
+) => {
+  const text = String(value || '').trim();
+  if (!text || (!isViralSplitConfig(config) && /参考视频/.test(text))) return fallback;
+  return text;
+};
+
+const extractStoryboardCells = (text = '', panelCount = 9, config: VideoStoryboardConfig) => {
   const normalized = String(text || '').replace(/\r/g, '').trim();
   const matches = Array.from(normalized.matchAll(/(?:^|[；;\n])\s*(?:分镜)?(?:\d+|[一二三四五六七八九十]+)[\.、：:]\s*([^；;\n]+)/g))
     .map((match) => match[1]?.trim())
     .filter(Boolean);
-  if (matches.length > 0) return matches.slice(0, panelCount);
-  return Array.from({ length: panelCount }, (_, index) => `参考视频中第${index + 1}个关键镜头的通用结构，结合当前商品原创改编，并保持商品、人物、环境和光影连续一致。`);
+  if (matches.length > 0) {
+    return matches.slice(0, panelCount).map((match, index) => (
+      normalizeModeSpecificText(match, config, getFallbackStoryboardCell(config, index))
+    ));
+  }
+  return Array.from({ length: panelCount }, (_, index) => getFallbackStoryboardCell(config, index));
 };
 
 const normalizeCoreVisualDescription = (value: string, fallback: string) => {
@@ -51,21 +73,69 @@ const extractCoreVisualDescription = (text: string, label: '人物细节' | '环
   return normalizeCoreVisualDescription(match?.[1] || '', fallback);
 };
 
-const getFallbackVoiceover = (_config: VideoStoryboardConfig, _shotIndex: number) => '参考视频该分镜口播信息未清晰识别';
+const getOriginalVoiceoverLines = (config: VideoStoryboardConfig) => {
+  const raw = String(config.scriptLogic || '').replace(/\r/g, '').trim();
+  if (!raw) return [];
+  const markers = Array.from(raw.matchAll(/(?:文案为|脚本文案|口播文案|口播内容)\s*[：:]/g));
+  const lastMarker = markers[markers.length - 1];
+  const script = lastMarker
+    ? raw.slice((lastMarker.index ?? 0) + lastMarker[0].length).trim()
+    : raw;
+  const lines = script
+    .split('\n')
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[\.、])\s*/, '').trim())
+    .filter((line) => line && !/^[【\[].*[】\]]$/.test(line));
+  if (lines.length !== 1) return lines;
+  return lines[0]
+    .split(/(?<=[。！？!?；;])/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+};
 
-const getFallbackAudio = () => '参考视频该分镜声音类型未清晰识别';
+const getFallbackVoiceover = (config: VideoStoryboardConfig, shotIndex: number) => (
+  isViralSplitConfig(config)
+    ? '参考视频该分镜口播信息未清晰识别'
+    : (getOriginalVoiceoverLines(config)[shotIndex] || '')
+);
+
+const getFallbackAudio = (config: VideoStoryboardConfig) => (
+  isViralSplitConfig(config)
+    ? '参考视频该分镜声音类型未清晰识别'
+    : '与当前原创画面动作匹配的背景音乐和自然环境音'
+);
+
+const getFallbackVisual = (config: VideoStoryboardConfig, shotIndex: number) => (
+  isViralSplitConfig(config)
+    ? `参考视频第${shotIndex + 1}个镜头的画面内容`
+    : `原创画面第${shotIndex + 1}个镜头，围绕用户脚本文案和当前商品信息展开`
+);
+
+const getFallbackMotion = (config: VideoStoryboardConfig, shotIndex: number) => (
+  isViralSplitConfig(config)
+    ? `延续参考视频第${shotIndex + 1}个镜头的动作和运镜节奏`
+    : `采用与原创画面第${shotIndex + 1}个镜头内容匹配的动作和运镜节奏`
+);
 
 const normalizeVoiceoverText = (value: string, config: VideoStoryboardConfig, shotIndex: number) => {
   const text = String(value || '').trim();
-  if (!text || /口播\s*(无|为空)|无口播|静音|none/i.test(text)) {
+  if (
+    !text
+    || /口播\s*(无|为空)|无口播|静音|none/i.test(text)
+    || (!isViralSplitConfig(config) && /参考视频/.test(text))
+  ) {
     return getFallbackVoiceover(config, shotIndex);
   }
   return text.replace(/^["“]|["”]$/g, '');
 };
 
-const extractScriptShots = (text = '', panelCount = 9, config: VideoStoryboardConfig) => {
+const extractScriptShots = (
+  text = '',
+  panelCount = 9,
+  config: VideoStoryboardConfig,
+  voiceoverOffset = 0,
+) => {
   const normalized = String(text || '').replace(/\r/g, '').trim();
-  const timeMatches = Array.from(normalized.matchAll(/(\d{2}:\d{2})\s*[-–—]\s*(\d{2}:\d{2})/g));
+  const timeMatches = Array.from(normalized.matchAll(/(\d{2}:\d{2}(?:\.\d+)?)\s*[-–—]\s*(\d{2}:\d{2}(?:\.\d+)?)/g));
   if (timeMatches.length > 0) {
     return timeMatches.slice(0, panelCount).map((match, index) => {
       const startIndex = match.index ?? 0;
@@ -79,14 +149,24 @@ const extractScriptShots = (text = '', panelCount = 9, config: VideoStoryboardCo
       const audioLine = lines.find((line) => line.startsWith('音效')) || '';
       const voiceMatch = voiceLine.match(/口播\s*[（(]?([^）)]*)[）)]?\s*[：:]?\s*[“"]?([^”"\n]*)/);
       const audioMatch = audioLine.match(/音效\s*[：:]?\s*(.*)$/);
+      const fallbackVisual = getFallbackVisual(config, index);
+      const fallbackMotion = getFallbackMotion(config, index);
       return {
         start: match[1],
         end: match[2],
-        visual: visualLine.replace(/^画面描述\(视觉\)：|^画面：/, '').trim() || `参考视频第${index + 1}个镜头的画面内容`,
-        motion: motionLine.replace(/^动作\/运镜：|^动作：/, '').trim() || `延续参考视频第${index + 1}个镜头的动作和运镜节奏`,
+        visual: normalizeModeSpecificText(
+          visualLine.replace(/^画面描述\(视觉\)：|^画面：/, ''),
+          config,
+          fallbackVisual,
+        ),
+        motion: normalizeModeSpecificText(
+          motionLine.replace(/^动作\/运镜：|^动作：/, ''),
+          config,
+          fallbackMotion,
+        ),
         voiceEmotion: voiceMatch?.[1]?.trim() || '自然、可信',
-        voiceover: normalizeVoiceoverText(voiceMatch?.[2] || '', config, index),
-        audio: audioMatch?.[1]?.trim() || getFallbackAudio(),
+        voiceover: normalizeVoiceoverText(voiceMatch?.[2] || '', config, voiceoverOffset + index),
+        audio: normalizeModeSpecificText(audioMatch?.[1], config, getFallbackAudio(config)),
       };
     });
   }
@@ -100,11 +180,11 @@ const extractScriptShots = (text = '', panelCount = 9, config: VideoStoryboardCo
     return {
       start: `00:${String(Math.floor(start)).padStart(2, '0')}`,
       end: `00:${String(Math.floor(end)).padStart(2, '0')}`,
-      visual: `参考视频第${index + 1}个关键镜头画面，结合商品参考图替换为当前产品`,
-      motion: `按参考视频第${index + 1}个镜头的运动节奏执行`,
+      visual: getFallbackVisual(config, index),
+      motion: getFallbackMotion(config, index),
       voiceEmotion: '自然、有说服力',
-      voiceover: getFallbackVoiceover(config, index),
-      audio: getFallbackAudio(),
+      voiceover: getFallbackVoiceover(config, voiceoverOffset + index),
+      audio: getFallbackAudio(config),
     };
   });
 };
@@ -117,7 +197,7 @@ const normalizeViralStoryboardPrompt = (
 ) => {
   const title = item.title || getSegmentLabel(index);
   const raw = String(item.storyboardPrompt || '').trim();
-  const cells = extractStoryboardCells(raw, panelCount);
+  const cells = extractStoryboardCells(raw, panelCount, config);
   const personDetail = extractCoreVisualDescription(
     raw,
     '人物细节',
@@ -171,25 +251,29 @@ const normalizeOriginalStoryboardPrompt = (
 ) => {
   const title = item.title || getSegmentLabel(index);
   const raw = String(item.storyboardPrompt || '').trim();
-  const cells = extractStoryboardCells(raw, panelCount);
+  const cells = extractStoryboardCells(raw, panelCount, config);
+  const personFallback = config.actorType === 'real_person'
+    ? `符合${config.countryLanguage}市场审美的真实人物出镜，手部和上半身动作自然，服装气质干净亲和，所有分段保持一致。`
+    : '根据演员类型保持统一的人物或局部动作表达，出镜范围、动作节奏和商业广告气质在所有分段保持一致。';
+  const environmentFallback = String(config.scenes?.[0] || config.productInfo || '干净明亮的电商短视频拍摄场景，桌面道具、光线方向、景深和机位在全片保持连续。');
   const personDetail = extractCoreVisualDescription(
     raw,
     '人物细节',
-    config.actorType === 'real_person'
-      ? `符合${config.countryLanguage}市场审美的真实人物出镜，手部和上半身动作自然，服装气质干净亲和，所有分段保持一致。`
-      : '根据演员类型保持统一的人物或局部动作表达，出镜范围、动作节奏和商业广告气质在所有分段保持一致。',
+    personFallback,
   );
   const environmentDetail = extractCoreVisualDescription(
     raw,
     '环境/场景',
-    String(config.scenes?.[0] || config.productInfo || '干净明亮的电商短视频拍摄场景，桌面道具、光线方向、景深和机位在全片保持连续。'),
+    environmentFallback,
   );
+  const safePersonDetail = normalizeModeSpecificText(personDetail, config, personFallback);
+  const safeEnvironmentDetail = normalizeModeSpecificText(environmentDetail, config, environmentFallback);
 
   return `${title}
 {任务：根据输入按照要求制作一张${panelCount}宫格分镜图，保证每个分镜单元格画面都必须是${config.aspectRatio}视频比例。
 【全片核心视觉基调】
-人物细节：${personDetail}
-环境/场景：${environmentDetail}
+人物细节：${safePersonDetail}
+环境/场景：${safeEnvironmentDetail}
 全局一致性：商品参考图一致性、人物、场景、道具、光影、镜头语言、画面质感在所有分段保持连续一致。
 分镜内容如下
 ${cells.map((cell, cellIndex) => `分镜${CHINESE_NUMERALS[cellIndex] || cellIndex + 1}：${cell}`).join('\n')}
@@ -204,9 +288,10 @@ const normalizeOriginalDynamicScriptPrompt = (
   index: number,
   panelCount: number,
   config: VideoStoryboardConfig,
+  voiceoverOffset = 0,
 ) => {
   const title = item.title || getSegmentLabel(index);
-  const shots = extractScriptShots(item.dynamicScriptPrompt || '', panelCount, config);
+  const shots = extractScriptShots(item.dynamicScriptPrompt || '', panelCount, config, voiceoverOffset);
   return `${title}
 {前置要求：保持视频画面纯净，禁止出现任何文字字幕！
 【全局一致性要求】
@@ -238,9 +323,9 @@ const buildOriginalSplitShotsAndBoards = (
     const fallbackRange = ranges[index] || ranges[ranges.length - 1] || { start: 0, end: config.shotCount };
     const panelCount = Math.max(1, Math.min(12, Number(item.panelCount || (fallbackRange.end - fallbackRange.start) || config.shotCount || 9) || 9));
     const storyboardPrompt = normalizeOriginalStoryboardPrompt(item, index, panelCount, config);
-    const dynamicScriptPrompt = normalizeOriginalDynamicScriptPrompt(item, index, panelCount, config);
-    const cells = extractStoryboardCells(storyboardPrompt, panelCount);
-    const scriptShots = extractScriptShots(dynamicScriptPrompt, panelCount, config);
+    const dynamicScriptPrompt = normalizeOriginalDynamicScriptPrompt(item, index, panelCount, config, fallbackRange.start);
+    const cells = extractStoryboardCells(storyboardPrompt, panelCount, config);
+    const scriptShots = extractScriptShots(dynamicScriptPrompt, panelCount, config, fallbackRange.start);
     const shotIds = Array.from({ length: panelCount }, (_, shotIndex) => {
       const id = buildStoryboardEntityId('shot', identitySeed, index, shotIndex);
       shots.push({
@@ -317,8 +402,40 @@ const buildViralSplitShotsAndBoards = (
   };
 };
 
+const scoreStoryboardPlanningCandidate = (value: unknown) => {
+  if (!Array.isArray(value) || value.length === 0) return -1;
+  const items = value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+  if (items.length !== value.length) return -1;
+
+  const hasText = (item: Record<string, unknown>, key: string) => String(item[key] || '').trim().length > 0;
+  const segmentedCount = items.filter((item) => hasText(item, 'storyboardPrompt') || hasText(item, 'dynamicScriptPrompt')).length;
+  const completeSegmentCount = items.filter((item) => hasText(item, 'storyboardPrompt') && hasText(item, 'dynamicScriptPrompt')).length;
+  const fullContractCount = items.filter((item) => (
+    hasText(item, 'title')
+    && Number(item.durationSeconds) > 0
+    && Number(item.panelCount) > 0
+    && hasText(item, 'storyboardPrompt')
+    && hasText(item, 'dynamicScriptPrompt')
+  )).length;
+  const legacyCount = items.filter((item) => hasText(item, 'description') || hasText(item, 'prompt') || hasText(item, 'script')).length;
+  const averageFieldScore = items.reduce((total, item) => total
+    + (hasText(item, 'storyboardPrompt') ? 25 : 0)
+    + (hasText(item, 'dynamicScriptPrompt') ? 25 : 0)
+    + (hasText(item, 'title') ? 3 : 0)
+    + (Number(item.panelCount) > 0 ? 2 : 0)
+    + (Number(item.durationSeconds) > 0 ? 1 : 0), 0) / items.length;
+
+  if (fullContractCount === items.length) return 2200 + averageFieldScore;
+  if (completeSegmentCount === items.length) return 1200 + averageFieldScore;
+  if (segmentedCount === items.length) return 200 + averageFieldScore;
+  if (legacyCount === items.length) return 500 + averageFieldScore;
+  return averageFieldScore;
+};
+
 const extractJsonArray = (content: string) => {
   const cleaned = content.replace(/```json/g, '').replace(/```/g, '').trim();
+  let selectedCandidate = '';
+  let selectedScore = -1;
   for (let start = cleaned.indexOf('['); start >= 0; start = cleaned.indexOf('[', start + 1)) {
     let depth = 0;
     let inString = false;
@@ -344,16 +461,21 @@ const extractJsonArray = (content: string) => {
         if (depth === 0) {
           const candidate = cleaned.slice(start, index + 1);
           try {
-            JSON.parse(candidate);
-            return candidate;
+            const parsed = JSON.parse(candidate);
+            const score = scoreStoryboardPlanningCandidate(parsed);
+            if (score >= selectedScore) {
+              selectedCandidate = candidate;
+              selectedScore = score;
+            }
           } catch {
             break;
           }
+          break;
         }
       }
     }
   }
-  return cleaned;
+  return selectedCandidate || cleaned;
 };
 
 const allocateDurations = (totalSeconds: number, count: number) => {
