@@ -297,7 +297,7 @@ export interface GeneratedResult {
   prompt: string;
   model: string;
   aspectRatio: string;
-  status: 'completed' | 'generating' | 'retry_waiting' | 'error';
+  status: 'planning' | 'completed' | 'generating' | 'retry_waiting' | 'error';
   createdAt: number;
   module: AppModule;
   subFeature?: string;

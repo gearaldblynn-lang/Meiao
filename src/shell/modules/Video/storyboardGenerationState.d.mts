@@ -48,4 +48,17 @@ export function mergeRecoveredStoryboardProject(
 
 export function toStoryboardShellResultStatus(
   board?: VideoStoryboardBoard,
-): 'completed' | 'generating' | 'error';
+): 'planning' | 'completed' | 'generating' | 'error';
+
+export function isStoryboardAwaitingImageConfirmation(
+  status?: unknown,
+): boolean;
+
+export function toStoryboardShellProjectStatus(
+  status?: VideoStoryboardProject['status'],
+): 'planning' | 'generating' | 'completed' | 'error';
+
+export function getStoryboardCardSegmentCount(project?: {
+  results?: unknown[];
+  storyboardSourceProject?: { boards?: unknown[] };
+}): number;

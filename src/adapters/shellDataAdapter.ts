@@ -19,6 +19,7 @@ import { parseStoryboardPlanningResult } from '../utils/videoStoryboardPlanning.
 import {
   applyStoryboardBoardResult,
   deriveStoryboardProjectStatus,
+  toStoryboardShellProjectStatus,
   toStoryboardShellResultStatus,
 } from '../shell/modules/Video/storyboardGenerationState.mjs';
 import { getOneClickPlanContent, isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
@@ -88,7 +89,7 @@ export interface ShellGeneratedResult {
   prompt: string;
   model?: string;
   aspectRatio: string;
-  status: 'completed' | 'generating' | 'error' | 'retry_waiting';
+  status: 'planning' | 'completed' | 'generating' | 'error' | 'retry_waiting';
   createdAt: number;
   module: AppModule;
   subFeature?: string;
@@ -1338,13 +1339,7 @@ const storyboardProjectToShellProject = (
     || project.planningJobId
     || ''
   ).trim() || undefined;
-  const status: ShellProjectStatus = project.status === 'completed'
-    ? 'completed'
-    : project.status === 'failed'
-      ? 'error'
-      : project.status === 'scripting' || project.status === 'imaging'
-        ? 'generating'
-        : 'planning';
+  const status = toStoryboardShellProjectStatus(project.status) as ShellProjectStatus;
 
   return {
     id: project.id,
@@ -1419,7 +1414,15 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         prompt: String(result?.prompt || '').trim(),
         model: normalizeModel(result?.model),
         aspectRatio: String(result?.aspectRatio || 'auto'),
-        status: result?.status === 'error' ? 'error' : result?.status === 'generating' ? 'generating' : 'completed',
+        status: result?.status === 'planning'
+          ? 'planning'
+          : result?.status === 'error'
+            ? 'error'
+            : result?.status === 'generating'
+              ? 'generating'
+              : result?.status === 'retry_waiting'
+                ? 'retry_waiting'
+                : 'completed',
         createdAt: coerceCreatedAtMs(result?.createdAt ?? project.createdAt, { id: result?.id ?? project.id, updatedAt: project.updatedAt }).ms,
         module: resultModule,
         subFeature: String(result?.subFeature || project.subFeature || '').trim() || undefined,

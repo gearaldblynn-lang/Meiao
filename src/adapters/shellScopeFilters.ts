@@ -3,7 +3,7 @@ import { normalizeShellProjectScope } from '../utils/shellProjectScope.mjs';
 
 export interface ScopeProjectResult {
   id: string;
-  status: 'completed' | 'generating' | 'retry_waiting' | 'error';
+  status: 'planning' | 'completed' | 'generating' | 'retry_waiting' | 'error';
   subFeature?: string;
 }
 

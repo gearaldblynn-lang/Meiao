@@ -10,6 +10,10 @@ import {
   getProductRestoreTotalKnownCredits,
   normalizeKnownProductRestoreCredits,
 } from '../../utils/productRestoreAnalysisCredits.ts';
+import {
+  getStoryboardCardSegmentCount,
+  isStoryboardAwaitingImageConfirmation,
+} from '../modules/Video/storyboardGenerationState.mjs';
 import { resolveProjectCardActivity } from './projectCardActivity.mjs';
 
 const projectCardPath = new URL('./ProjectCard.tsx', import.meta.url);
@@ -32,6 +36,8 @@ const {
   getProductRestoreAnalysisCreditSummary,
   getProductRestoreTotalKnownCredits,
   normalizeKnownProductRestoreCredits,
+  getStoryboardCardSegmentCount,
+  isStoryboardAwaitingImageConfirmation,
   resolveProjectCardActivity,
 } = globalThis.__projectCardCreditTestDeps;
 const useEffect = React.useEffect;
@@ -94,6 +100,8 @@ export const resetProjectCardTestState = () => { projectCardStateCall = 0; };
     getProductRestoreAnalysisCreditSummary,
     getProductRestoreTotalKnownCredits,
     normalizeKnownProductRestoreCredits,
+    getStoryboardCardSegmentCount,
+    isStoryboardAwaitingImageConfirmation,
     resolveProjectCardActivity,
   };
   try {
