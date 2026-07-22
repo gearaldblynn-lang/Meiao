@@ -62,6 +62,56 @@ test('classic local worker leaves the store untouched while deployment drain is 
   assert.equal(readCalls, 0);
 });
 
+test('classic local worker settles provider-completed rejected output without exposing it as success', async () => {
+  const store = createStore();
+  const user = createUser();
+  store.users.push(user);
+  const job = createLocalJobRecord(store, user, {
+    module: 'translation',
+    taskType: 'maxforai_image',
+    provider: 'maxforai',
+    payload: {},
+    maxRetries: 0,
+  });
+  const settled = [];
+  const released = [];
+  const rejectedOutput = {
+    result: {
+      quarantinedImageAssetId: 'asset-local-1',
+      imageOutputContract: { sourceWidth: 899, sourceHeight: 1750, targetWidth: 312, targetHeight: 840 },
+    },
+  };
+  const worker = createLocalJobWorker({
+    readStore: () => store,
+    writeStore: () => {},
+    executeJob: async () => {
+      throw Object.assign(new Error('output rejected'), {
+        code: 'image_output_aspect_ratio_mismatch',
+        providerStage: 'output_transform',
+        providerCompleted: true,
+        rejectedOutput,
+      });
+    },
+    getMaxConcurrency: () => 1,
+    createLog: () => {},
+    findUserById: (userId) => store.users.find((candidate) => candidate.id === userId),
+    settleJobCredits: (context) => settled.push(context),
+    releaseJobCredits: (context) => released.push(context),
+    isExecutionPaused: () => false,
+  });
+
+  worker.start(5);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  worker.stop();
+
+  const failed = getLocalJobById(store, job.id);
+  assert.equal(failed.status, 'failed');
+  assert.deepEqual(failed.result, rejectedOutput.result);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].rejected, true);
+  assert.equal(released.length, 0);
+});
+
 test('normalizeLocalJobs returns stable empty array for invalid input', () => {
   assert.deepEqual(normalizeLocalJobs(null), []);
   assert.deepEqual(normalizeLocalJobs({}), []);

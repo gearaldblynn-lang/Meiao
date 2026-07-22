@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 
 import { humanizeProviderError } from './providerErrorHumanize.mjs';
 
+test('aspect-ratio output rejection explains that stretching was blocked', () => {
+  const { message, detail } = humanizeProviderError({
+    code: 'image_output_aspect_ratio_mismatch',
+    message: '899x1750 -> 312x840',
+  });
+
+  assert.match(message, /比例与原图不一致/);
+  assert.match(message, /阻止拉伸/);
+  assert.equal(detail, '899x1750 -> 312x840');
+});
+
 test('provider_network_error 映射为网络不稳人话，detail 保留技术原文', () => {
   const { message, detail } = humanizeProviderError({
     code: 'provider_network_error',

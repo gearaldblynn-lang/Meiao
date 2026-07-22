@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
+  assertTranslationOutputAspectRatio,
   deriveLinkedTranslationSize,
   deriveTranslationExecutionPlan,
   deriveTranslationExportSize,
   getStoredSourceDimensions,
 } from './translationProcessingUtils.mjs';
 
-test('deriveTranslationExecutionPlan maps detail auto ratio to the closest provider-supported ratio', () => {
+test('deriveTranslationExecutionPlan preserves detail auto ratio for the provider', () => {
   const config = {
     aspectRatio: 'auto',
     resolutionMode: 'custom',
@@ -28,18 +29,42 @@ test('deriveTranslationExecutionPlan maps detail auto ratio to the closest provi
     },
   });
 
-  assert.equal(plan.effectiveConfig.aspectRatio, '9:16');
-  assert.equal(plan.isRatioMatch, false);
+  assert.equal(plan.effectiveConfig.aspectRatio, 'auto');
+  assert.equal(plan.isRatioMatch, true);
 });
 
-test('MaxForAI detail auto ratio stays within its documented size table', () => {
+test('translation output aspect-ratio tolerance accepts both exact two-percent boundaries', () => {
+  assert.doesNotThrow(() => assertTranslationOutputAspectRatio({
+    sourceWidth: 98,
+    sourceHeight: 100,
+    targetWidth: 1,
+    targetHeight: 1,
+  }));
+  assert.doesNotThrow(() => assertTranslationOutputAspectRatio({
+    sourceWidth: 102,
+    sourceHeight: 100,
+    targetWidth: 1,
+    targetHeight: 1,
+  }));
+  assert.throws(
+    () => assertTranslationOutputAspectRatio({
+      sourceWidth: 979,
+      sourceHeight: 1000,
+      targetWidth: 1,
+      targetHeight: 1,
+    }),
+    (error) => error?.code === 'image_output_aspect_ratio_mismatch',
+  );
+});
+
+test('MaxForAI detail auto ratio stays auto for its documented auto size mode', () => {
   const plan = deriveTranslationExecutionPlan({
     config: { aspectRatio: 'auto', model: 'maxforai-image-2-relay' },
     subMode: 'detail',
     sourceDimensions: { width: 800, height: 1000 },
   });
 
-  assert.equal(plan.effectiveConfig.aspectRatio, '3:4');
+  assert.equal(plan.effectiveConfig.aspectRatio, 'auto');
 });
 
 test('deriveTranslationExecutionPlan keeps remove text fixed ratio exactly as configured', () => {
@@ -65,7 +90,7 @@ test('deriveTranslationExecutionPlan keeps remove text fixed ratio exactly as co
   assert.equal(plan.isRatioMatch, false);
 });
 
-test('deriveTranslationExecutionPlan maps remove text auto ratio like detail mode', () => {
+test('deriveTranslationExecutionPlan preserves remove text auto ratio for the provider', () => {
   const config = {
     aspectRatio: 'auto',
     resolutionMode: 'custom',
@@ -84,8 +109,8 @@ test('deriveTranslationExecutionPlan maps remove text auto ratio like detail mod
     },
   });
 
-  assert.equal(plan.effectiveConfig.aspectRatio, '9:16');
-  assert.equal(plan.isRatioMatch, false);
+  assert.equal(plan.effectiveConfig.aspectRatio, 'auto');
+  assert.equal(plan.isRatioMatch, true);
 });
 
 test('deriveTranslationExecutionPlan keeps main mode explicit ratio validation behavior', () => {

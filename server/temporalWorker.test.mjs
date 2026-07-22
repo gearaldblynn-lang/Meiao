@@ -146,6 +146,53 @@ test('local temporal activity writes a failed terminal job without submitting up
   assert.equal(store.logs.at(-1).status, 'failed');
 });
 
+test('local temporal activity settles provider-completed rejected output and keeps quarantine evidence', async () => {
+  const store = createStore();
+  const job = createLocalJobRecord(store, store.users[0], {
+    module: 'translation',
+    taskType: 'maxforai_image',
+    provider: 'maxforai',
+    payload: {},
+    maxRetries: 0,
+  });
+  const settled = [];
+  const released = [];
+  const rejectedOutput = {
+    result: {
+      quarantinedImageAssetId: 'asset-inline-1',
+      imageOutputContract: { sourceWidth: 899, sourceHeight: 1750, targetWidth: 312, targetHeight: 840 },
+    },
+  };
+  const activities = createLocalTemporalActivities({
+    readStore: () => store,
+    writeStore: () => {},
+    executeJob: async () => {
+      throw Object.assign(new Error('output rejected'), {
+        code: 'image_output_aspect_ratio_mismatch',
+        providerStage: 'output_transform',
+        providerCompleted: true,
+        rejectedOutput,
+      });
+    },
+    settleJobCredits: (context) => settled.push(context),
+    releaseJobCredits: (context) => released.push(context),
+    createLog: (entry) => store.logs.push(entry),
+    findUserById: (userId) => store.users.find((user) => user.id === userId),
+  });
+
+  const result = await activities.executeLocalJobAttemptActivity({ jobId: job.id });
+  const failed = getLocalJobById(store, job.id);
+
+  assert.equal(result.status, 'failed');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.errorCode, 'image_output_aspect_ratio_mismatch');
+  assert.deepEqual(failed.result, rejectedOutput.result);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].rejected, true);
+  assert.equal(settled[0].output, rejectedOutput);
+  assert.equal(released.length, 0);
+});
+
 test('local temporal activity returns a terminal result when the job was already removed', async () => {
   const store = createStore();
   const activities = createLocalTemporalActivities({
@@ -278,6 +325,66 @@ test('mysql temporal activity leaves queued work unclaimed while deployment drai
   assert.equal(state.job.status, 'queued');
   assert.equal(state.attempts.length, 0);
   assert.equal(executeCalls, 0);
+});
+
+test('mysql temporal activity settles provider-completed rejected output and persists quarantine evidence', async () => {
+  const { state, pool } = createMysqlHarness({
+    id: 'job-output-rejected',
+    user_id: 'user-1',
+    module: 'translation',
+    task_type: 'kie_image',
+    provider: 'kie',
+    status: 'queued',
+    priority: 0,
+    payload_json: JSON.stringify({ resolutionMode: 'original' }),
+    provider_task_id: null,
+    retry_count: 0,
+    max_retries: 2,
+    created_at: 1000,
+    updated_at: 1000,
+  });
+  const settled = [];
+  const released = [];
+  const rejectedOutput = {
+    providerTaskId: 'provider-task-output-rejected',
+    result: {
+      quarantinedImageAssetId: 'asset-remote-1',
+      imageOutputContract: { sourceWidth: 899, sourceHeight: 1750, targetWidth: 312, targetHeight: 840 },
+    },
+  };
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async (_job, _signal, options) => {
+      await options.onProviderTaskId('provider-task-output-rejected');
+      throw Object.assign(new Error('output rejected'), {
+        code: 'image_output_aspect_ratio_mismatch',
+        providerStage: 'output_transform',
+        providerTaskId: 'provider-task-output-rejected',
+        providerCompleted: true,
+        rejectedOutput,
+      });
+    },
+    settleJobCredits: async (context) => settled.push(context),
+    releaseJobCredits: async (context) => released.push(context),
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', username: 'user-1', displayName: 'User 1', role: 'admin' }),
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: 'job-output-rejected',
+    workflowId: 'meiao-job-output-rejected',
+    runId: 'run-1',
+  });
+
+  assert.equal(result.status, 'failed');
+  assert.equal(state.job.status, 'failed');
+  assert.equal(state.job.provider_task_id, 'provider-task-output-rejected');
+  assert.equal(state.job.error_code, 'image_output_aspect_ratio_mismatch');
+  assert.deepEqual(JSON.parse(state.job.result_json), rejectedOutput.result);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].rejected, true);
+  assert.equal(settled[0].output, rejectedOutput);
+  assert.equal(released.length, 0);
 });
 
 test('mysql temporal activity returns a terminal result when the job was already removed', async () => {

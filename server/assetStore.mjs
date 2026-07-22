@@ -998,6 +998,7 @@ export const persistInlineImageResult = async ({
   result = {},
   persistAsset = persistAssetBuffer,
   persistOptions = {},
+  transformImage,
 } = {}) => {
   const nextResult = { ...(result || {}) };
   const imageUrl = String(nextResult.imageUrl || '').trim();
@@ -1012,11 +1013,22 @@ export const persistInlineImageResult = async ({
     throw createInlineImageResultError();
   }
 
+  const transformed = typeof transformImage === 'function'
+    ? await transformImage({ fileBuffer, mimeType: parsed.mimeType })
+    : null;
+  const persistedBuffer = Buffer.isBuffer(transformed?.fileBuffer) ? transformed.fileBuffer : fileBuffer;
+  const persistedMimeType = String(transformed?.mimeType || parsed.mimeType).trim() || parsed.mimeType;
+  const persistedOriginalName = String(transformed?.originalName || '').trim()
+    || buildInlineImageAssetName(persistOptions.originalName, persistedMimeType);
+
   const persisted = await persistAsset({
     ...persistOptions,
-    originalName: buildInlineImageAssetName(persistOptions.originalName, parsed.mimeType),
-    mimeType: parsed.mimeType,
-    fileBuffer,
+    ...(transformed?.assetType ? { assetType: transformed.assetType } : {}),
+    originalName: persistedOriginalName,
+    mimeType: persistedMimeType,
+    fileBuffer: persistedBuffer,
+    ...(Number(transformed?.width) > 0 ? { width: Number(transformed.width) } : {}),
+    ...(Number(transformed?.height) > 0 ? { height: Number(transformed.height) } : {}),
     providerSourceUrl: '',
   });
   const publicUrl = String(persisted?.publicUrl || '').trim();
@@ -1024,6 +1036,9 @@ export const persistInlineImageResult = async ({
 
   nextResult.imageUrl = publicUrl;
   nextResult.imageUrlAssetId = String(persisted?.id || '').trim();
+  if (transformed?.outputTransform && typeof transformed.outputTransform === 'object') {
+    nextResult.imageOutputTransform = transformed.outputTransform;
+  }
   return nextResult;
 };
 

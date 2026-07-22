@@ -1,10 +1,7 @@
 import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
 import { resolveMaxForAiImageModelId } from '../../utils/maxforaiImageModels.mjs';
 
-const SUPPORTED_RATIOS = {
-  'nano-banana-2': ['1:1', '1:4', '1:8', '2:3', '3:2', '3:4', '4:1', '4:3', '4:5', '5:4', '8:1', '9:16', '16:9', '21:9'],
-  'gpt-image-2': ['1:1', '1:4', '1:8', '2:3', '3:2', '3:4', '4:1', '4:3', '4:5', '5:4', '8:1', '9:16', '16:9', '21:9'],
-};
+export const TRANSLATION_OUTPUT_ASPECT_RATIO_TOLERANCE = 0.02;
 
 const getClosestSupportedAspectRatio = (sourceDimensions, model = 'gpt-image-2') => {
   const width = Number(sourceDimensions?.width || 0);
@@ -12,10 +9,9 @@ const getClosestSupportedAspectRatio = (sourceDimensions, model = 'gpt-image-2')
   if (!width || !height) return 'auto';
 
   const sourceRatio = width / height;
-  const maxForAiModel = resolveMaxForAiImageModelId(model);
-  const supportedRatios = maxForAiModel
-    ? getImageModelCapabilities(maxForAiModel).supportedAspectRatios.filter((ratio) => ratio !== 'auto')
-    : SUPPORTED_RATIOS[model] || SUPPORTED_RATIOS['gpt-image-2'];
+  const normalizedModel = resolveMaxForAiImageModelId(model) || model;
+  const supportedRatios = getImageModelCapabilities(normalizedModel).supportedAspectRatios
+    .filter((ratio) => ratio !== 'auto');
 
   let closestRatio = supportedRatios[0];
   let closestDelta = Infinity;
@@ -94,7 +90,10 @@ export const deriveLinkedTranslationSize = ({
 };
 
 export const deriveTranslationExecutionPlan = ({ config, subMode, sourceDimensions }) => {
-  const useAutoMatchedRatio = (subMode === 'detail' || subMode === 'remove_text') && config?.aspectRatio === 'auto';
+  const providerRatios = getImageModelCapabilities(config?.model).supportedAspectRatios || [];
+  const useAutoMatchedRatio = (subMode === 'detail' || subMode === 'remove_text')
+    && config?.aspectRatio === 'auto'
+    && !providerRatios.includes('auto');
   const effectiveConfig = useAutoMatchedRatio
     ? { ...config, aspectRatio: getClosestSupportedAspectRatio(sourceDimensions, config?.model) }
     : config;
@@ -103,6 +102,31 @@ export const deriveTranslationExecutionPlan = ({ config, subMode, sourceDimensio
     effectiveConfig,
     isRatioMatch: effectiveConfig.aspectRatio === 'auto',
   };
+};
+
+export const assertTranslationOutputAspectRatio = ({
+  sourceWidth,
+  sourceHeight,
+  targetWidth,
+  targetHeight,
+  tolerance = TRANSLATION_OUTPUT_ASPECT_RATIO_TOLERANCE,
+}) => {
+  const normalized = [sourceWidth, sourceHeight, targetWidth, targetHeight].map(Number);
+  if (!normalized.every((value) => Number.isFinite(value) && value > 0)) return;
+  const [safeSourceWidth, safeSourceHeight, safeTargetWidth, safeTargetHeight] = normalized;
+  const sourceRatio = safeSourceWidth / safeSourceHeight;
+  const targetRatio = safeTargetWidth / safeTargetHeight;
+  const relativeDrift = Math.abs(sourceRatio / targetRatio - 1);
+  const safeTolerance = Number(tolerance || TRANSLATION_OUTPUT_ASPECT_RATIO_TOLERANCE);
+  if (relativeDrift <= safeTolerance + Number.EPSILON * 10) return;
+
+  const error = new Error(
+    `模型返回图片比例与目标画布不一致：${Math.round(safeSourceWidth)}x${Math.round(safeSourceHeight)} -> ${Math.round(safeTargetWidth)}x${Math.round(safeTargetHeight)}，已阻止非等比拉伸。`,
+  );
+  error.code = 'image_output_aspect_ratio_mismatch';
+  error.providerStage = 'output_transform';
+  error.providerStatus = 'failed';
+  throw error;
 };
 
 export const getStoredSourceDimensions = (fileItem) => {

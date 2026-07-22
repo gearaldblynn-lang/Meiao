@@ -11,7 +11,7 @@ import {
   updateLocalJobProviderTaskId,
 } from './localJobStore.mjs';
 import { getJobById, isRunningJobConcurrencyBlocking, updateJobFields } from './jobManager.mjs';
-import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode } from './jobRuntime.mjs';
+import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode, getProviderCompletedRejectedOutput, isProviderCompletedOutputRejectedError } from './jobRuntime.mjs';
 import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, recordJobEvent } from './taskPlatform.mjs';
@@ -254,9 +254,19 @@ export const createLocalTemporalActivities = ({
       const failedJob = await mutate((failureStore) => {
         const nextJob = markLocalJobFailed(failureStore, claimedJob.id, error);
         try {
-          releaseJobCredits?.({ store: failureStore, job: nextJob, error, retryWaiting: nextJob?.status === 'retry_waiting' });
+          if (isProviderCompletedOutputRejectedError(error)) {
+            settleJobCredits?.({
+              store: failureStore,
+              job: nextJob,
+              output: getProviderCompletedRejectedOutput(error),
+              aborted: false,
+              rejected: true,
+            });
+          } else {
+            releaseJobCredits?.({ store: failureStore, job: nextJob, error, retryWaiting: nextJob?.status === 'retry_waiting' });
+          }
         } catch (creditError) {
-          console.error('Account credit release failed after local Temporal job failure.', creditError);
+          console.error('Account credit finalization failed after local Temporal job failure.', creditError);
         }
         return nextJob;
       });
@@ -557,13 +567,26 @@ export const createMysqlTemporalActivities = ({
         error_code: persistedErrorCode,
         error_message: errorFields.errorMessage,
         error_detail: errorFields.errorDetail || null,
+        result_json: isProviderCompletedOutputRejectedError(error)
+          ? serializeJsonValue(getProviderCompletedRejectedOutput(error)?.result || null)
+          : latestJob.result ? serializeJsonValue(latestJob.result) : null,
         updated_at: finishedAt,
         finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
       });
       try {
-        await releaseJobCredits?.({ job: latestJob, error, finishedAt, retryWaiting: failure.status === 'retry_waiting' });
+        if (isProviderCompletedOutputRejectedError(error)) {
+          await settleJobCredits?.({
+            job: latestJob,
+            output: getProviderCompletedRejectedOutput(error),
+            finishedAt,
+            aborted: false,
+            rejected: true,
+          });
+        } else {
+          await releaseJobCredits?.({ job: latestJob, error, finishedAt, retryWaiting: failure.status === 'retry_waiting' });
+        }
       } catch (creditError) {
-        console.error('Account credit release failed after MySQL Temporal job failure.', creditError);
+        console.error('Account credit finalization failed after MySQL Temporal job failure.', creditError);
       }
       await runTaskPlatformWrite(() => attempt?.id ? finishJobAttempt(pool, attempt.id, {
         status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,

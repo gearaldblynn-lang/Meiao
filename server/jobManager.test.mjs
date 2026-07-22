@@ -59,6 +59,115 @@ test('classic mysql worker does not query or claim jobs while deployment drain i
   assert.equal(poolCalls, 0);
 });
 
+test('classic mysql worker settles provider-completed rejected output and persists quarantine evidence', async () => {
+  const row = {
+    id: 'job-output-rejected-classic',
+    user_id: 'user-1',
+    module: 'translation',
+    task_type: 'kie_image',
+    provider: 'kie',
+    status: 'queued',
+    priority: 0,
+    payload_json: JSON.stringify({ resolutionMode: 'original' }),
+    provider_task_id: null,
+    result_json: null,
+    error_code: null,
+    error_message: null,
+    error_detail: null,
+    retry_count: 0,
+    max_retries: 2,
+    created_at: 1000,
+    updated_at: 1000,
+    started_at: null,
+    finished_at: null,
+    cancel_requested_at: null,
+  };
+  const toCamel = (column) => ({
+    provider_task_id: 'providerTaskId',
+    result_json: 'result',
+    error_code: 'errorCode',
+    error_message: 'errorMessage',
+    error_detail: 'errorDetail',
+    retry_count: 'retryCount',
+    updated_at: 'updatedAt',
+    started_at: 'startedAt',
+    finished_at: 'finishedAt',
+  })[column];
+  const setColumn = (column, value) => {
+    row[column] = value;
+    const camel = toCamel(column);
+    if (camel) row[camel] = value;
+  };
+  const pool = {
+    async query(sql, params = []) {
+      if (/SELECT \*\s+FROM internal_jobs\s+WHERE status = 'running'/.test(sql)) return [[]];
+      if (/SELECT \* FROM internal_jobs\s+WHERE status IN \('queued', 'retry_waiting'\)/.test(sql)) {
+        return [row.status === 'queued' ? [row] : []];
+      }
+      if (/UPDATE internal_jobs\s+SET status = 'running'/.test(sql)) {
+        if (row.status !== 'queued') return [{ affectedRows: 0 }];
+        setColumn('status', 'running');
+        setColumn('started_at', params[0]);
+        setColumn('updated_at', params[1]);
+        return [{ affectedRows: 1 }];
+      }
+      if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1/.test(sql)) return [[row]];
+      if (/SELECT MAX\(attempt_no\) AS attempt_no/.test(sql)) return [[{ attempt_no: 0 }]];
+      if (/INSERT INTO internal_job_(?:attempts|events)/.test(sql)) return [{ affectedRows: 1 }];
+      if (/UPDATE internal_job_attempts/.test(sql)) return [{ affectedRows: 1 }];
+      if (/UPDATE internal_jobs SET /.test(sql)) {
+        const assignments = sql.match(/UPDATE internal_jobs SET ([\s\S]+) WHERE id = \?/)?.[1]
+          .split(',')
+          .map((item) => item.trim().replace(/\s*= \?$/, '')) || [];
+        assignments.forEach((column, index) => setColumn(column, params[index]));
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unhandled SQL in classic worker test: ${sql}`);
+    },
+  };
+  const settled = [];
+  const released = [];
+  const rejectedOutput = {
+    providerTaskId: 'provider-task-classic',
+    result: {
+      quarantinedImageAssetId: 'asset-classic-1',
+      imageOutputContract: { status: 'rejected', reason: 'aspect_ratio_mismatch' },
+    },
+  };
+  const worker = createJobWorker({
+    getPool: async () => pool,
+    executeJob: async () => {
+      throw Object.assign(new Error('output rejected'), {
+        code: 'image_output_aspect_ratio_mismatch',
+        providerStage: 'output_transform',
+        providerTaskId: 'provider-task-classic',
+        providerCompleted: true,
+        rejectedOutput,
+      });
+    },
+    getMaxConcurrency: () => 1,
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+    settleJobCredits: async (context) => settled.push(context),
+    releaseJobCredits: async (context) => released.push(context),
+    getTaskEngineMode: () => 'mysql',
+    isExecutionPaused: () => false,
+  });
+
+  worker.start(5);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  worker.stop();
+
+  assert.equal(row.status, 'failed');
+  assert.equal(row.provider_task_id, 'provider-task-classic');
+  assert.equal(row.error_code, 'image_output_aspect_ratio_mismatch');
+  assert.deepEqual(JSON.parse(row.result_json), rejectedOutput.result);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].rejected, true);
+  assert.equal(settled[0].output, rejectedOutput);
+  assert.equal(released.length, 0);
+});
+
 const createNamedLockPool = () => {
   const held = new Set();
   const waiters = new Map();

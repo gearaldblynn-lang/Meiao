@@ -52,6 +52,22 @@ test('buildKieImageTaskRequestBody preserves GPT Image 2 image edit payload shap
   assert.equal('image_input' in requestBody.input, false);
 });
 
+test('buildKieImageTaskRequestBody passes translation auto ratio through explicitly', () => {
+  const requestBody = buildKieImageTaskRequestBody({
+    payload: {
+      model: 'gpt-image-2',
+      prompt: 'translate the source image',
+      imageUrls: ['https://cdn.test/source.png'],
+      aspectRatio: 'auto',
+      resolution: '1K',
+    },
+    imageUrls: ['https://cdn.test/source.png'],
+    prompt: 'translate the source image',
+  });
+
+  assert.equal(requestBody.input.aspect_ratio, 'auto');
+});
+
 test('runKieImageJob resolves duplicate input and prompt media URLs once', async () => {
   const resolved = [];
   let createTaskBody = null;

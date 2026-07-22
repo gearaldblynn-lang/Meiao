@@ -22,6 +22,7 @@ import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 import { extractShellSchemeField } from './shellSchemeFields';
 import { fetchRemoteFileBlob, getImageDimensions, getImageDimensionsFromUrl, resizeImage } from '../utils/imageUtils';
 import { normalizeFetchedImageBlob } from '../utils/imageBlobUtils.mjs';
+import { assertTranslationOutputAspectRatio } from '../modules/Translation/translationProcessingUtils.mjs';
 import { persistGeneratedAsset } from '../services/persistedAssetClient';
 import { resolveShellSkuCount } from './shellSkuCount';
 import { buildShellImageInputUrls } from './shellOneClickMaterials.mjs';
@@ -827,9 +828,19 @@ const maybeResizeAndPersistImageResult = async (
       width = Math.round(height * (dims.ratio || 1));
     }
     if (width <= 0 || height <= 0) return imageUrl;
+    if (shouldUseFinalSize) {
+      const generatedDimensions = await getImageDimensions(blob);
+      assertTranslationOutputAspectRatio({
+        sourceWidth: generatedDimensions.width,
+        sourceHeight: generatedDimensions.height,
+        targetWidth: width,
+        targetHeight: height,
+      });
+    }
     const resizedBlob = await resizeImage(blob, width, height, config.maxFileSize);
     return persistGeneratedAsset(resizedBlob, 'shell-result', sourceName);
   } catch (error) {
+    if ((error as { code?: string })?.code === 'image_output_aspect_ratio_mismatch') throw error;
     console.warn('[MEIAO] shell result resize failed, keeping provider output', error);
     return imageUrl;
   }

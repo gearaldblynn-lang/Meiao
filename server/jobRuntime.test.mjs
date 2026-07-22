@@ -9,12 +9,15 @@ import {
   buildPublicSystemConfig,
   getWorkerConcurrencyLimit,
   getNextJobFailureState,
+  getProviderCompletedRejectedOutput,
   getPersistedJobFailureErrorCode,
   getSubmittedTaskRecoveryRetries,
   isRetryableErrorCode,
+  isProviderCompletedOutputRejectedError,
   isTransientMysqlConnectionError,
   normalizeAllowedOrigins,
   runWithTransientRetry,
+  shouldSettleProviderCompletedRejectedJob,
   getReconcileBackoffMs,
 } from './jobRuntime.mjs';
 
@@ -457,6 +460,38 @@ test('getNextJobFailureState returns failed for non-retryable errors', () => {
       status: 'failed',
     }
   );
+});
+
+test('provider-completed output rejection exposes quarantined evidence for failure persistence and settlement', () => {
+  const rejectedOutput = {
+    providerTaskId: 'provider-task-1',
+    result: {
+      quarantinedImageAssetId: 'asset-1',
+      imageOutputContract: { sourceWidth: 899, sourceHeight: 1750, targetWidth: 312, targetHeight: 840 },
+    },
+  };
+  const error = Object.assign(new Error('output rejected'), {
+    code: 'image_output_aspect_ratio_mismatch',
+    providerCompleted: true,
+    rejectedOutput,
+  });
+
+  assert.equal(isProviderCompletedOutputRejectedError(error), true);
+  assert.equal(getProviderCompletedRejectedOutput(error), rejectedOutput);
+  assert.equal(isProviderCompletedOutputRejectedError({ ...error, providerCompleted: false }), false);
+  assert.equal(shouldSettleProviderCompletedRejectedJob({
+    status: 'failed',
+    errorCode: 'image_output_aspect_ratio_mismatch',
+    result: {
+      imageOutputContract: { status: 'rejected' },
+      quarantinedImageAssetId: 'asset-1',
+    },
+  }), true);
+  assert.equal(shouldSettleProviderCompletedRejectedJob({
+    status: 'failed',
+    errorCode: 'provider_bad_response',
+    result: { imageOutputContract: { status: 'rejected' } },
+  }), false);
 });
 
 test('getNextJobFailureState returns failed when retry budget is exhausted', () => {
