@@ -36,6 +36,7 @@ import { useToast } from './ToastSystem';
 import ProductRestoreAnalysisPanel, { ProductRestoreResultCreditBadge } from '../modules/Retouch/ProductRestoreAnalysisPanel';
 import SubtitleComparisonPlayer from './SubtitleComparisonPlayer';
 import { getSubtitleRemovalRetryDecision } from '../../utils/subtitleRemovalRetrySafety.mjs';
+import { resolveProjectCardActivity } from './projectCardActivity.mjs';
 import {
   getProductRestoreAnalysisCreditSummary,
   getProductRestoreTotalKnownCredits,
@@ -670,6 +671,7 @@ const ProjectCard: React.FC<Props> = ({
   const isResultActivelyGenerating = (result: GeneratedResult) => (
     result.status === 'generating'
     && !isCompletedMediaResult(result)
+    && !(isStoryboardProject && project.storyboardProjectStatus === 'awaiting_image_confirmation')
     && (resultHasVisibleTaskId(result) || project.status === 'generating')
   );
   const getResultCancelTarget = (result: GeneratedResult, targetProject: Project) => (
@@ -687,15 +689,19 @@ const ProjectCard: React.FC<Props> = ({
     : 0;
   const projectProgressIncomplete = Number(project.completedCount || 0) < Number(project.taskCount || 0);
   const hasPendingProductRestoreSync = isProductRestoreProject && String(project.error || '').includes('同步失败');
-  const isProjectActivelyGenerating = project.status === 'generating' && (
-    hasGeneratingResult
-    || (!hasPlans && projectProgressIncomplete)
-    || hasPendingProductRestoreSync
-  );
+  const { isProjectActivelyGenerating, displayProjectStatus } = resolveProjectCardActivity({
+    projectStatus: project.status,
+    storyboardProjectStatus: isStoryboardProject ? project.storyboardProjectStatus : undefined,
+    hasGeneratingResult,
+    hasPlans,
+    projectProgressIncomplete,
+    hasPendingProductRestoreSync,
+    hasResults,
+  }) as {
+    isProjectActivelyGenerating: boolean;
+    displayProjectStatus: Project['status'];
+  };
   const regenerationLockedByActiveProject = isProjectActivelyGenerating || hasGeneratingResult;
-  const displayProjectStatus: Project['status'] = project.status === 'generating' && !isProjectActivelyGenerating
-    ? (hasResults ? 'completed' : 'planning')
-    : project.status;
   const isSubtitlePartial = isSubtitleRemovalProject
     && !hasGeneratingResult
     && subtitleSuccessCount > 0
@@ -1416,6 +1422,12 @@ const ProjectCard: React.FC<Props> = ({
                   {previewResult.status === 'error' ? '去字幕失败' : '正在去除字幕'}
                 </span>
                 <span className="line-clamp-3 text-[11px] leading-5">{previewResult.error || '处理中可离开页面，完成后在任务卡内对比查看'}</span>
+              </div>
+            ) : isStoryboardAwaitingImageConfirmation ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center" style={{ color: 'var(--text-tertiary)' }}>
+                <Sparkles size={22} style={{ color: 'var(--accent)' }} />
+                <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>分镜脚本已完成</span>
+                <span className="text-[11px] leading-5">已生成 {project.results.length} 个分段，点击详情确认生图</span>
               </div>
             ) : hasResults ? renderMedia(previewResult, `h-full w-full object-cover ${isPreviewVideoResult ? '' : 'transition-transform duration-300 group-hover:scale-[1.03]'}`, { videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowIndicator: true, videoAutoLoadWhenVisible: true }) : hasPlans ? (
               <div className="flex h-full flex-col justify-between p-4" style={{ color: 'var(--text-secondary)' }}>

@@ -206,5 +206,6 @@ export const mergeRecoveredStoryboardProject = (current = {}, recovered = {}) =>
 export const toStoryboardShellResultStatus = (board = {}) => {
   if (board.status === 'failed') return 'error';
   if (board.status === 'completed' && String(board.imageUrl || '').trim()) return 'completed';
+  if (board.status === 'pending') return 'planning';
   return 'generating';
 };

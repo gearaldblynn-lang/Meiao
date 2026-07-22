@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 
 const helperUrl = new URL('./storyboardGenerationState.mjs', import.meta.url);
+const projectCardActivityUrl = new URL('../../components/projectCardActivity.mjs', import.meta.url);
 
 const loadHelper = async () => {
   assert.equal(existsSync(helperUrl), true, 'storyboard generation state helper must exist');
@@ -50,10 +51,38 @@ test('storyboard project and shell status never treat pending boards as complete
     { status: 'completed', imageUrl: '/second.png' },
   ]), 'completed');
   assert.equal(deriveStoryboardProjectStatus([{ status: 'failed' }]), 'failed');
-  assert.equal(toStoryboardShellResultStatus({ status: 'pending' }), 'generating');
+  assert.equal(toStoryboardShellResultStatus({ status: 'pending' }), 'planning');
   assert.equal(toStoryboardShellResultStatus({ status: 'generating' }), 'generating');
   assert.equal(toStoryboardShellResultStatus({ status: 'completed', imageUrl: '/board.png' }), 'completed');
   assert.equal(toStoryboardShellResultStatus({ status: 'failed' }), 'error');
+});
+
+test('storyboard confirmation wins over stale generating state while real imaging stays active', async () => {
+  const { resolveProjectCardActivity } = await import(projectCardActivityUrl.href);
+
+  assert.deepEqual(resolveProjectCardActivity({
+    projectStatus: 'generating',
+    storyboardProjectStatus: 'awaiting_image_confirmation',
+    hasGeneratingResult: true,
+    hasPlans: false,
+    projectProgressIncomplete: true,
+    hasResults: true,
+  }), {
+    isProjectActivelyGenerating: false,
+    displayProjectStatus: 'planning',
+  });
+
+  assert.deepEqual(resolveProjectCardActivity({
+    projectStatus: 'generating',
+    storyboardProjectStatus: 'imaging',
+    hasGeneratingResult: false,
+    hasPlans: false,
+    projectProgressIncomplete: true,
+    hasResults: true,
+  }), {
+    isProjectActivelyGenerating: true,
+    displayProjectStatus: 'generating',
+  });
 });
 
 test('imaging project resumes the next pending board only after earlier work is terminal', async () => {
@@ -202,6 +231,7 @@ test('recovered storyboard merge preserves local edits and only advances matchin
 test('all storyboard image entry points consume the shared status mapper', () => {
   const shellSource = readFileSync(new URL('../../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
   const videoModuleSource = readFileSync(new URL('./VideoModule.tsx', import.meta.url), 'utf8');
+  const projectCardSource = readFileSync(new URL('../../components/ProjectCard.tsx', import.meta.url), 'utf8');
   const initialBlock = shellSource.match(/if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'storyboard'\) \{[\s\S]*?if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'diagnosis'\) \{/)?.[0] || '';
   const regenerateBlock = shellSource.match(/const handleStoryboardRegenerateResult = useCallback\(async \([\s\S]*?const handleConfirmStoryboardImaging =/)?.[0] || '';
   const confirmBlock = shellSource.match(/const handleConfirmStoryboardImaging = useCallback\(async \([\s\S]*?const handleRegenerateResult =/)?.[0] || '';
@@ -213,4 +243,6 @@ test('all storyboard image entry points consume the shared status mapper', () =>
   });
   assert.match(videoModuleSource, /toStoryboardShellResultStatus\(board\)/);
   assert.doesNotMatch(videoModuleSource, /board\.status === 'failed' \? 'error' : board\.status === 'generating' \? 'generating' : 'completed'/);
+  assert.match(projectCardSource, /分镜脚本已完成/);
+  assert.match(projectCardSource, /点击详情确认生图/);
 });

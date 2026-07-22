@@ -1496,13 +1496,15 @@ test('login screen keeps typing lightweight by avoiding per-keystroke page reren
 
 test('project cards do not let stale generating status lock completed detail projects', () => {
   const projectCard = read('../shell/components/ProjectCard.tsx');
-  const activeGeneratingBody = projectCard.match(/const isProjectActivelyGenerating = project\.status === 'generating' && \(([\s\S]*?)\n  \);/)?.[1] || '';
+  const projectCardActivity = read('../shell/components/projectCardActivity.mjs');
 
-  assert.match(projectCard, /const isProjectActivelyGenerating = project\.status === 'generating' && \(/);
-  assert.match(activeGeneratingBody, /hasGeneratingResult/);
-  assert.match(activeGeneratingBody, /!hasPlans && projectProgressIncomplete/);
-  assert.doesNotMatch(activeGeneratingBody, /hasMissingSelectedPlanResult/);
-  assert.match(projectCard, /const displayProjectStatus: Project\['status'\] = project\.status === 'generating' && !isProjectActivelyGenerating/);
+  assert.match(projectCard, /resolveProjectCardActivity\(\{/);
+  assert.match(projectCardActivity, /projectStatus === 'generating'/);
+  assert.match(projectCardActivity, /hasGeneratingResult/);
+  assert.match(projectCardActivity, /!hasPlans && projectProgressIncomplete/);
+  assert.match(projectCardActivity, /isAwaitingStoryboardConfirmation/);
+  assert.doesNotMatch(projectCardActivity, /hasMissingSelectedPlanResult/);
+  assert.match(projectCardActivity, /projectStatus === 'generating' && !isProjectActivelyGenerating/);
   assert.match(projectCard, /projectStatus=\{displayProjectStatus\}/);
   assert.doesNotMatch(projectCard, /disabled=\{isConfirmPlanPending \|\| project\.status === 'generating'\}/);
   assert.doesNotMatch(projectCard, /if \(isConfirmPlanPending \|\| project\.status === 'generating'\) return;/);

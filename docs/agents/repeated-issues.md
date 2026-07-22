@@ -1108,3 +1108,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 发布仍要求应用、worker、COS 全部健康，并要求墓碑协调器至少完成一个周期；墓碑门禁改为检查该周期 `errors=0`。历史人工恢复项继续留在 health 中告警和等待审计，但不再伪装成新进程启动失败。
 - Regression check: `node --test scripts/hold-deploy-drain.test.mjs scripts/deploy_tencent.test.mjs`。必须锁定：已完成周期且只有人工积压时允许切换；周期未运行或 `errors>0` 时继续 fail closed；HTTP、worker、COS 任一不健康时继续拒绝发布。
 - Avoid next time: 健康门禁只能组合与当前发布就绪直接相关、可由本次启动收敛的信号。业务积压告警和进程就绪必须分层表达；新增聚合 `alerting` 时要分别覆盖“执行错误”和“人工待处理”两类真实数据，不能直接把聚合布尔值接入停机判定。
+
+## 2026-07-22 - 分镜策划待确认不能显示为仍在生图
+
+- Symptom: 董丹丹的爆款复刻分镜卡左上角已标“待确认 / 2 个结果”，卡片主体却长期显示“生成中”，用户等待一两个小时后仍认为任务没有完成。
+- Cloud evidence: job `c8eff64cd585467dcf721011` 于 09:37:04 创建、09:38:35 成功，实际耗时约 91.6 秒；payload 为 `videoGenerationMode=viral_split`、8 张商品图和 1 个参考视频，结果含 2 个分段。持久项目状态为 `awaiting_image_confirmation`，两块 board 都是 `pending` 且没有 board image job；审计时该账号没有任何 `queued/running/retry_waiting` 分镜任务。
+- Root cause: 爆款复刻按产品流程先返回可编辑策划，再等待用户统一确认生图；但 `toStoryboardShellResultStatus` 把所有非成功/失败 board（包括尚未提交的 `pending`）统一映射为 `generating`。VideoModule 又把所有 pending board 放进结果卡，所以卡片主体显示“生成中”，与项目级“待确认”互相矛盾。项目状态判定也没有让 `awaiting_image_confirmation` 对脏的 `generating` 字段取得最高优先级。
+- Fix: pending board 映射为 shell `planning`，真实已提交的 generating board 继续保持 generating；卡片首页对 `awaiting_image_confirmation` 直接显示“分镜脚本已完成，点击详情确认生图”。项目 active/展示状态收敛到纯函数，等待确认强制 `active=false/display=planning`，即使历史字段残留 generating 也不会锁定或误显示；真正 imaging 且仅有待后续提交 board 时仍由项目进度保持生成态。
+- Regression check: `node --test src/shell/modules/Video/storyboardGenerationState.test.mjs src/shell/components/ProjectCard.productRestoreCredits.test.mjs src/components/uiArchitecture.test.mjs`；必须同时覆盖脏的 `generating + awaiting_image_confirmation` 显示待确认，以及 `imaging + pending-only` 仍显示生成中并保持操作锁定。生产审计必须核对 planning job 的终态、board image job 是否存在和 app state 三层，不能只看卡片文案。
+- Avoid next time: 项目阶段、子结果阶段和 provider job 阶段不得共用一个模糊的“生成中”。任何需要用户确认后才创建付费 job 的流程，都必须把“尚未提交”“已提交运行中”“结果待同步”分成独立状态，并用真实持久状态回放验证卡片徽标、主体文案和按钮是否一致。

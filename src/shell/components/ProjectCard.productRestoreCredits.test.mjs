@@ -10,6 +10,7 @@ import {
   getProductRestoreTotalKnownCredits,
   normalizeKnownProductRestoreCredits,
 } from '../../utils/productRestoreAnalysisCredits.ts';
+import { resolveProjectCardActivity } from './projectCardActivity.mjs';
 
 const projectCardPath = new URL('./ProjectCard.tsx', import.meta.url);
 let moduleSequence = 0;
@@ -31,6 +32,7 @@ const {
   getProductRestoreAnalysisCreditSummary,
   getProductRestoreTotalKnownCredits,
   normalizeKnownProductRestoreCredits,
+  resolveProjectCardActivity,
 } = globalThis.__projectCardCreditTestDeps;
 const useEffect = React.useEffect;
 const useRef = React.useRef;
@@ -92,6 +94,7 @@ export const resetProjectCardTestState = () => { projectCardStateCall = 0; };
     getProductRestoreAnalysisCreditSummary,
     getProductRestoreTotalKnownCredits,
     normalizeKnownProductRestoreCredits,
+    resolveProjectCardActivity,
   };
   try {
     return await import(
