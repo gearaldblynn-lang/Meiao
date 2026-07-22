@@ -87,7 +87,7 @@ test('scanner refuses nested repository roots for explicit and default root scan
   }
 });
 
-test('scanner covers static JS TS JSON YAML and dotenv values but skips dynamic member expressions', async (t) => {
+test('scanner covers static JS TS JSON YAML and dotenv values', async (t) => {
   const values = [
     'J8k9L0m1N2p3Q4r5S6t7U8v9W0xY1zA2',
     'K9l0M1n2P3q4R5s6T7u8V9w0X1y2Z3a4',
@@ -96,7 +96,7 @@ test('scanner covers static JS TS JSON YAML and dotenv values but skips dynamic 
     'N2p3Q4r5S6t7U8v9W0x1Y2z3A4b5C6d7',
   ];
   const root = await repository({
-    'config.mjs': `const x = {\n  apiKey: ${JSON.stringify(values[0])},\n  dynamicToken: process.env.RUNTIME_TOKEN,\n};`,
+    'config.mjs': `const x = {\n  apiKey: ${JSON.stringify(values[0])},\n};`,
     'config.ts': `token = ${JSON.stringify(values[1])};`,
     'config.json': `{\n  "password": ${JSON.stringify(values[2])},\n  "ordinary": "text"\n}`,
     'config.yaml': `secret: ${values[3]}`,
@@ -109,20 +109,48 @@ test('scanner covers static JS TS JSON YAML and dotenv values but skips dynamic 
   assert.equal(report(result).findings.length, values.length);
 });
 
-test('scanner never emits a matched value embedded in its tracked filename', async (t) => {
+test('member-expression exclusion is JS-family only and never hides dotenv values', async (t) => {
+  const dottedStatic = 'credential.segment.with9mixed8entropy7value6';
+  const root = await repository({
+    '.env': `SOME_SECRET=${dottedStatic}`,
+    'config.mjs': 'const x = { apiKey: process.env.RUNTIME_TOKEN };',
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const result = scan(root);
+  assert.equal(result.status, 1);
+  assert.deepEqual(report(result).findings, [{
+    file: '.env',
+    line: 1,
+    rule: 'high_entropy_assignment',
+    length: dottedStatic.length,
+  }]);
+});
+
+test('scanner uses one union-redacted filename for every finding in a file', async (t) => {
   const value = 'sk-' + 'P'.repeat(40);
-  const root = await repository({ [`prefix-${value}-suffix.txt`]: value });
+  const secondValue = 'sk-' + 'Q'.repeat(40);
+  const root = await repository({ [`prefix-${value}-suffix.txt`]: `${value}\n${secondValue}` });
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const result = scan(root);
   assert.equal(result.status, 1);
   assert.equal((result.stdout + result.stderr).includes(value), false);
-  assert.deepEqual(report(result).findings, [{
-    file: 'prefix-[redacted]-suffix.txt',
-    line: 1,
-    rule: 'provider_token',
-    length: value.length,
-  }]);
+  assert.equal((result.stdout + result.stderr).includes(secondValue), false);
+  assert.deepEqual(report(result).findings, [
+    {
+      file: 'prefix-[redacted]-suffix.txt',
+      line: 1,
+      rule: 'provider_token',
+      length: value.length,
+    },
+    {
+      file: 'prefix-[redacted]-suffix.txt',
+      line: 2,
+      rule: 'provider_token',
+      length: secondValue.length,
+    },
+  ]);
 });
 
 test('snapshot comparison includes ctime and symlink reads verify the link twice', async () => {
@@ -171,7 +199,6 @@ test('scanner skips shell-expanded assignments and unquoted JavaScript identifie
   const root = await repository({
     'deploy.sh': 'DEPLOY_OWNER_TOKEN="$(date +%s)-$$-${RANDOM}-$(hostname)"',
     'config.mjs': 'apiKeyMasked: openaiCompatibleRuntimeCredentialReference',
-    'example.md': 'maxTokens: runtimeConfig.maxOutputTokens,',
   });
   t.after(() => rm(root, { recursive: true, force: true }));
 
@@ -224,6 +251,25 @@ test('scanner allows the model-provider synthetic fixture only at its exact path
     line: 1,
     rule: 'provider_token',
     length: syntheticProviderFixture.length,
+  }]);
+});
+
+test('scanner allows a documented runtime reference only at its exact path', async (t) => {
+  const documentedRuntimeReference = ['contextLimits', 'maxOutputTokens'].join('.');
+  const documentedPath = 'docs/superpowers/plans/2026-06-16-生图工具调用.md';
+  const root = await repository({
+    [documentedPath]: `maxTokens: ${documentedRuntimeReference},`,
+    'fixtures/documented-reference-copy.md': `maxTokens: ${documentedRuntimeReference},`,
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const result = scan(root);
+  assert.equal(result.status, 1);
+  assert.deepEqual(report(result).findings, [{
+    file: 'fixtures/documented-reference-copy.md',
+    line: 1,
+    rule: 'high_entropy_assignment',
+    length: documentedRuntimeReference.length,
   }]);
 });
 

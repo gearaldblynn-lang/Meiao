@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const modelProviderSyntheticFixture = ['sk', 'raw', 'should', 'never', 'return'].join('-');
 const managedAssetSyntheticFixture = ['new', 'managed', 'asset', 'secret', '32', 'bytes'].join('-');
 const strippedProviderSyntheticFixture = ['sk', 'should', 'never', 'leak'].join('-');
+const documentedRuntimeReference = ['contextLimits', 'maxOutputTokens'].join('.');
 
 const exactSyntheticAllowlist = new Map([
   ['fixtures/allowed-secrets.txt', new Set([
@@ -22,6 +23,9 @@ const exactSyntheticAllowlist = new Map([
   ])],
   ['server/smartFactoryConfigStore.test.mjs', new Set([
     strippedProviderSyntheticFixture,
+  ])],
+  ['docs/superpowers/plans/2026-06-16-生图工具调用.md', new Set([
+    documentedRuntimeReference,
   ])],
 ]);
 
@@ -64,19 +68,15 @@ function isDirectCredentialValue(value) {
 
 function isUnquotedJavaScriptDynamicReference(file, value, isUnquoted) {
   return isUnquoted
-    && (
-      javascriptMemberReference.test(value)
-      || (
-        javascriptExtensions.has(path.extname(file).toLowerCase())
-        && javascriptIdentifierReference.test(value)
-      )
-    );
+    && javascriptExtensions.has(path.extname(file).toLowerCase())
+    && (javascriptMemberReference.test(value) || javascriptIdentifierReference.test(value));
 }
 
-function sanitizeFindingPath(file, matchedValue) {
-  return file.includes(matchedValue)
-    ? file.split(matchedValue).join('[redacted]')
-    : file;
+function sanitizeFindingPath(file, matchedValues) {
+  return [...new Set(matchedValues)].reduce(
+    (current, matchedValue) => current.split(matchedValue).join('[redacted]'),
+    file,
+  );
 }
 
 function isTrackedPathInsideRoot(root, file) {
@@ -157,16 +157,17 @@ async function main() {
     const bytes = await readTrackedBytes(path.resolve(root, file));
     if (bytes.includes(0)) continue;
 
+    const fileFindings = [];
     for (const [lineIndex, line] of bytes.toString('utf8').split(/\r?\n/).entries()) {
       for (const [rule, pattern] of rules) {
         pattern.lastIndex = 0;
         for (const match of line.matchAll(pattern)) {
           if (exactSyntheticAllowlist.get(file)?.has(match[0])) continue;
-          findings.push({
-            file: sanitizeFindingPath(file, match[0]),
+          fileFindings.push({
             line: lineIndex + 1,
             rule,
             length: match[0].length,
+            matchedValue: match[0],
           });
         }
       }
@@ -176,15 +177,17 @@ async function main() {
         if (exactSyntheticAllowlist.get(file)?.has(value)) continue;
         if (isUnquotedJavaScriptDynamicReference(file, value, Boolean(match[3]))) continue;
         if (!isDirectCredentialValue(value) && new Set(value).size >= 10 && entropy(value) >= 3.5) {
-          findings.push({
-            file: sanitizeFindingPath(file, value),
+          fileFindings.push({
             line: lineIndex + 1,
             rule: 'high_entropy_assignment',
             length: value.length,
+            matchedValue: value,
           });
         }
       }
     }
+    const safeFile = sanitizeFindingPath(file, fileFindings.map(({ matchedValue }) => matchedValue));
+    findings.push(...fileFindings.map(({ matchedValue, ...finding }) => ({ ...finding, file: safeFile })));
   }
 
   findings.sort((left, right) => left.file.localeCompare(right.file)
