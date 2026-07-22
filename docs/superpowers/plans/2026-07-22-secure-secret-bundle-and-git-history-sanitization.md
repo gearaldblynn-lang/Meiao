@@ -221,6 +221,8 @@ git commit -m "feat(security): define friend secret policy"
 - Create: `scripts/export-friend-secret-bundle.mjs`
 - Create: `scripts/import-secret-bundle.mjs`
 - Create: `scripts/secret-bundle-cli.test.mjs`
+- Modify: `server/envLoader.mjs`
+- Modify: `server/envLoader.test.mjs`
 - Modify: `package.json`
 - Modify: `.gitignore`
 
@@ -328,6 +330,20 @@ test('import rejects forbidden or unknown keys without partial writes', async ()
   const result = run(importer, [bundle], repo);
   assert.notEqual(result.status, 0);
   assert.equal(await readFile(path.join(repo, '.env.server'), 'utf8'), original);
+});
+
+test('imported quoted values round-trip through the application env loader', async () => {
+  const repo = await makeRepo();
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'meiao-secret-roundtrip-'));
+  const bundle = path.join(outside, '.env.meiao.friend');
+  const expected = 'fixture provider credential with space # and "quote"';
+  await writeFile(bundle, `KIE_API_KEY=${JSON.stringify(expected)}\n`);
+  const result = run(importer, [bundle], repo);
+  assert.equal(result.status, 0, result.stderr);
+  const { loadServerEnvFile } = await import('../server/envLoader.mjs');
+  const targetEnv = {};
+  loadServerEnvFile({ envPath: path.join(repo, '.env.server'), targetEnv });
+  assert.equal(targetEnv.KIE_API_KEY, expected);
 });
 ```
 
@@ -472,7 +488,11 @@ console.log(JSON.stringify({
 }));
 ```
 
-- [ ] **Step 5: Wire npm scripts and ignore rules**
+- [ ] **Step 5: Make the runtime env loader decode serialized quoted values**
+
+Update `stripWrappingQuotes` in `server/envLoader.mjs` so a double-quoted value first attempts `JSON.parse(value)` and accepts the result only when it is a string. Preserve the existing slice behavior for single quotes and for legacy double-quoted strings that are not valid JSON. Add a focused `server/envLoader.test.mjs` case for spaces, `#`, escaped quote, and escaped backslash so the importer and application share one round-trip contract.
+
+- [ ] **Step 6: Wire npm scripts and ignore rules**
 
 ```json
 {
@@ -485,16 +505,16 @@ console.log(JSON.stringify({
 
 Add explicit ignores for `.env.meiao.friend`, `.env.server.backup-*`, and importer temporary files even though `.env.*` already provides defense in depth.
 
-- [ ] **Step 6: Run CLI and policy tests**
+- [ ] **Step 7: Run CLI, policy, and runtime env-loader tests**
 
-Run: `node --test scripts/secret-bundle-policy.test.mjs scripts/secret-bundle-cli.test.mjs`
+Run: `node --test scripts/secret-bundle-policy.test.mjs scripts/secret-bundle-cli.test.mjs server/envLoader.test.mjs`
 
 Expected: PASS; test output contains no fixture secret values.
 
-- [ ] **Step 7: Commit importer/exporter**
+- [ ] **Step 8: Commit importer/exporter**
 
 ```bash
-git add .gitignore package.json scripts/export-friend-secret-bundle.mjs scripts/import-secret-bundle.mjs scripts/secret-bundle-cli.test.mjs
+git add .gitignore package.json server/envLoader.mjs server/envLoader.test.mjs scripts/export-friend-secret-bundle.mjs scripts/import-secret-bundle.mjs scripts/secret-bundle-cli.test.mjs
 git commit -m "feat(security): add one-command secret import"
 ```
 
