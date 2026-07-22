@@ -111,6 +111,8 @@ npm run dev
 
 ## 5. 环境变量
 
+朋友/本地环境的 provider 与 COS 凭据必须按 [friend secret setup](friend-secret-setup.md) 从仓库外 bundle 导入；不要把实时值粘贴到 Git 跟踪的示例、Markdown 或代码中。
+
 核心服务：
 - `NODE_ENV`
 - `PORT`

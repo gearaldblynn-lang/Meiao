@@ -1136,3 +1136,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 翻译执行计划统一读取共享模型能力；支持 `auto` 的模型原样透传 `auto`，不再预映射为 1:4。原图输出在任何非等比缩放前比较自动旋转后的真实几何，超过 2% 即阻止发布；远程 URL 与 MaxForAI base64 两条结果路径都把原始输出保存为 quarantine 证据，并以 `image_output_aspect_ratio_mismatch` 终止用户可见成功。该类错误明确标记 provider 已完成，MySQL/Temporal/local 四条 worker 路径结算已发生的费用、保存结果证据，重启对账也保持 settle，不能悬挂预留或错误退款。
 - Regression check: `node --test server/imagePostProcess.test.mjs server/assetStore.test.mjs server/jobRuntime.test.mjs server/providerErrorHumanize.test.mjs server/temporalWorker.test.mjs server/localJobStore.test.mjs server/maxforaiIntegration.test.mjs src/modules/Translation/translationProcessingUtils.test.mjs src/modules/Translation/translationRetryUtils.test.mjs`；`npm run verify`；`npm run doctor`。回归必须锁定 899×1750 → 312×840 不执行拉伸、匹配比例仍可等比还原、EXIF orientation 6 使用旋转后尺寸、0.98/1.02 边界、KIE 有 task ID 与 MaxForAI 无 task ID 都保存 quarantine 且 settle、base64 不绕过校验。
 - Avoid next time: 模型尺寸/比例能力只能有一个权威来源，不得在业务模块复制 provider 支持列表；未知或不支持的参数不能静默丢弃。真实图片验收必须同时核对用户选择、最终 job payload、provider 原始宽高、托管结果宽高和内容几何，不能把“像素尺寸相等”当成“比例正确”。任何发生在 provider 成功之后的本地合同拒绝都必须有独立的失败、证据留存和计费结算语义。
+
+## 2026-07-22 - Git ignore rules cannot protect secrets pasted into tracked Markdown
+
+- Symptom: A design document in the public Git repository contained a live provider credential.
+- Root cause: `.gitignore` only excludes untracked paths. It cannot protect a literal that is pasted into a tracked Markdown file, so treating the repository ignore rules as a secret boundary was unsafe.
+- Fix: The document now contains a synthetic placeholder. The tracked-file secret scanner runs before the existing verify gates, and friend configuration is imported from an external allowlisted bundle rather than copied into repository files.
+- Regression check: `npm run security:secrets`; `node --test scripts/secret-bundle-policy.test.mjs scripts/secret-bundle-cli.test.mjs scripts/check-tracked-secrets.test.mjs`; `npm run verify`.
+- Avoid next time: Keep all live provider and COS values outside Git, use the external bundle importer, and run the tracked-file scanner before accepting changes to documentation, examples, or source files.
