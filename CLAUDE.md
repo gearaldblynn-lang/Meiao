@@ -23,7 +23,7 @@
   - 前端 `.test.mjs`(会 `import './xxx.ts'`)→ 必须加 `node --experimental-strip-types --test src/.../xxx.test.mjs`,否则 Node 报 `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`(文档里写的 `node --test` 漏了这个 flag)。
   - 全量:`find src -name "*.test.mjs" | xargs node --experimental-strip-types --test` / `find server -name "*.test.mjs" | xargs node --test`。
 
-## 3. 已诊断根因库 ★(持续维护,截至 2026-07-21 已记录至 #76)
+## 3. 已诊断根因库 ★(持续维护,截至 2026-07-23 已记录至 #79)
 
 > 🔗 本节是 Claude 与 Codex **共享的架构根因库主源**(单一真相)。Codex 通过 `AGENTS.md` 顶部指针 + `docs/agents/repeated-issues.md` 顶部指针读到这里。沉淀架构级根因写本节;`repeated-issues.md` 只留指针或记纯操作型问题,两边不抄全文以免漂移。
 
@@ -446,3 +446,8 @@
   根因:托管图片上传先按文件魔数识别 PNG/JPEG/WEBP 等真实类型，随后又要求浏览器 multipart 声明的 `Content-Type` 与真实类型完全相等。用户从平台下载或仅改扩展名的图片常出现“文件名 `.jpg`、浏览器声明 `image/jpeg`、真实字节为 WEBP/PNG”，这些仍是受支持且可安全解析的图片，却在 `asset_upload` 阶段被误判为“图片类型与文件内容不一致”，尚未创建 provider 任务。生产自 7 月 18 日起共观察到 41 次、涉及 5 个账号；同一张坏本地素材会让连续项目重复失败。
   修复:图片安全边界改为以文件魔数为可信来源：真实字节属于受支持图片时，允许浏览器声明的另一种 `image/*` 类型并规范化为检测 MIME；明确声明为非图片且不是 `application/octet-stream` 时仍拒绝，无法识别或不受支持的字节仍 fail closed。素材记录、COS `Content-Type`、对象键和公开文件名统一使用检测 MIME 对应的规范扩展名，避免内容、元数据与 URL 再次漂移。
   如何避免:**上传验收必须把“安全识别”和“客户端元数据一致性”分开：安全只信任真实字节，客户端 MIME/扩展名只能作为提示。回归矩阵至少包含 JPEG 名称承载 WEBP/PNG 的合法归一化、非图片伪装、未知签名、容量上限和 COS 扩展名；排查时先确认错误发生在素材上传还是 provider job，`providerTaskId=null` 不应被归因于上游出图不稳定。**
+
+- **#79 🟡 本地已修、待发布验收(2026-07-23)· 单上游先停后启发布必然制造官网 502**
+  根因:Nginx 只回源 `127.0.0.1:3100`，PM2 又只有一个 fork 进程；旧脚本即使先用 iptables 排空连接，最终仍会在新进程 ready 前 `pm2 stop` 唯一后端。生产 PM2 历史显示多个 `STOPPED -> RUNNING` 窗口（6.640s、88.208s、6.077s、5.619s、5.931s、26.218s、8.109s），与今日间歇 502 对应；无 OOM、磁盘耗尽或 provider 502 证据。诊断指纹:`deploy:single_upstream_stop_start:public_502`。
+  修复:正式 PM2 合同改为单实例 `cluster + wait_ready`，完成 bootstrap/listen 后才发 ready，旧进程收到信号后优雅停 worker、Temporal、HTTP 和连接池。发布脚本先用 marker 暂停新写入和 worker，等待活动写请求/任务归零，以短时 MySQL 表锁做 reload 前最终屏障，释放锁后原子切 dist 并 `pm2 startOrReload`。只有精确 release health 通过才移除 marker；自动失败清理不再停止最后一个健康进程。旧 fork 首次迁移必须用只监听 `127.0.0.1:3101` 的候选与 Nginx 双切换，后续才全部走标准脚本。
+  如何避免:**发布脚本也是生产代码，必须对“新 ready 前旧进程仍服务”建立可执行合同。单 Nginx 上游禁止 stop/start 切换；发布回归必须锁定不出现 `pm2 stop|restart`、校验 ready/release 身份/写请求排空，并在真实发布期间连续探测公网 2xx，不能用发布结束后单次 health 代替零 502 证据。**

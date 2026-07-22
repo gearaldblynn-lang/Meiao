@@ -137,7 +137,7 @@ npm run dev
 - `MEIAO_COS_SECRET_ID` / `MEIAO_COS_SECRET_KEY`：Gemini 视频专用腾讯 COS 服务端凭证；必须来自只允许目标桶 `gemini-video/*` 执行 `PutObject`、`GetObject` 的 CAM 子用户，不得下发前端或使用主账号密钥。
 - `MEIAO_COS_BUCKET` / `MEIAO_COS_REGION`：Gemini 视频私有桶与地域。内部托管视频会先写入该桶，再把签名 GET URL 直接交给 Gemini；无需 CDN，建议给 `gemini-video/` 设置 3 天自动删除生命周期。
 - `MEIAO_COS_SIGNED_URL_TTL_SECONDS`：默认 `10800`（3 小时），限制 `300-86400` 秒；控制 Gemini 可读取 COS 对象的时间窗口。
-- `MEIAO_MANAGED_IMAGE_UPLOAD_MODE`：用户新上传图片的存储模式，支持 `disabled|cos|local`。空配置用 `disabled` fail closed；生产标准部署只接受 `cos` 且必须在停旧服务前通过真探针。`local` 仅允许 `NODE_ENV=development/test` 且公网基址为本机或内网的本地联调环境，生产与公网配置会拒绝启动本地写入。图片 COS 失败时不回退到本地或 KIE。
+- `MEIAO_MANAGED_IMAGE_UPLOAD_MODE`：用户新上传图片的存储模式，支持 `disabled|cos|local`。空配置用 `disabled` fail closed；生产标准部署只接受 `cos` 且必须在 PM2 平滑 reload 前通过真探针。`local` 仅允许 `NODE_ENV=development/test` 且公网基址为本机或内网的本地联调环境，生产与公网配置会拒绝启动本地写入。图片 COS 失败时不回退到本地或 KIE。
 - `MEIAO_MANAGED_ASSET_ACCESS_SECRET` / `MEIAO_MANAGED_ASSET_ACCESS_PREVIOUS_SECRET`：绑定素材 ID 与用户的访问 capability 密钥及轮换兼容值；至少 24 字符，只存服务端。
 - `MEIAO_IMAGE_COS_SECRET_ID` / `MEIAO_IMAGE_COS_SECRET_KEY` / `MEIAO_IMAGE_COS_BUCKET` / `MEIAO_IMAGE_COS_REGION`：新 source/reference/chat 图片的独立私有 COS 配置，与 Gemini 视频桶及凭证完全分开。云上目标为 `meiao-managed-images-1406860462` / `ap-guangzhou`，CAM 仅授予 `managed-images/*` 的对象读写删权限。
 - `MEIAO_IMAGE_COS_BROWSER_URL_TTL_SECONDS` / `MEIAO_IMAGE_COS_PROVIDER_URL_TTL_SECONDS`：默认 `300` / `10800`，分别控制浏览器和外部分析/生成模型的临时签名读取窗口；签名 URL 不落库、不写日志。
@@ -250,6 +250,6 @@ node --test src/modules/XhsCover/xhsCoverUtils.test.mjs
 - 腾讯云目录：`/www/wwwroot/meiao-internal`
 - PM2 进程：`meiao-internal`
 - 发布脚本：`./scripts/deploy_tencent.sh`
-- 发布切换：首先用临时 `iptables`/`ip6tables` 规则排空 IPv4/IPv6 旧请求，再由 `internal_jobs` 持锁连接停止旧 PM2；新进程以 drain marker 暂停 API 写入和 worker，health 通过后解除。`manual` marker 代表必须人工恢复且不会过期。
+- 发布切换：PM2 固定使用单实例 `cluster + wait_ready`，脚本先写 drain marker 暂停 API 写入和 worker，等待存量写请求与运行任务归零，再用短时 `internal_jobs` 表锁作最终零任务屏障。释放表锁后执行 `pm2 startOrReload`，新进程发出 ready 且精确 release health 通过后才移除 marker；正常路径不再停止唯一进程，也不操作 `iptables`。`manual` marker 代表必须人工恢复且不会过期。
 
 GitHub 主要是备份和历史留档，不会自动更新线上服务。线上事实以腾讯云服务器目录和 PM2 进程为准。

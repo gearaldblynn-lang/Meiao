@@ -614,7 +614,15 @@ test('cloud deploy keeps old hashed assets and missing chunks do not fall back t
   // coreutils 9.2+ 的 cp -n 对跳过文件退出1会掐死部署,必须用显式'不存在才拷'循环
   assert.match(deployScript, /if \[ ! -e \\"dist-next\/assets\/\\\$base\\" \]; then\n\s*cp -p \\"\\\$asset\\" \\"dist-next\/assets\/\\\$base\\"/, '旧 hash chunk 必须显式跳过已存在文件合并,不许 cp -n');
   assert.doesNotMatch(deployScript, /cp -R?p?n /, '禁止 cp -n(coreutils 9.2+ 跳过即退出1)');
-  assert.match(deployScript, /mv dist dist-prev; fi\n\s*mv dist-next dist/, '切换必须是原子换名');
+  const previousDistRenameIndex = deployScript.indexOf('mv dist dist-prev');
+  const nextDistRenameIndex = deployScript.indexOf('mv dist-next dist');
+  assert.ok(previousDistRenameIndex >= 0, '切换前必须原子保留旧 dist');
+  assert.ok(nextDistRenameIndex > previousDistRenameIndex, '新 dist 的原子换名必须晚于旧 dist 保留');
+  assert.match(
+    deployScript.slice(previousDistRenameIndex, nextDistRenameIndex),
+    /HAD_PREVIOUS_DIST=1/,
+    '只有成功保留旧 dist 才能允许失败回滚',
+  );
 });
 
 test('shell hydration keeps backend jobs out of the refresh critical path', () => {

@@ -164,7 +164,7 @@ EOF
 
 `MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS` 默认 `10`，控制同用户、同语义付费任务的 MySQL 命名锁等待。去重查询、积分预留和 job 创建在同一事务内完成；锁超时返回 409，不创建第二个任务。
 
-`APP_STATE_MAX_BYTES` 是 app_states 单行 state_json 写入大小闸(超闸按 updatedAt 倒序裁老项目,active 永留)。云上 2026-07-04 起为 `16777216`(16 MiB):当时妙木山 8.76 MiB 已超旧 8 MiB 闸、正在丢老项目;线上 MySQL `max_allowed_packet` 实测 128 MiB,16 MiB 仍有 8 倍余量。调整该值必须 `source .env.server` 后 `pm2 restart --update-env` 并从进程环境(`/proc/<pid>/environ`)复核生效。
+`APP_STATE_MAX_BYTES` 是 app_states 单行 state_json 写入大小闸(超闸按 updatedAt 倒序裁老项目,active 永留)。云上 2026-07-04 起为 `16777216`(16 MiB):当时妙木山 8.76 MiB 已超旧 8 MiB 闸、正在丢老项目;线上 MySQL `max_allowed_packet` 实测 128 MiB,16 MiB 仍有 8 倍余量。调整该值必须 `source .env.server` 后 `pm2 startOrReload ecosystem.config.cjs --update-env` 并从进程环境(`/proc/<pid>/environ`)复核生效。
 
 `MEIAO_KIE_HTTP_TRANSIENT_RETRIES` / `MEIAO_KIE_HTTP_RETRY_BASE_MS` 控制 KIE HTTP 请求级瞬时重试（默认 2 次、退避 1s/3s）：createTask/chat 付费 POST 只有在全部底层原因都明确停在 TCP `connect` 阶段（如 `ETIMEDOUT/ENETUNREACH`）时才安全重试；连接建立后的 `ECONNRESET/UND_ERR_SOCKET`、主动超时、混合未知异常或任何 HTTP 响应都不得重提。`502/503/504` 默认只对只读 GET 重试；文件上传 POST 是显式例外，由独立上传预算控制。任务失败落库时 `error_message` 为用户可读人话、`error_detail` 保留技术原文。
 
@@ -182,7 +182,7 @@ Gemini 视频读取是独立的强约束链路：我方 `/api/assets/file/` 视�
 - CAM 密钥必须与视频 COS 分开，只对该桶的 `managed-images/*` 授予 `PutObject`、`GetObject`/`HeadObject` 和 `DeleteObject`；禁止 `DeleteBucket`、修改桶策略、修改 ACL 及访问其他桶。Secret 只写服务端 `.env.server`，不进 Git、页面、日志或诊断看板。`MEIAO_MANAGED_ASSET_ACCESS_SECRET` 用于生成绑定素材与用户的访问 capability；轮换时先把旧值放入 `MEIAO_MANAGED_ASSET_ACCESS_PREVIOUS_SECRET`，等旧 URL 完成更新后再清空。
 - 生命周期只配置“终止 1 天前未完成的分块上传”，不配置定时删除正常对象；正常图片由用户/项目/任务/会话删除触发的持久清理队列精确删除。删除前 worker 会再次检查存活引用，防止并发误删。
 - CORS 不开放上传；如页面确需 canvas 跨域读图，只允许 `https://meiaoyuntai.com` 和 `https://www.meiaoyuntai.com` 的 `GET/HEAD`。强制 HTTPS。
-- 云资源和成对密钥必须先配好，且 `MEIAO_MANAGED_IMAGE_UPLOAD_MODE=cos`。标准部署在网络 drain/停旧进程之前自动执行 `npm run probe:managed-image-cos`；只有 `put -> head -> signed HTTPS GET -> byte equality -> delete -> head/not-found` 全部通过才继续。任何一步失败都原地中止，旧进程和旧 `dist` 继续服务。
+- 云资源和成对密钥必须先配好，且 `MEIAO_MANAGED_IMAGE_UPLOAD_MODE=cos`。标准部署在写请求 drain/PM2 平滑 reload 之前自动执行 `npm run probe:managed-image-cos`；只有 `put -> head -> signed HTTPS GET -> byte equality -> delete -> head/not-found` 全部通过才继续。任何一步失败都原地中止，旧进程和旧 `dist` 继续服务。
 - 紧急回滚仍可把上传模式设为 `disabled`以防错写，并保留 COS-aware 代码读删既有素材；这是明确的降级状态，`managedImageUpload.ready=false`，不得报告为发布完成。
 - `/api/health` 的 `managedImageUpload` 暴露模式、配置完整性、最近一次真探针、时效和告警；`managedAssetCleanup` 另行暴露 backlog、最老等待时间、retry attempts、manual review、upload failed 和 alerting。密钥、SecretId、bucket 和签名 URL 都不进入 health。
 
@@ -253,7 +253,7 @@ location /__meiao_stored_assets/ {
 
 ```bash
 MEIAO_ASSET_X_ACCEL=1
-pm2 restart meiao-internal --update-env
+pm2 startOrReload ecosystem.config.cjs --update-env
 ```
 
 ## 启动
@@ -284,10 +284,10 @@ MEIAO_TEMPORAL_TASK_QUEUE=meiao-cloud
 MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS=10000
 ```
 
-然后重启 PM2：
+然后平滑 reload PM2：
 ```bash
 cd /www/wwwroot/meiao-internal
-pm2 restart meiao-internal --update-env
+pm2 startOrReload ecosystem.config.cjs --update-env
 pm2 save
 ```
 
@@ -300,27 +300,31 @@ MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh
 
 部署脚本为零断档设计(2026-07-07 起):`npm install`/`build` 期间旧 `dist` 一直原样服务,新产物先构建到 `dist-next`,旧的 hash chunk 按修改时间保留(供部署前已打开的旧标签页懒加载),最后原子换名切换,前端静态文件没有中断窗口。
 
-部署脚本先用原子 `mkdir /tmp/meiao-deploy-mutex` 获取整次发布的远端互斥锁，并以排他创建写入本次唯一 owner token；锁存在、owner 缺失或不匹配都 fail-closed。锁在首次 readiness/marker 检查和任何源码上传前取得，并在上传前、远端源码替换前和 dist 切换前复核 owner。随后读取远端 `.env.server`，按 `MEIAO_DEPLOY_DRAIN_FILE` 解析 marker；只要 marker 路径存在（包括空文件）就在任何源码替换前拒绝发布。远端构建后再次检查 `internal_jobs.status='running'`，最终切换进入首发兼容 drain：预检 `iptables`/`ip6tables`/`ss`，拒绝新的 IPv4 Nginx 回源、公网直连和 IPv6 直连 3100，等已有连接连续为零；再以排他创建写入带本次 owner token 的 marker，对 `internal_jobs` 取得 `WRITE` 表锁并复查零运行任务。确认旧 PM2 存在且即将调用 stop 时，先写 stop-attempted ack，再执行 `pm2 stop`；只有 `pm2 pid` 成功、至少返回一个全零 PID token且 MySQL 会话仍存活，才另写 stopped ack。
+部署脚本先用原子 `mkdir /tmp/meiao-deploy-mutex` 获取整次发布的远端互斥锁，并以排他创建写入本次唯一 owner token；锁存在、owner 缺失或不匹配都 fail-closed。锁在首次 readiness/marker 检查和任何源码上传前取得，并在上传前、远端源码替换前和 dist 切换前复核 owner。随后读取远端 `.env.server`，按 `MEIAO_DEPLOY_DRAIN_FILE` 解析 marker；只要 marker 路径存在（包括空文件）就在任何源码替换前拒绝发布。远端构建后再次检查 `internal_jobs.status='running'`，以排他创建写入带本次 owner token 的 marker，等 `/api/health.deployment.activeWriteRequests=0`，再对 `internal_jobs` 取得短时 `WRITE` 表锁并复查零运行任务。这个锁只是 reload 前的最终屏障，必须在启动新进程前释放，否则新进程 bootstrap 查询同表会与 PM2 等待 ready 互锁。
 
-新进程启动后才幂等删除精确网络规则供 health/静态流量使用；每条规则先用对应命令执行 `-C`，只有退出码 0 才 `-D`、退出码 1 视为已不存在，其他错误保留剩余状态并失败。剩余规则状态通过同目录临时文件加原子 rename 持久化。marker 仍拒绝 API 写请求并暂停 worker，直到 `/api/health` 同时确认 HTTP 与 worker 健康；活动 marker 和 mutex 的清理都会先在同目录用 `mkdtemp` 创建不可预测的私有 claim 目录，再原子 rename 到其中尚不存在的 `claimed` 子路径。恢复 marker 只允许用排他 `wx` 创建 live 文件；恢复 mutex 只允许排他创建 live 目录和内部文件，任何新 replacement 或冲突都会保留私有 claim，不会被覆盖。远端 mutation shell 只在 drain 清理成功且 holder 子进程已退出后，把 owner token 写入 mutex 内的 `remote-complete`；`retain-manual` 失败也属于清理失败，绝不生成完成证明。本地 `EXIT` trap 在 mutation 已开始时必须看到精确匹配的完成证明才释放 mutex。`SIGKILL`、SSH 中断、清理失败或仍存活的远端子进程都不会产生完成证明。`manual` marker 永不自动删除。health 失败时只在严格停机证明成立时认定新进程已停；存在 stop-attempted 但没有 stopped 证明且新进程尚未启动时，只能报告“旧服务可能已停止”，保留规则状态并把 marker 写为永不过期的 `manual`。紧急情况下只能显式设置 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 覆盖；该开关不应作为日常发布参数。
+dist 原子切换后执行 `pm2 startOrReload ecosystem.config.cjs --update-env`。正式 PM2 合同为单实例 `cluster + wait_ready`：新进程完成 bootstrap、开始监听并发出 `ready` 前，旧进程继续承接流量；新进程 ready 后 PM2 才向旧进程发信号，旧进程先停 worker/定时器/Temporal，再关闭 HTTP 与连接池。脚本不再调用 `pm2 stop`/`pm2 restart`，也不操作 `iptables`。只有 `/api/health` 同时证明 HTTP、worker 和本次精确 `release.id` 后才清理 marker；命令返回异常但新 release 已健康时按成功收敛，否则恢复旧 dist，且任何自动清理都不会停止最后一个健康进程。marker 与 mutex 仍使用不可预测私有 claim 目录原子清理；`manual` marker 永不自动删除。紧急情况下只能显式设置 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 覆盖；该开关不应作为日常发布参数。
+
+### 旧 fork 进程首次迁移
+
+2026-07-23 以前的旧进程无 `deployment.activeWriteRequests` 指标，标准脚本会安全拒绝，不允许猜测存量写请求已归零。仅首次迁移使用一次性候选切换：新版候选必须以 `MEIAO_BIND_HOST=127.0.0.1 PORT=3101` 启动，通过精确 release health 后才备份 Nginx vhost、把所有正式回源从 3100 改到 3101，经 `nginx -t` 后 reload。公网连续探测无 502 后，再把正式 `meiao-internal` 迁移为 ecosystem 的 cluster/wait_ready 合同，确认 3100 新 release 健康；最后将 Nginx 切回 3100、再次连续探测，才删除 3101 候选。任一候选/health/Nginx 校验失败都保留当前健康上游并恢复 vhost 备份；候选端口禁止监听 `0.0.0.0`。此流程只用一次，迁移完成后所有后续发布均走标准脚本。
 
 ### 部署互斥锁残留恢复
 
 `deploy_tencent.sh` 的本地 `EXIT` trap 在上传前失败时可释放 owner 匹配的 mutex；远端 mutation 开始后，还必须有匹配的 `remote-complete`。释放 claim 位于类似 `/tmp/.meiao-deploy-mutex.release-XXXXXX/claimed` 的随机私有目录；核验后只删除该 claim，此时新建的 live mutex 或外部预建的可预测同名路径都不会被误删。`kill -9`、本机断电、SSH 中断或远端 shell 尚未完成时可能留下 mutex 或私有 claim；**残锁没有自动过期机制，不得按 mtime 直接删除**。
 
 1. 读取 owner：`cat /tmp/meiao-deploy-mutex/owner`。owner 缺失也视为异常残锁。
-2. 确认没有仍在执行的远端发布步骤：检查 `hold-deploy-drain.mjs`、`backend-network-drain.mjs`、`npm install`、`npm run build`、`tar -xzf` 等进程；无法确认时保持锁不动。
-3. `source /www/wwwroot/meiao-internal/.env.server`，解析 `DRAIN_MARKER_FILE="${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}"` 并读取其完整内容。若为 `manual` 或与 mutex owner 相同的活动 token，先按下方 manual 流程恢复 PM2、精确清理网络规则并确认 health/worker；不要先删 marker 或 mutex。
+2. 确认没有仍在执行的远端发布步骤：检查 `hold-deploy-job-lock.mjs`、`pm2 startOrReload`、`npm install`、`npm run build`、`tar -xzf` 等进程；无法确认时保持锁不动。
+3. `source /www/wwwroot/meiao-internal/.env.server`，解析 `DRAIN_MARKER_FILE="${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}"` 并读取其完整内容。若为 `manual` 或与 mutex owner 相同的活动 token，先按下方 manual 流程确认 PM2 与 health/worker；不要先删 marker 或 mutex。
 4. 同时检查 `/tmp/.meiao-deploy-mutex.release-*` 和 marker 对应的 `.<marker名>.quarantine-*`/`.<marker名>.manual-*` 私有目录。每个 claim 的业务对象都在其 `claimed` 子路径；若 live 路径已被新 owner 占用，两者都保留，禁止覆盖、合并或递归删除。
-5. 确认服务健康、没有残留网络 drain、没有相关远端发布/holder 子进程，且 owner 从步骤 1 起未变化后，再处理残锁。若有匹配的 `remote-complete`，使用当前版本 `scripts/deploy-ownership.mjs release-mutex --mutex-dir /tmp/meiao-deploy-mutex --owner '<owner>' --mutation-started 1`。若没有完成证明，先把它视为 mutation 状态未知并完成上述全部人工核验；人工 claim 也必须先用 `CLAIM_PARENT=$(mktemp -d /tmp/.meiao-deploy-mutex.manual-release-XXXXXX)`，再执行 `mv /tmp/meiao-deploy-mutex "$CLAIM_PARENT/claimed"`。复核 claimed owner 和允许文件后，只删除 claimed 内的允许文件并依次 `rmdir "$CLAIM_PARENT/claimed" "$CLAIM_PARENT"`。owner 不匹配或 live mutex 已重新出现时保留 claim 并停止，不得把 claim rename 回 live、直接删除 live mutex或递归删除。
+5. 确认服务健康、没有残留 job-lock/reload 子进程，且 owner 从步骤 1 起未变化后，再处理残锁。若有匹配的 `remote-complete`，使用当前版本 `scripts/deploy-ownership.mjs release-mutex --mutex-dir /tmp/meiao-deploy-mutex --owner '<owner>' --mutation-started 1`。若没有完成证明，先把它视为 mutation 状态未知并完成上述全部人工核验；人工 claim 也必须先用 `CLAIM_PARENT=$(mktemp -d /tmp/.meiao-deploy-mutex.manual-release-XXXXXX)`，再执行 `mv /tmp/meiao-deploy-mutex "$CLAIM_PARENT/claimed"`。复核 claimed owner 和允许文件后，只删除 claimed 内的允许文件并依次 `rmdir "$CLAIM_PARENT/claimed" "$CLAIM_PARENT"`。owner 不匹配或 live mutex 已重新出现时保留 claim 并停止，不得把 claim rename 回 live、直接删除 live mutex或递归删除。
 
 ### manual 门禁恢复
 
-部署输出 `manual` 时，**不得直接删除 marker**。记下脚本输出的 `DRAIN_NETWORK_STATE_FILE`；若同时存在部署 mutex，先保留 mutex，然后在云上按以下顺序恢复：
+部署输出 `manual` 时，**不得直接删除 marker，也不得为恢复而停止当前唯一健康进程**。若同时存在部署 mutex，先保留 mutex，然后在云上按以下顺序恢复：
 
-1. 保留 `/tmp/meiao-deploy-drain` 中的 `manual`，执行 `pm2 stop meiao-internal`；只有 `pm2 pid meiao-internal` 命令成功且输出全为 `0` 才继续。
-2. 服务已确认停止后，执行 `node scripts/backend-network-drain.mjs exit --state-file <脚本输出的状态文件>`；命令失败时保留文件并重试，不手工宽泛删规则。
-3. 执行 `pm2 restart meiao-internal --update-env`（进程不存在时用 `pm2 start ecosystem.config.cjs`）；marker 保持 `manual`，因此新代码只允许 health/GET，不会接受付费写请求。
+1. 保留 marker，检查 `pm2 jlist`、`/api/health`、`release.id` 和 3100 监听进程；先确定是新 release 已健康但脚本超时，还是新 release 未就绪。
+2. 若本次精确 release health 已通过，不停进程，直接进入步骤 4。若当前仍是旧健康 release，先恢复旧 dist 并保持 marker。
+3. 只在 3100 没有任何健康进程时，才从项目目录执行 `pm2 startOrReload ecosystem.config.cjs --update-env`；marker 保持 `manual`，新代码只允许 health/GET，不接受付费写请求。
 4. 执行 `curl -fsS http://127.0.0.1:3100/api/health | node scripts/assert-deploy-health.mjs`。只有 HTTP 和 worker 都健康后，才执行 `pm2 save`。marker 删除也必须使用私有 claim：`MARKER="${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}"; CLAIM_PARENT=$(mktemp -d "$(dirname "$MARKER")/.$(basename "$MARKER").manual-recovery-XXXXXX"); mv "$MARKER" "$CLAIM_PARENT/claimed"`。确认 claimed 完整内容恰为 `manual` 后只删除 `claimed` 并 `rmdir "$CLAIM_PARENT"`。内容不符或 rename 后出现新 live marker 时保留 claim，绝不能删除、覆盖或 rename 回 live。
 
 `MEIAO_OLD_ASSET_RETENTION_DAYS`(部署时本地环境变量,默认 `30`)控制旧 hash chunk 的保留天数,超期文件在合并前清掉,防止 `dist/assets` 无限膨胀。前端每 5 分钟和回到前台时会比对 `version.json` 的构建号,发现新版本且无进行中任务时自动软刷新;有任务时只提示不打断。
@@ -328,8 +332,8 @@ MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh
 ## 云上发布硬性门禁
 - 每次同步新内容到云上前，必须先完成代码审查；至少检查本次 diff、数据隔离、公网资源 URL、日志/统计保留、权限边界和核心任务链路。
 - 部署脚本默认会拦截未审查发布；只有确认审查完成后，才允许带 `MEIAO_CODE_REVIEW_CONFIRMED=1` 执行。
-- 服务器 `npm install` 后会执行 `npm run security:audit`；只要依赖树仍有 high/critical 级别漏洞，发布会在构建和 PM2 重启前停止。
-- 发布前与重启前必须通过运行中任务检查和 drain 交接；有活跃 job 时等待结束后重新执行，不得默认使用覆盖开关。
+- 服务器 `npm install` 后会执行 `npm run security:audit`；只要依赖树仍有 high/critical 级别漏洞，发布会在构建和 PM2 reload 前停止。
+- 发布前与 PM2 reload 前必须通过运行中任务检查和 drain 交接；有活跃 job 时等待结束后重新执行，不得默认使用覆盖开关。
 - 不允许为了省时间绕过该门禁；紧急修复也必须先做最小范围代码审查并记录验证结果。
 
 如果密钥路径或服务器地址变化，可以临时指定：

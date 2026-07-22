@@ -17,6 +17,19 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Environment: cloud production / local development / local backup / GitHub comparison
 - Root cause:
 - Fix:
+- Regression check:
+- Avoid next time:
+```
+
+## 2026-07-23 - Single-upstream stop/start deployment makes public 502 inevitable
+
+- Symptom: 官网今天多次在发布期间返回 502，恢复后过一会又出现；日志中可对应到 PM2 `STOPPED -> RUNNING` 空窗。
+- Environment: Tencent Cloud production / Nginx single upstream `127.0.0.1:3100` / PM2 one process / release path.
+- Root cause: 旧发布脚本在新进程 ready 前先 `pm2 stop` 唯一后端，Nginx 必然暂时无上游；这不是 provider、内存或磁盘故障。架构级根因见 `CLAUDE.md` #79，诊断指纹为 `deploy:single_upstream_stop_start:public_502`。
+- Fix: 正式进程改为单实例 `cluster + wait_ready`，服务只在完成 bootstrap 与 HTTP listen 后发 ready，退出时优雅关闭 worker/Temporal/HTTP/连接池。发布先 drain 写请求与任务，再 `pm2 startOrReload`，并用精确 release health 收敛；正常路径不再 stop/restart 唯一进程或操作 iptables。
+- Regression check: `server/processLifecycle.test.mjs`、`server/pm2Contract.test.mjs`、`scripts/deploy_tencent.test.mjs`、`scripts/assert-deploy-health.test.mjs`、`server/deployDrain.test.mjs` 锁定 ready/优雅退出/cluster/release 身份/写请求排空与禁止 stop-start。
+- Avoid next time: 发布时序是公网可用性合同。单上游不得在候选实例 ready 前停止；验收必须连续探测公网状态码并核对 release ID，不能只在发布结束后看一次 health。
+
 ## 2026-07-22 - Managed image validation must trust bytes, not browser MIME labels
 
 - Symptom: 多个账号上传 `.jpg` 素材时集中出现“图片类型与文件内容不一致”，项目在策划/生图前失败；同一素材会让连续新项目重复报错。

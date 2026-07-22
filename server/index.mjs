@@ -271,6 +271,7 @@ const dataDir = path.join(__dirname, 'data');
 const storePath = path.join(dataDir, 'internal-store.json');
 const distDir = path.join(__dirname, '..', 'dist');
 const PORT = Number(process.env.PORT || 3100);
+const BIND_HOST = String(process.env.MEIAO_BIND_HOST || '0.0.0.0').trim() || '0.0.0.0';
 const processRelease = getProcessReleaseIdentity();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const ASSET_RETENTION_MS = 1000 * 60 * 60 * 24 * 3;
@@ -17790,7 +17791,7 @@ const bootstrap = async () => {
     });
   }
 
-  await listenAndNotifyReady({ server, port: PORT, host: '0.0.0.0' });
+  await listenAndNotifyReady({ server, port: PORT, host: BIND_HOST });
 };
 
 bootstrap().catch((error) => {

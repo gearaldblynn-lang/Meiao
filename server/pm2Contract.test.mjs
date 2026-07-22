@@ -14,6 +14,7 @@ test('production PM2 app uses one ready-gated cluster instance', () => {
   assert.equal(app.wait_ready, true);
   assert.equal(app.listen_timeout, 120000);
   assert.equal(app.kill_timeout, 30000);
+  assert.equal(app.env.MEIAO_BIND_HOST, '0.0.0.0');
 });
 
 test('server health exposes immutable release identity', () => {
@@ -21,4 +22,11 @@ test('server health exposes immutable release identity', () => {
 
   assert.match(source, /const processRelease = getProcessReleaseIdentity\(\);/);
   assert.match(source, /release: processRelease/);
+});
+
+test('server bind host is configurable for loopback-only migration candidates', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+
+  assert.match(source, /const BIND_HOST = String\(process\.env\.MEIAO_BIND_HOST \|\| '0\.0\.0\.0'\)\.trim\(\) \|\| '0\.0\.0\.0'/);
+  assert.match(source, /listenAndNotifyReady\(\{ server, port: PORT, host: BIND_HOST \}\)/);
 });

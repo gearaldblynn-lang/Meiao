@@ -20,6 +20,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3100,
+        MEIAO_BIND_HOST: process.env.MEIAO_BIND_HOST || '0.0.0.0',
         MEIAO_RELEASE_ID: process.env.MEIAO_RELEASE_ID || '',
         MEIAO_DB_HOST: '127.0.0.1',
         MEIAO_DB_PORT: '3307',
