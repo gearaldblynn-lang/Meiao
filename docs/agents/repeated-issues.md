@@ -1099,3 +1099,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 扫描全部合法数组并按完整分镜合同评分，优先选择同时包含 `storyboardPrompt` 与 `dynamicScriptPrompt` 的最终分段；所有画面、运镜、口播、音效兜底按 `videoGenerationMode` 隔离，原创口播只从用户 `scriptLogic` 文案逐镜头分配，缺失时留空，不伪造视频识别结果；时间码支持小数秒。原创 RTCFE 提示词同时明确“没有参考视频”并禁止输出参考视频未识别文案。
 - Regression check: `node --test src/utils/videoStoryboardPlanning.test.mjs src/services/videoStoryboardService.test.mjs`；`npm run verify`；把上述真实云上原始响应交给本地解析器重放，必须得到 2 个分段、12 个镜头、12 条口播且不含任何参考视频兜底。爆款复刻缺字段回归仍必须保留参考视频专用提示。
 - Avoid next time: 长推理模型的 HTTP 成功内容不能按“第一个合法 JSON”消费；解析边界必须同时验证业务 schema，并用真实多候选响应回放。共享 normalizer 的任何兜底都必须显式携带业务模式，禁止把一种输入来源的诊断文案泄漏到另一种模式。时间字段必须覆盖 provider 实际可能返回的小数精度。
+
+## 2026-07-22 - 发布启动门禁不得把历史人工恢复积压误判为新进程不健康
+
+- Symptom: 新版本 PM2 已启动，`/api/health` 连续返回 `ok=true`、worker healthy、COS ready，但发布脚本等待 60 秒后仍报“health/worker 未恢复”，随后按失败清理停止新进程，公网短暂返回 502。
+- Cloud evidence: 墓碑清理周期已完成且 `errors=0`、`lastError` 为空，但 24 个历史 `provider_recovery_manual` 项令汇总 `alerting=true`。同一时刻应用 HTTP、Temporal poller、COS 探针和转码工具均健康；人工重启 PM2 后立即恢复。
+- Root cause: `assert-deploy-health` 把 `tombstonedJobCleanup.alerting=false` 作为进程启动条件。该 `alerting` 同时表示“存在需人工核验的历史业务项”和“本轮协调器执行错误”，语义比发布就绪更宽；历史人工项因此能永久阻断任何无关版本发布。
+- Fix: 发布仍要求应用、worker、COS 全部健康，并要求墓碑协调器至少完成一个周期；墓碑门禁改为检查该周期 `errors=0`。历史人工恢复项继续留在 health 中告警和等待审计，但不再伪装成新进程启动失败。
+- Regression check: `node --test scripts/hold-deploy-drain.test.mjs scripts/deploy_tencent.test.mjs`。必须锁定：已完成周期且只有人工积压时允许切换；周期未运行或 `errors>0` 时继续 fail closed；HTTP、worker、COS 任一不健康时继续拒绝发布。
+- Avoid next time: 健康门禁只能组合与当前发布就绪直接相关、可由本次启动收敛的信号。业务积压告警和进程就绪必须分层表达；新增聚合 `alerting` 时要分别覆盖“执行错误”和“人工待处理”两类真实数据，不能直接把聚合布尔值接入停机判定。
