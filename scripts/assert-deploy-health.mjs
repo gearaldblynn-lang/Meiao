@@ -4,8 +4,9 @@ export const isDeployHealthReady = (health) => (
   health?.ok === true
   && health?.worker?.healthy === true
   && health?.managedImageUpload?.ready === true
-  && health?.tombstonedJobCleanup?.alerting === false
   && Number(health?.tombstonedJobCleanup?.lastCycleAt || 0) > 0
+  && Number.isFinite(health?.tombstonedJobCleanup?.errors)
+  && health.tombstonedJobCleanup.errors === 0
 );
 
 const run = async () => {

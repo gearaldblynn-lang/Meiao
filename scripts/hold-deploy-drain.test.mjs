@@ -190,30 +190,38 @@ test('real PM2 process manager requires successful explicit all-zero pid output'
   );
 });
 
-test('deployment health also requires one successful tombstoned-job cleanup cycle', () => {
-  assert.equal(isDeployHealthReady({
+test('deployment health requires one error-free tombstoned-job cleanup cycle', () => {
+  const healthy = {
     ok: true,
     worker: { healthy: true },
     managedImageUpload: { ready: true },
-    tombstonedJobCleanup: { alerting: false, lastCycleAt: 1 },
+    tombstonedJobCleanup: { alerting: false, errors: 0, lastCycleAt: 1 },
+  };
+
+  assert.equal(isDeployHealthReady(healthy), true);
+  assert.equal(isDeployHealthReady({
+    ...healthy,
+    tombstonedJobCleanup: { alerting: true, errors: 0, lastCycleAt: 1 },
   }), true);
   assert.equal(isDeployHealthReady({
-    ok: true,
-    worker: { healthy: true },
-    managedImageUpload: { ready: true },
+    ...healthy,
+    tombstonedJobCleanup: { alerting: true, errors: 1, lastCycleAt: 1 },
   }), false);
   assert.equal(isDeployHealthReady({
-    ok: true,
-    worker: { healthy: true },
-    managedImageUpload: { ready: true },
-    tombstonedJobCleanup: { alerting: true, lastCycleAt: 1 },
+    ...healthy,
+    tombstonedJobCleanup: { alerting: false, lastCycleAt: 1 },
   }), false);
-  assert.equal(isDeployHealthReady({ ok: true, worker: { healthy: true } }), false);
   assert.equal(isDeployHealthReady({
-    ok: true,
-    worker: { healthy: true },
+    ...healthy,
+    tombstonedJobCleanup: { alerting: false, errors: 0, lastCycleAt: 0 },
+  }), false);
+  assert.equal(isDeployHealthReady({
+    ...healthy,
+    worker: { healthy: false },
+  }), false);
+  assert.equal(isDeployHealthReady({
+    ...healthy,
     managedImageUpload: { ready: false },
   }), false);
-  assert.equal(isDeployHealthReady({ ok: true, worker: { healthy: false } }), false);
-  assert.equal(isDeployHealthReady({ ok: false, worker: { healthy: true } }), false);
+  assert.equal(isDeployHealthReady({ ...healthy, ok: false }), false);
 });
