@@ -127,7 +127,7 @@ git commit -m "feat(deploy): define pm2 graceful reload contract"
 **Interfaces:**
 - Produces CLI: `node scripts/hold-deploy-job-lock.mjs --ready-file <path> --release-file <path>`.
 - Ready file contains the existing `summarizeRunningJobs` JSON.
-- The helper holds `LOCK TABLES internal_jobs WRITE` until the release file exists, then always unlocks and closes its connection.
+- The helper holds `LOCK TABLES internal_jobs WRITE` until the release file exists, then always unlocks and closes its connection. The release file must be written before PM2 reload so bootstrap cannot deadlock on `internal_jobs`.
 
 - [ ] **Step 1: Write failing lock-holder tests**
 
@@ -168,14 +168,17 @@ git commit -m "feat(deploy): hold job lock across graceful reload"
 - Modify: `scripts/deploy_tencent.test.mjs`
 - Modify: `scripts/deploy-lifecycle.mjs`
 - Modify: `scripts/deploy-lifecycle.test.mjs`
+- Modify: `server/deployDrain.mjs`
+- Modify: `server/deployDrain.test.mjs`
+- Modify: `server/index.mjs`
 
 **Interfaces:**
 - Consumes: Task 2 expected release health check and Task 3 lock-holder CLI.
-- Produces release sequence: marker → DB lock → atomic dist swap → `pm2 startOrReload` → expected-release health → lock release → marker removal.
+- Produces release sequence: marker → active writes zero → DB lock/final running check → lock release → atomic dist swap → `pm2 startOrReload` → expected-release health → marker removal.
 
 - [ ] **Step 1: Rewrite deployment contract tests first**
 
-Make the source-level tests require `hold-deploy-job-lock.mjs`, `MEIAO_RELEASE_ID`, `pm2 startOrReload ecosystem.config.cjs --update-env`, and expected-release health. Assert the normal remote payload contains no invocation of `backend-network-drain.mjs enter`, `pm2 stop meiao-internal`, `pm2 restart meiao-internal`, or `hold-deploy-drain.mjs`.
+First add failing request-tracker tests proving guarded writes increment before admission and decrement in `finally`, while GET is not counted. Then make source-level tests require an `activeWriteRequests === 0` health gate, `hold-deploy-job-lock.mjs`, release of the table lock before PM2, `MEIAO_RELEASE_ID`, `pm2 startOrReload ecosystem.config.cjs --update-env`, and expected-release health. Assert the normal remote payload contains no invocation of `backend-network-drain.mjs enter`, `pm2 stop meiao-internal`, `pm2 restart meiao-internal`, or `hold-deploy-drain.mjs`.
 
 ```js
 assert.match(source, /pm2 startOrReload ecosystem\.config\.cjs --update-env/);
@@ -190,7 +193,7 @@ Expected: FAIL because the current script deliberately drains the network and st
 
 - [ ] **Step 3: Implement the reload sequence and cleanup state machine**
 
-Generate a unique release ID locally and pass it into remote PM2 environment. Start the job-lock helper after the marker, retain `dist-prev` until expected-release health passes, and always signal the helper release file during cleanup. On failure, restore `dist-prev` when it exists; if any healthy PM2 instance remains, remove only the owned marker after restoring assets, otherwise retain the marker as `manual`. Never issue a stop command from automated cleanup.
+Track guarded writes in `server/deployDrain.mjs`, wrap the real dispatcher in `try/finally`, and expose the count in health. Generate a unique release ID locally and pass it into remote PM2 environment. After the marker, wait for the count to remain zero, start the job-lock helper for the final running check, then release and join it before PM2 starts. Retain `dist-prev` until expected-release health passes. On failure, restore `dist-prev` when it exists; if any healthy PM2 instance remains, remove only the owned marker after restoring assets, otherwise retain the marker as `manual`. Never issue a stop command from automated cleanup.
 
 - [ ] **Step 4: Verify GREEN and all deploy safety tests**
 
@@ -201,7 +204,7 @@ Expected: all tests PASS; the network-drain utility remains tested but absent fr
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/deploy_tencent.sh scripts/deploy_tencent.test.mjs scripts/deploy-lifecycle.mjs scripts/deploy-lifecycle.test.mjs
+git add scripts/deploy_tencent.sh scripts/deploy_tencent.test.mjs scripts/deploy-lifecycle.mjs scripts/deploy-lifecycle.test.mjs server/deployDrain.mjs server/deployDrain.test.mjs server/index.mjs
 git commit -m "fix(deploy): eliminate stop-start 502 window"
 ```
 
@@ -249,7 +252,7 @@ git commit -m "docs(deploy): record zero-downtime release invariant"
 
 - [ ] **Step 1: Check remote capability without changing production state**
 
-Verify PM2 version, cluster/startOrReload support, current marker/mutex absence, active jobs zero, current PM2 PID/mode, local host health, and Nginx upstream. Stop if any requirement is unmet.
+Verify PM2 version, cluster/startOrReload support, current marker/mutex absence, active jobs zero, current PM2 PID/mode, local host health, and Nginx upstream. Because the pre-fix process has no active-write metric, prepare the one-time 3101 candidate migration with a timestamped Nginx backup and explicit rollback commands. Stop if any requirement is unmet.
 
 - [ ] **Step 2: Start continuous probes before release**
 
@@ -257,7 +260,7 @@ Run concurrent timestamped probes for public homepage and health at 200 ms inter
 
 - [ ] **Step 3: Publish the committed code through the gated script**
 
-Run: `MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh`
+For the first migration only, start the committed server as a candidate on `127.0.0.1:3101`, verify its exact release health, atomically route Nginx to it, migrate the formal 3100 PM2 app to cluster mode, route Nginx back after exact release health, then remove the candidate. Subsequent releases run `MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh`.
 
 Expected: lock readiness JSON has `runningCount: 0`; PM2 reports online cluster mode; expected release ID health passes; marker and mutex are removed.
 
