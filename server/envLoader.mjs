@@ -1,7 +1,16 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 const stripWrappingQuotes = (value) => {
-  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const decoded = JSON.parse(value);
+      if (typeof decoded === 'string') return decoded;
+    } catch {
+      // Legacy double-quoted dotenv values are not necessarily JSON strings.
+    }
+    return value.slice(1, -1);
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
     return value.slice(1, -1);
   }
   return value;

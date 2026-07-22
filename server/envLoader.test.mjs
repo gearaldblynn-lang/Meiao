@@ -49,3 +49,15 @@ test('loadServerEnvFile returns false when file is missing', () => {
   assert.equal(loaded, false);
   assert.deepEqual(targetEnv, {});
 });
+
+test('loadServerEnvFile decodes JSON-serialized double-quoted dotenv values', () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'meiao-env-quoted-'));
+  const envPath = path.join(tempDir, '.env.server');
+  const expected = 'fixture credential with spaces #, a "quote", and \\backslash';
+  writeFileSync(envPath, `KIE_API_KEY=${JSON.stringify(expected)}\n`, 'utf8');
+
+  const targetEnv = {};
+  loadServerEnvFile({ envPath, targetEnv });
+
+  assert.equal(targetEnv.KIE_API_KEY, expected);
+});

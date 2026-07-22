@@ -31,6 +31,9 @@ backups/
 # Secrets hardening (defense-in-depth). Real secret files must never be tracked.
 .env
 .env.*
+.env.meiao.friend
+.env.server.backup-*
+.env.server.tmp-*
 *.env
 # Keep the sanitized template that carries only placeholders.
 !.env.server.example
