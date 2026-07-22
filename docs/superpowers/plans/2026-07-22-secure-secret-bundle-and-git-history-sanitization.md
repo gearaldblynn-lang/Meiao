@@ -592,6 +592,35 @@ test('scanner rejects unknown CLI arguments before reading the repository', asyn
   assert.equal((result.stdout + result.stderr).includes('fixture-argv-secret'), false);
 });
 
+test('scanner refuses a repository subdirectory as --root', async () => {
+  const root = await repository({
+    'outside.txt': 'sk-' + 'R'.repeat(40),
+    'nested/ordinary.txt': 'ordinary text',
+  });
+  const result = scan(path.join(root, 'nested'));
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, '');
+});
+
+test('scanner covers JS and JSON quoted literals but skips dynamic member expressions', async () => {
+  const staticValue = 'J8k9L0m1N2p3Q4r5S6t7U8v9W0xY1zA2';
+  const root = await repository({
+    'config.mjs': `const x = {\n  apiKey: ${JSON.stringify(staticValue)},\n  dynamicToken: process.env.RUNTIME_TOKEN,\n};`,
+    'config.json': JSON.stringify({ password: staticValue }, null, 2),
+  });
+  const result = scan(root);
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stdout).findings.length, 2);
+});
+
+test('scanner never emits a matched value embedded in its tracked filename', async () => {
+  const value = 'sk-' + 'P'.repeat(40);
+  const root = await repository({ [`prefix-${value}.txt`]: value });
+  const result = scan(root);
+  assert.equal(result.status, 1);
+  assert.equal((result.stdout + result.stderr).includes(value), false);
+});
+
 test('scanner accepts only the exact synthetic fixtures and placeholders', async () => {
   const root = await repository({
     'fixtures/allowed-secrets.txt': [
@@ -614,7 +643,7 @@ Expected: FAIL because the scanner does not exist.
 
 - [ ] **Step 3: Implement the scanner**
 
-Parse argv strictly as either no arguments or exactly `--root ABSOLUTE_PATH`, rejecting unknown/duplicate/missing flags without echoing values. Read tracked paths via `git ls-files -z`; for each path use `lstat`, read regular-file worktree bytes, read a symlink's link text without following it outside the repository, and reject unsupported file types. Skip binary blobs after detecting NUL bytes. Use exact regex rules plus Shannon entropy for quoted and unquoted sensitive assignments, including dotenv/YAML forms. Never include the matched value or a value-derived hash in output. Test exceptions require an exact relative path and exact clearly synthetic value; no directory-wide exclusions.
+Parse argv strictly as either no arguments or exactly `--root ABSOLUTE_PATH`, rejecting unknown/duplicate/missing flags without echoing values. Resolve `git rev-parse --show-toplevel` and require the requested/root cwd canonical path to equal that top-level path; a subdirectory is an error, never a partial scan. Read tracked paths via `git ls-files -z`; for each path use `lstat`, read regular-file worktree bytes, read a symlink's link text without following it outside the repository, and reject unsupported file types. Compare device, inode, size, nanosecond mtime, and nanosecond ctime before/after every regular-file and symlink read. Skip NUL-containing binary blobs. Use exact regex rules plus Shannon entropy for quoted and unquoted sensitive assignments across dotenv, YAML, JS/TS, and JSON, accepting ordinary trailing comma/semicolon syntax while excluding unquoted identifier/member-expression references such as `process.env.RUNTIME_TOKEN`. Never include the matched value or a value-derived hash in output; if a tracked filename contains the same matched value, replace that substring with `[redacted]` before storing the finding. Test exceptions require an exact relative path and exact clearly synthetic value; no directory-wide exclusions.
 
 Implement the scanner with this structure:
 
@@ -628,6 +657,10 @@ if (!(rawArgs.length === 0 || (rawArgs.length === 2 && rawArgs[0] === '--root' &
   throw new Error('usage: check-tracked-secrets [--root ABSOLUTE_PATH]');
 }
 const root = await realpath(rawArgs.length ? rawArgs[1] : process.cwd());
+const topLevelResult = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: root, encoding: 'utf8' });
+if (topLevelResult.status !== 0 || await realpath(topLevelResult.stdout.trim()) !== root) {
+  throw new Error('repository_root_required');
+}
 const tracked = spawnSync('git', ['ls-files', '-z'], { cwd: root });
 if (tracked.status !== 0) throw new Error('git_ls_files_failed');
 
@@ -646,7 +679,7 @@ const rules = [
   ['provider_token', /\bsk-[A-Za-z0-9_-]{20,}\b/g],
   ['credential_url', /\b(?:mysql|postgres(?:ql)?|mongodb(?:\+srv)?):\/\/[^\s:@/]+:[^\s@/]+@[^\s]+/g],
 ];
-const assignment = /\b(?:[A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*|api[_-]?key|secret|token|password)\b\s*[:=]\s*(?:["']([^"'\r\n]{20,})["']|([^\s#,"']{20,}))/gi;
+const assignment = /^\s*(?:-\s+)?(?:export\s+)?(["']?)(?:[A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*|api[_-]?key|secret|token|password)\1\s*[:=]\s*(?:["']([^"'\r\n]{20,})["']|([^\s#,"']{20,}))(?:\s+#.*)?\s*[,;]?\s*$/gi;
 
 function entropy(value) {
   const counts = new Map();
@@ -672,7 +705,8 @@ for (const file of tracked.stdout.toString('utf8').split('\0').filter(Boolean)) 
       pattern.lastIndex = 0;
       for (const match of line.matchAll(pattern)) {
         if (exactSyntheticAllowlist.get(file)?.has(match[0])) continue;
-        findings.push({ file, line: lineIndex + 1, rule, length: match[0].length });
+        const safeFile = file.includes(match[0]) ? file.split(match[0]).join('[redacted]') : file;
+        findings.push({ file: safeFile, line: lineIndex + 1, rule, length: match[0].length });
       }
     }
     assignment.lastIndex = 0;
