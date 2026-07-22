@@ -220,6 +220,8 @@ git commit -m "feat(security): define friend secret policy"
 **Files:**
 - Create: `scripts/export-friend-secret-bundle.mjs`
 - Create: `scripts/import-secret-bundle.mjs`
+- Create: `scripts/secret-bundle-file-ops.mjs`
+- Create: `scripts/secret-bundle-file-ops.test.mjs`
 - Create: `scripts/secret-bundle-cli.test.mjs`
 - Modify: `server/envLoader.mjs`
 - Modify: `server/envLoader.test.mjs`
@@ -277,7 +279,28 @@ test('export writes only allowlisted non-empty keys with mode 0600', async () =>
   assert.match(exported, /^KIE_API_KEY=/m);
   assert.doesNotMatch(exported, /MEIAO_DB_PASSWORD|MEIAO_ADMIN_PASSWORD/);
   assert.equal((await stat(output)).mode & 0o777, 0o600);
-  assert.doesNotMatch(result.stdout + result.stderr, /fixture-.*password/);
+  for (const value of ['fixture-provider-credential-a1', 'fixture-db-password-a1', 'fixture-admin-password-a1']) {
+    assert.equal((result.stdout + result.stderr).includes(value), false);
+  }
+});
+
+test('export rejects unknown or duplicate argv and never replaces an existing output', async () => {
+  const repo = await makeRepo();
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'meiao-secret-export-contract-'));
+  const source = path.join(outside, 'source.env');
+  const output = path.join(outside, '.env.meiao.friend');
+  await writeFile(source, 'KIE_API_KEY=fixture-provider-argv-a2\n');
+  await writeFile(output, 'existing-output\n', { mode: 0o600 });
+  for (const args of [
+    ['--source', source, '--output', output, '--api-key', 'fixture-argv-secret-a2'],
+    ['--source', source, '--source', source, '--output', output],
+    ['--source', source, '--output', output],
+  ]) {
+    const result = run(exporter, args, repo);
+    assert.notEqual(result.status, 0);
+    assert.equal(await readFile(output, 'utf8'), 'existing-output\n');
+    assert.equal((result.stdout + result.stderr).includes('fixture-argv-secret-a2'), false);
+  }
 });
 
 test('import refuses a bundle inside the repository unless git says it is ignored', async () => {
@@ -330,6 +353,22 @@ test('import rejects forbidden or unknown keys without partial writes', async ()
   const result = run(importer, [bundle], repo);
   assert.notEqual(result.status, 0);
   assert.equal(await readFile(path.join(repo, '.env.server'), 'utf8'), original);
+  assert.equal((result.stdout + result.stderr).includes('fixture-provider-f6'), false);
+  assert.equal((result.stdout + result.stderr).includes('fixture-db-f6'), false);
+  await writeFile(bundle, 'KIE_API_KEY=fixture-provider-f7\nUNKNOWN_TOKEN=fixture-unknown-f7\n');
+  const unknownResult = run(importer, [bundle], repo);
+  assert.notEqual(unknownResult.status, 0);
+  assert.equal(await readFile(path.join(repo, '.env.server'), 'utf8'), original);
+  assert.equal((unknownResult.stdout + unknownResult.stderr).includes('fixture-unknown-f7'), false);
+});
+
+test('import rejects symlink targets and an existing cooperative lock without mutation', async () => {
+  const repo = await makeRepo();
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'meiao-secret-symlink-'));
+  const bundle = path.join(outside, '.env.meiao.friend');
+  await writeFile(bundle, 'KIE_API_KEY=fixture-provider-symlink-g7\n');
+  // Create a real outside target plus `.env.server` symlink; assert both stay byte-identical.
+  // Replace the symlink with a regular file plus `.env.server.import.lock`; assert both stay unchanged.
 });
 
 test('imported quoted values round-trip through the application env loader', async () => {
@@ -355,12 +394,12 @@ Expected: FAIL because both CLI files are missing.
 
 - [ ] **Step 3: Implement the exporter**
 
-The exporter requires absolute `--source` and `--output` paths, resolves the output parent with `realpath`, refuses output inside the Git worktree, reads only allowlisted non-empty values, validates them, writes through a sibling temporary file named from the final basename plus the current process ID with mode `0600`, renames atomically, and prints only JSON `{ outputPath, exportedKeys, omittedKeys, cosRisk: boolean }`. It accepts no secret via argv, stdin, or environment-variable overrides.
+The exporter requires exactly one `--source ABSOLUTE_PATH` pair and one `--output ABSOLUTE_PATH` pair, rejects unknown/duplicate/missing flags before reading files, resolves the output parent with `realpath`, refuses output inside the Git worktree, reads only allowlisted non-empty values, validates them, writes through a sibling temporary file with mode `0600`, installs the final name atomically without replacing an existing path, and prints only JSON `{ outputPath, exportedKeys, omittedKeys, cosRisk: boolean }`. It accepts no secret via argv, stdin, or environment-variable overrides; `--source` equal to `--output` fails without mutation.
 
 Implement this control flow in `scripts/export-friend-secret-bundle.mjs`:
 
 ```js
-import { chmod, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
@@ -369,10 +408,17 @@ import {
   serializeDotenv,
   validateFriendSecretEntries,
 } from './secret-bundle-policy.mjs';
+import { installFileNoReplace } from './secret-bundle-file-ops.mjs';
 
+const rawArgs = process.argv.slice(2);
+if (rawArgs.length !== 4) throw new Error('usage: secrets:export -- --source ABSOLUTE_PATH --output ABSOLUTE_PATH');
 const args = new Map();
-for (let index = 2; index < process.argv.length; index += 2) {
-  args.set(process.argv[index], process.argv[index + 1]);
+for (let index = 0; index < rawArgs.length; index += 2) {
+  const flag = rawArgs[index];
+  if (!['--source', '--output'].includes(flag) || args.has(flag) || rawArgs[index + 1] === undefined) {
+    throw new Error('invalid_export_arguments');
+  }
+  args.set(flag, rawArgs[index + 1]);
 }
 const source = args.get('--source');
 const output = args.get('--output');
@@ -397,7 +443,7 @@ const temporary = `${canonicalOutput}.tmp-${process.pid}`;
 try {
   await writeFile(temporary, serializeDotenv(selected), { mode: 0o600, flag: 'wx' });
   await chmod(temporary, 0o600);
-  await rename(temporary, canonicalOutput);
+  await installFileNoReplace(temporary, canonicalOutput);
 } catch (error) {
   await unlink(temporary).catch(() => {});
   throw error;
@@ -410,89 +456,44 @@ console.log(JSON.stringify({
 }));
 ```
 
-- [ ] **Step 4: Implement the importer**
+- [ ] **Step 4: Implement reusable file-safety operations and focused tests**
 
-The importer resolves the repository using `git rev-parse --show-toplevel`, canonicalizes the existing bundle with `realpath`, and runs `git check-ignore --quiet --` with the computed repository-relative bundle path only when the bundle is inside the repository. It parses `.env.server.example`, an optional current `.env.server`, and the bundle. It validates the entire bundle before writing, preserves existing non-empty allowlisted values unless `--force` is present, creates `.env.server.backup-YYYYMMDDTHHMMSS` with mode `0600`, writes a `0600` temporary file, renames it, and reports imported key names and missing allowlisted capabilities without values. Any parse, validation, backup, chmod, write, or rename failure leaves the original `.env.server` byte-identical.
+In `scripts/secret-bundle-file-ops.mjs`, implement `acquireExclusiveLock(lockPath)`, `readRegularFileSnapshot(targetPath)`, `assertFileSnapshotUnchanged(targetPath, snapshot)`, `writeExclusive0600(path, text)`, and `installFileNoReplace(temporaryPath, finalPath)`. Use `lstat({ bigint: true })`, reject non-regular files, compare device/inode/size/nanosecond mtime plus byte content, create via `open(path, 'wx', 0o600)`, `FileHandle.writeFile`, `FileHandle.sync`, and close-before-return. `installFileNoReplace` uses `link` followed by `unlink`, so the final name cannot replace anything. Tests cover symlink rejection, content drift, inode replacement with equal content, existing-final no-replace, backup mode `0600`, and release of only the acquired lock.
 
-Implement this control flow in `scripts/import-secret-bundle.mjs`:
+- [ ] **Step 5: Implement the importer**
+
+The importer resolves the repository using `git rev-parse --show-toplevel`, canonicalizes the existing bundle with `realpath`, and runs `git check-ignore --quiet --` with the computed repository-relative bundle path only when the bundle is inside the repository. It acquires `.env.server.import.lock` by exclusive `0600` creation before inspecting the target. A current `.env.server` must be a regular non-symlink file; record its device, inode, size, nanosecond mtime, and bytes, then re-check all of them immediately before commit. It parses `.env.server.example`, the current snapshot, and the bundle; validates the entire bundle before backup/write; preserves existing non-empty allowlisted values unless `--force` is present; writes `.env.server.backup-YYYYMMDDTHHMMSS` from the already-read bytes through an exclusive `0600` file handle; writes a `0600` temporary file; and reports imported key names and missing capabilities without values. For an initially absent target, install without replacement; for an existing target, rename only after the cooperative lock and unchanged-snapshot check. Any parse, validation, lock, snapshot, backup, chmod, write, or install failure leaves the original `.env.server` byte-identical. Always release only the lock created by the current process.
+
+Implement the commit sequence in `scripts/import-secret-bundle.mjs` exactly in this order:
 
 ```js
-import { chmod, copyFile, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-import { spawnSync } from 'node:child_process';
-import {
-  FRIEND_SECRET_ALLOWLIST,
-  parseDotenvText,
-  serializeDotenv,
-  validateFriendSecretEntries,
-} from './secret-bundle-policy.mjs';
-
-const positional = process.argv.slice(2).filter((arg) => arg !== '--force');
-const force = process.argv.slice(2).includes('--force');
-if (positional.length !== 1) throw new Error('usage: secrets:import -- /absolute/path/.env.meiao.friend [--force]');
-if (!path.isAbsolute(positional[0])) throw new Error('absolute_bundle_path_required');
-const rootResult = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
-if (rootResult.status !== 0) throw new Error('git_worktree_required');
-const root = await realpath(rootResult.stdout.trim());
-const bundle = await realpath(positional[0]);
-if (bundle === root || bundle.startsWith(root + path.sep)) {
-  const relative = path.relative(root, bundle);
-  const ignored = spawnSync('git', ['check-ignore', '--quiet', '--', relative], { cwd: root });
-  if (ignored.status !== 0) throw new Error('in_repo_bundle_must_be_gitignored');
-}
-
-const examplePath = path.join(root, '.env.server.example');
-const targetPath = path.join(root, '.env.server');
-const example = parseDotenvText(await readFile(examplePath, 'utf8'));
-const currentText = await readFile(targetPath, 'utf8').catch((error) => {
-  if (error.code === 'ENOENT') return null;
-  throw error;
-});
-const current = currentText === null ? new Map() : parseDotenvText(currentText);
-const incoming = parseDotenvText(await readFile(bundle, 'utf8'));
-const validation = validateFriendSecretEntries(incoming);
-if (!validation.ok) throw new Error(`invalid_friend_bundle:${validation.rejectedKeys.join(',')}`);
-
-const merged = new Map([...example, ...current]);
-const importedKeys = [];
-const preservedKeys = [];
-for (const [key, value] of incoming) {
-  if (!force && String(current.get(key) || '').trim()) preservedKeys.push(key);
-  else {
-    merged.set(key, value);
-    importedKeys.push(key);
-  }
-}
-const timestamp = new Date().toISOString().replace(/[-:.]/g, '');
-const backupPath = `${targetPath}.backup-${timestamp}`;
-const temporary = `${targetPath}.tmp-${process.pid}`;
+const lock = await acquireExclusiveLock(`${targetPath}.import.lock`);
+let temporaryCreated = false;
 try {
-  if (currentText !== null) {
-    await copyFile(targetPath, backupPath);
-    await chmod(backupPath, 0o600);
-  }
-  await writeFile(temporary, serializeDotenv(merged), { mode: 0o600, flag: 'wx' });
-  await chmod(temporary, 0o600);
-  await rename(temporary, targetPath);
-} catch (error) {
-  await unlink(temporary).catch(() => {});
-  throw error;
+  const snapshot = await readRegularFileSnapshot(targetPath);
+  const current = snapshot.exists ? parseDotenvText(snapshot.text) : new Map();
+  // Parse and validate the example plus the complete incoming bundle here.
+  // Compute merged/imported/preserved only from this locked snapshot.
+  if (snapshot.exists) await writeExclusive0600(backupPath, snapshot.text);
+  await writeExclusive0600(temporary, serializeDotenv(merged));
+  temporaryCreated = true;
+  await assertFileSnapshotUnchanged(targetPath, snapshot);
+  if (snapshot.exists) await rename(temporary, targetPath);
+  else await installFileNoReplace(temporary, targetPath);
+  temporaryCreated = false;
+} finally {
+  if (temporaryCreated) await unlink(temporary).catch(() => {});
+  await lock.release();
 }
-console.log(JSON.stringify({
-  importedKeys: importedKeys.sort(),
-  preservedKeys: preservedKeys.sort(),
-  missingKeys: [...FRIEND_SECRET_ALLOWLIST].filter((key) => !String(merged.get(key) || '').trim()).sort(),
-  backupCreated: currentText !== null,
-  cosRisk: [...incoming.keys()].some((key) => key.includes('_COS_')),
-  nextCommand: 'npm run doctor',
-}));
 ```
 
-- [ ] **Step 5: Make the runtime env loader decode serialized quoted values**
+The omitted parse/merge section is the already-tested Task 2 logic: validate the complete incoming map before `writeExclusive0600`, keep existing non-empty allowlisted values unless `--force`, and report only key names/booleans/`npm run doctor` after successful commit.
+
+- [ ] **Step 6: Make the runtime env loader decode serialized quoted values**
 
 Update `stripWrappingQuotes` in `server/envLoader.mjs` so a double-quoted value first attempts `JSON.parse(value)` and accepts the result only when it is a string. Preserve the existing slice behavior for single quotes and for legacy double-quoted strings that are not valid JSON. Add a focused `server/envLoader.test.mjs` case for spaces, `#`, escaped quote, and escaped backslash so the importer and application share one round-trip contract.
 
-- [ ] **Step 6: Wire npm scripts and ignore rules**
+- [ ] **Step 7: Wire npm scripts and ignore rules**
 
 ```json
 {
@@ -503,18 +504,18 @@ Update `stripWrappingQuotes` in `server/envLoader.mjs` so a double-quoted value 
 }
 ```
 
-Add explicit ignores for `.env.meiao.friend`, `.env.server.backup-*`, and importer temporary files even though `.env.*` already provides defense in depth.
+Add explicit ignores for `.env.meiao.friend`, `.env.server.backup-*`, `.env.server.tmp-*`, and `.env.server.import.lock` even though `.env.*` already provides defense in depth.
 
-- [ ] **Step 7: Run CLI, policy, and runtime env-loader tests**
+- [ ] **Step 8: Run CLI, file-safety, policy, and runtime env-loader tests**
 
-Run: `node --test scripts/secret-bundle-policy.test.mjs scripts/secret-bundle-cli.test.mjs server/envLoader.test.mjs`
+Run: `node --test scripts/secret-bundle-policy.test.mjs scripts/secret-bundle-file-ops.test.mjs scripts/secret-bundle-cli.test.mjs server/envLoader.test.mjs`
 
 Expected: PASS; test output contains no fixture secret values.
 
-- [ ] **Step 8: Commit importer/exporter**
+- [ ] **Step 9: Commit importer/exporter**
 
 ```bash
-git add .gitignore package.json server/envLoader.mjs server/envLoader.test.mjs scripts/export-friend-secret-bundle.mjs scripts/import-secret-bundle.mjs scripts/secret-bundle-cli.test.mjs
+git add .gitignore package.json server/envLoader.mjs server/envLoader.test.mjs scripts/export-friend-secret-bundle.mjs scripts/import-secret-bundle.mjs scripts/secret-bundle-file-ops.mjs scripts/secret-bundle-file-ops.test.mjs scripts/secret-bundle-cli.test.mjs
 git commit -m "feat(security): add one-command secret import"
 ```
 
