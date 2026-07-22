@@ -44,7 +44,75 @@ test('buildImageOutputTransformFromJob uses original finalSize when provided', (
     width: 1024,
     height: 1536,
     maxFileSize: 2,
+    preserveAspectRatio: true,
   });
+});
+
+test('translation original output preserves provider geometry instead of non-uniform stretching', async () => {
+  const input = await sharp({
+    create: {
+      width: 899,
+      height: 1750,
+      channels: 3,
+      background: '#f7f3ed',
+    },
+  }).png().toBuffer();
+
+  const output = await transformImageOutputBuffer(input, {
+    width: 312,
+    height: 840,
+    maxFileSize: 2,
+    preserveAspectRatio: true,
+  });
+
+  assert.equal(output.width, 899);
+  assert.equal(output.height, 1750);
+  assert.equal(output.transformSkippedReason, 'aspect_ratio_mismatch');
+});
+
+test('translation original output may resize when provider and target aspect ratios match', async () => {
+  const input = await sharp({
+    create: {
+      width: 624,
+      height: 1680,
+      channels: 3,
+      background: '#f7f3ed',
+    },
+  }).png().toBuffer();
+
+  const output = await transformImageOutputBuffer(input, {
+    width: 312,
+    height: 840,
+    maxFileSize: 2,
+    preserveAspectRatio: true,
+  });
+
+  assert.equal(output.width, 312);
+  assert.equal(output.height, 840);
+  assert.equal(output.transformSkippedReason, undefined);
+});
+
+test('translation original output validates EXIF-oriented dimensions after auto-orient', async () => {
+  const input = await sharp({
+    create: {
+      width: 40,
+      height: 20,
+      channels: 3,
+      background: '#f7f3ed',
+    },
+  }).jpeg().withMetadata({ orientation: 6 }).toBuffer();
+
+  const output = await transformImageOutputBuffer(input, {
+    width: 10,
+    height: 20,
+    preserveAspectRatio: true,
+  });
+
+  assert.equal(output.width, 10);
+  assert.equal(output.height, 20);
+  assert.equal(output.transformSkippedReason, undefined);
+  assert.equal(output.sourceWidth, 20);
+  assert.equal(output.sourceHeight, 40);
 });
 
 test('transformImageOutputBuffer resizes output and keeps jpeg under max file size', async () => {

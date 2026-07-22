@@ -126,7 +126,7 @@ test('translation ratio label keeps original-size selection distinct from provid
   }), '3:4');
 });
 
-test('failed retry plan keeps the historical model and restores a provider 1:4 image to source pixels', async () => {
+test('failed retry plan keeps historical auto and preserves mismatched provider geometry instead of stretching', async () => {
   const buildPlan = translationRetryUtils.buildTranslationFailedRetryPlan;
   assert.equal(typeof buildPlan, 'function');
   if (typeof buildPlan !== 'function') return;
@@ -168,7 +168,12 @@ test('failed retry plan keeps the historical model and restores a provider 1:4 i
       maxFileSize: 10,
     },
   });
-  assert.deepEqual(outputTransform, { width: 790, height: 2132, maxFileSize: 10 });
+  assert.deepEqual(outputTransform, {
+    width: 790,
+    height: 2132,
+    maxFileSize: 10,
+    preserveAspectRatio: true,
+  });
 
   const providerOutput = await sharp({
     create: {
@@ -179,8 +184,9 @@ test('failed retry plan keeps the historical model and restores a provider 1:4 i
     },
   }).jpeg().toBuffer();
   const transformed = await transformImageOutputBuffer(providerOutput, outputTransform);
-  assert.equal(transformed.width, 790);
-  assert.equal(transformed.height, 2132);
+  assert.equal(transformed.width, 512);
+  assert.equal(transformed.height, 2064);
+  assert.equal(transformed.transformSkippedReason, 'aspect_ratio_mismatch');
 });
 
 test('failed retry plan supports each translation subfeature and keeps remove-text on its native direct prompt', () => {

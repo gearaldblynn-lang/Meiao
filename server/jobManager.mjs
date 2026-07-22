@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode, isTransientMysqlConnectionError } from './jobRuntime.mjs';
+import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode, getProviderCompletedRejectedOutput, isProviderCompletedOutputRejectedError, isTransientMysqlConnectionError } from './jobRuntime.mjs';
 import { canRecoverProviderTaskById, KIE_RECOVERY_SOURCE_TASK_TYPES } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
@@ -1687,13 +1687,26 @@ export const createJobWorker = ({
               error_code: persistedErrorCode,
               error_message: errorFields.errorMessage,
               error_detail: errorFields.errorDetail || null,
+              result_json: isProviderCompletedOutputRejectedError(error)
+                ? serializeJsonValue(getProviderCompletedRejectedOutput(error)?.result || null)
+                : latestJob?.result ? serializeJsonValue(latestJob.result) : null,
               updated_at: finishedAt,
               finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
             });
             try {
-              await releaseJobCredits?.({ job: latestJob, error, finishedAt, retryWaiting: failure.status === 'retry_waiting' });
+              if (isProviderCompletedOutputRejectedError(error)) {
+                await settleJobCredits?.({
+                  job: latestJob,
+                  output: getProviderCompletedRejectedOutput(error),
+                  finishedAt,
+                  aborted: false,
+                  rejected: true,
+                });
+              } else {
+                await releaseJobCredits?.({ job: latestJob, error, finishedAt, retryWaiting: failure.status === 'retry_waiting' });
+              }
             } catch (creditError) {
-              console.error('Account credit release failed after job failure.', creditError);
+              console.error('Account credit finalization failed after job failure.', creditError);
             }
             await runTaskPlatformWrite(() => attempt?.id ? finishJobAttempt(poolAgain, attempt.id, {
               status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,

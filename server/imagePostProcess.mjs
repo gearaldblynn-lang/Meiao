@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { assertTranslationOutputAspectRatio } from '../src/modules/Translation/translationProcessingUtils.mjs';
 
 const toPositiveNumber = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -48,6 +49,9 @@ export const buildImageOutputTransformFromJob = (job = {}) => {
     ...(width > 0 ? { width } : {}),
     ...(height > 0 ? { height } : {}),
     ...(maxFileSize ? { maxFileSize } : {}),
+    ...(String(job?.module || '').trim() === 'translation' && isOriginalMode
+      ? { preserveAspectRatio: true }
+      : {}),
   };
 };
 
@@ -70,17 +74,34 @@ export const transformImageOutputBuffer = async (fileBuffer, transform = {}) => 
   const maxFileSize = toPositiveNumber(transform.maxFileSize, 0);
   const pipeline = sharp(fileBuffer, { failOn: 'none' }).rotate();
   const metadata = await pipeline.metadata();
+  const sourceWidth = normalizeDimension(metadata.autoOrient?.width || metadata.width);
+  const sourceHeight = normalizeDimension(metadata.autoOrient?.height || metadata.height);
   let targetWidth = width;
   let targetHeight = height;
+  let transformSkippedReason;
 
-  if (targetWidth > 0 && targetHeight <= 0 && metadata.width && metadata.height) {
-    targetHeight = Math.max(1, Math.round(targetWidth * metadata.height / metadata.width));
+  if (targetWidth > 0 && targetHeight <= 0 && sourceWidth && sourceHeight) {
+    targetHeight = Math.max(1, Math.round(targetWidth * sourceHeight / sourceWidth));
   }
-  if (targetHeight > 0 && targetWidth <= 0 && metadata.width && metadata.height) {
-    targetWidth = Math.max(1, Math.round(targetHeight * metadata.width / metadata.height));
+  if (targetHeight > 0 && targetWidth <= 0 && sourceWidth && sourceHeight) {
+    targetWidth = Math.max(1, Math.round(targetHeight * sourceWidth / sourceHeight));
   }
 
-  const resized = targetWidth > 0 || targetHeight > 0
+  if (transform.preserveAspectRatio && targetWidth > 0 && targetHeight > 0) {
+    try {
+      assertTranslationOutputAspectRatio({
+        sourceWidth,
+        sourceHeight,
+        targetWidth,
+        targetHeight,
+      });
+    } catch (error) {
+      if (error?.code !== 'image_output_aspect_ratio_mismatch') throw error;
+      transformSkippedReason = 'aspect_ratio_mismatch';
+    }
+  }
+
+  const resized = !transformSkippedReason && (targetWidth > 0 || targetHeight > 0)
     ? pipeline.resize({
         width: targetWidth || null,
         height: targetHeight || null,
@@ -96,5 +117,10 @@ export const transformImageOutputBuffer = async (fileBuffer, transform = {}) => 
     fileNameExtension: '.jpg',
     width: normalizeDimension(outputMetadata.width),
     height: normalizeDimension(outputMetadata.height),
+    sourceWidth,
+    sourceHeight,
+    targetWidth,
+    targetHeight,
+    ...(transformSkippedReason ? { transformSkippedReason } : {}),
   };
 };

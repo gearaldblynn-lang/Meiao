@@ -150,4 +150,11 @@ test('all job workers persist inline image results before durable completion', (
     (serverSource.match(/return persistJobOutputAssetsIfEnabled\(job, output\);/g) || []).length,
     4,
   );
+  assert.match(
+    serverSource,
+    /persistInlineImageResult\(\{[\s\S]{0,1200}transformImage: imageTransform[\s\S]{0,1600}transformImageOutputBuffer\(fileBuffer, imageTransform\)/,
+  );
+  assert.match(serverSource, /hasInlineImageResult[\s\S]{0,2600}result_quarantine/);
+  assert.match(serverSource, /inlineTransformed\?\.transformSkippedReason === 'aspect_ratio_mismatch'/);
+  assert.match(serverSource, /catch \(quarantineError\)[\s\S]{0,700}inlineTransformed\?\.transformSkippedReason === 'aspect_ratio_mismatch'[\s\S]{0,700}quarantineError/);
 });

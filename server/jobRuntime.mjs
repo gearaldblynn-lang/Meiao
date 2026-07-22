@@ -394,6 +394,23 @@ export const getNextJobFailureState = ({
   };
 };
 
+export const isProviderCompletedOutputRejectedError = (error) => (
+  error?.providerCompleted === true
+  && String(error?.code || '').trim() === 'image_output_aspect_ratio_mismatch'
+  && error?.rejectedOutput
+  && typeof error.rejectedOutput === 'object'
+);
+
+export const getProviderCompletedRejectedOutput = (error) => (
+  isProviderCompletedOutputRejectedError(error) ? error.rejectedOutput : null
+);
+
+export const shouldSettleProviderCompletedRejectedJob = (job) => (
+  String(job?.status || '').trim() === 'failed'
+  && String(job?.errorCode || '').trim() === 'image_output_aspect_ratio_mismatch'
+  && job?.result?.imageOutputContract?.status === 'rejected'
+);
+
 // S2 Task G2 · job 失败落库字段单一构造器:errorMessage=人话、errorDetail=技术原文。
 // 三个失败落库点(localJobStore / jobManager worker / temporalWorker)共用,禁止各写一份。
 export const buildJobFailureErrorFields = (error) => {

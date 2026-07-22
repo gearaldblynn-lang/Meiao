@@ -64,11 +64,13 @@ test('job workers settle or release account credits in mysql local and temporal 
   assert.match(jobManagerSource, /settleJobCredits\?\.\(\{ job: refreshedJob, output, finishedAt, aborted: controller\.signal\.aborted \}\)/);
   assert.match(jobManagerSource, /releaseJobCredits\?\.\(\{ job: latestJob, error, finishedAt, retryWaiting: failure\.status === 'retry_waiting' \}\)/);
   assert.match(localJobSource, /const finishedJob = await mutate\(\(completeStore\)[\s\S]{0,300}settleJobCredits\?\.\(\{ store: completeStore, job: nextJob, output, aborted: controller\.signal\.aborted \}\)/);
-  assert.match(localJobSource, /const failedJob = await mutate\(\(failureStore\)[\s\S]{0,300}releaseJobCredits\?\.\(\{ store: failureStore, job: nextJob, error, retryWaiting: nextJob\?\.status === 'retry_waiting' \}\)/);
+  assert.match(localJobSource, /const failedJob = await mutate\(\(failureStore\)[\s\S]{0,900}isProviderCompletedOutputRejectedError\(error\)[\s\S]{0,900}settleJobCredits\?\.[\s\S]{0,900}releaseJobCredits\?\./);
   assert.match(temporalSource, /const finishedJob = await mutate\(\(completeStore\)[\s\S]{0,300}settleJobCredits\?\.\(\{ store: completeStore, job: nextJob, output, aborted: controller\.signal\.aborted \}\)/);
-  assert.match(temporalSource, /const failedJob = await mutate\(\(failureStore\)[\s\S]{0,300}releaseJobCredits\?\.\(\{ store: failureStore, job: nextJob, error, retryWaiting: nextJob\?\.status === 'retry_waiting' \}\)/);
+  assert.match(temporalSource, /const failedJob = await mutate\(\(failureStore\)[\s\S]{0,900}isProviderCompletedOutputRejectedError\(error\)[\s\S]{0,900}settleJobCredits\?\.[\s\S]{0,900}releaseJobCredits\?\./);
   assert.match(temporalSource, /settleJobCredits\?\.\(\{ job: refreshedJob, output, finishedAt, aborted: controller\.signal\.aborted \}\)/);
   assert.match(temporalSource, /releaseJobCredits\?\.\(\{ job: latestJob, error, finishedAt, retryWaiting: failure\.status === 'retry_waiting' \}\)/);
+  assert.match(jobManagerSource, /isProviderCompletedOutputRejectedError\(error\)[\s\S]{0,900}settleJobCredits\?\.[\s\S]{0,900}releaseJobCredits\?\./);
+  assert.match(temporalSource, /isProviderCompletedOutputRejectedError\(error\)[\s\S]{0,900}settleJobCredits\?\.[\s\S]{0,900}releaseJobCredits\?\./);
 });
 
 test('terminal jobs with reservations are reconciled after restart without double processing', () => {

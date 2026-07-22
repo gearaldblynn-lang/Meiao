@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode } from './jobRuntime.mjs';
+import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode, getProviderCompletedRejectedOutput, isProviderCompletedOutputRejectedError } from './jobRuntime.mjs';
 import { canRecoverProviderTaskById, KIE_RECOVERY_SOURCE_TASK_TYPES } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { findReusableJobSubmission, normalizeSubmissionSettlementInput, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
@@ -545,6 +545,7 @@ export const markLocalJobFailed = (store, jobId, error) => {
     errorCode: persistedErrorCode,
     errorMessage: errorFields.errorMessage,
     errorDetail: errorFields.errorDetail,
+    result: getProviderCompletedRejectedOutput(error)?.result || current.result || null,
     updatedAt: finishedAt,
     finishedAt: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
   });
@@ -637,9 +638,19 @@ export const createLocalJobWorker = ({
             const failedJob = await mutate((failureStore) => {
               const nextJob = markLocalJobFailed(failureStore, job.id, error);
               try {
-                releaseJobCredits?.({ store: failureStore, job: nextJob, error, retryWaiting: nextJob?.status === 'retry_waiting' });
+                if (isProviderCompletedOutputRejectedError(error)) {
+                  settleJobCredits?.({
+                    store: failureStore,
+                    job: nextJob,
+                    output: getProviderCompletedRejectedOutput(error),
+                    aborted: false,
+                    rejected: true,
+                  });
+                } else {
+                  releaseJobCredits?.({ store: failureStore, job: nextJob, error, retryWaiting: nextJob?.status === 'retry_waiting' });
+                }
               } catch (creditError) {
-                console.error('Account credit release failed after local job failure.', creditError);
+                console.error('Account credit finalization failed after local job failure.', creditError);
               }
               return nextJob;
             });

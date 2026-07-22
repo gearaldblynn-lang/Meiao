@@ -60,6 +60,47 @@ test('inline image result is decoded and replaced by a managed asset URL', async
   assert.doesNotMatch(JSON.stringify(result), /aGVsbG8=/);
 });
 
+test('inline image result applies the injected output transform before persistence', async () => {
+  const calls = [];
+  const input = await (await import('sharp')).default({
+    create: { width: 20, height: 40, channels: 3, background: '#fff' },
+  }).png().toBuffer();
+
+  const result = await assetStore.persistInlineImageResult({
+    result: {
+      imageUrl: `data:image/png;base64,${input.toString('base64')}`,
+      providerResponseFormat: 'b64_json',
+    },
+    transformImage: async ({ fileBuffer }) => ({
+      fileBuffer,
+      mimeType: 'image/jpeg',
+      originalName: 'translated.jpg',
+      width: 20,
+      height: 40,
+      assetType: 'result_quarantine',
+      outputTransform: { transformSkippedReason: 'aspect_ratio_mismatch' },
+    }),
+    persistAsset: async (options) => {
+      calls.push(options);
+      return { id: 'asset-inline-1', publicUrl: '/api/assets/file/asset-inline-1/translated.jpg' };
+    },
+    persistOptions: {
+      publicBaseUrl: 'https://meiao.test',
+      userId: 'user-1',
+      originalName: 'result.png',
+      assetType: 'result',
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].mimeType, 'image/jpeg');
+  assert.equal(calls[0].originalName, 'translated.jpg');
+  assert.equal(calls[0].assetType, 'result_quarantine');
+  assert.equal(calls[0].width, 20);
+  assert.equal(calls[0].height, 40);
+  assert.deepEqual(result.imageOutputTransform, { transformSkippedReason: 'aspect_ratio_mismatch' });
+});
+
 test('remote image result bypasses inline persistence unchanged', async () => {
   let calls = 0;
   const original = {

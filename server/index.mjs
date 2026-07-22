@@ -119,7 +119,7 @@ import {
   shouldRequireAgentImageInput,
 } from './agentImagePlan.mjs';
 import { compactAppStateForStorage, mergeAppStateForStorage, trimAppStateForStorage, writeMergedAppStateUnderUserLock } from './appStateMerge.mjs';
-import { buildJobRuntimeLogMeta, buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins, runWithTransientRetry, getReconcileBackoffMs } from './jobRuntime.mjs';
+import { buildJobRuntimeLogMeta, buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins, runWithTransientRetry, getReconcileBackoffMs, shouldSettleProviderCompletedRejectedJob } from './jobRuntime.mjs';
 import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../src/utils/gptImage2.mjs';
 import { isExternallyReachableBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import {
@@ -190,6 +190,7 @@ import {
 import { runManagedImageCosProbe } from '../scripts/probe-managed-image-cos.mjs';
 import { createLocalTemporalActivities, createMysqlTemporalActivities, startMeiaoTemporalWorker } from './temporalWorker.mjs';
 import { buildImageOutputTransformFromJob, transformImageOutputBuffer } from './imagePostProcess.mjs';
+import { createProviderCompletedImageOutputRejectedError } from './imageOutputContract.mjs';
 import {
   buildReadyImageCheckpoint,
   buildSubmittedImageTaskCheckpoint,
@@ -4558,6 +4559,7 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
 
   const pool = lockedPool;
   let result = { ...(output.result || {}) };
+  const imageTransform = buildImageOutputTransformFromJob(job);
   const hasInlineImageResult = /^data:image\//i.test(String(result.imageUrl || '').trim());
   if (hasInlineImageResult && !publicBaseUrl) {
     const error = new Error('图片已生成，但当前服务无法安全保存内联图片结果');
@@ -4568,24 +4570,75 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
     throw error;
   }
   if (hasInlineImageResult) {
-    result = await persistInlineImageResult({
-      result,
-      persistOptions: {
-        pool,
-        publicBaseUrl,
-        userId: job.userId,
-        module: job.module,
-        assetType: 'result',
-        originalName: `${job.taskType || 'result'}.png`,
-        provider: job.provider,
-        jobId: job.id,
-      },
-    });
+    let inlineTransformed = null;
+    try {
+      result = await persistInlineImageResult({
+        result,
+        transformImage: imageTransform
+          ? async ({ fileBuffer }) => {
+              inlineTransformed = await transformImageOutputBuffer(fileBuffer, imageTransform);
+              return {
+                fileBuffer: inlineTransformed.buffer,
+                mimeType: inlineTransformed.mimeType,
+                originalName: buildTransformedImageOutputName(`${job.taskType || 'result'}.png`),
+                width: inlineTransformed.width,
+                height: inlineTransformed.height,
+                ...(inlineTransformed.transformSkippedReason
+                  ? { assetType: 'result_quarantine' }
+                  : {}),
+                ...(inlineTransformed.transformSkippedReason
+                  ? {
+                      outputTransform: {
+                        transformSkippedReason: inlineTransformed.transformSkippedReason,
+                        sourceWidth: inlineTransformed.sourceWidth,
+                        sourceHeight: inlineTransformed.sourceHeight,
+                        targetWidth: inlineTransformed.targetWidth,
+                        targetHeight: inlineTransformed.targetHeight,
+                      },
+                    }
+                  : {}),
+              };
+            }
+          : undefined,
+        persistOptions: {
+          pool,
+          publicBaseUrl,
+          userId: job.userId,
+          module: job.module,
+          assetType: 'result',
+          originalName: `${job.taskType || 'result'}.png`,
+          provider: job.provider,
+          jobId: job.id,
+        },
+      });
+    } catch (quarantineError) {
+      if (inlineTransformed?.transformSkippedReason === 'aspect_ratio_mismatch') {
+        throw createProviderCompletedImageOutputRejectedError({
+          job,
+          output,
+          result,
+          transformed: inlineTransformed,
+          quarantineError,
+        });
+      }
+      throw quarantineError;
+    }
+    if (inlineTransformed?.transformSkippedReason === 'aspect_ratio_mismatch') {
+      throw createProviderCompletedImageOutputRejectedError({
+        job,
+        output,
+        result,
+        persisted: {
+          id: result.imageUrlAssetId,
+          publicUrl: result.imageUrl,
+        },
+        transformed: inlineTransformed,
+      });
+    }
   }
   if (!publicBaseUrl) {
     return { ...output, result };
   }
-  const imageTransform = buildImageOutputTransformFromJob(job);
   const persistRemoteField = async (fieldName, assetType, fallbackName) => {
     const sourceUrl = result[fieldName];
     if (typeof sourceUrl !== 'string' || !/^https?:\/\//i.test(sourceUrl) || isManagedAssetUrl(sourceUrl)) {
@@ -4596,21 +4649,45 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
     if (fieldName === 'imageUrl' && imageTransform) {
       const { fileBuffer } = await fetchRemoteAssetBufferWithRetry(sourceUrl);
       const transformed = await transformImageOutputBuffer(fileBuffer, imageTransform);
-      persisted = await persistAssetBuffer({
-        pool,
-        publicBaseUrl,
-        userId: job.userId,
-        module: job.module,
-        assetType,
-        originalName: buildTransformedImageOutputName(fallbackName),
-        mimeType: transformed.mimeType,
-        fileBuffer: transformed.buffer,
-        width: transformed.width || imageTransform.width || 0,
-        height: transformed.height || imageTransform.height || 0,
-        provider: job.provider,
-        providerSourceUrl: sourceUrl,
-        jobId: job.id,
-      });
+      try {
+        persisted = await persistAssetBuffer({
+          pool,
+          publicBaseUrl,
+          userId: job.userId,
+          module: job.module,
+          assetType: transformed.transformSkippedReason ? 'result_quarantine' : assetType,
+          originalName: buildTransformedImageOutputName(fallbackName),
+          mimeType: transformed.mimeType,
+          fileBuffer: transformed.buffer,
+          width: transformed.width || imageTransform.width || 0,
+          height: transformed.height || imageTransform.height || 0,
+          provider: job.provider,
+          providerSourceUrl: sourceUrl,
+          jobId: job.id,
+        });
+      } catch (quarantineError) {
+        if (transformed.transformSkippedReason === 'aspect_ratio_mismatch') {
+          throw createProviderCompletedImageOutputRejectedError({
+            job,
+            output,
+            result,
+            sourceUrl,
+            transformed,
+            quarantineError,
+          });
+        }
+        throw quarantineError;
+      }
+      if (transformed.transformSkippedReason === 'aspect_ratio_mismatch') {
+        throw createProviderCompletedImageOutputRejectedError({
+          job,
+          output,
+          result,
+          sourceUrl,
+          persisted,
+          transformed,
+        });
+      }
     } else {
       persisted = await persistRemoteAsset({
         pool,
@@ -5817,7 +5894,7 @@ const reserveLocalJobCredits = (store, user, jobPayload) => {
   });
 };
 
-const settleDbJobCredits = async ({ pool, job, output, finishedAt, aborted }) => {
+const settleDbJobCredits = async ({ pool, job, output, finishedAt, aborted, rejected = false }) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
   if (aborted) {
@@ -5841,7 +5918,7 @@ const settleDbJobCredits = async ({ pool, job, output, finishedAt, aborted }) =>
     module: job.module,
     taskType: job.taskType,
     provider: job.provider,
-    reason: 'job_completed',
+    reason: rejected ? 'job_completed_output_rejected' : 'job_completed',
     meta: { finishedAt },
   });
 };
@@ -5863,7 +5940,7 @@ const releaseDbJobCredits = async ({ pool, job, error, finishedAt, retryWaiting 
   });
 };
 
-const settleLocalJobCredits = ({ store, job, output, aborted }) => {
+const settleLocalJobCredits = ({ store, job, output, aborted, rejected = false }) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
   if (aborted) {
@@ -5886,7 +5963,7 @@ const settleLocalJobCredits = ({ store, job, output, aborted }) => {
     module: job.module,
     taskType: job.taskType,
     provider: job.provider,
-    reason: 'job_completed',
+    reason: rejected ? 'job_completed_output_rejected' : 'job_completed',
   });
 };
 
@@ -6026,13 +6103,15 @@ const reconcileDbTerminalJobCredits = async (pool, { limit = 500 } = {}) => {
   for (const row of rows || []) {
     const job = buildDbCreditJobFromRow(row);
     if (!getCreditReservationFromJob(job)) continue;
-    const result = job.status === 'succeeded'
+    const completedOutputRejected = shouldSettleProviderCompletedRejectedJob(job);
+    const result = job.status === 'succeeded' || completedOutputRejected
       ? await settleDbJobCredits({
           pool,
           job,
           output: { providerTaskId: job.providerTaskId, result: job.result },
           finishedAt: job.finishedAt || Date.now(),
           aborted: false,
+          rejected: completedOutputRejected,
         })
       : await releaseDbJobCredits({
           pool,
@@ -6177,12 +6256,14 @@ const reconcileLocalTerminalJobCredits = (store, { limit = 500 } = {}) => {
     .slice(0, Math.max(1, Math.min(5000, Number(limit || 500))));
   let reconciled = 0;
   for (const job of jobs) {
-    const result = job.status === 'succeeded'
+    const completedOutputRejected = shouldSettleProviderCompletedRejectedJob(job);
+    const result = job.status === 'succeeded' || completedOutputRejected
       ? settleLocalJobCredits({
           store,
           job,
           output: { providerTaskId: job.providerTaskId, result: job.result },
           aborted: false,
+          rejected: completedOutputRejected,
         })
       : releaseLocalJobCredits({
           store,
@@ -17490,7 +17571,7 @@ const bootstrap = async () => {
           getMaxConcurrency: getDbWorkerConcurrency,
           createLog: createDbLog,
           findUserById: findDbUserById,
-          settleJobCredits: async ({ job, output, finishedAt, aborted }) => settleDbJobCredits({ pool, job, output, finishedAt, aborted }),
+          settleJobCredits: async ({ job, output, finishedAt, aborted, rejected }) => settleDbJobCredits({ pool, job, output, finishedAt, aborted, rejected }),
           releaseJobCredits: async ({ job, error, finishedAt, retryWaiting }) => releaseDbJobCredits({ pool, job, error, finishedAt, retryWaiting }),
           getProviderlessRunningStaleMs: getTemporalProviderlessRunningStaleMs,
           getSubmittedRunningStaleMs: getTemporalSubmittedRunningStaleMs,
@@ -17518,7 +17599,7 @@ const bootstrap = async () => {
         getMaxConcurrency: getDbWorkerConcurrency,
         createLog: createDbLog,
         findUserById: findDbUserById,
-        settleJobCredits: async ({ job, output, finishedAt, aborted }) => settleDbJobCredits({ pool, job, output, finishedAt, aborted }),
+        settleJobCredits: async ({ job, output, finishedAt, aborted, rejected }) => settleDbJobCredits({ pool, job, output, finishedAt, aborted, rejected }),
         releaseJobCredits: async ({ job, error, finishedAt, retryWaiting }) => releaseDbJobCredits({ pool, job, error, finishedAt, retryWaiting }),
         getTaskEngineMode: () => process.env.MEIAO_TASK_ENGINE,
         getProviderlessRunningStaleMs: getTemporalProviderlessRunningStaleMs,
@@ -17563,7 +17644,7 @@ const bootstrap = async () => {
             appendLocalLog(store, payload);
           }),
           findUserById: (userId) => findLocalUserById(userId),
-          settleJobCredits: ({ store, job, output, aborted }) => settleLocalJobCredits({ store, job, output, aborted }),
+          settleJobCredits: ({ store, job, output, aborted, rejected }) => settleLocalJobCredits({ store, job, output, aborted, rejected }),
           releaseJobCredits: ({ store, job, error, retryWaiting }) => releaseLocalJobCredits({ store, job, error, retryWaiting }),
         }),
       });
@@ -17583,7 +17664,7 @@ const bootstrap = async () => {
           appendLocalLog(store, payload);
         }),
         findUserById: (userId) => findLocalUserById(userId),
-        settleJobCredits: ({ store, job, output, aborted }) => settleLocalJobCredits({ store, job, output, aborted }),
+        settleJobCredits: ({ store, job, output, aborted, rejected }) => settleLocalJobCredits({ store, job, output, aborted, rejected }),
         releaseJobCredits: ({ store, job, error, retryWaiting }) => releaseLocalJobCredits({ store, job, error, retryWaiting }),
       });
       localJobWorker.start(1000);
