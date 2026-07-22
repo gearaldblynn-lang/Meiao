@@ -110,6 +110,7 @@ import {
 import { assertDeployRequestAllowed } from './deployDrain.mjs';
 import {
   createGracefulShutdown,
+  getProcessReleaseIdentity,
   listenAndNotifyReady,
   registerProcessShutdown,
 } from './processLifecycle.mjs';
@@ -266,6 +267,7 @@ const dataDir = path.join(__dirname, 'data');
 const storePath = path.join(dataDir, 'internal-store.json');
 const distDir = path.join(__dirname, '..', 'dist');
 const PORT = Number(process.env.PORT || 3100);
+const processRelease = getProcessReleaseIdentity();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const ASSET_RETENTION_MS = 1000 * 60 * 60 * 24 * 3;
 const LOG_RETENTION_MS = 1000 * 60 * 60 * 24 * 7;
@@ -17425,6 +17427,7 @@ const server = createServer(async (req, res) => {
       const mediaTranscodeStatus = await mediaTranscodeApi.status();
       json(res, 200, {
         ok: true,
+        release: processRelease,
         mode: shouldUseMysql ? 'internal-mysql-v1' : 'internal-v1',
         taskEngine,
         worker,

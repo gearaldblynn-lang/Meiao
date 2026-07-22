@@ -1,7 +1,8 @@
 import { pathToFileURL } from 'node:url';
 
-export const isDeployHealthReady = (health) => (
+export const isDeployHealthReady = (health, { expectedReleaseId = '' } = {}) => (
   health?.ok === true
+  && (!expectedReleaseId || health?.release?.id === expectedReleaseId)
   && health?.worker?.healthy === true
   && health?.managedImageUpload?.ready === true
   && Number(health?.tombstonedJobCleanup?.lastCycleAt || 0) > 0
@@ -13,7 +14,11 @@ const run = async () => {
   let body = '';
   for await (const chunk of process.stdin) body += chunk;
   const health = JSON.parse(body);
-  if (!isDeployHealthReady(health)) {
+  const releaseIdIndex = process.argv.indexOf('--release-id');
+  const expectedReleaseId = releaseIdIndex >= 0
+    ? String(process.argv[releaseIdIndex + 1] || '').trim()
+    : '';
+  if (!isDeployHealthReady(health, { expectedReleaseId })) {
     console.error(JSON.stringify(health));
     process.exitCode = 2;
   }

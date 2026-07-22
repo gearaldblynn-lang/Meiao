@@ -2,6 +2,16 @@ const getDefaultReadySender = () => (
   typeof process.send === 'function' ? process.send.bind(process) : null
 );
 
+export const getProcessReleaseIdentity = ({
+  env = process.env,
+  pid = process.pid,
+  startedAt = Date.now(),
+} = {}) => ({
+  id: String(env.MEIAO_RELEASE_ID || '').trim() || 'unversioned',
+  pid,
+  startedAt,
+});
+
 export const listenAndNotifyReady = ({
   server,
   port,

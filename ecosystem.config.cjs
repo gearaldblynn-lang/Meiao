@@ -1,3 +1,8 @@
+const readPositiveInteger = (value, fallback) => {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 module.exports = {
   apps: [
     {
@@ -5,13 +10,17 @@ module.exports = {
       script: 'server/index.mjs',
       cwd: '/www/wwwroot/meiao-internal',
       instances: 1,
-      exec_mode: 'fork',
+      exec_mode: 'cluster',
+      wait_ready: true,
+      listen_timeout: readPositiveInteger(process.env.MEIAO_PM2_LISTEN_TIMEOUT_MS, 120000),
+      kill_timeout: readPositiveInteger(process.env.MEIAO_PM2_KILL_TIMEOUT_MS, 30000),
       autorestart: true,
       watch: false,
       max_memory_restart: '1500M',
       env: {
         NODE_ENV: 'production',
         PORT: 3100,
+        MEIAO_RELEASE_ID: process.env.MEIAO_RELEASE_ID || '',
         MEIAO_DB_HOST: '127.0.0.1',
         MEIAO_DB_PORT: '3307',
         MEIAO_DB_USER: process.env.MEIAO_DB_USER || 'root',
