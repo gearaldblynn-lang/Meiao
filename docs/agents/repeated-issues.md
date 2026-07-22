@@ -1144,3 +1144,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: The document now contains a synthetic placeholder. The tracked-file secret scanner runs before the existing verify gates, and friend configuration is imported from an external allowlisted bundle rather than copied into repository files. The unsafe scratch diff was removed without displaying it; secret-removal reviews use metadata plus current-tree checks or a value-redacted package, never a raw diff.
 - Regression check: `npm run security:secrets`; `node --test scripts/secret-bundle-policy.test.mjs scripts/secret-bundle-cli.test.mjs scripts/check-tracked-secrets.test.mjs`; `npm run verify`.
 - Avoid next time: Keep all live provider and COS values outside Git, use the external bundle importer, and run the tracked-file scanner before accepting changes to documentation, examples, or source files. Treat deleted lines in diffs, patches, review packages, logs, and clipboard exports as secret-bearing until proven redacted; `.gitignore` is not a safe disposal mechanism.
+
+## 2026-07-23 - 标准 Git 克隆的验证不得依赖仓库外本机文件
+
+- Symptom: 从 GitHub 全新标准克隆后，依赖安装成功，但 `npm run verify` 固定失败；删除确认规则测试报缺少多个相对路径下的 `开发规范.md`。同一测试在原开发机通过。
+- Environment: public GitHub `main` / clean standalone clone / frontend test suite.
+- Root cause: 测试从 `src/shell/components` 向仓库外回溯读取工作区级规范，后续增加的路径兜底仍只覆盖另一种本机目录深度。Git 没有交付这些父目录文件，因此本机通过依赖了未声明的环境状态，无法证明朋友或 CI 拿到的仓库可独立验证。
+- Fix: 把删除二次确认规则写入仓库内、可版本化且所有 AI 首先读取的 `AGENTS.md`；回归测试固定读取该文件，删除仓库外路径探测和目录层级兜底。
+- Regression check: 在仓库父目录不存在 `开发规范.md` 的全新标准克隆中运行 `node --test --test-name-pattern='repository rules require secondary confirmation' src/shell/components/destructiveActions.test.mjs`，再运行 `npm run verify`。
+- Avoid next time: 所有通过 GitHub 交付的测试、脚本、构建和启动流程只能依赖 tracked 文件、锁定依赖或显式配置；不得读取仓库父目录、个人 home、旧工作树或未声明本机文件。发布给他人前必须在仓库外创建全新标准克隆完成 `npm ci` 与 `npm run verify`，不能用原开发工作树替代。

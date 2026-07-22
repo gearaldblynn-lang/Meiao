@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import {
   collectShellDeletionJobIds,
   collectShellResultDeletionJobIds,
@@ -12,19 +12,11 @@ import {
 import { buildPersistedAppState } from '../../utils/appState.ts';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
-const readFirstExisting = (...paths) => {
-  const target = paths.map((path) => new URL(path, import.meta.url)).find((url) => existsSync(url));
-  if (!target) throw new Error(`missing required file: ${paths.join(', ')}`);
-  return readFileSync(target, 'utf8');
-};
 
-test('project rules require secondary confirmation for all destructive delete actions', () => {
-  const rules = readFirstExisting(
-    '../../../../../开发规范.md',
-    '../../../../../../../开发规范.md',
-  );
+test('repository rules require secondary confirmation for all destructive delete actions', () => {
+  const rules = read('../../../AGENTS.md');
 
-  assert.match(rules, /## 6\. 任何删除都必须二次确认/);
+  assert.match(rules, /### 任何删除都必须二次确认/);
   assert.match(rules, /删除、移除、清空、永久删除/);
   assert.match(rules, /不允许按钮直接执行删除/);
   assert.match(rules, /同类删除入口尽量复用同一个确认组件/);
