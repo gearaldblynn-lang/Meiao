@@ -108,6 +108,11 @@ import {
   resolveLocalSubmissionUnknownJob,
 } from './localJobStore.mjs';
 import { assertDeployRequestAllowed } from './deployDrain.mjs';
+import {
+  createGracefulShutdown,
+  listenAndNotifyReady,
+  registerProcessShutdown,
+} from './processLifecycle.mjs';
 import { createAuthorizedProviderRecovery } from './jobRecoveryService.mjs';
 import { executeProviderJob, uploadAssetViaKieStream } from './providerGateway.mjs';
 import { resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel } from './providerAssetTransfer.mjs';
@@ -17534,6 +17539,47 @@ const server = createServer(async (req, res) => {
   }
 });
 
+const stopRuntimeWorkers = () => {
+  jobWorker?.stop?.();
+  localJobWorker?.stop?.();
+};
+
+const clearRuntimeTimers = () => {
+  if (assetCleanupTimer) clearInterval(assetCleanupTimer);
+  if (managedImageProbeTimer) clearInterval(managedImageProbeTimer);
+  if (tombstonedJobReconcilerTimer) clearInterval(tombstonedJobReconcilerTimer);
+  if (logCleanupTimer) clearInterval(logCleanupTimer);
+  if (staleRunningJobReconcilerTimer) clearTimeout(staleRunningJobReconcilerTimer);
+  assetCleanupTimer = null;
+  managedImageProbeTimer = null;
+  tombstonedJobReconcilerTimer = null;
+  logCleanupTimer = null;
+  staleRunningJobReconcilerTimer = null;
+};
+
+const shutdownTemporalWorker = async () => {
+  const runtime = temporalWorkerRuntime;
+  temporalWorkerRuntime = null;
+  await runtime?.shutdown?.();
+};
+
+const closeMysqlPools = async () => {
+  const pools = [mysqlPool, mysqlManagedAssetLockPool].filter(Boolean);
+  mysqlPool = null;
+  mysqlManagedAssetLockPool = null;
+  mysqlPoolHealthCheckPromise = null;
+  for (const pool of pools) await pool.end?.().catch(() => null);
+};
+
+const gracefulShutdown = createGracefulShutdown({
+  server,
+  stopWorkers: [stopRuntimeWorkers],
+  clearTimers: [clearRuntimeTimers],
+  shutdownTemporal: shutdownTemporalWorker,
+  closePools: [closeMysqlPools],
+});
+registerProcessShutdown({ shutdown: gracefulShutdown });
+
 const bootstrap = async () => {
   await mediaTranscodeSessionStore.cleanupExpired();
   mediaTranscodeReadiness = await mediaTranscodeApi.readiness();
@@ -17730,7 +17776,7 @@ const bootstrap = async () => {
     });
   }
 
-  server.listen(PORT);
+  await listenAndNotifyReady({ server, port: PORT, host: '0.0.0.0' });
 };
 
 bootstrap().catch((error) => {
