@@ -1,6 +1,6 @@
 # Friend secret setup
 
-Use a friend bundle supplied by a trusted maintainer. The bundle contains only allowlisted provider and COS configuration and must remain outside this Git repository.
+Use a friend bundle supplied by a trusted maintainer. The bundle contains only allowlisted provider and COS configuration and must remain outside this Git repository. It never contains production database credentials, SSH private keys or passwords, GitHub credentials, administrator credentials, session secrets, or managed-asset capability secrets.
 
 ```bash
 git clone https://github.com/gearaldblynn-lang/Meiao.git
@@ -14,4 +14,4 @@ The import command creates or updates the local `.env.server` without printing s
 
 Provider keys can create billable requests. COS credentials can access shared storage. Treat both as sensitive: use only the access granted to you, do not share the bundle, and ask the maintainer before changing or rotating anything.
 
-The friend bundle does not configure local infrastructure. MySQL, Temporal, FFmpeg, and local administrator access remain separate local prerequisites; obtain and configure them through the maintainer's normal setup process.
+The friend bundle does not configure local infrastructure. MySQL, Temporal, FFmpeg, SSH access, GitHub access, session signing, managed-asset capabilities, and local administrator access remain separate prerequisites or operator-only controls; obtain and configure only the local prerequisites you need through the maintainer's normal setup process.
