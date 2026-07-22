@@ -1,4 +1,4 @@
-import { chmod, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { readFile, realpath, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
@@ -7,13 +7,26 @@ import {
   serializeDotenv,
   validateFriendSecretEntries,
 } from './secret-bundle-policy.mjs';
+import {
+  installFileNoReplace,
+  writeExclusive0600,
+} from './secret-bundle-file-ops.mjs';
 
+const rawArgs = process.argv.slice(2);
+if (rawArgs.length !== 4) {
+  throw new Error('usage: secrets:export -- --source ABSOLUTE_PATH --output ABSOLUTE_PATH');
+}
 const args = new Map();
-for (let index = 2; index < process.argv.length; index += 2) {
-  args.set(process.argv[index], process.argv[index + 1]);
+for (let index = 0; index < rawArgs.length; index += 2) {
+  const flag = rawArgs[index];
+  if (!['--source', '--output'].includes(flag) || args.has(flag) || rawArgs[index + 1] === undefined) {
+    throw new Error('invalid_export_arguments');
+  }
+  args.set(flag, rawArgs[index + 1]);
 }
 const source = args.get('--source');
 const output = args.get('--output');
+if (!source || !output) throw new Error('invalid_export_arguments');
 if (!path.isAbsolute(source || '') || !path.isAbsolute(output || '')) throw new Error('absolute_paths_required');
 
 const rootResult = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
@@ -23,6 +36,18 @@ const outputParent = await realpath(path.dirname(output));
 const canonicalOutput = path.join(outputParent, path.basename(output));
 if (canonicalOutput === root || canonicalOutput.startsWith(root + path.sep)) {
   throw new Error('output_inside_git_worktree');
+}
+const canonicalSource = await realpath(source);
+const existingCanonicalOutput = await realpath(canonicalOutput).catch((error) => {
+  if (error.code === 'ENOENT') return null;
+  throw error;
+});
+if (
+  path.normalize(source) === canonicalOutput
+  || canonicalSource === canonicalOutput
+  || canonicalSource === existingCanonicalOutput
+) {
+  throw new Error('source_and_output_must_differ');
 }
 
 const sourceEntries = parseDotenvText(await readFile(source, 'utf8'));
@@ -35,10 +60,9 @@ if (!validation.ok) throw new Error(`invalid_friend_bundle:${validation.rejected
 const temporary = `${canonicalOutput}.tmp-${process.pid}`;
 let temporaryCreated = false;
 try {
-  await writeFile(temporary, serializeDotenv(selected), { mode: 0o600, flag: 'wx' });
+  await writeExclusive0600(temporary, serializeDotenv(selected));
   temporaryCreated = true;
-  await chmod(temporary, 0o600);
-  await rename(temporary, canonicalOutput);
+  await installFileNoReplace(temporary, canonicalOutput);
   temporaryCreated = false;
 } catch (error) {
   if (temporaryCreated) await unlink(temporary).catch(() => {});

@@ -1,5 +1,4 @@
-import { constants } from 'node:fs';
-import { chmod, copyFile, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { readFile, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
@@ -8,16 +7,26 @@ import {
   serializeDotenv,
   validateFriendSecretEntries,
 } from './secret-bundle-policy.mjs';
+import {
+  acquireExclusiveLock,
+  assertFileSnapshotUnchanged,
+  installFileNoReplace,
+  readRegularFileSnapshot,
+  writeExclusive0600,
+} from './secret-bundle-file-ops.mjs';
 
-const positional = process.argv.slice(2).filter((arg) => arg !== '--force');
-const force = process.argv.slice(2).includes('--force');
-if (positional.length !== 1) throw new Error('usage: secrets:import -- /absolute/path/.env.meiao.friend [--force]');
-if (!path.isAbsolute(positional[0])) throw new Error('absolute_bundle_path_required');
+const rawArgs = process.argv.slice(2);
+if (!(rawArgs.length === 1 || (rawArgs.length === 2 && rawArgs[1] === '--force'))) {
+  throw new Error('usage: secrets:import -- /absolute/path/.env.meiao.friend [--force]');
+}
+const bundleArgument = rawArgs[0];
+const force = rawArgs.length === 2;
+if (!path.isAbsolute(bundleArgument || '')) throw new Error('absolute_bundle_path_required');
 
 const rootResult = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
 if (rootResult.status !== 0) throw new Error('git_worktree_required');
 const root = await realpath(rootResult.stdout.trim());
-const bundle = await realpath(positional[0]);
+const bundle = await realpath(bundleArgument);
 if (bundle === root || bundle.startsWith(root + path.sep)) {
   const relative = path.relative(root, bundle);
   const ignored = spawnSync('git', ['check-ignore', '--quiet', '--', relative], { cwd: root });
@@ -26,50 +35,50 @@ if (bundle === root || bundle.startsWith(root + path.sep)) {
 
 const examplePath = path.join(root, '.env.server.example');
 const targetPath = path.join(root, '.env.server');
-const example = parseDotenvText(await readFile(examplePath, 'utf8'));
-const currentText = await readFile(targetPath, 'utf8').catch((error) => {
-  if (error.code === 'ENOENT') return null;
-  throw error;
-});
-const current = currentText === null ? new Map() : parseDotenvText(currentText);
-const incoming = parseDotenvText(await readFile(bundle, 'utf8'));
-const validation = validateFriendSecretEntries(incoming);
-if (!validation.ok) throw new Error(`invalid_friend_bundle:${validation.rejectedKeys.join(',')}`);
-
-const merged = new Map([...example, ...current]);
-const importedKeys = [];
-const preservedKeys = [];
-for (const [key, value] of incoming) {
-  if (!force && String(current.get(key) || '').trim()) preservedKeys.push(key);
-  else {
-    merged.set(key, value);
-    importedKeys.push(key);
-  }
-}
-
 const timestamp = new Date().toISOString().replace(/[-:.]/g, '');
 const backupPath = `${targetPath}.backup-${timestamp}`;
 const temporary = `${targetPath}.tmp-${process.pid}`;
+const lock = await acquireExclusiveLock(`${targetPath}.import.lock`);
 let temporaryCreated = false;
+let report;
 try {
-  if (currentText !== null) {
-    await copyFile(targetPath, backupPath, constants.COPYFILE_EXCL);
-    await chmod(backupPath, 0o600);
+  const snapshot = await readRegularFileSnapshot(targetPath);
+  const current = snapshot.exists ? parseDotenvText(snapshot.text) : new Map();
+  const example = parseDotenvText(await readFile(examplePath, 'utf8'));
+  const incoming = parseDotenvText(await readFile(bundle, 'utf8'));
+  const validation = validateFriendSecretEntries(incoming);
+  if (!validation.ok) throw new Error(`invalid_friend_bundle:${validation.rejectedKeys.join(',')}`);
+
+  const merged = new Map([...example, ...current]);
+  const importedKeys = [];
+  const preservedKeys = [];
+  for (const [key, value] of incoming) {
+    if (!force && String(current.get(key) || '').trim()) preservedKeys.push(key);
+    else {
+      merged.set(key, value);
+      importedKeys.push(key);
+    }
   }
-  await writeFile(temporary, serializeDotenv(merged), { mode: 0o600, flag: 'wx' });
+
+  if (snapshot.exists) await writeExclusive0600(backupPath, snapshot.bytes);
+  await writeExclusive0600(temporary, serializeDotenv(merged));
   temporaryCreated = true;
-  await chmod(temporary, 0o600);
-  await rename(temporary, targetPath);
+  await assertFileSnapshotUnchanged(targetPath, snapshot);
+  if (snapshot.exists) await rename(temporary, targetPath);
+  else await installFileNoReplace(temporary, targetPath);
   temporaryCreated = false;
-} catch (error) {
+  report = {
+    importedKeys: importedKeys.sort(),
+    preservedKeys: preservedKeys.sort(),
+    missingKeys: [...FRIEND_SECRET_ALLOWLIST]
+      .filter((key) => !String(merged.get(key) || '').trim())
+      .sort(),
+    backupCreated: snapshot.exists,
+    cosRisk: [...incoming.keys()].some((key) => key.includes('_COS_')),
+    nextCommand: 'npm run doctor',
+  };
+} finally {
   if (temporaryCreated) await unlink(temporary).catch(() => {});
-  throw error;
+  await lock.release();
 }
-console.log(JSON.stringify({
-  importedKeys: importedKeys.sort(),
-  preservedKeys: preservedKeys.sort(),
-  missingKeys: [...FRIEND_SECRET_ALLOWLIST].filter((key) => !String(merged.get(key) || '').trim()).sort(),
-  backupCreated: currentText !== null,
-  cosRisk: [...incoming.keys()].some((key) => key.includes('_COS_')),
-  nextCommand: 'npm run doctor',
-}));
+console.log(JSON.stringify(report));

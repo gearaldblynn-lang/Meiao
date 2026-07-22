@@ -34,6 +34,7 @@ backups/
 .env.meiao.friend
 .env.server.backup-*
 .env.server.tmp-*
+.env.server.import.lock
 *.env
 # Keep the sanitized template that carries only placeholders.
 !.env.server.example
