@@ -57,7 +57,7 @@ test('viral storyboard prompt asks for policy-safe structural reference and orig
 test('viral storyboard parser preserves multiline voiceover and audio content from structured scripts', () => {
   assert.ok(planningSource.includes("const voiceLine = lines.find((line) => line.startsWith('口播')) || '';"));
   assert.ok(planningSource.includes("const audioLine = lines.find((line) => line.startsWith('音效')) || '';"));
-  assert.ok(planningSource.includes("audio: audioMatch?.[1]?.trim() || getFallbackAudio(),"));
+  assert.ok(planningSource.includes("audio: normalizeModeSpecificText(audioMatch?.[1], config, getFallbackAudio(config)),"));
 });
 
 test('storyboard JSON parser scans for a valid array instead of using a greedy bracket match', () => {
@@ -130,6 +130,9 @@ test('original storyboard planning outputs segmented storyboard and dynamic scri
   assert.match(requestPromptBlock, /宫格分镜图 prompt 必须严格使用以下格式/);
   assert.match(requestPromptBlock, /动态视频脚本提示词必须严格使用以下格式/);
   assert.match(requestPromptBlock, /不得描述、复述或猜测商品包装的品牌、标签、文字和内容物细节/);
+  assert.match(requestPromptBlock, /当前是原创生成模式，没有参考视频/);
+  assert.match(requestPromptBlock, /口播必须优先按“脚本逻辑”中的用户文案逐镜头分配/);
+  assert.match(requestPromptBlock, /不得输出任何“参考视频.*未识别”文案/);
   assert.match(originalBuilderBlock, /normalizeOriginalStoryboardPrompt/);
   assert.match(originalBuilderBlock, /normalizeOriginalDynamicScriptPrompt/);
   assert.match(originalBuilderBlock, /buildOriginalSplitShotsAndBoards/);

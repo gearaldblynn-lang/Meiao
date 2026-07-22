@@ -1090,3 +1090,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 失败项重试统一从结果快照或项目生成上下文恢复语言、模型、分辨率模式和比例；原图尺寸优先读取持久字段，缺失时才探测源图。提交元数据统一包含项目/结果身份、源文件、`finalSize`、翻译快照与范围；原图模式缺少尺寸时在付费任务创建前拒绝提交。结果卡在原图模式显示 `auto`，`matchedAspectRatio` 只保留作内部诊断。AI 优化的策划、待生成、生成、完成和失败阶段持久化，刷新后复用既有策划结果并以稳定提交键续跑，避免重复策划计费或重复生成；去文案只允许 AI 直出，服务层同时拒绝用策划提示词覆盖原生去文案提示词。
 - Regression check: `node --test src/modules/Translation/translationRetryUtils.test.mjs src/modules/Translation/translationRetryIntegration.test.mjs src/adapters/shellDataAdapter.test.mjs src/shell/components/layout/BottomInputBar.test.mjs`；验收必须同时核对最终 job payload 的历史模型、`resolutionMode=original`、`finalSize`，托管结果资产宽高等于原图，以及策划完成刷新后只续建一次生成任务。
 - Avoid next time: 同一按钮支持成功项和失败项时，不得维护两份不同的参数恢复与任务元数据协议。付费重试必须以不可变历史快照为准，界面当前值只用于新任务；“模型生成比例”和“用户输出尺寸”必须分字段展示和验证。多阶段付费流程必须把阶段与幂等身份写入持久层，不能只保存在 React 内存；模式选项与服务端提示词选择必须双层约束。
+
+## 2026-07-22 - 原创分镜不得消费推理草稿或复用参考视频兜底
+
+- Symptom: 董丹丹选择“原创生成”、只上传商品图并在文字输入中提供完整脚本文案后，分镜结果仍出现“参考视频该分镜口播信息未清晰识别”，还生成了多余分段；实际没有上传参考视频。
+- Cloud evidence: planning job `726bdd6398d6aca1bec77da3` 的 `videoGenerationMode=original`、视频 `input_file` 数量为 0，`scriptLogic` 含完整用户文案。Gemini 原始响应前部有多轮 6 项推理草稿数组，末尾才是字段完整的 2 分段、12 镜头正式 JSON；正式 JSON 已包含 12 条真实口播。旧解析器取第一个可解析数组，继而给草稿缺失字段写入参考视频兜底。真实响应还使用 `00:02.5` 等小数秒时间码，旧整数时间码正则每段只能保留首镜头。
+- Root cause: `extractJsonArray` 只验证 JSON 语法，不验证业务 schema，错误地把 Gemini 推理草稿当正式输出；原创与爆款复刻又共享一套硬编码“参考视频”缺字段兜底，模式边界失守。时间码解析器只接受整数秒，使结构正确的正式结果仍可能被截断。
+- Fix: 扫描全部合法数组并按完整分镜合同评分，优先选择同时包含 `storyboardPrompt` 与 `dynamicScriptPrompt` 的最终分段；所有画面、运镜、口播、音效兜底按 `videoGenerationMode` 隔离，原创口播只从用户 `scriptLogic` 文案逐镜头分配，缺失时留空，不伪造视频识别结果；时间码支持小数秒。原创 RTCFE 提示词同时明确“没有参考视频”并禁止输出参考视频未识别文案。
+- Regression check: `node --test src/utils/videoStoryboardPlanning.test.mjs src/services/videoStoryboardService.test.mjs`；`npm run verify`；把上述真实云上原始响应交给本地解析器重放，必须得到 2 个分段、12 个镜头、12 条口播且不含任何参考视频兜底。爆款复刻缺字段回归仍必须保留参考视频专用提示。
+- Avoid next time: 长推理模型的 HTTP 成功内容不能按“第一个合法 JSON”消费；解析边界必须同时验证业务 schema，并用真实多候选响应回放。共享 normalizer 的任何兜底都必须显式携带业务模式，禁止把一种输入来源的诊断文案泄漏到另一种模式。时间字段必须覆盖 provider 实际可能返回的小数精度。
