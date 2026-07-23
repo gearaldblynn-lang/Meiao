@@ -238,6 +238,8 @@ location ^~ /api/media-transcodes/ {
 
 `MEIAO_ASSET_X_ACCEL` 默认保持 `0`。只有在 Nginx 已配置内部资源映射后才可设为 `1`，让 `/api/assets/file/:id` 由 Node 校验权限和缓存头，再通过 `X-Accel-Redirect` 交给 Nginx 直出文件，降低大视频经过 Node 流式转发的抖动。示例：
 
+开启 X-Accel 后，应用根目录 `/www/wwwroot/meiao-internal` 是资源交付合同的一部分：Nginx 的 `www` 用户必须能够穿越该目录。标准部署脚本会在源码同步后只执行 `chmod 0755 /www/wwwroot/meiao-internal`；不得递归放宽权限，`.env.server` 必须继续保持 `0600`。`rsync -a`、tar 解包等操作会携带本地目录权限，如果把开发机根目录的 `0700` 元数据复制到线上，会出现“任务成功、文件存在、Node 直连 200，但公网图片 403/不显示”。
+
 `VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS` 和 `VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS` 是前端构建期变量，控制项目卡片视频播放前的预缓冲。默认值分别为 `3` 秒和 `5000` 毫秒；线上网络较慢时可小幅上调，调整后需要重新构建前端。
 
 `VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS` 也是前端构建期变量，控制模块工作台从耐久任务队列同步项目卡的周期，默认 `10000` 毫秒，低于 `1000` 毫秒会回退默认值。前台恢复、窗口聚焦和网络恢复会额外立即同步；调整该值后必须重新构建前端。不要用极短轮询掩盖 provider 或任务队列故障。
@@ -255,6 +257,16 @@ location /__meiao_stored_assets/ {
 MEIAO_ASSET_X_ACCEL=1
 pm2 startOrReload ecosystem.config.cjs --update-env
 ```
+
+开启后必须同时验证 Node 授权层和 Nginx 交付层，不能只看 `/api/health` 或 `127.0.0.1:3100`：
+
+```bash
+stat -c '%U:%G %a %n' /www/wwwroot/meiao-internal
+stat -c '%U:%G %a %n' /www/wwwroot/meiao-internal/.env.server
+namei -l /www/wwwroot/meiao-internal/server/data/assets
+```
+
+预期应用根目录为可穿越的 `0755`，`.env.server` 仍为 `0600`。再从一个当前账号真实、有效的本地托管结果素材取得授权 URL，分别请求 Node 直连地址和正式域名；两端都必须返回 `200`、正确 `Content-Type` 和相同字节数/哈希。公网任一 `403` 都视为发布失败，即使任务状态、文件落盘和 Node 直连已经成功。
 
 ## 启动
 ```bash

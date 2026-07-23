@@ -39,14 +39,14 @@
 
 ## 5. 发布命令
 - 本地发布脚本：
-  `./scripts/deploy_tencent.sh`
+  `MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh`
 - 如需显式指定密钥或服务器：
-  `MEIAO_SSH_KEY=~/.ssh/MEIAO.pem MEIAO_SERVER_HOST=111.229.66.247 ./scripts/deploy_tencent.sh`
+  `MEIAO_SSH_KEY=~/.ssh/MEIAO.pem MEIAO_SERVER_HOST=111.229.66.247 MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh`
 - 说明：
   - 该脚本会把本地代码同步到腾讯云目录。
   - 服务器上会执行 `npm install`、`npm run security:audit`、`npm run build`。
-  - 若依赖树仍有 high/critical 级别漏洞，发布会在构建和 PM2 重启前停止。
-  - 然后用 PM2 重启 `meiao-internal`。
+  - 若依赖树仍有 high/critical 级别漏洞，发布会在构建和 PM2 reload 前停止。
+  - 运行中任务、写请求、部署 marker、互斥锁、COS 就绪和精确 release health 均通过后，才用 PM2 `cluster + wait_ready` 合同执行 ready-gated reload；旧进程在新进程 ready 前继续服务。
 
 ## 6. 发布后验证
 - 健康检查：
@@ -55,6 +55,8 @@
 - 如果要确认系统配置接口是否正常：
   - 先登录后再访问 `/api/system/config`
 - 若健康检查返回 `{"ok":true,"mode":"internal-mysql-v1"}`，说明服务基本在线。
+- 若生产环境开启 `MEIAO_ASSET_X_ACCEL=1`，还必须抽取一个当前账号真实托管结果素材做双层验收：Node 直连和正式域名都返回 `200`、正确媒体类型且字节数/哈希一致。仅 health 正常、任务成功或 Node 直连成功，不能证明 Nginx 已能交付图片。
+- 应用根目录 `/www/wwwroot/meiao-internal` 必须允许 Nginx 用户穿越（标准脚本固定为 `0755`），但 `.env.server` 继续保持 `0600`；禁止用递归 chmod 修复资源权限。
 
 ## 7. 当前接手判断规则
 - 不要默认以 GitHub 为线上真实版本。
