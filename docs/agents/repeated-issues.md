@@ -30,6 +30,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `server/processLifecycle.test.mjs`、`server/pm2Contract.test.mjs`、`server/deployClaimLock.test.mjs`、`scripts/deploy_tencent.test.mjs`、`scripts/assert-deploy-health.test.mjs`、`server/deployDrain.test.mjs` 锁定 ready/优雅退出/cluster/release 身份/写请求排空、claim 竞态与禁止 stop-start；`npm run test:pm2-reload` 用真实 PM2 跨 A→B 连续探测 0 失败。云上先用 3101 候选完成旧 fork 首迁，再用标准脚本真实发布到 `meiao-zero502-standard-844605f95229`；绕过本机代理连续直连首页与 health 共 2000 次，HTTP 502、网络错误及其他状态码均为 0，且云上正式进程为单实例 `cluster_mode`、marker/mutex/3101 候选均已清理。
 - Avoid next time: 发布时序是公网可用性合同。单上游不得在候选实例 ready 前停止；验收必须连续探测公网状态码并核对 release ID，不能只在发布结束后看一次 health。
 
+## 2026-07-23 - X-Accel asset delivery requires nginx traversal on the application root
+
+- Symptom: 多桑一键主详任务已成功、积分已结算且卡片显示“已出图”，但图片区域破图；同一结果 URL 公网返回 403。
+- Environment: Tencent Cloud production / local generated result asset / `MEIAO_ASSET_X_ACCEL=1` / Nginx worker `www`.
+- Root cause: 首次零停机迁移的 `rsync -a` 把开发机仓库根目录的 `0700` 和数值 owner 复制到生产应用根。PM2 root 直连读取返回 200，但 Nginx `www` 无法穿过应用根目录执行 X-Accel 内部文件映射，因此公网交付返回 403；provider、任务结果、资产记录和物理 JPEG 均正常。
+- Fix: 云上应用根目录恢复 `root:root 0755`，不重提任务；标准部署脚本在源码复制后、安装构建前只对应用根目录执行 `chmod 0755`，不递归放宽源码、`.env.server` 或资产权限。多桑原图恢复 `200 image/jpeg`，最近 30 个 active 本地资产经 Nginx 抽样均为 200。
+- Regression check: `node --test scripts/deploy_tencent.test.mjs` 锁定 copy→chmod→install 顺序并拒绝 `-R/--recursive`；`bash -n scripts/deploy_tencent.sh`；部署后核对应用根目录 0755、`.env.server` 原权限、真实 X-Accel 结果 URL 200 及文件长度一致。
+- Avoid next time: X-Accel 验收必须覆盖 Nginx worker 的完整目录穿透权限，不能用 PM2/root 直读 200 代替；保留元数据的 tar/rsync 不得覆盖生产应用根权限。
+
 ## 2026-07-22 - Managed image validation must trust bytes, not browser MIME labels
 
 - Symptom: 多个账号上传 `.jpg` 素材时集中出现“图片类型与文件内容不一致”，项目在策划/生图前失败；同一素材会让连续新项目重复报错。
