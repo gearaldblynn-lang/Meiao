@@ -59,6 +59,28 @@ test('deploy_tencent preserves remote server data directory', () => {
   );
 });
 
+test('deploy_tencent restores nginx traversal permission on the remote app root after copying source', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const copyIndex = source.indexOf('cp -R \\\"$REMOTE_TMP_DIR\\\"/. \\\"$REMOTE_APP_DIR\\\"/');
+  const permissionIndex = source.indexOf("chmod 0755 '$REMOTE_APP_DIR'");
+  const installBoundaryIndex = source.indexOf("cd '$REMOTE_APP_DIR'", copyIndex);
+
+  assert.ok(copyIndex >= 0, 'deploy must copy the staged source into the remote app root');
+  assert.ok(
+    permissionIndex > copyIndex,
+    'deploy must restore root traversal after source copy so nginx X-Accel can read stored assets',
+  );
+  assert.ok(
+    permissionIndex < installBoundaryIndex,
+    'deploy must restore root traversal before install/build and any later cutover',
+  );
+  assert.doesNotMatch(
+    source,
+    /chmod\s+(?:--recursive|-\S*R\S*)\s/,
+    'deploy must not recursively broaden source or secret permissions',
+  );
+});
+
 test('deploy_tencent reuses a persistent remote FFmpeg binary during dependency installation', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
 

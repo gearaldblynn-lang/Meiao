@@ -191,6 +191,9 @@ tar \
       find '$REMOTE_APP_DIR/server' -mindepth 1 -maxdepth 1 ! -name 'data' -exec rm -rf {} +
     fi
     cp -R \"$REMOTE_TMP_DIR\"/. \"$REMOTE_APP_DIR\"/
+    # Nginx X-Accel 以 www 用户读取 server/data/assets。源码同步不得把本机仓库根目录的
+    # 0700 权限复制到生产应用根目录；只恢复根目录通行，不递归放宽源码或密钥权限。
+    chmod 0755 '$REMOTE_APP_DIR'
 
     cd '$REMOTE_APP_DIR'
     npm config delete disturl >/dev/null 2>&1 || true
