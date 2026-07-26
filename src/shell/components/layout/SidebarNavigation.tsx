@@ -3,7 +3,7 @@ import type { AppModule } from '../../types';
 import { AppModuleObj } from '../../types';
 import {
   Bot, Sparkles, Globe, Users, Wand2, PlayCircle, BookOpen, Crop,
-  Settings, UserCircle, Hexagon, Sun, Moon, ChevronLeft, ChevronRight, ReplaceAll, Bell, Factory
+  Settings, UserCircle, Hexagon, Sun, Moon, ChevronLeft, ChevronRight, ReplaceAll, Bell, Factory, Images
 } from 'lucide-react';
 
 interface SidebarNavDef { module: AppModule | 'landing'; icon: React.ReactNode; label: string; }
@@ -31,6 +31,7 @@ const MAIN: NavDef[] = [
 // 智能工厂调通期(阶段5)只对管理员开放,商家不可见;整体验收后再进 MAIN 对全员开放。
 // AI 客服仍整体撤下(业主决策靠后),不在此列。
 const ADMIN_ONLY: NavDef[] = [
+  { module: AppModuleObj.VIRTUAL_MODEL_LIBRARY, icon: <Images size={20} strokeWidth={1.5} />, label: '虚拟模特库' },
   { module: AppModuleObj.SMART_FACTORY, icon: <Factory size={20} strokeWidth={1.5} />, label: '智能工厂' },
 ];
 

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import type { SubFeatureOption } from '../../ShellMigratedApp';
 
 interface Props {
@@ -8,9 +8,20 @@ interface Props {
 }
 
 const SubFeatureTabs: React.FC<Props> = ({ items = [], activeId, onChange }) => {
+  const activeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const ensureActiveVisible = () => {
+      activeButtonRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    };
+    ensureActiveVisible();
+    window.addEventListener('resize', ensureActiveVisible);
+    return () => window.removeEventListener('resize', ensureActiveVisible);
+  }, [activeId]);
+
   if (items.length <= 1) return null;
   return (
-    <div className="overflow-x-auto scrollbar-none">
+    <div className="w-full max-w-full overflow-x-auto scrollbar-none">
       <div
         className="mx-auto inline-flex min-w-fit items-center gap-0.5 rounded-full px-1 py-1"
         style={{ background: 'var(--bg-elevated)' }}
@@ -20,6 +31,7 @@ const SubFeatureTabs: React.FC<Props> = ({ items = [], activeId, onChange }) => 
           const disabledLabel = item.description || '待制作';
           return (
             <button
+              ref={active ? activeButtonRef : undefined}
               key={item.id}
               type="button"
               onClick={() => !item.disabled && onChange?.(item.id)}

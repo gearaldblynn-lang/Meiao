@@ -11,6 +11,10 @@ import {
   runTranslationRetriesSequentially,
 } from '../../modules/Translation/translationRetryUtils.mjs';
 import { copyTextToClipboard } from '../../utils/clipboard.mjs';
+import {
+  getProjectResultRegenerationUnavailableReason,
+  isProjectResultRegenerationEligible,
+} from '../../utils/modelReplaceRetry.mjs';
 import { isInvalidOneClickPlanLike } from '../../utils/oneClickPlanValidation.ts';
 import { formatMonthDay } from '../../utils/timeFormat.ts';
 import TranslationRegionEditDialog from '../../modules/Translation/TranslationRegionEditDialog';
@@ -114,6 +118,7 @@ const subFeatureNames: Record<string, string> = {
   product_restore: '产品还原',
   product_replace: '产品替换',
   background_replace: '背景替换',
+  model_replace: '模特替换',
   enhance: '智能增强',
   image: '买家秀图片',
   copy: '纯文案',
@@ -368,7 +373,7 @@ const getMissingMediaLabel = (result: GeneratedResult, mediaType: 'image' | 'vid
   return mediaType === 'video' ? '视频待生成' : '待生成图';
 };
 
-const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto'; videoPreviewFrameTime?: number; videoShowPlayOverlay?: boolean; videoShowIndicator?: boolean; videoAutoLoadWhenVisible?: boolean }) => {
+const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto'; videoPreviewFrameTime?: number; videoShowPlayOverlay?: boolean; videoShowIndicator?: boolean; videoAutoLoadWhenVisible?: boolean; imageFailureReason?: string }) => {
   if (result.mediaType === 'video' || result.videoUrl) {
     const src = result.videoUrl || result.imageUrl;
     return src ? (
@@ -392,12 +397,15 @@ const renderMedia = (result: GeneratedResult, className: string, options?: { vid
     );
   }
   if (!result.imageUrl) {
+    const imageFailureReason = result.status === 'error' ? String(options?.imageFailureReason || '').trim() : '';
     return (
       <div
-        className={`flex items-center justify-center text-[12px] ${className}`}
+        className={`flex items-center justify-center px-5 text-center text-[12px] ${className}`}
         style={{ color: result.status === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}
       >
-        {getMissingMediaLabel(result, 'image')}
+        <span className="max-h-28 max-w-full overflow-y-auto whitespace-pre-wrap break-words leading-5">
+          {imageFailureReason || getMissingMediaLabel(result, 'image')}
+        </span>
       </div>
     );
   }
@@ -526,6 +534,19 @@ const getProjectCreditsConsumed = (project: Project) => {
   };
 };
 
+const getModelReplaceIdentityLabel = (project: Project) => {
+  const context = project.generationContext;
+  if (context?.identitySource === 'library' && context.virtualModelSnapshot?.identitySource === 'library') {
+    const snapshot = context.virtualModelSnapshot;
+    const name = String(snapshot.modelName || snapshot.virtualModelId || '').trim();
+    const code = String(snapshot.modelCode || '').trim();
+    const version = Number(snapshot.versionNumber);
+    return `公共模特${name ? ` · ${name}` : ''}${code ? ` (${code})` : ''}${Number.isFinite(version) ? ` · v${version}` : ''}`;
+  }
+  const count = Array.isArray(context?.materials?.model) ? context.materials.model.length : 0;
+  return `上传身份${count > 0 ? ` · ${count} 张` : ''}`;
+};
+
 const ResultActionButton: React.FC<{
   icon: React.ReactNode;
   label: string;
@@ -533,7 +554,8 @@ const ResultActionButton: React.FC<{
   tone?: 'neutral' | 'primary' | 'danger';
   className?: string;
   disabled?: boolean;
-}> = ({ icon, label, onClick, tone = 'neutral', className = '', disabled = false }) => {
+  title?: string;
+}> = ({ icon, label, onClick, tone = 'neutral', className = '', disabled = false, title }) => {
   const styleByTone = {
     neutral: {
       background: 'var(--bg-surface)',
@@ -560,6 +582,7 @@ const ResultActionButton: React.FC<{
         onClick();
       }}
       disabled={disabled}
+      title={title}
       className={`flex min-h-9 min-w-0 items-center justify-center gap-1 rounded-[16px] px-2 py-2 text-[11px] font-semibold transition-all ${disabled ? 'cursor-not-allowed opacity-60' : 'hover:-translate-y-0.5'} ${className}`}
       style={styleByTone}
     >
@@ -634,6 +657,9 @@ const ProjectCard: React.FC<Props> = ({
   const isEverythingReplaceProductEditProject = project.module === 'everything_replace' && project.subFeature === 'product_replace';
   const isEverythingReplaceBackgroundEditProject = project.module === 'everything_replace' && project.subFeature === 'background_replace';
   const isImageCropProject = project.module === 'image_crop';
+  const modelReplaceIdentityLabel = project.module === 'everything_replace' && project.subFeature === 'model_replace'
+    ? getModelReplaceIdentityLabel(project)
+    : '';
   const isProductRestoreProject = project.module === 'retouch' && project.subFeature === 'product_restore';
   const isRetouchComparisonProject = isRetouchComparisonScope(project.module, project.subFeature);
   const isSubtitleRemovalProject = project.module === 'video' && project.subFeature === 'subtitle_removal';
@@ -759,8 +785,14 @@ const ProjectCard: React.FC<Props> = ({
     && Boolean(result.imageUrl)
     && !result.videoUrl
   );
-  const canRetryTranslationResult = (result: GeneratedResult) => !isTranslationProject
-    || isTranslationResultRetryEligible(result.subFeature || project.subFeature, result);
+  const canRetryTranslationResult = (result: GeneratedResult) => isProjectResultRegenerationEligible(
+    project,
+    result,
+    isTranslationResultRetryEligible,
+  );
+  const getRegenerationUnavailableReason = (result: GeneratedResult) => (
+    getProjectResultRegenerationUnavailableReason(project, result)
+  );
   const failedTranslationResults = translationResults.filter((result) => (
     result.status === 'error' && canRetryTranslationResult(result)
   ));
@@ -1516,6 +1548,7 @@ const ProjectCard: React.FC<Props> = ({
               {project.subFeature && (
                 <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{subFeatureNames[project.subFeature] || project.subFeature}</span>
               )}
+              {modelReplaceIdentityLabel && <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{modelReplaceIdentityLabel}</span>}
               <span className="text-[11px]" style={{ color: 'var(--text-disabled)' }}>{formatMonthDay(project.createdAt)}</span>
               {hasResults && (
                 <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
@@ -1559,6 +1592,7 @@ const ProjectCard: React.FC<Props> = ({
                 <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
                   <span>{moduleNames[project.module] || project.module}</span>
                   {project.subFeature && <span>{subFeatureNames[project.subFeature] || project.subFeature}</span>}
+                  {modelReplaceIdentityLabel && <span>{modelReplaceIdentityLabel}</span>}
                   <span>{formatMonthDay(project.createdAt)}</span>
                   <span>任务 {project.completedCount}/{project.taskCount}</span>
                 </div>
@@ -2474,11 +2508,21 @@ const ProjectCard: React.FC<Props> = ({
                           const displayedPrompt = getDisplayedResultPrompt(displayResult, matchedPlan);
                           const hideResultPromptInProjectCard = isSubtitleRemovalProject || (
                             project.module === 'everything_replace'
-                            && (project.subFeature === 'product_replace' || project.subFeature === 'background_replace')
-                            && result.status !== 'error'
+                            && (
+                              project.subFeature === 'model_replace'
+                              || (
+                                (project.subFeature === 'product_replace' || project.subFeature === 'background_replace')
+                                && result.status !== 'error'
+                              )
+                            )
                           );
                           const hasResult = Boolean(displayResult.imageUrl || displayResult.videoUrl);
                           const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
+                          const modelReplaceFailureReason = project.module === 'everything_replace'
+                            && project.subFeature === 'model_replace'
+                            && displayResult.status === 'error'
+                            ? String(displayResult.error || displayResult.message || '').trim()
+                            : '';
                           const resultMeta: string[] = [];
                           if (displayResult.aspectRatio && displayResult.aspectRatio !== 'auto') resultMeta.push(displayResult.aspectRatio);
                           if (displayResult.createdAt) resultMeta.push(formatMonthDay(displayResult.createdAt));
@@ -2486,6 +2530,7 @@ const ProjectCard: React.FC<Props> = ({
                             resultMeta.push(`后端状态：${displayResult.status === 'completed' ? '已完成' : displayResult.status === 'error' ? '失败' : '生成中'}`);
                           }
                           const regeneratePending = isRegeneratePending(result.id);
+                          const regenerationUnavailableReason = getRegenerationUnavailableReason(result);
                           const subtitleSubmissionUnknown = isSubtitleRemovalProject
                             && getSubtitleRemovalRetryDecision(displayResult).mode === 'blocked_unknown';
                           const sourcePreviewUrl = displayResult.sourcePreviewUrl;
@@ -2572,7 +2617,7 @@ const ProjectCard: React.FC<Props> = ({
                             </div>
                           ) : (
                             <div className="relative">
-                              {renderMedia(displayResult, 'h-[210px] w-full object-contain')}
+                              {renderMedia(displayResult, 'h-[210px] w-full object-contain', { imageFailureReason: modelReplaceFailureReason })}
                               <div className="absolute left-3 top-3 rounded-full bg-black/45 px-2 py-1 text-[10px] font-medium text-white">#{index + 1}</div>
                             </div>
                           );
@@ -2742,14 +2787,15 @@ const ProjectCard: React.FC<Props> = ({
                                     ) : (
                                       <div />
                                     )}
-                                  {onRegenerate && canRetryTranslationResult(result) ? (
+                                  {onRegenerate && (canRetryTranslationResult(result) || Boolean(regenerationUnavailableReason)) ? (
                                     <ResultActionButton
                                       icon={<RefreshCw size={12} />}
-                                      label={regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : (isTranslationProject || isProductRestoreProject) ? '重试' : '重生成'}
+                                      label={regenerationUnavailableReason ? '无法重试' : regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : (isTranslationProject || isProductRestoreProject || project.subFeature === 'model_replace') ? '重试' : '重生成'}
                                       tone="primary"
-                                      disabled={regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
+                                      disabled={Boolean(regenerationUnavailableReason) || regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
+                                      title={regenerationUnavailableReason}
                                       onClick={() => {
-                                        if (regeneratePending || isGeneratingResult || regenerationLockedByActiveProject) return;
+                                        if (regenerationUnavailableReason || regeneratePending || isGeneratingResult || regenerationLockedByActiveProject) return;
                                         onRegenerate(project.id, result.id);
                                       }}
                                     />

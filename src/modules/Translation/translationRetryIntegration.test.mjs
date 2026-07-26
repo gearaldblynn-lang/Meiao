@@ -7,7 +7,10 @@ const projectCardSource = readFileSync(new URL('../../shell/components/ProjectCa
 
 test('failed translation retry wires historical snapshot and original dimensions into the image job', () => {
   const failedBranchStart = shellSource.indexOf("if (result.status !== 'error') {");
-  const failedBranchEnd = shellSource.indexOf("if (project.sourceType === 'job')", failedBranchStart);
+  const failedBranchEnd = shellSource.indexOf(
+    "if (project.sourceType === 'job' && !isModelReplaceRegeneration)",
+    failedBranchStart,
+  );
   assert.ok(failedBranchStart >= 0 && failedBranchEnd > failedBranchStart);
   const failedBranch = shellSource.slice(failedBranchStart, failedBranchEnd);
 

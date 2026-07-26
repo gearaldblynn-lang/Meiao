@@ -58,6 +58,7 @@ import {
   resolveNearestLogoPlacementRatio,
   updateLogoPlacementTemplate,
 } from '../../../utils/everythingReplaceLogoPlacement.mjs';
+import VirtualModelPicker from '../VirtualModelPicker';
 
 /* ── Module-specific toolbar params ── */
 interface ParamItem {
@@ -241,10 +242,15 @@ const isLogoReplaceContext = (module: AppModule, activeSubFeature?: string) => (
   module === AppModuleObj.EVERYTHING_REPLACE && activeSubFeature === 'logo_replace'
 );
 
+const isModelReplaceContext = (module: AppModule, activeSubFeature?: string) => (
+  module === AppModuleObj.EVERYTHING_REPLACE && activeSubFeature === 'model_replace'
+);
+
 const isEverythingReplaceImageContext = (module: AppModule, activeSubFeature?: string) => (
   isProductReplaceContext(module, activeSubFeature)
   || isBackgroundReplaceContext(module, activeSubFeature)
   || isLogoReplaceContext(module, activeSubFeature)
+  || isModelReplaceContext(module, activeSubFeature)
 );
 
 const LOGO_REGION_REPLACE_PLACEHOLDER = '框选旧 Logo 区域时，请让选框略大于 Logo 本身，完整包住文字/图形及周围少量背景留白。';
@@ -292,6 +298,10 @@ const getBackgroundReplaceQuickParams = (currentParams: Record<string, string>):
     { key: 'quality', label: '1K', title: '出图分辨率', icon: <Sparkles size={12} />, options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
   ];
 };
+
+const getModelReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => [
+  ...getBackgroundReplaceQuickParams(currentParams),
+];
 
 const getLogoReplaceModeLabel = (value?: string) => {
   const mode = String(value || '').trim();
@@ -699,6 +709,7 @@ const getBaseQuickParamsForModule = (
   if (module === AppModuleObj.VIDEO) return getVideoQuickParams(activeSubFeature, systemConfig, currentParams);
   if (module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') return getProductRestoreQuickParams(currentParams);
   if (module === AppModuleObj.RETOUCH) return getRetouchQuickParams(currentParams);
+  if (isModelReplaceContext(module, activeSubFeature)) return getModelReplaceQuickParams(currentParams);
   if (isProductReplaceContext(module, activeSubFeature)) return getEverythingReplaceQuickParams(currentParams);
   if (isBackgroundReplaceContext(module, activeSubFeature)) return getBackgroundReplaceQuickParams(currentParams);
   if (isLogoReplaceContext(module, activeSubFeature)) return getLogoReplaceQuickParams(currentParams);
@@ -767,6 +778,7 @@ const getMaterialTypesForContext = (module: AppModule, currentParams: Record<str
   if (isProductReplaceContext(module, activeSubFeature)) return ['product', 'logo', 'styleRef'];
   if (isBackgroundReplaceContext(module, activeSubFeature)) return ['product', 'styleRef'];
   if (isLogoReplaceContext(module, activeSubFeature)) return ['logo', 'styleRef'];
+  if (isModelReplaceContext(module, activeSubFeature)) return ['model', 'styleRef'];
   if (module === AppModuleObj.VIDEO) {
     if (activeSubFeature === 'diagnosis') return [];
     if (activeSubFeature === 'storyboard') {
@@ -906,6 +918,12 @@ const getEverythingReplaceMaterialLabels = (
   activeSubFeature: string | undefined,
   params: Record<string, string>,
 ): Partial<Record<MaterialType, { label: string; desc: string }>> => {
+  if (activeSubFeature === 'model_replace') {
+    return {
+      model: { label: '人物身份图', desc: '1–4 张同一人物，首图为主身份图' },
+      styleRef: { label: '待替换参考图', desc: '一图一结果，每张图仅限一人' },
+    };
+  }
   if (activeSubFeature === 'background_replace') {
     return {
       product: { label: '原产品图', desc: '保持产品和人物不变' },
@@ -941,6 +959,7 @@ const resolveEverythingReplaceBillingCount = (
     .length;
   const productCount = scopedCount('product');
   const referenceCount = scopedCount('styleRef');
+  if (activeSubFeature === 'model_replace') return Math.max(1, referenceCount);
   if (activeSubFeature === 'logo_replace') return Math.max(1, referenceCount || 1);
   if (productCount <= 0 || referenceCount <= 0) return 1;
   return referenceCount;
@@ -975,6 +994,22 @@ const getExtendedSectionsForModule = (module: AppModule, currentParams: Record<s
           { key: 'ratio', label: '出图比例', type: 'select', options: ratioOptions, defaultValue: isDetail || isRemoveText ? 'auto' : '1:1', disabled: isOriginalSizeMode },
           { key: 'targetWidth', label: '输出宽度(px)', type: 'number', defaultValue: isDetail ? '750' : isRemoveText ? '1200' : '800', disabled: isOriginalSizeMode },
           { key: 'targetHeight', label: '输出高度(px)', type: 'number', defaultValue: isDetail || isRemoveText ? '0' : '800', disabled: isOriginalSizeMode },
+        ],
+      },
+    ];
+  }
+  if (isModelReplaceContext(module, activeSubFeature)) {
+    const isOriginalSizeMode = String(currentParams.resolutionMode || currentParams.sizeMode || '').includes('原图')
+      || currentParams.resolutionMode === 'original';
+    return [
+      {
+        section: '尺寸',
+        params: [
+          { key: 'resolutionMode', label: '尺寸模式', type: 'select' as const, options: ['自定义', '原图'], defaultValue: '自定义' },
+          { key: 'maxSize', label: '体积限制(MB)', type: 'number' as const, defaultValue: '2.0' },
+          { key: 'ratio', label: '出图比例', type: 'select' as const, options: ['1:1', '3:4', '4:3', '9:16', '16:9'], defaultValue: '1:1', disabled: isOriginalSizeMode },
+          { key: 'targetWidth', label: '输出宽度(px)', type: 'number' as const, defaultValue: '800', disabled: isOriginalSizeMode },
+          { key: 'targetHeight', label: '输出高度(px)', type: 'number' as const, defaultValue: '800', disabled: isOriginalSizeMode },
         ],
       },
     ];
@@ -1048,6 +1083,9 @@ const getPlaceholderForContext = (module: AppModule, activeSubFeature?: string, 
   if (isBackgroundReplaceContext(module, activeSubFeature)) {
     return '补充背景替换要求，例如：保留人物姿势和产品不变，只换成参考图同款场景...';
   }
+  if (isModelReplaceContext(module, activeSubFeature)) {
+    return '补充模特替换要求（可选），例如：保持服装、姿势、场景和构图不变...';
+  }
   if (isLogoReplaceContext(module, activeSubFeature)) {
     const logoReplaceMode = String(currentParams.replacementLogic || '').trim();
     if (logoReplaceMode === 'single_logo_region_replace' || logoReplaceMode === 'multi_logo_replace') {
@@ -1075,6 +1113,7 @@ const getGenerateLabelForContext = (module: AppModule, activeSubFeature?: string
   if (isProductReplaceContext(module, activeSubFeature)) return '开始产品替换';
   if (isBackgroundReplaceContext(module, activeSubFeature)) return '开始背景替换';
   if (isLogoReplaceContext(module, activeSubFeature)) return '开始Logo替换';
+  if (isModelReplaceContext(module, activeSubFeature)) return '开始模特替换';
   if (module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard') return '生成分镜';
   if (module === AppModuleObj.VIDEO && activeSubFeature === 'diagnosis') return '一键勘探深度分析';
   return '生成';
@@ -1264,12 +1303,34 @@ interface Props {
   onMoveMaterial?: (type: string, id: string, direction: 'left' | 'right') => void;
   systemConfig?: SystemPublicConfig | null;
   generationDisabledReason?: string;
+  identityDraft?: {
+    identitySource: 'upload' | 'library';
+    librarySelection: {
+      virtualModelId: string;
+      virtualModelVersionId: string;
+      modelName?: string;
+      modelCode?: string;
+      versionNumber?: number;
+      publishedAt?: number;
+    } | null;
+  };
+  onIdentityDraftChange?: (draft: {
+    identitySource: 'upload' | 'library';
+    librarySelection: {
+      virtualModelId: string;
+      virtualModelVersionId: string;
+      modelName?: string;
+      modelCode?: string;
+      versionNumber?: number;
+      publishedAt?: number;
+    } | null;
+  }) => void;
 }
 
 const BottomInputBar: React.FC<Props> = ({
   module, activeSubFeature, promptText, onPromptChange, onGenerate, isGenerating: _isGenerating, isSubmitLocked = false,
   currentParams, onParamChange, materials, oneClickReferencePresets, onUploadMaterial, onApplyPresetMaterials, onUpdateMaterial, onRemoveMaterial, onMoveMaterial,
-  systemConfig, generationDisabledReason = '',
+  systemConfig, generationDisabledReason = '', identityDraft, onIdentityDraftChange,
 }) => {
   const quickParams = getQuickParamsForModule(module, currentParams, activeSubFeature, systemConfig);
   const extendedSections = getExtendedSectionsForModule(module, currentParams, activeSubFeature);
@@ -1296,6 +1357,7 @@ const BottomInputBar: React.FC<Props> = ({
   const [materialMentionQuery, setMaterialMentionQuery] = useState('');
   const [materialMentionRange, setMaterialMentionRange] = useState({ start: 0, end: 0 });
   const [xhsPreviewImage, setXhsPreviewImage] = useState<string | null>(null);
+  const [virtualModelPickerOpen, setVirtualModelPickerOpen] = useState(false);
   const logoPlacementFrameRef = useRef<HTMLDivElement>(null);
   const logoReplaceRegionFrameRef = useRef<HTMLDivElement>(null);
   const logoPlacementInteractionRef = useRef<null | {
@@ -1334,6 +1396,8 @@ const BottomInputBar: React.FC<Props> = ({
   const isProductRestore = module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore';
   const isEverythingReplaceProductReplace = isProductReplaceContext(module, activeSubFeature);
   const isEverythingReplaceLogoReplace = isLogoReplaceContext(module, activeSubFeature);
+  const isEverythingReplaceModelReplace = isModelReplaceContext(module, activeSubFeature);
+  const identitySource = identityDraft?.identitySource || 'upload';
   const isEverythingReplaceImageReplace = isEverythingReplaceImageContext(module, activeSubFeature);
   const isPendingSubFeature = isPendingShellSubFeature(module, activeSubFeature);
   const disabledReason = generationDisabledReason || (isPendingSubFeature ? '该子功能待制作' : '');
@@ -1442,7 +1506,8 @@ const BottomInputBar: React.FC<Props> = ({
     });
   };
   const showPromptInput = module !== AppModuleObj.TRANSLATION;
-  const contextMaterialTypes = getMaterialTypesForContext(module, currentParams, activeSubFeature);
+  const contextMaterialTypes = (getMaterialTypesForContext(module, currentParams, activeSubFeature) || [])
+    .filter((type) => !(isEverythingReplaceModelReplace && identitySource === 'library' && type === 'model'));
   const buyerShowSetCount = isBuyerShow ? getBuyerShowSetCount(currentParams) : 1;
   const shouldShowUpload = !(module === AppModuleObj.VIDEO && activeSubFeature === 'diagnosis');
   const billingMaterialCount = isProductRestore
@@ -1457,7 +1522,7 @@ const BottomInputBar: React.FC<Props> = ({
     ? { ...currentParams, count: String(activeStyleRefCount), exactCount: 'true' }
     : isMainImageSuiteReplication
     ? { ...currentParams, count: String(activeStyleRefCount), exactCount: 'true' }
-    : (isEverythingReplaceProductReplace || isEverythingReplaceLogoReplace)
+    : (isEverythingReplaceProductReplace || isEverythingReplaceLogoReplace || isEverythingReplaceModelReplace)
     ? { ...currentParams, count: String(resolveEverythingReplaceBillingCount(materials, activeSubFeature, currentParams)), exactCount: 'true' }
     : currentParams;
   const imageBillingEstimate = estimateImageBilling({
@@ -2606,6 +2671,7 @@ const BottomInputBar: React.FC<Props> = ({
 
   const displayMaterials = {
     ...materials,
+    ...(isEverythingReplaceModelReplace && identitySource === 'library' ? { model: [] } : {}),
     ...(isXhsCover && selectedXhsStyle ? {
       xhsPreset: [{
         id: selectedXhsStyle.id,
@@ -2984,6 +3050,60 @@ const BottomInputBar: React.FC<Props> = ({
           } : undefined}
           onMoveMaterial={isProductRestore ? onMoveMaterial : undefined}
         />
+        {isEverythingReplaceModelReplace && (
+          <div
+            className="mx-auto mb-3 flex max-w-[896px] flex-wrap items-center gap-2 rounded-2xl border p-3"
+            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+          >
+            <div className="flex rounded-xl border p-0.5" style={{ borderColor: 'var(--border-subtle)' }}>
+              {(['library', 'upload'] as const).map((source) => (
+                <button
+                  key={source}
+                  type="button"
+                  aria-pressed={identitySource === source}
+                  onClick={() => onIdentityDraftChange?.({
+                    ...(identityDraft || { identitySource: 'upload', librarySelection: null }),
+                    identitySource: source,
+                  })}
+                  className="rounded-[10px] px-3 py-1.5 text-[12px] font-medium"
+                  style={{
+                    background: identitySource === source ? 'var(--accent)' : 'transparent',
+                    color: identitySource === source ? '#fff' : 'var(--text-secondary)',
+                  }}
+                >
+                  {source === 'library' ? '公共模特库' : '临时上传'}
+                </button>
+              ))}
+            </div>
+            {identitySource === 'library' ? (
+              <>
+                <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+                  {identityDraft?.librarySelection
+                    ? `${identityDraft.librarySelection.modelName || '已选模特'}${identityDraft.librarySelection.modelCode ? ` · ${identityDraft.librarySelection.modelCode}` : ''}${identityDraft.librarySelection.versionNumber ? ` · v${identityDraft.librarySelection.versionNumber}` : ''}`
+                    : '尚未选择模特'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setVirtualModelPickerOpen(true)}
+                  className="rounded-xl px-3 py-1.5 text-[12px] font-medium text-white"
+                  style={{ background: 'var(--accent)' }}
+                >
+                  {identityDraft?.librarySelection ? '更换模特' : '选择模特'}
+                </button>
+              </>
+            ) : (
+              <span className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>上传 1–4 张同一人物身份图</span>
+            )}
+          </div>
+        )}
+        {virtualModelPickerOpen && (
+          <VirtualModelPicker
+            open
+            selected={identityDraft?.librarySelection || null}
+            onSelect={(librarySelection) => onIdentityDraftChange?.({ identitySource: 'library', librarySelection })}
+            onClose={() => setVirtualModelPickerOpen(false)}
+          />
+        )}
         {renderEverythingReplaceLogoPlacementEditor()}
         {renderLogoReplaceRegionEditor()}
         {isDreaminaVideoGeneration && (

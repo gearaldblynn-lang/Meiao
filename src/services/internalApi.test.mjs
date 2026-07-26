@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 const installBrowserLikeGlobals = () => {
   const storage = new Map();
@@ -114,6 +115,91 @@ const validTimeline = {
 const isInvalidResponse = (api) => (error) => error instanceof api.ApiError
   && error.code === 'invalid_response'
   && error.status === 502;
+
+test('virtual model API functions use authenticated public and admin route contracts', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({
+      url: String(url),
+      method: init.method || 'GET',
+      body: init.body ? JSON.parse(String(init.body)) : null,
+    });
+    const payload = init.method === 'DELETE'
+      ? { result: { ok: true } }
+      : { ok: true, models: [], model: {}, version: {}, assets: [], result: { ok: true } };
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    await api.fetchVirtualModels();
+    await api.fetchAdminVirtualModels('draft');
+    await api.fetchVirtualModel('model 1');
+    await api.validateVirtualModelLibrarySelection('model 1', 'version 1');
+    await api.createVirtualModel({ code: 'VM-1', name: 'Model', tags: ['catalog'] });
+    await api.updateVirtualModel('model 1', { name: 'Updated' });
+    await api.createVirtualModelVersion('model 1', { identityProfile: { gender: 'female' } });
+    await api.replaceVirtualModelVersionAssets('model 1', 'version 1', { assets: [] });
+    await api.publishVirtualModel('model 1', 'version 1');
+    await api.unpublishVirtualModel('model 1');
+    const deleted = await api.deleteVirtualModel('model 1');
+
+    assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
+      'GET /api/virtual-models',
+      'GET /api/admin/virtual-models?status=draft',
+      'GET /api/virtual-models/model%201',
+      'POST /api/virtual-models/validate-selection',
+      'POST /api/admin/virtual-models',
+      'PATCH /api/admin/virtual-models/model%201',
+      'POST /api/admin/virtual-models/model%201/versions',
+      'PUT /api/admin/virtual-models/model%201/versions/version%201/assets',
+      'POST /api/admin/virtual-models/model%201/publish',
+      'POST /api/admin/virtual-models/model%201/unpublish',
+      'DELETE /api/admin/virtual-models/model%201',
+    ]);
+    assert.deepEqual(deleted, { result: { ok: true } });
+    assert.equal(calls.at(-1).body, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('virtual model status type includes deleted for internal API completeness', async () => {
+  const source = await readFile(new URL('./internalApi.ts', import.meta.url), 'utf8');
+  const summaryType = source.slice(
+    source.indexOf('export type VirtualModelSummary'),
+    source.indexOf('type VirtualModelDraftPayload'),
+  );
+  assert.match(summaryType, /status: 'draft' \| 'published' \| 'unpublished' \| 'deleted'/);
+});
+
+test('deleteVirtualModel preserves a MODEL_NOT_FOUND server code', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    code: 'MODEL_NOT_FOUND',
+    message: 'Virtual model not found.',
+  }), {
+    status: 404,
+    headers: { 'content-type': 'application/json' },
+  });
+
+  try {
+    await assert.rejects(
+      api.deleteVirtualModel('missing model'),
+      (error) => error instanceof api.ApiError
+        && error.status === 404
+        && error.code === 'MODEL_NOT_FOUND'
+        && error.message === 'Virtual model not found.',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test('probeInternalApi aborts the health request on timeout', async () => {
   const originalFetch = globalThis.fetch;

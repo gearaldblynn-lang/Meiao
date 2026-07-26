@@ -1016,7 +1016,8 @@ test('shell generation paths upload local draft assets before provider submissio
   assert.match(handleGenerateBody, /const latestFilteredMaterials = filterMaterialsForScope\(materialsRef\.current, targetModule, targetSubFeature\);/);
   assert.match(handleGenerateBody, /let generationMaterials = hasMaterialInputs\(latestFilteredMaterials\) \|\| !hasMaterialInputs\(filteredMaterials\)/);
   assert.match(handleGenerateBody, /generationMaterials = await ensureMaterialRemoteUrls\(generationMaterials, targetModule\);/);
-  assert.match(handleGenerateBody, /cloneGenerationContext\(generationPrompt, generationParams, generationMaterials\)/);
+  assert.match(handleGenerateBody, /cloneSubmissionGenerationContext\(generationMaterials\)/);
+  assert.match(handleGenerateBody, /cloneGenerationContext\(generationPrompt, generationParams, materials\)/);
   assert.match(handleGenerateBody, /\(generationMaterials\.product \|\| \[\]\)/);
   assert.match(handleGenerateBody, /\.\.\.generationMaterials,\s+product:/);
   assert.match(handleGenerateBody, /materials: generationMaterials/);

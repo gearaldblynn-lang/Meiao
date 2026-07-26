@@ -69,6 +69,8 @@ const Trash2 = Icon;
 const X = Icon;
 const copyTextToClipboard = async () => true;
 const isInvalidOneClickPlanLike = () => false;
+const getProjectResultRegenerationUnavailableReason = () => null;
+const isProjectResultRegenerationEligible = () => true;
 const formatMonthDay = () => '07-14';
 const canManuallyReanalyzeProductRestore = () => false;
 const PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID = 'product-restore-manual-analysis';

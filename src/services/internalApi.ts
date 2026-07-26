@@ -1677,7 +1677,7 @@ export const uploadInternalAssetStream = async (payload: {
   if (!response.ok) {
     throw classifyError(response.status, data.message || '', data.errorCode || data.code || '');
   }
-  return data as { fileUrl: string };
+  return data as { fileUrl: string; assetId?: string };
 };
 
 export const deleteInternalAssetByUrl = async (fileUrl: string) => {
@@ -2310,16 +2310,93 @@ export const fetchChatwootReportsSummary = async (payload: ChatwootConnectionPay
   });
 };
 
-export const validateVirtualModelLibrarySelection = async (
-  virtualModelId: string,
-  virtualModelVersionId: string,
-) => {
+export type VirtualModelAsset = {
+  assetId: string;
+  url?: string;
+  publicUrl?: string;
+  previewAssetId?: string;
+  previewUrl?: string;
+  slot: string;
+  position: number;
+  isPrimary: boolean;
+};
+
+export type VirtualModelSummary = {
+  id: string;
+  code: string;
+  name: string;
+  tags: string[];
+  status: 'draft' | 'published' | 'unpublished' | 'deleted';
+  currentVersionId: string | null;
+  coverUrl: string;
+  updatedAt?: number;
+  version?: {
+    id: string;
+    versionNumber: number;
+    status: string;
+    publishedAt: number | null;
+    thumbnailUrl?: string;
+  };
+};
+
+type VirtualModelDraftPayload = { code: string; name: string; tags?: string[] };
+type VirtualModelVersionPayload = { identityProfile: Record<string, unknown> };
+type VirtualModelAssetsPayload = {
+  assets: Array<{
+    slot: string;
+    assetId: string;
+    publicUrl?: string;
+    previewAssetId?: string;
+    previewUrl?: string;
+    position?: number;
+    isPrimary?: boolean;
+    validationStatus?: 'pending' | 'passed' | 'failed';
+  }>;
+};
+
+export const fetchVirtualModels = async () => request<{ models: VirtualModelSummary[] }>('/api/virtual-models');
+
+export type AdminVirtualModel = Omit<VirtualModelSummary, 'version'> & { createdAt: number; updatedAt: number; version: ({ id: string; versionNumber: number; status: string; publishedAt: number | null; identityProfile: Record<string, unknown>; assets: VirtualModelAsset[] }) | null };
+
+export const fetchAdminVirtualModels = async (status: 'draft' | 'published' | 'unpublished' | 'all' = 'all') => request<{ models: AdminVirtualModel[] }>(`/api/admin/virtual-models?status=${encodeURIComponent(status)}`);
+
+export const fetchVirtualModel = async (virtualModelId: string) => {
+  return request<{ model: VirtualModelSummary }>(`/api/virtual-models/${encodeURIComponent(virtualModelId)}`);
+};
+
+export const validateVirtualModelLibrarySelection = async (virtualModelId: string, virtualModelVersionId: string) => {
   const response = await request<{ ok: boolean }>('/api/virtual-models/validate-selection', {
     method: 'POST',
     body: JSON.stringify({ virtualModelId, virtualModelVersionId }),
   });
-  if (response.ok !== true) {
-    throw new Error('当前公共模特选择已失效，请重新选择。');
-  }
+  if (response.ok !== true) throw new Error('当前公共模特选择已失效，请重新选择。');
   return response;
+};
+
+export const createVirtualModel = async (payload: VirtualModelDraftPayload) => {
+  return request<{ model: VirtualModelSummary }>('/api/admin/virtual-models', { method: 'POST', body: JSON.stringify(payload) });
+};
+
+export const updateVirtualModel = async (virtualModelId: string, payload: Partial<VirtualModelDraftPayload>) => {
+  return request<{ model: VirtualModelSummary }>(`/api/admin/virtual-models/${encodeURIComponent(virtualModelId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+};
+
+export const deleteVirtualModel = async (virtualModelId: string) => {
+  return request<{ result: { ok: boolean } }>(`/api/admin/virtual-models/${encodeURIComponent(virtualModelId)}`, { method: 'DELETE' });
+};
+
+export const createVirtualModelVersion = async (virtualModelId: string, payload: VirtualModelVersionPayload) => {
+  return request<{ version: { id: string; virtualModelId: string; versionNumber: number; status: string } }>(`/api/admin/virtual-models/${encodeURIComponent(virtualModelId)}/versions`, { method: 'POST', body: JSON.stringify(payload) });
+};
+
+export const replaceVirtualModelVersionAssets = async (virtualModelId: string, virtualModelVersionId: string, payload: VirtualModelAssetsPayload) => {
+  return request<{ assets: VirtualModelAsset[] }>(`/api/admin/virtual-models/${encodeURIComponent(virtualModelId)}/versions/${encodeURIComponent(virtualModelVersionId)}/assets`, { method: 'PUT', body: JSON.stringify(payload) });
+};
+
+export const publishVirtualModel = async (virtualModelId: string, virtualModelVersionId: string) => {
+  return request<{ result: { ok: boolean; publishedAt?: number } }>(`/api/admin/virtual-models/${encodeURIComponent(virtualModelId)}/publish`, { method: 'POST', body: JSON.stringify({ virtualModelVersionId }) });
+};
+
+export const unpublishVirtualModel = async (virtualModelId: string) => {
+  return request<{ result: { ok: boolean } }>(`/api/admin/virtual-models/${encodeURIComponent(virtualModelId)}/unpublish`, { method: 'POST', body: JSON.stringify({}) });
 };

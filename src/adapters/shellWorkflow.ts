@@ -15,7 +15,7 @@ import {
 } from '../types';
 import { cancelInternalJob, createInternalJob, uploadInternalAssetStream, storeActiveModuleContext, updateInternalJobResult, waitForInternalJob } from '../services/internalApi';
 import { processWithKieAi } from '../services/kieAiService';
-import { analyzeRetouchTask, analyzeTranslationCopyForGeneration, generateBuyerShowPrompts, generateDetailPageReplicationSchemes, generateFirstImageReplicationSchemes, generateMainImageSetReplicationSchemes, generateMarketingSchemes, generateSkuSchemes } from '../services/arkService';
+import { analyzeModelReplaceMaterials, analyzeRetouchTask, analyzeTranslationCopyForGeneration, generateBuyerShowPrompts, generateDetailPageReplicationSchemes, generateFirstImageReplicationSchemes, generateMainImageSetReplicationSchemes, generateMarketingSchemes, generateSkuSchemes } from '../services/arkService';
 import { buildOneClickImagePrompt } from '../modules/OneClick/generationPromptUtils';
 import { XHS_COVER_STYLES } from '../modules/XhsCover/xhsCoverStyles';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
@@ -52,6 +52,10 @@ import { normalizeLogoReplaceRegions } from '../utils/logoReplaceRegion.mjs';
 import { createWhitespaceCroppedLogoBlob } from '../utils/logoWhitespaceCrop.mjs';
 import { createMultiLogoReplacePreviewBlob } from '../utils/logoReplacePreview.mjs';
 import { createGuardedMultiLogoReplaceResultBlob } from '../utils/logoReplaceGuard.mjs';
+import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
+import { assertModelReplaceMaterialCounts } from '../utils/modelReplacePreflight.mjs';
+import { buildModelReplacePrompt } from '../utils/modelReplacePrompt.mjs';
+import { normalizeModelReplaceRawUserPrompt } from '../utils/modelReplacePromptInput.mjs';
 import { planBuyerShowSetsConcurrently } from '../utils/buyerShowPlanning';
 import {
   runShellProductRestoreWorkflow,
@@ -96,7 +100,40 @@ export interface ShellGenerateInput {
   onProductRestoreAnalysisCompleted?: (context: ProductRestoreProjectContext) => void | Promise<void>;
   productRestoreContext?: ProductRestoreProjectContext;
   publicBaseUrl?: string;
+  identitySource?: 'upload' | 'library';
+  virtualModelSnapshot?: ResolvedVirtualModelSnapshot;
+  preflight?: { referenceAnalysis?: ModelReplaceReferenceAnalysis[] };
 }
+
+type ModelReplaceReferenceAnalysis = {
+  index: number;
+  framing: 'portrait' | 'half_body' | 'full_body' | 'unknown';
+  faceDirection: 'front' | 'left' | 'right' | 'profile' | 'unknown';
+  headPitch: 'up' | 'level' | 'down' | 'unknown';
+  occlusion: 'low' | 'medium' | 'high' | 'unknown';
+  exposedSkinRegions: Array<'face' | 'ears' | 'neck' | 'shoulders' | 'chest' | 'arms' | 'hands' | 'midriff' | 'legs' | 'feet'>;
+};
+
+type ResolvedVirtualModelSnapshot = {
+  identitySource: 'library';
+  virtualModelId: string;
+  virtualModelVersionId: string;
+  modelName?: string;
+  modelCode?: string;
+  versionNumber?: number;
+  allowHistoricalPublishedVersion?: boolean;
+  publishedAt?: number;
+  selectedAssetIds?: string[];
+};
+
+const assertCompleteVirtualModelSnapshot = (snapshot?: ResolvedVirtualModelSnapshot) => {
+  if (!snapshot || snapshot.identitySource !== 'library' || !snapshot.virtualModelId || !snapshot.virtualModelVersionId) {
+    throw Object.assign(new Error('Virtual model identity assets are incomplete.'), { code: 'MODEL_ASSET_INCOMPLETE' });
+  }
+};
+
+type ShellModelReplacePreflightInput = Omit<ShellGenerateInput, 'onJobCreated' | 'taskMetadata'>
+  & { onJobCreated?: never; taskMetadata?: never };
 
 type LogoReplaceRegion = Record<string, unknown> & {
   regionId?: string;
@@ -144,7 +181,7 @@ export interface ShellWorkflowImageResult {
   fileName?: string;
   sourceUrl?: string;
   error?: string;
-  status?: 'completed' | 'generating' | 'error';
+  status?: 'completed' | 'generating' | 'interrupted' | 'error';
   message?: string;
   errorCode?: string;
   batchIndex?: number;
@@ -154,6 +191,7 @@ export interface ShellWorkflowImageResult {
   buyerShowEvaluation?: string;
   buyerShowDisplayPrompt?: string;
   logoReplaceGuarded?: boolean;
+  virtualModelSnapshot?: Record<string, unknown>;
 }
 
 export interface ShellRetouchWorkflowResult {
@@ -337,12 +375,28 @@ const collectMaterialDurations = (items: ShellMaterialInput[] | undefined) =>
     .map((item) => Number(item.durationSeconds))
     .filter((duration) => Number.isFinite(duration) && duration > 0);
 
-const materialUrl = (material: ShellMaterialInput, publicBaseUrl = '') => requireShellAssetUrl(material.remoteUrl || material.url, publicBaseUrl, '素材');
+const materialUrl = (material: ShellMaterialInput, publicBaseUrl = '', label = '素材') =>
+  requireShellAssetUrl(material.remoteUrl || material.url, publicBaseUrl, label);
 
 const firstMaterialUrl = (items: ShellMaterialInput[] | undefined, publicBaseUrl = '', label = '素材') => {
   const first = (items || []).find(Boolean);
   return first ? materialUrl(first, publicBaseUrl) : '';
 };
+
+const collectRequiredMaterialUrls = (
+  items: ShellMaterialInput[] | undefined,
+  publicBaseUrl = '',
+  label = '素材',
+) => (
+  (items || []).map((item, index) => {
+    const url = materialUrl(item, publicBaseUrl, label);
+    if (!url) {
+      const suffix = item?.fileName ? `（${item.fileName}）` : '';
+      throw new Error(`${label}${items && items.length > 1 ? index + 1 : ''}${suffix} 缺少可用于模型读取的公网地址，请重新上传后重试。`);
+    }
+    return url;
+  })
+);
 
 const getImageResultModelLabel = (config: ModuleConfig) =>
   config.model === 'nano-banana-2' ? 'Nano Banana 2' : config.model === 'gpt-image-2-secondary' ? 'GPT Image 2（副）' : 'GPT Image 2';
@@ -796,6 +850,59 @@ export const buildShellModuleConfig = (input: ShellGenerateInput): ModuleConfig 
         ? 'global_translation'
         : 'product_isolation',
   };
+};
+
+export const preflightShellModelReplace = async (input: ShellModelReplacePreflightInput) => {
+  const publicBaseUrl = input.publicBaseUrl || '';
+  const isLibraryIdentity = input.identitySource === 'library';
+  const identityUrls = isLibraryIdentity
+    ? []
+    : collectRequiredMaterialUrls(input.materials.model || [], publicBaseUrl, '人物身份图');
+  const referenceUrls = collectRequiredMaterialUrls(input.materials.styleRef || [], publicBaseUrl, '待替换参考图');
+  if (isLibraryIdentity) {
+    if (!input.virtualModelSnapshot || input.virtualModelSnapshot.identitySource !== 'library') {
+      throw Object.assign(new Error('Virtual model library snapshot is required.'), { code: 'MODEL_SNAPSHOT_REQUIRED' });
+    }
+    assertCompleteVirtualModelSnapshot(input.virtualModelSnapshot);
+    assertModelReplaceMaterialCounts(1, referenceUrls.length);
+  } else {
+    assertModelReplaceMaterialCounts(identityUrls.length, referenceUrls.length);
+  }
+
+  const config = buildShellModuleConfig({
+    ...input,
+    params: {
+      ...input.params,
+      ratio: input.params.ratio || 'auto',
+      aspectRatio: input.params.aspectRatio || input.params.ratio || 'auto',
+    },
+  });
+  const maxInputImages = getImageModelCapabilities(config.model).maxInputImages;
+  const libraryIdentityCount = [3, 4, 5].includes(input.virtualModelSnapshot?.selectedAssetIds?.length || 0)
+    ? input.virtualModelSnapshot.selectedAssetIds.length
+    : 3;
+  const requiredInputImages = (isLibraryIdentity ? libraryIdentityCount : identityUrls.length) + 1;
+  if (requiredInputImages > maxInputImages) {
+    throw new Error(`当前模型最多支持 ${maxInputImages} 张输入图片；本次每个任务需要 ${requiredInputImages} 张。请减少身份补充图或更换模型。`);
+  }
+
+  const apiConfig: GlobalApiConfig = input.apiConfig || {
+    kieApiKey: '',
+    concurrency: 1,
+    workspacePreferences: input.params.__workspacePreferences
+      ? JSON.parse(input.params.__workspacePreferences)
+      : undefined,
+  };
+  const result = await analyzeModelReplaceMaterials({
+    identityUrls,
+    referenceUrls,
+    replacementScope: 'identity_only',
+    apiConfig,
+    signal: input.signal,
+    jobMetadata: { subFeature: 'model_replace' },
+    skipIdentityValidation: isLibraryIdentity,
+  });
+  return { ...result, ...(isLibraryIdentity ? { identityValidationSkipped: true } : {}) };
 };
 
 const maybeResizeAndPersistImageResult = async (
@@ -1433,7 +1540,7 @@ export const runShellBuyerShowWorkflow = async (
   };
 };
 
-type ShellRetouchMode = 'original' | 'white_bg' | 'product_restore' | 'product_replace' | 'background_replace' | 'logo_replace';
+type ShellRetouchMode = 'original' | 'white_bg' | 'product_restore' | 'product_replace' | 'background_replace' | 'logo_replace' | 'model_replace';
 
 export const resolveShellRetouchMode = (input: ShellGenerateInput): ShellRetouchMode => {
   const value = String(input.subFeature || input.params.mode || '').trim();
@@ -1441,6 +1548,7 @@ export const resolveShellRetouchMode = (input: ShellGenerateInput): ShellRetouch
   if (input.module === AppModule.EVERYTHING_REPLACE && isProductRestoreAlias) {
     throw new Error('产品还原仅支持图片升级，请切换到图片升级后重试。');
   }
+  if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'model_replace' || value.includes('模特'))) return 'model_replace';
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'product_replace' || value.includes('产品'))) return 'product_replace';
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'background_replace' || value.includes('背景'))) return 'background_replace';
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'logo_replace' || value.toLowerCase().includes('logo'))) return 'logo_replace';
@@ -2616,7 +2724,7 @@ const toProductReplaceResultItem = async (
   resultConfig: ModuleConfig = { ...config, aspectRatio, resolutionMode: 'original', targetWidth: 0, targetHeight: 0 },
 ): Promise<ShellWorkflowImageResult> => {
   if (generation.status !== 'success' || !generation.imageUrl) {
-    if (generation.taskId) {
+    if (generation.taskId || generation.status === 'interrupted') {
       return {
         imageUrl: '',
         prompt,
@@ -2625,10 +2733,10 @@ const toProductReplaceResultItem = async (
         model: getImageResultModelLabel(config),
         aspectRatio,
         sourceUrl,
-        status: generation.status === 'generating' ? 'generating' : 'error',
+        status: generation.status === 'generating' ? 'generating' : generation.status === 'interrupted' ? 'interrupted' : 'error',
         error: generation.message || `第 ${batchIndex}/${batchCount} 张${taskLabel}失败`,
         message: generation.message,
-        errorCode: generation.errorCode,
+        errorCode: generation.status === 'interrupted' ? 'INTERRUPTED' : generation.errorCode,
         batchIndex,
       };
     }
@@ -2653,6 +2761,210 @@ const toProductReplaceResultItem = async (
     batchIndex,
   };
 };
+
+type ModelReplaceWorkflow = (
+  input: ShellGenerateInput,
+  config: ModuleConfig,
+  apiConfig: GlobalApiConfig,
+  onItemCompleted?: (item: ShellWorkflowImageResult, index: number, total: number) => void,
+) => Promise<{ results: ShellWorkflowImageResult[]; creditsConsumed?: number }>;
+
+type ModelReplaceWorkflowDependencies = {
+  collectRequiredMaterialUrls: typeof collectRequiredMaterialUrls;
+  assertModelReplaceMaterialCounts: typeof assertModelReplaceMaterialCounts;
+  getImageModelCapabilities: typeof getImageModelCapabilities;
+  normalizeModelReplaceRawUserPrompt: typeof normalizeModelReplaceRawUserPrompt;
+  resolveProductReplaceReferenceAspectRatio: typeof resolveProductReplaceReferenceAspectRatio;
+  buildModelReplacePrompt: (options: {
+    identityCount: number;
+    replacementScope: string;
+    userPrompt: string;
+    referenceAnalysis?: ModelReplaceReferenceAnalysis;
+    aspectRatio: AspectRatio;
+    batchIndex: number;
+    batchCount: number;
+  }) => string;
+  processWithKieAi: typeof processWithKieAi;
+  toProductReplaceResultItem: typeof toProductReplaceResultItem;
+  getImageResultModelLabel: typeof getImageResultModelLabel;
+};
+
+type ModelReplaceWorkflowFactory = (dependencies: ModelReplaceWorkflowDependencies) => ModelReplaceWorkflow;
+
+const createModelReplaceWorkflow: ModelReplaceWorkflowFactory = ({
+  collectRequiredMaterialUrls,
+  assertModelReplaceMaterialCounts,
+  getImageModelCapabilities,
+  normalizeModelReplaceRawUserPrompt,
+  resolveProductReplaceReferenceAspectRatio,
+  buildModelReplacePrompt,
+  processWithKieAi,
+  toProductReplaceResultItem,
+  getImageResultModelLabel,
+}) => async (input, config, apiConfig, onItemCompleted) => {
+  const publicBaseUrl = input.publicBaseUrl || '';
+  const isLibraryIdentity = input.identitySource === 'library';
+  const virtualModelSnapshot = input.virtualModelSnapshot;
+  const identityMaterials = input.materials.model || [];
+  const referenceMaterials = input.materials.styleRef || [];
+  const identityUrls = isLibraryIdentity
+    ? []
+    : collectRequiredMaterialUrls(identityMaterials, publicBaseUrl, '人物身份图');
+  const referenceUrls = collectRequiredMaterialUrls(referenceMaterials, publicBaseUrl, '待替换参考图');
+  if (isLibraryIdentity) {
+    if (!virtualModelSnapshot || virtualModelSnapshot.identitySource !== 'library') {
+      throw Object.assign(new Error('Virtual model library snapshot is required.'), { code: 'MODEL_SNAPSHOT_REQUIRED' });
+    }
+    if (!virtualModelSnapshot.virtualModelId || !virtualModelSnapshot.virtualModelVersionId) {
+      throw Object.assign(new Error('Virtual model identity assets are incomplete.'), { code: 'MODEL_ASSET_INCOMPLETE' });
+    }
+    assertModelReplaceMaterialCounts(1, referenceUrls.length);
+  } else {
+    assertModelReplaceMaterialCounts(identityUrls.length, referenceUrls.length);
+  }
+
+  const maxInputImages = getImageModelCapabilities(config.model).maxInputImages;
+  const libraryIdentityCount = [3, 4, 5].includes(virtualModelSnapshot?.selectedAssetIds?.length || 0)
+    ? virtualModelSnapshot.selectedAssetIds.length
+    : 3;
+  const requiredInputImages = (isLibraryIdentity ? libraryIdentityCount : identityUrls.length) + 1;
+  if (requiredInputImages > maxInputImages) {
+    throw new Error(`当前模型最多支持 ${maxInputImages} 张输入图片；本次每个任务需要 ${requiredInputImages} 张。请减少身份补充图或更换模型。`);
+  }
+
+  const replacementScope = 'identity_only';
+  const rawUserPrompt = normalizeModelReplaceRawUserPrompt(input.prompt);
+  const total = referenceUrls.length;
+  const results = await Promise.all(referenceUrls.map(async (referenceUrl, referenceIndex) => {
+    const referenceMaterial = referenceMaterials[referenceIndex];
+    const currentBatchIndex = referenceIndex + 1;
+    const referenceAnalysis = input.preflight?.referenceAnalysis?.find((analysis) => analysis.index === currentBatchIndex);
+    const generationIdentityUrls = isLibraryIdentity
+      ? []
+      : identityUrls;
+    let aspectRatio = config.aspectRatio;
+    let prompt = input.prompt.trim();
+    let item;
+
+    try {
+      prompt = buildModelReplacePrompt({
+        identityCount: isLibraryIdentity ? libraryIdentityCount : generationIdentityUrls.length,
+        replacementScope,
+        userPrompt: rawUserPrompt,
+        referenceAnalysis,
+        aspectRatio,
+        batchIndex: currentBatchIndex,
+        batchCount: total,
+      });
+      if (input.signal.aborted) throw new Error('任务已取消');
+
+      aspectRatio = await resolveProductReplaceReferenceAspectRatio(referenceMaterial, config, publicBaseUrl, input.signal);
+      if (input.signal.aborted) throw new Error('INTERRUPTED');
+      prompt = buildModelReplacePrompt({
+        identityCount: isLibraryIdentity ? libraryIdentityCount : generationIdentityUrls.length,
+        replacementScope,
+        userPrompt: rawUserPrompt,
+        referenceAnalysis,
+        aspectRatio,
+        batchIndex: currentBatchIndex,
+        batchCount: total,
+      });
+      const generation = await processWithKieAi(
+        [...generationIdentityUrls, referenceUrl],
+        apiConfig,
+        { ...config, aspectRatio, targetLanguage: 'zh', removeWatermark: true, resolutionMode: 'original', targetWidth: 0, targetHeight: 0 },
+        aspectRatio === 'auto',
+        input.signal,
+        prompt,
+        false,
+        undefined,
+        'main',
+        {
+          ...(input.taskMetadata || {}),
+          subFeature: 'model_replace',
+          replacementScope,
+          identityImageCount: isLibraryIdentity ? libraryIdentityCount : generationIdentityUrls.length,
+          modelReplaceRawUserPrompt: rawUserPrompt,
+          ...(isLibraryIdentity ? {
+            identitySource: 'library',
+            virtualModelId: virtualModelSnapshot?.virtualModelId,
+            virtualModelVersionId: virtualModelSnapshot?.virtualModelVersionId,
+            modelName: virtualModelSnapshot?.modelName,
+            modelCode: virtualModelSnapshot?.modelCode,
+            versionNumber: virtualModelSnapshot?.versionNumber,
+            allowHistoricalPublishedVersion: virtualModelSnapshot?.allowHistoricalPublishedVersion === true,
+            publishedAt: virtualModelSnapshot?.publishedAt,
+            selectedAssetIds: virtualModelSnapshot?.selectedAssetIds,
+            referenceAnalysis: referenceAnalysis || null,
+          } : {}),
+          preserveInputImageOrder: true,
+          skipPromptCleanupSuffix: true,
+          batchIndex: currentBatchIndex,
+          batchCount: total,
+          referenceIndex: currentBatchIndex,
+          referenceCount: total,
+        },
+        input.onJobCreated,
+      );
+      const converted = await toProductReplaceResultItem(
+        generation, prompt, config, aspectRatio, currentBatchIndex, total, referenceUrl, input.signal,
+        '模特替换', { ...config, aspectRatio, resolutionMode: 'original', targetWidth: 0, targetHeight: 0 },
+      );
+      item = {
+        ...converted,
+        fileName: referenceMaterial.fileName,
+        sourceUrl: referenceUrl,
+        ...(generation.virtualModelSnapshot ? { virtualModelSnapshot: generation.virtualModelSnapshot } : {}),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '模特替换失败';
+      const providerErrorCode = error && typeof error === 'object' && 'code' in error
+        ? String(error.code || '')
+        : '';
+      const interrupted = input.signal.aborted
+        || providerErrorCode.toUpperCase() === 'INTERRUPTED'
+        || message.toUpperCase() === 'INTERRUPTED';
+      const errorCode = interrupted ? 'INTERRUPTED' : (providerErrorCode || 'model_replace_failed');
+      item = {
+        imageUrl: '',
+        prompt,
+        model: getImageResultModelLabel(config),
+        aspectRatio,
+        fileName: referenceMaterial?.fileName || `待替换参考图 ${currentBatchIndex}`,
+        sourceUrl: referenceUrl,
+        status: interrupted ? 'interrupted' : 'error',
+        error: message,
+        message,
+        errorCode,
+        batchIndex: currentBatchIndex,
+      };
+    }
+
+    try {
+      onItemCompleted?.(item, currentBatchIndex, total);
+    } catch {
+      // A consumer callback must not discard other independently generated results.
+    }
+    return item;
+  }));
+
+  return {
+    results,
+    creditsConsumed: results.reduce((sum, item) => sum + (Number(item.creditsConsumed) || 0), 0) || undefined,
+  };
+};
+
+const runModelReplaceWorkflow: ModelReplaceWorkflow = createModelReplaceWorkflow({
+  collectRequiredMaterialUrls,
+  assertModelReplaceMaterialCounts,
+  getImageModelCapabilities,
+  normalizeModelReplaceRawUserPrompt,
+  resolveProductReplaceReferenceAspectRatio,
+  buildModelReplacePrompt,
+  processWithKieAi,
+  toProductReplaceResultItem,
+  getImageResultModelLabel,
+});
 
 const hasPendingGenerationIdentity = (generation: KieAiResult) => (
   generation.status !== 'success'
@@ -2820,6 +3132,9 @@ export const runShellRetouchWorkflow = async (
       onAnalysisCompleted: input.onProductRestoreAnalysisCompleted,
       onItemChanged: (item, index) => onItemCompleted?.(item, index, targetCount),
     }, productRestoreDeps);
+  }
+  if (mode === 'model_replace') {
+    return runModelReplaceWorkflow(input, config, apiConfig, onItemCompleted);
   }
   if (mode === 'product_replace') {
     return runProductReplaceWorkflow(input, config, apiConfig, onItemCompleted);

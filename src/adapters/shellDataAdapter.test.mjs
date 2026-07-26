@@ -7667,3 +7667,135 @@ test('shell data adapter marks succeeded translation edits without an image url 
   assert.equal(version?.pendingProtectedSourceUrl, undefined);
   assert.deepEqual(snapshot.tasks, []);
 });
+
+const buildModelReplaceRecoveryJob = ({
+  batchIndex = 1,
+  status = 'failed',
+  result = null,
+  errorMessage = 'generation failed',
+  projectName = '模特替换历史批次',
+  payload = {},
+} = {}) => ({
+  id: `model-replace-recovery-job-${batchIndex}`,
+  module: 'everything_replace',
+  taskType: 'kie_image',
+  provider: 'kie',
+  status,
+  providerTaskId: `model-replace-provider-${batchIndex}`,
+  payload: {
+    shellProjectId: 'model-replace-recovery-project',
+    shellProjectName: projectName,
+    subFeature: 'model_replace',
+    prompt: `第${batchIndex}张模特替换`,
+    modelReplaceRawUserPrompt: '保留参考图中的手提包',
+    imageUrls: [
+      'https://assets.example/identity-1.png',
+      'https://assets.example/identity-2.png',
+      `https://assets.example/reference-${batchIndex}.png`,
+    ],
+    identityImageCount: 2,
+    batchIndex,
+    batchCount: 2,
+    replacementScope: 'identity_only',
+    model: 'gpt-image-2',
+    ratio: '4:5',
+    quality: 'high',
+    ...payload,
+  },
+  result,
+  errorMessage,
+  createdAt: 1784500000000 + batchIndex,
+  updatedAt: 1784500001000 + batchIndex,
+});
+
+test('shell data adapter reconstructs ordered upload identity context for job-only model replacement retry', () => {
+  const second = buildModelReplaceRecoveryJob({ batchIndex: 2 });
+  const first = buildModelReplaceRecoveryJob({
+    batchIndex: 1,
+    status: 'succeeded',
+    result: { imageUrl: '/first.png' },
+  });
+
+  const project = buildShellDataSnapshot({}, [second, first]).projects[0];
+
+  assert.equal(project?.name, '模特替换历史批次');
+  assert.deepEqual(project?.results.map((item) => item.sourceUrl), [
+    'https://assets.example/reference-1.png',
+    'https://assets.example/reference-2.png',
+  ]);
+  assert.deepEqual(project?.generationContext, {
+    prompt: '保留参考图中的手提包',
+    params: {
+      replacementScope: 'identity_only',
+      model: 'gpt-image-2',
+      ratio: '4:5',
+      quality: 'high',
+    },
+    materials: {
+      model: [
+        { id: 'model-replace-identity-1', type: 'model', url: 'https://assets.example/identity-1.png', remoteUrl: 'https://assets.example/identity-1.png', fileName: 'identity-1' },
+        { id: 'model-replace-identity-2', type: 'model', url: 'https://assets.example/identity-2.png', remoteUrl: 'https://assets.example/identity-2.png', fileName: 'identity-2' },
+      ],
+      styleRef: [
+        { id: 'model-replace-reference-1', type: 'styleRef', url: 'https://assets.example/reference-1.png', remoteUrl: 'https://assets.example/reference-1.png', fileName: 'reference-1' },
+        { id: 'model-replace-reference-2', type: 'styleRef', url: 'https://assets.example/reference-2.png', remoteUrl: 'https://assets.example/reference-2.png', fileName: 'reference-2' },
+      ],
+    },
+  });
+});
+
+test('shell data adapter reconstructs a URL-free library snapshot from job payload', () => {
+  const job = buildModelReplaceRecoveryJob({
+    payload: {
+      identitySource: 'library',
+      identityImageCount: 0,
+      imageUrls: ['https://assets.example/reference-1.png'],
+      virtualModelId: 'model-1',
+      virtualModelVersionId: 'version-3',
+      modelName: 'Summer model',
+      modelCode: 'SUMMER-03',
+      versionNumber: 3,
+      publishedAt: 123,
+      selectedAssetIds: ['asset-1', 'asset-2', 'asset-3', 'asset-4'],
+      resolverUrl: 'https://resolver.example/private',
+    },
+  });
+
+  const project = buildShellDataSnapshot({}, [job]).projects[0];
+
+  assert.deepEqual(project?.generationContext?.virtualModelSnapshot, {
+    identitySource: 'library',
+    virtualModelId: 'model-1',
+    virtualModelVersionId: 'version-3',
+    modelName: 'Summer model',
+    modelCode: 'SUMMER-03',
+    versionNumber: 3,
+    publishedAt: 123,
+    selectedAssetIds: ['asset-1', 'asset-2', 'asset-3', 'asset-4'],
+  });
+  assert.equal(project?.generationContext?.materials.model, undefined);
+  assert.equal(project?.results[0]?.virtualModelSnapshot?.modelName, 'Summer model');
+  assert.equal(JSON.stringify(project).includes('resolver.example'), false);
+});
+
+test('shell data adapter hides an active orphan model replacement job until its project has been persisted', () => {
+  const job = buildModelReplaceRecoveryJob({ status: 'running', projectName: '' });
+
+  const snapshot = buildShellDataSnapshot({}, [job]);
+
+  assert.deepEqual(snapshot.projects, []);
+  assert.deepEqual(snapshot.tasks, []);
+});
+
+test('shell data adapter never restores a compiled provider prompt as raw model replacement input', () => {
+  const job = buildModelReplaceRecoveryJob({
+    payload: {
+      modelReplaceRawUserPrompt: '',
+      prompt: ['R Role', 'T Task', 'C Constraint', 'F Format', 'E Example'].join('\n'),
+    },
+  });
+
+  const project = buildShellDataSnapshot({}, [job]).projects[0];
+
+  assert.equal(project?.generationContext?.prompt, '');
+});

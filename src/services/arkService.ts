@@ -8,6 +8,7 @@ import { normalizeExactAspectRatio, resolveNearestSupportedAspectRatio } from ".
 import { buildRetouchAnalysisFallback, shouldUseRetouchAnalysisFallback } from "./retouchAnalysisFallback.mjs";
 import { buildProductRestoreAnalysisPrompt, parseProductRestoreAnalysis } from "../modules/Retouch/productRestoreContract.mjs";
 import { normalizeKnownProductRestoreCredits } from "../utils/productRestoreAnalysisCredits";
+import { assertModelReplaceMaterialCounts, parseModelReplacePreflightContent } from "../utils/modelReplacePreflight.mjs";
 
 const estimatePromptTokens = (items: Array<{ type: string; text?: string }>) =>
   items.reduce((sum, item) => sum + Math.ceil((item.text || '').length / 4), 0);
@@ -638,6 +639,289 @@ const requestAnalysisResponse = async (
   signal?: AbortSignal,
   onJobCreated?: AnalysisJobCreatedCallback
 ) => (await requestAnalysisResponseDetailed(inputContent, apiConfig, signal, onJobCreated)).content;
+
+type ModelReplacePreflightRole = 'identity' | 'reference';
+type ModelReplacePreflightCode =
+  | 'PERSON_COUNT_INVALID'
+  | 'IDENTITY_MISMATCH'
+  | 'FACE_NOT_USABLE'
+  | 'REFERENCE_PERSON_TOO_SMALL'
+  | 'FULL_REPLACE_SOURCE_INCOMPLETE';
+type ModelReplacePreflightIssue = {
+  role: ModelReplacePreflightRole;
+  index: number;
+  code: ModelReplacePreflightCode;
+};
+type ModelReplaceParsedPreflight = {
+  passed: boolean;
+  issues: ModelReplacePreflightIssue[];
+  referenceAnalysis?: Array<{
+    index: number;
+    framing: 'portrait' | 'half_body' | 'full_body' | 'unknown';
+    faceDirection: 'front' | 'left' | 'right' | 'profile' | 'unknown';
+    headPitch: 'up' | 'level' | 'down' | 'unknown';
+    occlusion: 'low' | 'medium' | 'high' | 'unknown';
+    exposedSkinRegions: Array<'face' | 'ears' | 'neck' | 'shoulders' | 'chest' | 'arms' | 'hands' | 'midriff' | 'legs' | 'feet'>;
+  }>;
+};
+type ModelReplaceMaterialsInput = {
+  identityUrls: string[];
+  referenceUrls: string[];
+  skipIdentityValidation?: boolean;
+  replacementScope: 'identity_only' | 'full_person';
+  apiConfig: GlobalApiConfig;
+  signal?: AbortSignal;
+  onJobCreated?: AnalysisJobCreatedCallback;
+  jobMetadata?: Record<string, unknown>;
+};
+type ModelReplaceMaterialsResult = {
+  passed: boolean;
+  issues: ModelReplacePreflightIssue[];
+  referenceAnalysis?: ModelReplaceParsedPreflight['referenceAnalysis'];
+  creditsConsumed?: number;
+  taskIds: string[];
+};
+type ModelReplaceAnalysisRequest = (
+  inputContent: Array<{ type: 'text' | 'image_url'; text?: string; image_url?: { url: string } }>,
+  apiConfig: GlobalApiConfig,
+  signal?: AbortSignal,
+  onJobCreated?: AnalysisJobCreatedCallback,
+  jobMetadata?: Record<string, unknown>,
+) => Promise<{ content: string; creditsConsumed?: number; taskId?: string }>;
+type ModelReplacePreflightParser = (
+  content: string,
+  options?: { requireCompleteReferenceAnalysis?: boolean },
+) => ModelReplaceParsedPreflight;
+type ModelReplaceMaterialCountGuard = (identityCount: number, referenceCount: number) => void;
+type ModelReplaceMaterialsAnalyzer = (input: ModelReplaceMaterialsInput) => Promise<ModelReplaceMaterialsResult>;
+type ModelReplaceMaterialsAnalyzerDependencies = {
+  requestDetailed: ModelReplaceAnalysisRequest;
+  parseContent: ModelReplacePreflightParser;
+  assertCounts: ModelReplaceMaterialCountGuard;
+};
+type ModelReplaceMaterialsAnalyzerFactory = (
+  dependencies: ModelReplaceMaterialsAnalyzerDependencies,
+) => ModelReplaceMaterialsAnalyzer;
+
+const assertAnalysisNotAborted = (signal) => {
+  if (signal?.aborted) throw new Error('INTERRUPTED');
+};
+
+const MODEL_REPLACE_REFERENCE_CHUNK_SIZE = 8;
+
+const MODEL_REPLACE_PREFLIGHT_FORMAT = `F Format 格式
+只输出一个 JSON 对象，不输出 Markdown 或解释：
+{"passed": boolean, "issues": [{"role":"identity|reference","index":1,"code":"PERSON_COUNT_INVALID|IDENTITY_MISMATCH|FACE_NOT_USABLE|REFERENCE_PERSON_TOO_SMALL|FULL_REPLACE_SOURCE_INCOMPLETE"}], "referenceAnalysis"?: [{"index":1,"framing":"portrait|half_body|full_body|unknown","faceDirection":"front|left|right|profile|unknown","headPitch":"up|level|down|unknown","occlusion":"low|medium|high|unknown","exposedSkinRegions":["face|ears|neck|shoulders|chest|arms|hands|midriff|legs|feet"]}]}
+图片索引从 1 开始，并使用整批素材中的原始全局索引。身份图检查没有问题时输出 {"passed":true,"issues":[]}；参考图检查即使没有问题也必须逐张输出完整 referenceAnalysis。`;
+
+const buildModelReplaceIdentityPreflightPrompt = (scope) => `R Role 角色
+你是人物素材质量检查器。
+T Task 任务
+检查每张 identity 图片是否恰好只有一人且面部可用，并判断图 2 及之后的人物是否与图 1 为同一人物。${scope === 'full_person' ? '同时检查主身份图是否完整清晰地展示希望沿用的身材、姿势、服装和配饰。' : ''}
+C Constraint 约束
+每张图的人数不是恰好一人时输出 PERSON_COUNT_INVALID；面部严重遮挡、过小或模糊时输出 FACE_NOT_USABLE；图 2 及之后不是图 1 的同一人物时输出 IDENTITY_MISMATCH。${scope === 'full_person' ? '主身份图未完整清晰展示希望沿用的身材、姿势、服装和配饰时输出 FULL_REPLACE_SOURCE_INCOMPLETE。' : ''}
+不要输出人物姓名、人物身份描述、人脸特征向量、相似度分数、嵌入或生物识别模板。
+${MODEL_REPLACE_PREFLIGHT_FORMAT}
+E Example 示例
+{"passed":false,"issues":[{"role":"identity","index":1,"code":"FACE_NOT_USABLE"}]}`;
+
+const buildModelReplaceReferencePreflightPrompt = (startIndex) => `R Role 角色
+你是待替换参考图质量检查与轻量角度分析器。
+T Task 任务
+从参考图 ${startIndex} 开始，逐张检查是否恰好只有一人、面部可用，以及人物主体是否足够大以便可靠替换；同时只识别人物脸部方向、头部俯仰、构图范围、遮挡程度和裸露皮肤区域。
+C Constraint 约束
+每张图的人数不是恰好一人时输出 PERSON_COUNT_INVALID；面部严重遮挡、过小或模糊时输出 FACE_NOT_USABLE；人物主体过小、无法可靠替换时输出 REFERENCE_PERSON_TOO_SMALL。
+必须填写 framing、faceDirection、headPitch、occlusion 和 exposedSkinRegions。无法可靠识别的角度使用 unknown；exposedSkinRegions 只列实际可见区域，不得猜测被服装或物体遮住的皮肤。
+不要分析服装、饰品、动作、场景、光影、文案或排版细节，也不要输出这些内容的描述。
+不要识别人物姓名或身份，不要输出人物或人脸特征描述、特征向量、相似度分数、嵌入或生物识别模板。
+${MODEL_REPLACE_PREFLIGHT_FORMAT}
+E Example 示例
+{"passed":true,"issues":[],"referenceAnalysis":[{"index":${startIndex},"framing":"full_body","faceDirection":"right","headPitch":"level","occlusion":"medium","exposedSkinRegions":["face","ears","neck","arms","hands","legs"]}]}`;
+
+const buildModelReplacePreflightContent = ({ prompt, urls, role, startIndex }) => {
+  const content = [{ type: 'text', text: prompt }];
+  urls.forEach((url, offset) => {
+    const index = startIndex + offset;
+    content.push({ type: 'text', text: `[${role}:${index}]` });
+    content.push({ type: 'image_url', image_url: { url } });
+  });
+  return content;
+};
+
+const assertModelReplacePreflightResponseSpecified = (analysis) => {
+  if (analysis.passed === false && analysis.issues.length === 0) {
+    throw new Error('Model replacement preflight response is malformed: failed without issues.');
+  }
+};
+
+const mergeModelReplacePreflightAnalyses = (analyses) => {
+  analyses.forEach(assertModelReplacePreflightResponseSpecified);
+
+  const issueMap = new Map();
+  analyses.flatMap((analysis) => analysis.issues).forEach((issue) => {
+    const key = `${issue.role}:${issue.index}:${issue.code}`;
+    if (!issueMap.has(key)) issueMap.set(key, issue);
+  });
+  const issues = Array.from(issueMap.values());
+  const creditsConsumed = analyses.reduce(
+    (sum, analysis) => sum + (Number(analysis.creditsConsumed) || 0),
+    0,
+  ) || undefined;
+  const taskIds = analyses
+    .map((analysis) => String(analysis.taskId || '').trim())
+    .filter(Boolean);
+
+  const referenceAnalysis = analyses
+    .flatMap((analysis) => analysis.referenceAnalysis || [])
+    .sort((left, right) => left.index - right.index);
+  return {
+    passed: issues.length === 0,
+    issues,
+    ...(referenceAnalysis.length > 0 ? { referenceAnalysis } : {}),
+    creditsConsumed,
+    taskIds,
+  };
+};
+
+const assertModelReplacePreflightRequestProtocol = ({
+  analysis,
+  role,
+  startIndex,
+  urls,
+  allowedCodes,
+  replacementScope,
+}) => {
+  const endIndex = startIndex + urls.length - 1;
+  if (role === 'reference' && analysis.issues.length === 0) {
+    const analysisIndexes = (analysis.referenceAnalysis || []).map((item) => item.index);
+    const uniqueIndexes = new Set(analysisIndexes);
+    const hasCompleteRange = analysisIndexes.length === urls.length
+      && uniqueIndexes.size === urls.length
+      && Array.from({ length: urls.length }, (_, offset) => startIndex + offset)
+        .every((index) => uniqueIndexes.has(index));
+    if (!hasCompleteRange) {
+      throw new Error(`Structured preflight protocol error: missing complete reference analysis for ${startIndex}-${endIndex}.`);
+    }
+  }
+  analysis.issues.forEach((issue) => {
+    const invalidIdentityCodeIndex = role === 'identity' && (
+      (issue.code === 'IDENTITY_MISMATCH' && issue.index < 2)
+      || (
+        issue.code === 'FULL_REPLACE_SOURCE_INCOMPLETE'
+        && (replacementScope !== 'full_person' || issue.index !== 1)
+      )
+    );
+    if (
+      issue.role !== role
+      || issue.index < startIndex
+      || issue.index > endIndex
+      || !allowedCodes.includes(issue.code)
+      || invalidIdentityCodeIndex
+    ) {
+      throw new Error(
+        `Structured preflight protocol error: ${issue.role}:${issue.index}:${issue.code} is invalid for ${role}:${startIndex}-${endIndex}.`,
+      );
+    }
+  });
+};
+
+const createModelReplaceMaterialsAnalyzer: ModelReplaceMaterialsAnalyzerFactory = ({ requestDetailed, parseContent, assertCounts }) => async ({
+  identityUrls,
+  referenceUrls,
+  skipIdentityValidation = false,
+  replacementScope,
+  apiConfig,
+  signal,
+  onJobCreated,
+  jobMetadata = {},
+}) => {
+  assertCounts(skipIdentityValidation ? 1 : identityUrls.length, referenceUrls.length);
+  const analyses = [];
+  const runRequest = async ({ prompt, urls, role, startIndex, allowedCodes, metadata }) => {
+    const inputContent = buildModelReplacePreflightContent({ prompt, urls, role, startIndex });
+    const analysis = await requestDetailed(
+      inputContent,
+      apiConfig,
+      signal,
+      onJobCreated,
+      metadata,
+    );
+    const parsed = parseContent(analysis.content, { requireCompleteReferenceAnalysis: role === 'reference' });
+    assertModelReplacePreflightResponseSpecified(parsed);
+    assertModelReplacePreflightRequestProtocol({
+      analysis: parsed,
+      role,
+      startIndex,
+      urls,
+      allowedCodes,
+      replacementScope,
+    });
+    return {
+      ...parsed,
+      creditsConsumed: analysis.creditsConsumed,
+      taskId: analysis.taskId,
+    };
+  };
+
+  const identityAllowedCodes = [
+    'PERSON_COUNT_INVALID',
+    'FACE_NOT_USABLE',
+    'IDENTITY_MISMATCH',
+    ...(replacementScope === 'full_person' ? ['FULL_REPLACE_SOURCE_INCOMPLETE'] : []),
+  ];
+  if (!skipIdentityValidation) {
+    assertAnalysisNotAborted(signal);
+    analyses.push(await runRequest({
+      prompt: buildModelReplaceIdentityPreflightPrompt(replacementScope),
+      urls: identityUrls,
+      role: 'identity',
+      startIndex: 1,
+      allowedCodes: identityAllowedCodes,
+      metadata: {
+        ...jobMetadata,
+        taskPurpose: 'model_replace_preflight',
+        subFeature: 'model_replace',
+        preflightPart: 'identity',
+        chunkIndex: 1,
+        chunkCount: 1,
+      },
+    }));
+  }
+
+  const chunkCount = Math.ceil(referenceUrls.length / MODEL_REPLACE_REFERENCE_CHUNK_SIZE);
+  for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+    assertAnalysisNotAborted(signal);
+    const start = chunkIndex * MODEL_REPLACE_REFERENCE_CHUNK_SIZE;
+    const urls = referenceUrls.slice(start, start + MODEL_REPLACE_REFERENCE_CHUNK_SIZE);
+    analyses.push(await runRequest({
+      prompt: buildModelReplaceReferencePreflightPrompt(start + 1),
+      urls,
+      role: 'reference',
+      startIndex: start + 1,
+      allowedCodes: [
+        'PERSON_COUNT_INVALID',
+        'FACE_NOT_USABLE',
+        'REFERENCE_PERSON_TOO_SMALL',
+      ],
+      metadata: {
+        ...jobMetadata,
+        taskPurpose: 'model_replace_preflight',
+        subFeature: 'model_replace',
+        preflightPart: 'reference',
+        chunkIndex: chunkIndex + 1,
+        chunkCount,
+      },
+    }));
+  }
+
+  return mergeModelReplacePreflightAnalyses(analyses);
+};
+
+export const analyzeModelReplaceMaterials: ModelReplaceMaterialsAnalyzer = createModelReplaceMaterialsAnalyzer({
+  requestDetailed: requestAnalysisResponseDetailed,
+  parseContent: parseModelReplacePreflightContent,
+  assertCounts: assertModelReplaceMaterialCounts,
+});
 
 const PRODUCT_RESTORE_ANALYSIS_PENDING_MESSAGE = '产品还原分析已提交，结果仍在生成中。';
 

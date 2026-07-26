@@ -324,7 +324,10 @@ test('Shell regeneration routes Product Restoration through persisted-context re
     'utf8',
   );
   const specialRetryIndex = shellSource.indexOf('runShellProductRestoreSingleRetry');
-  const genericRetryIndex = shellSource.indexOf("if (project.sourceType === 'job')", specialRetryIndex);
+  const genericRetryIndex = shellSource.indexOf(
+    "if (project.sourceType === 'job' && !isModelReplaceRegeneration)",
+    specialRetryIndex,
+  );
   const analysisRecoveryIndex = shellSource.indexOf('retryPersistedProductRestoreAnalysis');
   const resumedItemIndex = shellSource.indexOf('runShellProductRestoreItem', analysisRecoveryIndex);
 

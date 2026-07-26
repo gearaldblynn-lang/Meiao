@@ -29,6 +29,7 @@ import {
 } from './shellProductRestoreCancellation.mjs';
 import { cloneProductRestoreAnalysisAttempts } from '../utils/productRestoreAnalysisCredits.ts';
 import { normalizeShellProjectScope } from '../utils/shellProjectScope.mjs';
+import { sanitizeModelReplaceGenerationContext, sanitizeVirtualModelSnapshot } from '../utils/virtualModelSnapshot.mjs';
 
 const INTERNAL_BACKEND_JOB_ID_PATTERN = /^[a-f0-9]{24}$/i;
 
@@ -87,6 +88,7 @@ type ShellResult = {
   translationGenerationCreditsConsumed?: number;
   translationRetryStage?: string;
   translationEditVersions?: TranslationEditVersion[];
+  virtualModelSnapshot?: Record<string, unknown>;
 };
 
 type ShellProject = {
@@ -142,6 +144,9 @@ type ShellProject = {
     productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
     productRestoreCancellation?: ProductRestoreCancellationMarker;
     productRestoreCancellationReset?: ProductRestoreCancellationReset;
+    identitySource?: 'upload' | 'library';
+    virtualModelSnapshot?: Record<string, unknown>;
+    preflight?: object;
   };
   sourceType?: 'persisted' | 'job';
   backendJobId?: string;
@@ -210,11 +215,14 @@ const TRANSLATION_BRANCH_KEY: Record<string, 'main' | 'detail' | 'removeText'> =
 
 const cloneShellProject = (project: ShellProject): ShellProject => {
   const scopedProject = normalizeShellProjectScope(project) as ShellProject;
-  const generationContext = scopedProject.generationContext ? {
-    ...scopedProject.generationContext,
-    params: { ...(scopedProject.generationContext.params || {}) },
+  const safeGenerationContext = scopedProject.generationContext
+    ? sanitizeModelReplaceGenerationContext(scopedProject.generationContext) as ShellProject['generationContext']
+    : undefined;
+  const generationContext = safeGenerationContext ? {
+    ...safeGenerationContext,
+    params: { ...(safeGenerationContext.params || {}) },
     materials: Object.fromEntries(
-      Object.entries(scopedProject.generationContext.materials || {}).map(([type, list]) => [
+      Object.entries(safeGenerationContext.materials || {}).map(([type, list]) => [
         type,
         (list || []).map((item) => ({ ...item })),
       ]),
@@ -247,7 +255,12 @@ const cloneShellProject = (project: ShellProject): ShellProject => {
   return {
     ...scopedProject,
     sourceType: 'persisted',
-    results: Array.isArray(scopedProject.results) ? scopedProject.results.map((result) => ({ ...result })) : [],
+    results: Array.isArray(scopedProject.results) ? scopedProject.results.map((result) => ({
+      ...result,
+      ...(result.virtualModelSnapshot
+        ? { virtualModelSnapshot: sanitizeVirtualModelSnapshot(result.virtualModelSnapshot) }
+        : {}),
+    })) : [],
     plans: Array.isArray(scopedProject.plans) ? scopedProject.plans.map((plan) => ({ ...plan })) : undefined,
     generationContext,
   };

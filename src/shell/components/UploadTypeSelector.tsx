@@ -41,7 +41,7 @@ const MODULE_MATERIALS: Record<string, MaterialType[]> = {
   one_click:   ['product', 'logo', 'styleRef'],
   translation: ['product'],
   retouch:     ['product', 'texture', 'styleRef'],
-  everything_replace: ['product', 'logo', 'styleRef'],
+  everything_replace: ['product', 'logo', 'model', 'styleRef'],
   buyer_show:  ['product', 'atmosphere', 'model'],
   video:       ['product', 'scene', 'referenceVideo', 'audio'],
   xhs_cover:   ['product', 'styleRef'],

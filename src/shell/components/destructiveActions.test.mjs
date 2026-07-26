@@ -174,8 +174,25 @@ test('generation submits use semantic locks through completion while different i
   assert.match(handleGeneratePrefix, /const beginGuardedSubmit = \(\) => !hasGuardedSubmitLock \|\| beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(handleGeneratePrefix, /const releaseGuardedSubmit = \(\) => \{/);
   assert.match(shellSource, /const currentGenerationSubmitLockKey = buildGenerationSubmissionKey\(\{/);
-  // 2026-07-07 即时卡扩展到全模块后,锚点从 EVERYTHING_REPLACE 条件改为 !== BUYER_SHOW;顺序语义不变:守卫→toast→即时卡→素材上传
-  assert.match(shellSource, /if \(!beginGuardedSubmit\(\)\) \{\s*return;\s*\}\s*addToast\('任务已提交，正在准备素材', 'info'\);[\s\S]*?const immediateProject = targetModule !== AppModuleObj\.BUYER_SHOW[\s\S]*?try \{\s*generationMaterials = await ensureMaterialRemoteUrls/);
+  // 普通生成保持“守卫→即时卡→素材上传”；模特替换必须在即时卡之前完成远程素材与语义预检，
+  // 避免预检失败仍留下空项目，同时两条路径都继续受同一语义提交锁保护。
+  const genericSubmitStart = shellSource.indexOf(
+    'if (!beginGuardedSubmit()) {',
+    shellSource.indexOf('const isModelReplaceSubmit ='),
+  );
+  const modelPreflightIndex = shellSource.indexOf('const preflight = await preflightShellModelReplace', genericSubmitStart);
+  const immediateProjectIndex = shellSource.indexOf('const immediateProject = targetModule !== AppModuleObj.BUYER_SHOW', genericSubmitStart);
+  const genericUploadIndex = shellSource.indexOf(
+    'generationMaterials = await ensureMaterialRemoteUrls(generationMaterials, targetModule);',
+    immediateProjectIndex,
+  );
+  assert.ok(genericSubmitStart >= 0);
+  assert.ok(modelPreflightIndex > genericSubmitStart && modelPreflightIndex < immediateProjectIndex);
+  assert.ok(genericUploadIndex > immediateProjectIndex);
+  assert.match(
+    shellSource.slice(genericSubmitStart, immediateProjectIndex),
+    /\} else \{\s*addToast\('任务已提交，正在准备素材', 'info'\);\s*\}/,
+  );
   assert.doesNotMatch(translationBranch.match(/onJobCreated: \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n\s*\},/)?.[0] || '', /releaseGuardedSubmit\(\);/);
   assert.doesNotMatch(oneClickBranch.match(/const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n      \};/)?.[0] || '', /releaseGuardedSubmit\(\);/);
   assert.doesNotMatch(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\);/);

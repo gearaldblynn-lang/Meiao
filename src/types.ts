@@ -12,6 +12,7 @@ export enum AppModule {
   PHOTOGRAPHY = 'photography',
   VIDEO = 'video',
   XHS_COVER = 'xhs_cover',
+  VIRTUAL_MODEL_LIBRARY = 'virtual_model_library',
   SETTINGS = 'settings',
   ACCOUNT = 'account'
 }
@@ -29,6 +30,7 @@ export const AppModuleObj = {
   PHOTOGRAPHY: AppModule.PHOTOGRAPHY,
   VIDEO: AppModule.VIDEO,
   XHS_COVER: AppModule.XHS_COVER,
+  VIRTUAL_MODEL_LIBRARY: AppModule.VIRTUAL_MODEL_LIBRARY,
   SETTINGS: AppModule.SETTINGS,
   ACCOUNT: AppModule.ACCOUNT,
 } as const;
@@ -1206,10 +1208,30 @@ export interface OneClickGenerationContext {
   prompt: string;
   params: Record<string, string>;
   materials: Record<string, OneClickMaterialSnapshot[]>;
+  identitySource?: 'upload' | 'library';
+  virtualModelSnapshot?: Record<string, unknown>;
+  preflight?: object;
   productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
   productRestore?: ProductRestoreProjectContext;
   productRestoreCancellation?: ProductRestoreCancellationMarker;
   productRestoreCancellationReset?: ProductRestoreCancellationReset;
+}
+
+export interface VirtualModelIdentitySnapshot {
+  identitySource: 'library';
+  virtualModelId: string;
+  virtualModelVersionId: string;
+  modelName?: string;
+  modelCode?: string;
+  versionNumber?: number;
+  allowHistoricalPublishedVersion?: boolean;
+  publishedAt?: number;
+  selectedAssetIds?: string[];
+}
+
+export interface ModelReplaceIdentityDraft {
+  identitySource: 'upload' | 'library';
+  librarySelection: Omit<VirtualModelIdentitySnapshot, 'identitySource'> | null;
 }
 
 export interface OneClickReferencePreset {
@@ -1425,6 +1447,7 @@ export interface KieAiResult {
   message?: string;
   errorCode?: string;
   creditsConsumed?: number;
+  virtualModelSnapshot?: Record<string, unknown>;
 }
 
 export interface ArkAnalysisResult {

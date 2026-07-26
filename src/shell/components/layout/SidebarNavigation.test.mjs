@@ -58,6 +58,21 @@ test('sidebar exposes Smart Factory to admins only during phase-5 tuning', () =>
   assert.match(app, /WITHDRAWN_CLOUD_MODULES/);
 });
 
+test('sidebar exposes Virtual Model Library to admins only', () => {
+  const source = read('src/shell/components/layout/SidebarNavigation.tsx');
+  const app = read('src/ShellMigratedApp.tsx');
+
+  const adminStart = source.indexOf('const ADMIN_ONLY: NavDef[] = [');
+  const adminBlock = source.slice(adminStart, source.indexOf('];', adminStart));
+  assert.ok(adminBlock.includes('AppModuleObj.VIRTUAL_MODEL_LIBRARY'));
+  assert.match(source, /module: AppModuleObj\.VIRTUAL_MODEL_LIBRARY[^\n]+label: '虚拟模特库'/);
+  assert.doesNotMatch(source, /label: 'VirtualModelLibrary'/);
+  assert.match(app, /const VirtualModelLibraryModule = lazy\(\(\) => import\('\.\/modules\/VirtualModelLibrary\/VirtualModelLibraryModule'\)\)/);
+  assert.match(app, /case AppModuleObj\.VIRTUAL_MODEL_LIBRARY:/);
+  assert.match(app, /AppModuleObj\.VIRTUAL_MODEL_LIBRARY/);
+  assert.match(app, /ADMIN_PREVIEW_MODULES/);
+});
+
 test('sidebar keeps AI customer service withdrawn from cloud navigation', () => {
   const source = read('src/shell/components/layout/SidebarNavigation.tsx');
   const app = read('src/ShellMigratedApp.tsx');

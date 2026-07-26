@@ -14,6 +14,7 @@ export type AppModule =
   | 'photography'
   | 'video'
   | 'xhs_cover'
+  | 'virtual_model_library'
   | 'settings'
   | 'account';
 
@@ -30,6 +31,7 @@ export const AppModuleObj = {
   PHOTOGRAPHY: 'photography' as AppModule,
   VIDEO: 'video' as AppModule,
   XHS_COVER: 'xhs_cover' as AppModule,
+  VIRTUAL_MODEL_LIBRARY: 'virtual_model_library' as AppModule,
   SETTINGS: 'settings' as AppModule,
   ACCOUNT: 'account' as AppModule,
 };

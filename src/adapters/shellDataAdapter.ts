@@ -69,6 +69,8 @@ import {
   getLatestCompletedTranslationEditVersionUrl,
   mergeTranslationEditVersions,
 } from '../modules/Translation/translationRegionEditUtils.mjs';
+import { sanitizeModelReplaceGenerationContext, sanitizeVirtualModelSnapshot } from '../utils/virtualModelSnapshot.mjs';
+import { normalizeModelReplaceRawUserPrompt } from '../utils/modelReplacePromptInput.mjs';
 
 type ShellProjectStatus = 'planning' | 'generating' | 'completed' | 'error';
 type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
@@ -109,6 +111,7 @@ export interface ShellGeneratedResult {
   creditsConsumed?: number;
   error?: string;
   errorCode?: string;
+  message?: string;
   /** 技术原文(errorMessage 人话之外的原始报错),只读透传,仅"技术详情"展示用 */
   errorDetail?: string;
   matchedAspectRatio?: string;
@@ -134,6 +137,7 @@ export interface ShellGeneratedResult {
   translationGenerationCreditsConsumed?: number;
   translationRetryStage?: TranslationRetryStage;
   translationEditVersions?: TranslationEditVersion[];
+  virtualModelSnapshot?: Record<string, unknown>;
 }
 
 export interface ShellProjectData {
@@ -183,6 +187,9 @@ export interface ShellProjectData {
     productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
     productRestoreCancellation?: ProductRestoreCancellationMarker;
     productRestoreCancellationReset?: ProductRestoreCancellationReset;
+    identitySource?: 'upload' | 'library';
+    virtualModelSnapshot?: Record<string, unknown>;
+    preflight?: object;
   };
   directGeneration?: boolean;
   storyboardProjectStatus?: VideoStoryboardProject['status'];
@@ -268,11 +275,12 @@ const cloneGenerationContext = (
   context?: ShellProjectData['generationContext'],
 ): ShellProjectData['generationContext'] => {
   if (!context) return undefined;
+  const safeContext = sanitizeModelReplaceGenerationContext(context) as NonNullable<ShellProjectData['generationContext']>;
   const cloned: NonNullable<ShellProjectData['generationContext']> = {
-    ...context,
-    params: { ...context.params },
+    ...safeContext,
+    params: { ...safeContext.params },
     materials: Object.fromEntries(
-      Object.entries(context.materials || {}).map(([type, items]) => [
+      Object.entries(safeContext.materials || {}).map(([type, items]) => [
         type,
         (items || []).map((item) => ({ ...item })),
       ]),
@@ -1470,6 +1478,9 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         ),
         translationRetryStage: String(result?.translationRetryStage ?? result?.payload?.translationRetryStage ?? '').trim() as TranslationRetryStage || undefined,
         ...(resultModule === MODULE_VALUES.TRANSLATION ? { translationEditVersions } : {}),
+        ...(result?.virtualModelSnapshot
+          ? { virtualModelSnapshot: sanitizeVirtualModelSnapshot(result.virtualModelSnapshot) }
+          : {}),
       };
       }) : [],
       taskCount: Number(project.taskCount || project.results?.length || 1),
@@ -2017,6 +2028,106 @@ const mapJobs = (
   const groupedStoryboardJobIds = new Set<string>();
   const storyboardGroups = new Map<string, InternalJob[]>();
 
+  const getEverythingReplaceBatchIndex = (job: InternalJob, fallback = 0) => {
+    const payload = job.payload || {};
+    const value = String(payload.shellPurpose || '').trim() === 'model_replace_regeneration'
+      ? payload.sourceBatchIndex
+      : payload.batchIndex;
+    return Number(value || fallback) || fallback;
+  };
+
+  const buildJobOnlyModelReplaceGenerationContext = (
+    orderedJobs: InternalJob[],
+  ): ShellProjectData['generationContext'] | undefined => {
+    const firstStructuredValue = (key: string) => orderedJobs
+      .map((job) => String((job.payload || {})[key] || '').trim())
+      .find(Boolean);
+    const referenceUrls = orderedJobs
+      .map((job) => {
+        const payload = job.payload || {};
+        const imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
+        const identityImageCount = Math.max(0, Number(payload.identityImageCount || 0) || 0);
+        return String(
+          payload.sourceUrl
+          || payload.sourcePreviewUrl
+          || imageUrls[identityImageCount]
+          || imageUrls.at(-1)
+          || '',
+        ).trim();
+      })
+      .filter((url, index, values) => Boolean(url) && values.indexOf(url) === index);
+    const params = Object.fromEntries([
+      ['replacementScope', firstStructuredValue('replacementScope')],
+      ['model', firstStructuredValue('model')],
+      ['ratio', firstStructuredValue('ratio')],
+      ['aspectRatio', firstStructuredValue('aspectRatio')],
+      ['quality', firstStructuredValue('quality')],
+    ].filter((entry) => Boolean(entry[1])));
+    const prompt = normalizeModelReplaceRawUserPrompt(
+      firstStructuredValue('modelReplaceRawUserPrompt') || firstStructuredValue('prompt'),
+    );
+    const libraryJob = orderedJobs.find((job) => {
+      const payload = job.payload || {};
+      return payload.identitySource === 'library'
+        && Boolean(sanitizeVirtualModelSnapshot({ identitySource: 'library', ...payload }));
+    });
+    if (libraryJob) {
+      const payload = libraryJob.payload || {};
+      return sanitizeModelReplaceGenerationContext({
+        prompt,
+        params,
+        materials: {
+          styleRef: referenceUrls.map((url, index) => ({
+            id: `model-replace-reference-${index + 1}`,
+            type: 'styleRef',
+            url,
+            remoteUrl: url,
+            fileName: `reference-${index + 1}`,
+          })),
+        },
+        identitySource: 'library',
+        virtualModelSnapshot: sanitizeVirtualModelSnapshot({ identitySource: 'library', ...payload }),
+      }) as ShellProjectData['generationContext'];
+    }
+
+    const structuredJob = orderedJobs.find((job) => {
+      const payload = job.payload || {};
+      const imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
+      const identityImageCount = Math.max(0, Number(payload.identityImageCount || 0) || 0);
+      return identityImageCount > 0
+        && imageUrls.slice(0, identityImageCount).every((url) => String(url || '').trim());
+    });
+    if (!structuredJob) return undefined;
+    const structuredPayload = structuredJob.payload || {};
+    const identityImageCount = Math.max(0, Number(structuredPayload.identityImageCount || 0) || 0);
+    const identityUrls = (Array.isArray(structuredPayload.imageUrls) ? structuredPayload.imageUrls : [])
+      .slice(0, identityImageCount)
+      .map((url) => String(url || '').trim())
+      .filter(Boolean);
+    if (identityUrls.length !== identityImageCount || identityUrls.length === 0) return undefined;
+
+    return {
+      prompt,
+      params,
+      materials: {
+        model: identityUrls.map((url, index) => ({
+          id: `model-replace-identity-${index + 1}`,
+          type: 'model',
+          url,
+          remoteUrl: url,
+          fileName: `identity-${index + 1}`,
+        })),
+        styleRef: referenceUrls.map((url, index) => ({
+          id: `model-replace-reference-${index + 1}`,
+          type: 'styleRef',
+          url,
+          remoteUrl: url,
+          fileName: `reference-${index + 1}`,
+        })),
+      },
+    };
+  };
+
   jobs.forEach((job) => {
     const jobId = String(job?.id || '').trim();
     if (!jobId || hiddenJobIds.has(jobId) || !isTranslationRegionEditJob(job)) return;
@@ -2296,28 +2407,50 @@ const mapJobs = (
 
 	  everythingReplaceGroups.forEach((groupJobs, shellProjectId) => {
     const sortedJobs = [...groupJobs].sort((a, b) => {
-      const aBatch = Number((a.payload as any)?.batchIndex || 0);
-      const bBatch = Number((b.payload as any)?.batchIndex || 0);
+      const aBatch = getEverythingReplaceBatchIndex(a, 0);
+      const bBatch = getEverythingReplaceBatchIndex(b, 0);
       if (aBatch > 0 && bBatch > 0 && aBatch !== bBatch) return aBatch - bBatch;
       return Number(a.createdAt || 0) - Number(b.createdAt || 0);
     });
     sortedJobs.forEach((job) => groupedEverythingReplaceJobIds.add(String(job.id || '').trim()));
     const firstJob = sortedJobs[0];
-    const createdAt = toCreatedMs(firstJob?.createdAt || firstJob?.updatedAt || Date.now());
+    const matchedProject = persistedProjects.find((project) => project.id === shellProjectId);
     const subFeature = normalizeJobSubFeature(MODULE_VALUES.EVERYTHING_REPLACE, firstJob?.taskType, firstJob?.payload || {});
+    const payloadProjectName = String(firstJob?.payload?.shellProjectName || '').trim();
+    const isActiveOrphanModelReplace = subFeature === 'model_replace'
+      && !matchedProject
+      && !payloadProjectName
+      && sortedJobs.some((job) => ['queued', 'running', 'retry_waiting'].includes(String(job.status || '')));
+    if (isActiveOrphanModelReplace) return;
+    const createdAt = toCreatedMs(matchedProject?.createdAt || firstJob?.createdAt || firstJob?.updatedAt || Date.now());
+    const subFeatureLabel = subFeature === 'model_replace'
+      ? '模特替换'
+      : MODULE_LABELS[MODULE_VALUES.EVERYTHING_REPLACE] || '万物替换';
     const results: ShellGeneratedResult[] = sortedJobs.map((job, index) => {
+      const payload = job.payload || {};
       const urls = getResultUrls(job);
       const status = taskStatusToProject(job.status);
-      const batchIndex = Number((job.payload as any)?.batchIndex || index + 1) || index + 1;
+      const batchIndex = getEverythingReplaceBatchIndex(job, index + 1);
       const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+      const imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
+      const identityImageCount = Math.max(0, Number(payload.identityImageCount || 0) || 0);
+      const sourceUrl = subFeature === 'model_replace'
+        ? String(
+            payload.sourceUrl
+            || payload.sourcePreviewUrl
+            || imageUrls[identityImageCount]
+            || imageUrls.at(-1)
+            || '',
+          ).trim()
+        : String(payload.sourceUrl || payload.sourcePreviewUrl || '').trim();
       return {
-        id: String(providerTaskId || `${job.id}-result-${batchIndex}`),
+        id: String(payload.shellResultId || providerTaskId || `${job.id}-result-${batchIndex}`),
         projectId: shellProjectId,
         imageUrl: urls[0] || '',
         mediaType: 'image' as const,
-        prompt: String(job.payload?.prompt || job.errorMessage || MODULE_LABELS[MODULE_VALUES.EVERYTHING_REPLACE] || '万物替换'),
-        model: normalizeModel(job.payload?.model || job.result?.model || job.provider),
-        aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
+        prompt: String(payload.prompt || (subFeature === 'model_replace' ? subFeatureLabel : job.errorMessage) || subFeatureLabel),
+        model: normalizeModel(payload.model || job.result?.model || job.provider),
+        aspectRatio: String(payload.aspectRatio || payload.ratio || job.result?.aspectRatio || 'auto'),
         status: (status === 'completed' && urls[0] ? 'completed' : status === 'error' ? 'error' : 'generating') as ShellGeneratedResult['status'],
         createdAt: toCreatedMs(job.createdAt || firstJob?.createdAt),
         module: MODULE_VALUES.EVERYTHING_REPLACE,
@@ -2325,9 +2458,17 @@ const mapJobs = (
         taskId: providerTaskId || undefined,
         backendJobId: String(job.id || '').trim() || undefined,
         batchIndex,
+        sourceUrl: sourceUrl || undefined,
+        sourcePreviewUrl: sourceUrl || undefined,
+        fileName: String(payload.sourceFileName || '').trim() || undefined,
         creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
         error: String(job.errorMessage || job.errorCode || '').trim() || undefined,
+        errorCode: String(job.errorCode || '').trim() || undefined,
+        message: String(job.errorMessage || '').trim() || undefined,
         errorDetail: String(job.errorDetail || '').trim() || undefined,
+        ...(payload.identitySource === 'library'
+          ? { virtualModelSnapshot: sanitizeVirtualModelSnapshot({ identitySource: 'library', ...payload }) }
+          : {}),
       };
     }).sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0));
     const completedCount = results.filter((result) => result.status === 'completed' && result.imageUrl).length;
@@ -2338,9 +2479,9 @@ const mapJobs = (
       results.length,
       1,
     );
-    const projectName = String((firstJob?.payload as any)?.shellProjectName || '').trim()
-      || MODULE_LABELS[MODULE_VALUES.EVERYTHING_REPLACE]
-      || '万物替换';
+    const projectName = payloadProjectName
+      || String(matchedProject?.name || '').trim()
+      || subFeatureLabel;
     projects.push({
       id: shellProjectId,
       name: projectName,
@@ -2355,6 +2496,9 @@ const mapJobs = (
       sourceType: 'job',
       backendJobId: String(sortedJobs.at(-1)?.id || '').trim() || undefined,
       creditsConsumed: normalizeCreditsConsumed(results.reduce((sum, result) => sum + (Number(result.creditsConsumed) || 0), 0)),
+      ...(!matchedProject && subFeature === 'model_replace'
+        ? { generationContext: buildJobOnlyModelReplaceGenerationContext(sortedJobs) }
+        : {}),
     });
     sortedJobs
       .filter((job) => ['queued', 'running', 'retry_waiting'].includes(String(job.status || '')))

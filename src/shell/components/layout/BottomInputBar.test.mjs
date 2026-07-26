@@ -579,7 +579,7 @@ test('everything replace product mode exposes replacement controls and material 
   assert.match(bottomInputBar, /exactCount: 'true'/);
 
   assert.doesNotMatch(uploadSelector, /everything_replace:\s+\['product', 'productDetail', 'styleRef'\]/);
-  assert.match(uploadSelector, /everything_replace:\s+\['product', 'logo', 'styleRef'\]/);
+  assert.match(uploadSelector, /everything_replace:\s+\['product', 'logo', 'model', 'styleRef'\]/);
   assert.match(uploadSelector, /materialActionLabels/);
   assert.match(uploadSelector, /onMaterialAction/);
   assert.match(materialPreview, /onAdjustMaterial/);
@@ -587,6 +587,22 @@ test('everything replace product mode exposes replacement controls and material 
   assert.match(imageLightbox, /bottom-8 left-1\/2/);
   assert.match(imageLightbox, /Move size=\{17\}/);
   assert.doesNotMatch(materialPreview, /详情补充/);
+});
+
+test('everything replace model mode exposes identity source and reference controls', () => {
+  const bottomInputBar = source();
+
+  assert.match(bottomInputBar, /isModelReplaceContext/);
+  assert.match(bottomInputBar, /return \['model', 'styleRef'\]/);
+  assert.match(bottomInputBar, /人物身份图/);
+  assert.match(bottomInputBar, /待替换参考图/);
+  assert.match(bottomInputBar, /临时上传/);
+  assert.match(bottomInputBar, /公共模特库/);
+  assert.match(bottomInputBar, /VirtualModelPicker/);
+  assert.match(bottomInputBar, /identityDraft/);
+  assert.match(bottomInputBar, /type === 'model'/);
+  assert.match(bottomInputBar, /开始模特替换/);
+  assert.match(bottomInputBar, /resolveEverythingReplaceBillingCount/);
 });
 
 test('everything replace background mode exposes only background replacement controls', () => {

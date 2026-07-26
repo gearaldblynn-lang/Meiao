@@ -9,6 +9,10 @@ import {
   parseProductRestoreAnalysis,
 } from '../modules/Retouch/productRestoreContract.mjs';
 import { normalizeKnownProductRestoreCredits } from '../utils/productRestoreAnalysisCredits.ts';
+import {
+  assertModelReplaceMaterialCounts,
+  parseModelReplacePreflightContent,
+} from '../utils/modelReplacePreflight.mjs';
 
 const arkServiceSource = readFileSync(new URL('./arkService.ts', import.meta.url), 'utf8');
 const skuSubModuleSource = readFileSync(new URL('../modules/OneClick/SkuSubModule.tsx', import.meta.url), 'utf8');
@@ -108,6 +112,8 @@ const loadArkServiceWithAnalysisFakes = async ({
     getSupportedAspectRatiosForModel: () => [],
     normalizeExactAspectRatio: (value) => value,
     normalizeKnownProductRestoreCredits,
+    assertModelReplaceMaterialCounts,
+    parseModelReplacePreflightContent,
     parseProductRestoreAnalysis,
     resolveNearestSupportedAspectRatio: (value) => value,
     resolvePublicAssetUrl: (value) => String(value || '').trim(),
@@ -143,6 +149,8 @@ const {
   getSupportedAspectRatiosForModel,
   normalizeExactAspectRatio,
   normalizeKnownProductRestoreCredits,
+  assertModelReplaceMaterialCounts,
+  parseModelReplacePreflightContent,
   parseProductRestoreAnalysis,
   resolveNearestSupportedAspectRatio,
   resolvePublicAssetUrl,

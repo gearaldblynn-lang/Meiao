@@ -2,7 +2,7 @@ import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, TranslationConfigSnapshot, TranslationEditRegion, TranslationEditVersion, TranslationRetryStage, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModelReplaceIdentityDraft, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, TranslationConfigSnapshot, TranslationEditRegion, TranslationEditVersion, TranslationRetryStage, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
@@ -199,6 +199,12 @@ import {
   getSubtitleRemovalRetryDecision,
   isSubtitleRemovalJobCreationUnknown,
 } from './utils/subtitleRemovalRetrySafety.mjs';
+import {
+  buildModelReplaceRetryContext,
+  runModelReplaceRetryLifecycle,
+} from './utils/modelReplaceRetry.mjs';
+import { sanitizeModelReplaceGenerationContext } from './utils/virtualModelSnapshot.mjs';
+import { formatModelReplacePreflightError } from './utils/modelReplacePreflight.mjs';
 
 type TranslationRegionCompositeInput = {
   sourceUrl?: string;
@@ -225,6 +231,7 @@ const VideoModule = lazy(() => import('./shell/modules/Video/VideoModule'));
 const XhsCoverModule = lazy(() => import('./shell/modules/XhsCover/XhsCoverModule'));
 const GlobalApiSettings = lazy(() => import('./shell/modules/Settings/GlobalApiSettings'));
 const AccountManagement = lazy(() => import('./shell/modules/Account/AccountManagement'));
+const VirtualModelLibraryModule = lazy(() => import('./modules/VirtualModelLibrary/VirtualModelLibraryModule'));
 
 const traceStartup = (label: string) => {
   if (typeof window === 'undefined' || !import.meta.env.DEV) return;
@@ -257,9 +264,11 @@ const SHELL_JOB_SYNC_INTERVAL_MS = getShellJobSyncIntervalMs(
 const WITHDRAWN_CLOUD_MODULES = new Set<AppModule>([
   AppModuleObj.AI_CUSTOMER_SERVICE,
   AppModuleObj.SMART_FACTORY,
+  AppModuleObj.VIRTUAL_MODEL_LIBRARY,
 ]);
 const ADMIN_PREVIEW_MODULES = new Set<AppModule>([
   AppModuleObj.SMART_FACTORY,
+  AppModuleObj.VIRTUAL_MODEL_LIBRARY,
 ]);
 
 const isModuleWithdrawnForUser = (module: AppModule, user?: AuthUser | null): boolean => {
@@ -318,6 +327,7 @@ export interface GeneratedResult {
   creditsConsumed?: number;
   error?: string;
   errorCode?: string;
+  message?: string;
   /** 技术原文(errorMessage 人话之外的原始报错),只读透传,仅"技术详情"展示用 */
   errorDetail?: string;
   matchedAspectRatio?: string;
@@ -357,6 +367,7 @@ export interface GeneratedResult {
   translationGenerationCreditsConsumed?: number;
   translationRetryStage?: TranslationRetryStage;
   translationEditVersions?: TranslationEditVersion[];
+  virtualModelSnapshot?: Record<string, unknown>;
 }
 
 export interface Material {
@@ -652,6 +663,32 @@ const cloneGenerationContext = (
       }
     : {}),
 });
+
+const cloneModelReplaceGenerationContext = (
+  prompt: string,
+  params: Record<string, string>,
+  materials: Record<string, Material[]>,
+  modelReplaceContext: Pick<OneClickGenerationContext, 'identitySource' | 'virtualModelSnapshot' | 'preflight'>,
+): OneClickGenerationContext => sanitizeModelReplaceGenerationContext({
+  ...cloneGenerationContext(prompt, params, materials),
+  identitySource: modelReplaceContext.identitySource,
+  ...(modelReplaceContext.virtualModelSnapshot
+    ? { virtualModelSnapshot: structuredClone(modelReplaceContext.virtualModelSnapshot) }
+    : {}),
+  ...(modelReplaceContext.preflight
+    ? { preflight: structuredClone(modelReplaceContext.preflight) }
+    : {}),
+}) as OneClickGenerationContext;
+
+const selectActiveModelReplaceMaterials = (
+  materials: Record<string, Material[]>,
+  identitySource: string,
+) => {
+  if (identitySource !== 'library') return materials;
+  const activeMaterials = { ...materials };
+  delete activeMaterials.model;
+  return activeMaterials;
+};
 
 const getProductRestoreProjectCredits = (
   generationContext: OneClickGenerationContext | undefined,
@@ -1632,6 +1669,7 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
     { id: 'product_replace', label: '产品替换' },
     { id: 'background_replace', label: '背景替换' },
     { id: 'logo_replace', label: 'logo替换' },
+    { id: 'model_replace', label: '模特替换' },
   ],
   [AppModuleObj.IMAGE_CROP]: [
     { id: 'long_slice', label: '长图切片' },
@@ -2424,6 +2462,10 @@ const AppContent: React.FC<{
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationSubmitLocks, setGenerationSubmitLocks] = useState<Record<string, boolean>>({});
   const [pendingActionKeys, setPendingActionKeys] = useState<Record<string, boolean>>({});
+  const [identityDraft, setIdentityDraft] = useState<ModelReplaceIdentityDraft>({
+    identitySource: 'upload',
+    librarySelection: null,
+  });
   const [activeSubFeatureByModule, setActiveSubFeatureByModule] = useState<Record<string, string>>(() => ({
     ...(savedShellUiState.activeSubFeatureByModule || {}),
     [initialModule]: savedShellUiState.activeSubFeatureByModule?.[initialModule] || getDefaultSubFeature(initialModule),
@@ -2446,6 +2488,7 @@ const AppContent: React.FC<{
   const subtitleRemovalSubmitLockRef = useRef(false);
   const subtitleRemovalEntryLockRef = useRef(false);
   const taskControllersRef = useRef<Record<string, AbortController>>({});
+  const modelReplacePreflightControllerRef = useRef<AbortController | null>(null);
   const translationRegionEditLockOwnersRef = useRef<Map<string, string>>(new Map());
   const translationRegionEditProtectionLocksRef = useRef<Set<string>>(new Set());
   const translationRegionEditRecoveryQueuesRef = useRef<Map<string, Promise<void>>>(new Map());
@@ -2724,16 +2767,19 @@ const AppContent: React.FC<{
     module,
     file,
     fileName,
+    signal,
   }: {
     localAssetId: string;
     module: AppModule;
     file: File;
     fileName?: string;
+    signal?: AbortSignal;
   }) => materialUploadCoordinatorRef.current.run(localAssetId, async () => {
     const uploaded = await uploadInternalAssetStream({
       module,
       file,
       fileName,
+      signal,
     });
     if (!uploaded.fileUrl) {
       throw new Error(`${fileName || '素材'} 上传失败，请重新上传后再生成。`);
@@ -2778,10 +2824,13 @@ const AppContent: React.FC<{
   const ensureMaterialRemoteUrls = useCallback(async (
     sourceMaterials: Record<string, Material[]>,
     module: AppModule,
+    signal?: AbortSignal,
   ): Promise<Record<string, Material[]>> => {
+    signal?.throwIfAborted();
     const nextEntries = await Promise.all(
       Object.entries(sourceMaterials).map(async ([type, list]) => {
         const nextList = await Promise.all((list || []).map(async (item) => {
+          signal?.throwIfAborted();
           const currentSafeUrl = resolvePublicAssetUrl(item.remoteUrl || item.url, publicBaseUrl);
           const refreshVideoAssetUrl = type === 'referenceVideo' && shouldRefreshVideoAssetUrl(currentSafeUrl, Boolean(item.localAssetId));
           const refreshExpiringMaterialUrl = type !== 'referenceVideo'
@@ -2814,7 +2863,9 @@ const AppContent: React.FC<{
             module,
             file: uploadFile,
             fileName: record.fileName || item.fileName,
+            signal,
           });
+          signal?.throwIfAborted();
           applyUploadedMaterialUrl(type, item.id, remoteUrl);
           return { ...item, remoteUrl, url: remoteUrl };
         }));
@@ -3593,6 +3644,8 @@ const AppContent: React.FC<{
     const runtimeSnapshot = pruneShellRuntimeSnapshotForDeletion(loadShellRuntimeSnapshot(userId), draftSnapshot);
     Object.values(taskControllersRef.current).forEach((controller) => controller.abort());
     taskControllersRef.current = {};
+    modelReplacePreflightControllerRef.current?.abort();
+    modelReplacePreflightControllerRef.current = null;
     productRestoreResumeProjectIdsRef.current.clear();
     deletedProductRestoreProjectIdsRef.current.clear();
     productRestoreProjectDeletionGuardsRef.current.clear();
@@ -4762,7 +4815,7 @@ const AppContent: React.FC<{
           prompt: item.prompt || storedContext.prompt,
           model: item.model || storedContext.params.model || 'gpt-image-2',
           aspectRatio: item.aspectRatio || 'auto',
-          status: item.status || (item.imageUrl ? 'completed' : 'generating'),
+          status: item.status === 'interrupted' ? 'error' : item.status || (item.imageUrl ? 'completed' : 'generating'),
           createdAt: project.createdAt,
           module: AppModuleObj.RETOUCH,
           subFeature: 'product_restore',
@@ -5790,7 +5843,7 @@ const AppContent: React.FC<{
     if (apiConfig.workspacePreferences?.playSoundAfterGeneration) {
       void primeCompletionSound();
     }
-    const generationPrompt = targetModule === AppModuleObj.TRANSLATION ? '' : promptText;
+    const generationPrompt = targetSubFeature === 'model_replace' ? '' : targetModule === AppModuleObj.TRANSLATION ? '' : promptText;
     const allowEmptySkuPrompt = targetModule === AppModuleObj.ONE_CLICK && targetSubFeature === 'sku';
     const allowEmptyRetouchPrompt = targetModule === AppModuleObj.RETOUCH;
     const allowEmptyEverythingReplacePrompt = targetModule === AppModuleObj.EVERYTHING_REPLACE && (targetSubFeature === 'product_replace' || targetSubFeature === 'background_replace' || targetSubFeature === 'logo_replace' || targetSubFeature === 'model_replace');
@@ -5843,30 +5896,100 @@ const AppContent: React.FC<{
     }
     const isModelReplaceSubmit = targetModule === AppModuleObj.EVERYTHING_REPLACE
       && targetSubFeature === 'model_replace';
-    if (isModelReplaceSubmit && generationParams.identitySource === 'library') {
-      const virtualModelId = String(generationParams.virtualModelId || '').trim();
-      const virtualModelVersionId = String(generationParams.virtualModelVersionId || '').trim();
-      if (!virtualModelId || !virtualModelVersionId) {
-        addToast('请选择公共模特后再生成', 'warning');
-        return;
-      }
-      try {
-        await validateVirtualModelLibrarySelection(
-          virtualModelId,
-          virtualModelVersionId,
-        );
-      } catch (error) {
-        addToast(
-          error instanceof Error ? error.message : '当前公共模特选择已失效，请重新选择。',
-          'error',
-        );
-        return;
-      }
+    const modelReplaceIdentitySource: 'upload' | 'library' = identityDraft.identitySource;
+    const modelReplaceVirtualModelId = String(identityDraft.librarySelection?.virtualModelId || '').trim();
+    const modelReplaceVirtualModelVersionId = String(identityDraft.librarySelection?.virtualModelVersionId || '').trim();
+    const modelReplaceLibraryContext = isModelReplaceSubmit
+      && modelReplaceIdentitySource === 'library'
+      && modelReplaceVirtualModelId
+      && modelReplaceVirtualModelVersionId
+      ? {
+          identitySource: 'library' as const,
+          virtualModelSnapshot: {
+            identitySource: 'library' as const,
+            ...(identityDraft.librarySelection || {}),
+            virtualModelId: modelReplaceVirtualModelId,
+            virtualModelVersionId: modelReplaceVirtualModelVersionId,
+          },
+        }
+      : undefined;
+    if (isModelReplaceSubmit && modelReplaceIdentitySource === 'library' && !modelReplaceLibraryContext) {
+      addToast('请选择公共模特后再生成', 'warning');
+      return;
+    }
+    if (isModelReplaceSubmit) {
+      generationMaterials = selectActiveModelReplaceMaterials(generationMaterials, modelReplaceIdentitySource);
     }
     if (!beginGuardedSubmit()) {
       return;
     }
-    addToast('任务已提交，正在准备素材', 'info');
+    let modelReplaceMaterialsPrepared = false;
+    let modelReplacePreflight: OneClickGenerationContext['preflight'];
+    if (isModelReplaceSubmit) {
+      modelReplacePreflightControllerRef.current?.abort();
+      const preflightController = new AbortController();
+      modelReplacePreflightControllerRef.current = preflightController;
+      try {
+        if (modelReplaceLibraryContext) {
+          await validateVirtualModelLibrarySelection(
+            modelReplaceLibraryContext.virtualModelSnapshot.virtualModelId,
+            modelReplaceLibraryContext.virtualModelSnapshot.virtualModelVersionId,
+          );
+        }
+        generationMaterials = await ensureMaterialRemoteUrls(
+          generationMaterials,
+          targetModule,
+          preflightController.signal,
+        );
+        if (preflightController.signal.aborted) {
+          releaseGuardedSubmit();
+          return;
+        }
+        const { preflightShellModelReplace } = await loadShellWorkflowModule();
+        const preflight = await preflightShellModelReplace({
+          module: targetModule,
+          subFeature: targetSubFeature,
+          prompt: generationPrompt,
+          params: generationParams,
+          materials: generationMaterials,
+          signal: preflightController.signal,
+          apiConfig,
+          publicBaseUrl,
+          identitySource: modelReplaceIdentitySource,
+          virtualModelSnapshot: modelReplaceLibraryContext?.virtualModelSnapshot,
+        });
+        if (!preflight.passed) {
+          const issueMessages = (preflight.issues || []).map(formatModelReplacePreflightError);
+          addToast(issueMessages.join('；') || '人物素材检查未通过，请调整素材后重试。', 'warning');
+          releaseGuardedSubmit();
+          return;
+        }
+        modelReplacePreflight = { referenceAnalysis: preflight.referenceAnalysis || [] };
+        modelReplaceMaterialsPrepared = true;
+      } catch (error) {
+        if (!preflightController.signal.aborted) {
+          const message = error instanceof Error ? error.message : '人物素材检查失败，请重试。';
+          addToast(message, 'error');
+        }
+        releaseGuardedSubmit();
+        return;
+      } finally {
+        if (modelReplacePreflightControllerRef.current === preflightController) {
+          modelReplacePreflightControllerRef.current = null;
+        }
+      }
+    } else {
+      addToast('任务已提交，正在准备素材', 'info');
+    }
+    const cloneSubmissionGenerationContext = (materials: Record<string, Material[]>) => (
+      isModelReplaceSubmit
+        ? cloneModelReplaceGenerationContext(generationPrompt, generationParams, materials, {
+            identitySource: modelReplaceIdentitySource,
+            virtualModelSnapshot: modelReplaceLibraryContext?.virtualModelSnapshot,
+            preflight: modelReplacePreflight,
+          })
+        : cloneGenerationContext(generationPrompt, generationParams, materials)
+    );
     const immediateCreatedAt = Date.now();
     const immediateTranslationCount = isTranslationSubmit ? Math.max(initialTranslationMaterials.length, 1) : batchCount;
     const immediateTranslationProjectId = isTranslationSubmit
@@ -5896,7 +6019,7 @@ const AppContent: React.FC<{
           taskCount: immediateBuyerShowImageCount,
           completedCount: 0,
           subFeature: targetSubFeature,
-          generationContext: cloneGenerationContext(generationPrompt, generationParams, generationMaterials),
+          generationContext: cloneSubmissionGenerationContext(generationMaterials),
         } satisfies Project;
       })
       : [];
@@ -5947,7 +6070,7 @@ const AppContent: React.FC<{
         taskCount: isProductRestoreSubmit ? batchCount : (isTranslationSubmit ? immediateTranslationCount : (isOneClickSubmit ? 1 : batchCount)),
         completedCount: 0,
         subFeature: targetSubFeature,
-        generationContext: cloneGenerationContext(generationPrompt, generationParams, generationMaterials),
+        generationContext: cloneSubmissionGenerationContext(generationMaterials),
       } satisfies Project)
       : null;
     const immediateTask = immediateProject || immediateBuyerShowProjects.length > 0
@@ -5977,7 +6100,9 @@ const AppContent: React.FC<{
       });
     }
     try {
-      generationMaterials = await ensureMaterialRemoteUrls(generationMaterials, targetModule);
+      if (!modelReplaceMaterialsPrepared) {
+        generationMaterials = await ensureMaterialRemoteUrls(generationMaterials, targetModule);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : '素材上传失败，请重新上传后重试。';
       logShellError('shell_generation_failed', error, {
@@ -6031,7 +6156,7 @@ const AppContent: React.FC<{
       return;
     }
     const generationContext = targetModule === AppModuleObj.ONE_CLICK || targetModule === AppModuleObj.TRANSLATION || targetModule === AppModuleObj.EVERYTHING_REPLACE || targetModule === AppModuleObj.BUYER_SHOW || isProductRestoreSubmit
-      ? cloneGenerationContext(generationPrompt, generationParams, generationMaterials)
+      ? cloneSubmissionGenerationContext(generationMaterials)
       : undefined;
 
     if (targetModule === AppModuleObj.TRANSLATION) {
@@ -6861,6 +6986,8 @@ const AppContent: React.FC<{
     const controller = new AbortController();
 	    taskControllersRef.current[taskId] = controller;
 	    if (isProductRestoreSubmit) taskControllersRef.current[projectId] = controller;
+	    const generationWasCancelled = () => controller.signal.aborted
+	      || taskControllersRef.current[taskId] !== controller;
 	    let batchResults: GeneratedResult[] = [];
 	    let pendingSyncProject: Project | null = null;
 	    let pendingSpecialTaskState: { status: 'generating'; total: number } | undefined;
@@ -6881,7 +7008,11 @@ const AppContent: React.FC<{
 	      )
 	    );
 	    const onJobCreated = (jobId: string, providerTaskId?: string) => {
-	      const normalizedJobId = String(jobId || '').trim();
+		      const normalizedJobId = String(jobId || '').trim();
+		      if (generationWasCancelled()) {
+		        if (isProductRestoreSubmit) recordProductRestoreJobCreated({ projectId, jobId: normalizedJobId });
+		        return;
+		      }
 	      if (isProductRestoreSubmit && recordProductRestoreJobCreated({
 	        projectId,
 	        jobId: normalizedJobId,
@@ -7056,6 +7187,7 @@ const AppContent: React.FC<{
 	        }
       } else if (targetModule === AppModuleObj.BUYER_SHOW || targetModule === AppModuleObj.RETOUCH || targetModule === AppModuleObj.EVERYTHING_REPLACE) {
         const onSpecialItemCompleted = (item: any, completed: number, total: number) => {
+          if (generationWasCancelled()) return;
           if (shouldStopProductRestore()) {
             recordProductRestoreJobCreated({
               projectId,
@@ -7089,6 +7221,7 @@ const AppContent: React.FC<{
             analysisJobId: item.analysisJobId,
             clientSubmissionKey: item.clientSubmissionKey,
             sourceUrl: item.sourceUrl,
+            virtualModelSnapshot: item.virtualModelSnapshot,
             fileName: item.fileName,
             error: item.error || item.message,
             logoReplaceGuarded: item.logoReplaceGuarded === true || undefined,
@@ -7225,7 +7358,7 @@ const AppContent: React.FC<{
           : await runShellRetouchWorkflow({
               module: targetModule,
               subFeature: targetSubFeature,
-              prompt: generationPrompt || (targetModule === AppModuleObj.EVERYTHING_REPLACE
+              prompt: targetSubFeature === 'model_replace' ? '' : generationPrompt || (targetModule === AppModuleObj.EVERYTHING_REPLACE
                 ? (targetSubFeature === 'background_replace' ? '背景替换' : '产品替换')
                 : '图片升级'),
               params: generationParams,
@@ -7240,6 +7373,9 @@ const AppContent: React.FC<{
               },
               onJobCreated,
               productRestoreContext,
+              identitySource: isModelReplaceSubmit ? modelReplaceIdentitySource : undefined,
+              virtualModelSnapshot: modelReplaceLibraryContext?.virtualModelSnapshot,
+              preflight: modelReplacePreflight,
               onProductRestoreAnalysisCompleted: async (context) => {
 	                if (shouldStopProductRestore()) {
 	                  recordProductRestoreJobCreated({ projectId, jobId: context.analysisJobId });
@@ -7315,6 +7451,7 @@ const AppContent: React.FC<{
               publicBaseUrl,
             }, onSpecialItemCompleted);
 
+        if (generationWasCancelled()) return;
         if (shouldStopProductRestore()) return;
 
         const specialWorkflowResults: GeneratedResult[] = sortGeneratedResultsByBatchIndex(batchResults.length > 0 ? batchResults : specialResult.results.map((item, index) => ({
@@ -7337,6 +7474,7 @@ const AppContent: React.FC<{
           analysisJobId: item.analysisJobId,
           clientSubmissionKey: item.clientSubmissionKey,
           sourceUrl: item.sourceUrl,
+          virtualModelSnapshot: item.virtualModelSnapshot,
           fileName: item.fileName,
           error: item.error || item.message,
           logoReplaceGuarded: item.logoReplaceGuarded === true || undefined,
@@ -7355,6 +7493,14 @@ const AppContent: React.FC<{
         const hasSpecialGenerating = productRestoreAnalysisPending.isPending
           || specialWorkflowResults.some((item) => item.status === 'generating');
         const hasSpecialError = specialWorkflowResults.some((item) => item.status === 'error');
+        const hasSpecialInterrupted = specialResult.results.some((item) => item.status === 'interrupted');
+        if (hasSpecialInterrupted) {
+          batchResults = specialWorkflowResults;
+          const interruptedItem = specialResult.results.find((item) => item.status === 'interrupted');
+          const interruptedError = new Error(interruptedItem?.error || '任务已中断');
+          (interruptedError as Error & { code?: string }).code = 'INTERRUPTED';
+          throw interruptedError;
+        }
         completedProject = {
           ...newProject,
           ...((productRestoreContext?.analysisJobId || productRestoreAnalysisPending.analysisJobId)
@@ -7559,12 +7705,17 @@ const AppContent: React.FC<{
         };
       }
 
+      if (generationWasCancelled()) return;
       setProjects((prev) => prev.map((p) =>
         p.id === projectId
           ? completedProject
           : p
       ));
-      const synced = await persistProjectToSharedState(completedProject);
+      const synced = await persistProjectToSharedState(completedProject, {
+        guard: () => !generationWasCancelled(),
+        signal: controller.signal,
+      });
+      if (generationWasCancelled()) return;
       if (pendingSyncProject) {
         setTasks((prev) => prev.map((t) => (
           t.id === taskId
@@ -7592,6 +7743,7 @@ const AppContent: React.FC<{
       );
       window.setTimeout(() => void hydrateShellJobs(), 800);
     } catch (error) {
+      if (generationWasCancelled()) return;
       if (bailIfFrontendResourceError(error)) return;
       if (shouldStopProductRestore()) return;
       const message = error instanceof Error ? error.message : '任务执行失败';
@@ -7718,7 +7870,13 @@ const AppContent: React.FC<{
           ? failedProject
           : p
       ));
-	      if (!isProductRestorePersistenceFailure) void persistProjectToSharedState(failedProject);
+	      if (!isProductRestorePersistenceFailure) {
+	        await persistProjectToSharedState(failedProject, {
+	          guard: () => !generationWasCancelled(),
+	          signal: controller.signal,
+	        });
+	        if (generationWasCancelled()) return;
+	      }
 	      setTasks((prev) => prev.map((t) => t.id === taskId ? {
 	        ...t,
 	        status: isProductRestorePersistenceFailure ? 'pending' : 'error',
@@ -9249,7 +9407,7 @@ const AppContent: React.FC<{
           prompt: item.prompt || storedContext.prompt,
           model: item.model || storedContext.params.model || 'gpt-image-2',
           aspectRatio: item.aspectRatio || 'auto',
-          status: item.status || (item.imageUrl ? 'completed' : 'generating'),
+          status: item.status === 'interrupted' ? 'error' : item.status || (item.imageUrl ? 'completed' : 'generating'),
           createdAt: Date.now(),
           module: AppModuleObj.RETOUCH,
           subFeature: 'product_restore',
@@ -9610,7 +9768,7 @@ const AppContent: React.FC<{
             prompt: item.prompt || result.prompt,
             model: item.model || result.model,
             aspectRatio: item.aspectRatio || result.aspectRatio,
-            status: item.status || (item.imageUrl ? 'completed' : 'generating'),
+            status: item.status === 'interrupted' ? 'error' : item.status || (item.imageUrl ? 'completed' : 'generating'),
             taskId: item.taskId,
             backendJobId: item.backendJobId,
             batchIndex: item.batchIndex || result.batchIndex,
@@ -10550,7 +10708,12 @@ const AppContent: React.FC<{
           releaseTranslationRetryScopeLock(translationRetryScopeLocksRef.current, translationRetryScopeKey);
         }
       }
-      if (project.sourceType === 'job') {
+      const result = project.results.find((item) => item.id === resultId);
+      if (!result) return;
+      const subFeature = project.subFeature || getDefaultSubFeature(project.module);
+      const isModelReplaceRegeneration = project.module === AppModuleObj.EVERYTHING_REPLACE
+        && subFeature === 'model_replace';
+      if (project.sourceType === 'job' && !isModelReplaceRegeneration) {
         await retryInternalJob(resultId);
         setProjects((prev) => prev.map((item) => item.id === projectId ? {
           ...item,
@@ -10566,8 +10729,6 @@ const AppContent: React.FC<{
         window.setTimeout(() => void hydrateShellJobs(), 800);
         return;
       }
-      const result = project.results.find((item) => item.id === resultId);
-      if (!result) return;
       if (result.mediaType === 'video' || result.videoUrl || project.module === AppModuleObj.VIDEO) {
         addToast('视频结果暂不支持单张重生成，请重新提交视频生成任务', 'info');
         return;
@@ -10576,20 +10737,32 @@ const AppContent: React.FC<{
         addToast('策划失败项需要先重新策划，不能直接重生成图片。', 'warning');
         return;
       }
-      const subFeature = project.subFeature || getDefaultSubFeature(project.module);
       const storedContext = project.generationContext;
+      const modelReplaceRetryContext = isModelReplaceRegeneration
+        ? buildModelReplaceRetryContext({
+            projectName: project.name,
+            generationContext: storedContext,
+            result,
+          }, normalizeParamsForGeneration)
+        : undefined;
       const currentScopedImageModel = getCurrentScopedImageModel(project.module, subFeature);
-      const retryParams = normalizeParamsForGeneration(project.module, subFeature, {
+      const retryParams = (modelReplaceRetryContext?.params || normalizeParamsForGeneration(project.module, subFeature, {
         ...(storedContext?.params || currentParams),
         ratio: result.aspectRatio || storedContext?.params?.ratio || currentParams.ratio,
         aspectRatio: result.aspectRatio || storedContext?.params?.aspectRatio || currentParams.aspectRatio,
         model: currentScopedImageModel || currentParams.model || storedContext?.params?.model || result.model,
-      }) as Record<string, string> & { [key: string]: string | undefined };
-      const sourceUrl = resolvePublicAssetUrl(result.sourceUrl || result.sourcePreviewUrl || '', publicBaseUrl);
-      const contextMaterials = hasMaterialInputs(storedContext?.materials as Record<string, Material[]>)
-        ? storedContext?.materials as Record<string, Material[]>
-        : {};
-      const retryMaterials = hasMaterialInputs(contextMaterials)
+      })) as Record<string, string> & { [key: string]: string | undefined };
+      const sourceUrl = resolvePublicAssetUrl(
+        modelReplaceRetryContext?.sourceUrl || result.sourceUrl || result.sourcePreviewUrl || '',
+        publicBaseUrl,
+      );
+      const contextMaterials = modelReplaceRetryContext?.materials
+        || (hasMaterialInputs(storedContext?.materials as Record<string, Material[]>)
+          ? storedContext?.materials as Record<string, Material[]>
+          : {});
+      const retryMaterials = isModelReplaceRegeneration
+        ? contextMaterials
+        : hasMaterialInputs(contextMaterials)
         ? contextMaterials
         : sourceUrl
           ? {
@@ -10608,7 +10781,88 @@ const AppContent: React.FC<{
         addToast('当前结果缺少可用于重生成的素材，请重新上传素材后提交', 'warning');
         return;
       }
-      const retryPrompt = result.prompt || storedContext?.prompt || project.name;
+      const retryPrompt = modelReplaceRetryContext?.prompt || result.prompt || storedContext?.prompt || project.name;
+      if (isModelReplaceRegeneration && modelReplaceRetryContext) {
+        const controller = new AbortController();
+        taskControllersRef.current[retryTaskId] = controller;
+        const regeneratedResultId = createRuntimeId('result-regenerated-');
+        setTasks((prev) => [{
+          id: retryTaskId,
+          projectId: project.id,
+          module: project.module,
+          type: 'image',
+          status: 'generating',
+          title: `重生成: ${project.name}`,
+          progress: 12,
+          createdAt: project.createdAt,
+          total: 1,
+          completed: 0,
+          subFeature,
+        }, ...prev]);
+        const { runShellRetouchWorkflow } = await loadShellWorkflowModule();
+        const preparedMaterials = await ensureMaterialRemoteUrls(retryMaterials, project.module, controller.signal);
+        if (controller.signal.aborted) return;
+        const finalRetryParams = {
+          ...retryParams,
+          ratio: result.aspectRatio || retryParams.ratio || retryParams.aspectRatio || 'auto',
+          aspectRatio: result.aspectRatio || retryParams.aspectRatio || retryParams.ratio || 'auto',
+          __workspacePreferences: JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences()),
+          __retryResultId: result.id,
+        };
+        const lifecycle = await runModelReplaceRetryLifecycle({
+          project,
+          sourceResult: result,
+          retryResultId: regeneratedResultId,
+          retryContext: {
+            ...modelReplaceRetryContext,
+            params: finalRetryParams,
+            materials: preparedMaterials,
+          },
+          signal: controller.signal,
+          publicBaseUrl,
+          runWorkflow: runShellRetouchWorkflow,
+          onProject: (nextProject: Project) => {
+            setProjects((prev) => prev.map((item) => item.id === project.id ? nextProject : item));
+          },
+          persistProject: (nextProject: Project) => persistProjectToSharedState(nextProject),
+          onJobCreated: (jobId: string, providerTaskId?: string) => {
+            setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+              ...task,
+              backendJobId: jobId,
+              status: 'generating',
+              progress: Math.max(task.progress || 0, providerTaskId ? 18 : 14),
+            } : task));
+          },
+          isRecoverableResult: isRecoverableShellWorkflowResult,
+        });
+        if (lifecycle.kind === 'interrupted') return;
+        if (lifecycle.kind === 'pending_persistence_error') {
+          setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+          delete taskControllersRef.current[retryTaskId];
+          addToast(lifecycle.persistenceError instanceof Error ? lifecycle.persistenceError.message : '重生成状态保存失败', 'error');
+          return;
+        }
+        if (lifecycle.kind === 'generating') {
+          if (lifecycle.persistenceError) {
+            addToast('任务已提交，但最新状态保存失败，请稍后刷新确认', 'warning');
+          }
+          addToast('重生成任务已提交云端，结果待同步', 'info');
+          window.setTimeout(() => void hydrateShellJobs(), 800);
+          return;
+        }
+        setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+        delete taskControllersRef.current[retryTaskId];
+        if (lifecycle.persistenceError) {
+          addToast('重生成结果已更新，但保存失败，请稍后重试', 'warning');
+          return;
+        }
+        if (lifecycle.kind === 'error') {
+          addToast(lifecycle.result?.error || '重新生成失败', 'error');
+          return;
+        }
+        addToast('重生成已完成', 'success');
+        return;
+      }
       const controller = new AbortController();
       taskControllersRef.current[retryTaskId] = controller;
       let latestRegeneratedProject = project;
@@ -12682,6 +12936,8 @@ const AppContent: React.FC<{
       />;
     }
     switch (activeModule) {
+      case AppModuleObj.VIRTUAL_MODEL_LIBRARY:
+        return currentUser?.role === 'admin' ? <VirtualModelLibraryModule /> : null;
       case AppModuleObj.AGENT_CENTER:
         return <AgentCenterModule
           currentUser={currentUser}
@@ -12893,7 +13149,7 @@ const AppContent: React.FC<{
             />
           )}
 
-          {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && activeModule !== AppModuleObj.AI_CUSTOMER_SERVICE && activeModule !== AppModuleObj.SMART_FACTORY && activeModule !== AppModuleObj.IMAGE_CROP && (activeModule !== AppModuleObj.VIDEO || activeSubFeature !== 'subtitle_removal') && (
+          {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && activeModule !== AppModuleObj.AI_CUSTOMER_SERVICE && activeModule !== AppModuleObj.SMART_FACTORY && activeModule !== AppModuleObj.VIRTUAL_MODEL_LIBRARY && activeModule !== AppModuleObj.IMAGE_CROP && (activeModule !== AppModuleObj.VIDEO || activeSubFeature !== 'subtitle_removal') && (
             <Suspense fallback={null}>
               <BottomInputBar
                 module={activeModule}
@@ -12925,6 +13181,8 @@ const AppContent: React.FC<{
                     ? '短视频生成未开放'
                     : ''
                 }
+                identityDraft={identityDraft}
+                onIdentityDraftChange={setIdentityDraft}
               />
             </Suspense>
           )}
