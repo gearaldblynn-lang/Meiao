@@ -43,7 +43,6 @@ const validCheckpoint = (overrides = {}) => ({
   originalAudioAssetId: 'asset-audio',
   vocalAssetId: 'asset-vocals',
   backgroundAssetId: 'asset-background',
-  subtitleRemoval: { childJobId: 'subtitle-child-1', attempt: 0, status: 'queued' },
   analysisAttempt: 0,
   ...overrides,
 });
@@ -143,6 +142,18 @@ test('no-Golden checkpoint progression omits subtitle removal while Golden requi
   assert.equal(checkpoint.stage, 'result_persisted');
   assert.equal(checkpoint.subtitleRemoval, undefined);
   assert.throws(() => normalizeVoiceoverCheckpoint(noGoldenCheckpointAt('result_persisted'), { removeText: true }), (error) => error.code === 'voiceover_checkpoint_invalid');
+});
+
+test('no-Golden options reject Golden stages and checkpoint data in normalization and merge', () => {
+  const goldenStage = { version: VOICEOVER_CHECKPOINT_VERSION, stage: 'subtitle_removal', baseVideoAssetId: 'asset-base', subtitleRemoval: validSubtitleRemoval(), analysisAttempt: 0 };
+  assert.throws(() => normalizeVoiceoverCheckpoint(goldenStage), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint({ ...noGoldenCheckpointAt('voice_separated'), subtitleRemoval: validSubtitleRemoval() }, { removeText: false }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  const prepared = normalizeVoiceoverCheckpoint(noGoldenCheckpointAt('input_prepared'));
+  assert.throws(() => mergeVoiceoverCheckpoint(prepared, { stage: 'subtitle_removal', subtitleRemoval: validSubtitleRemoval() }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  const separated = normalizeVoiceoverCheckpoint(noGoldenCheckpointAt('voice_separated'));
+  assert.throws(() => mergeVoiceoverCheckpoint(separated, { subtitleRemoval: validSubtitleRemoval() }, { removeText: false }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.equal(normalizeVoiceoverCheckpoint(goldenStage, { removeText: true }).subtitleRemoval.childJobId, 'subtitle-child-1');
+  assert.equal(mergeVoiceoverCheckpoint(normalizeVoiceoverCheckpoint(goldenStage, { removeText: true }), { stage: 'audio_extracted', originalAudioAssetId: 'asset-audio' }, { removeText: true }).subtitleRemoval.childJobId, 'subtitle-child-1');
 });
 
 test('checkpoint merging is deep and monotonic for TTS group state and durable anchors', () => {
@@ -283,7 +294,6 @@ function checkpointAt(stage, overrides = {}) {
     version: VOICEOVER_CHECKPOINT_VERSION,
     stage,
     baseVideoAssetId: 'asset-base',
-    subtitleRemoval: { childJobId: 'subtitle-child-1', attempt: 0, status: 'queued' },
     originalAudioAssetId: 'asset-audio',
     vocalAssetId: 'asset-vocals',
     backgroundAssetId: 'asset-background',
@@ -313,6 +323,10 @@ function noGoldenCheckpointAt(stage, overrides = {}) {
     ...(stage === 'result_persisted' ? { finalAssetId: 'asset-final' } : {}),
     ...overrides,
   };
+}
+
+function validSubtitleRemoval(overrides = {}) {
+  return { childJobId: 'subtitle-child-1', attempt: 0, status: 'queued', ...overrides };
 }
 
 function validTtsGroup(index, overrides = {}) {

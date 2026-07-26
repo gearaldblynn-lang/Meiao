@@ -340,6 +340,9 @@ export function normalizeVoiceoverCheckpoint(value, options = {}) {
   if (Number(value.version) !== VOICEOVER_CHECKPOINT_VERSION || !STAGE_INDEX.has(value.stage) || !isAssetId(value.baseVideoAssetId)) {
     throw buildVoiceoverError('voiceover_checkpoint_invalid', '口播翻译检查点无效');
   }
+  if (!validationOptions.removeText && (value.stage === 'subtitle_removal' || value.subtitleRemoval !== undefined)) {
+    throw buildVoiceoverError('voiceover_checkpoint_invalid', '未启用去文案时不能写入 Golden 检查点');
+  }
   const stageIndex = STAGE_INDEX.get(value.stage); const output = { version: 1, stage: value.stage, baseVideoAssetId: value.baseVideoAssetId };
   const analysisAttempt = Number(value.analysisAttempt ?? 0);
   if (!Number.isInteger(analysisAttempt) || analysisAttempt < 0 || analysisAttempt > 100) throw buildVoiceoverError('voiceover_checkpoint_invalid', '分析尝试次数无效');
