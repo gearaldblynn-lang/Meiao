@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { persistManagedRemoteJobOutput } from './jobOutputAssetPersistence.mjs';
 
 import {
   buildJobFailureErrorFields,
@@ -131,17 +132,31 @@ test('buildPublicSystemConfig exposes MaxForAI video readiness without leaking i
   assert.equal(JSON.stringify(config).includes('private-video-secret'), false);
 });
 
-test('voiceover TTS audio output persistence uses managed intermediate ownership and never returns provider URLs', () => {
-  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
-  const persistence = source.match(/const persistJobOutputAssetsIfEnabled = async[\s\S]*?const persistRuntimeRemoteAssetIfEnabled/)?.[0] || '';
+test('voiceover TTS audio output persistence hands off only managed audio after storage succeeds', async () => {
+  const providerUrl = 'https://provider.example/tts.wav';
+  const calls = [];
+  const result = await persistManagedRemoteJobOutput({
+    job: {
+      id: 'tts-child-1', userId: 'user-1', module: 'video', provider: 'kie', taskType: 'kie_tts',
+      payload: { parentJobId: 'voiceover-parent-1' },
+    },
+    result: { audioUrl: providerUrl },
+    publicBaseUrl: 'https://meiao.example.com',
+    now: () => 1_700_000_000_000,
+    persistRemoteAsset: async (options) => {
+      calls.push(options);
+      return { id: 'managed-audio-1', publicUrl: '/api/assets/file/managed-audio-1/tts.wav', mimeType: 'audio/wav' };
+    },
+  });
 
-  assert.match(persistence, /persistRemoteField\('audioUrl', 'intermediate', `\$\{job\.taskType \|\| 'result'\}\.mp3`\)/);
-  assert.match(persistence, /const parentJobId = String\(job\?\.payload\?\.parentJobId \|\| ''\)\.trim\(\)/);
-  assert.match(persistence, /jobId: isVoiceoverTts \? parentJobId : job\.id/);
-  assert.match(persistence, /expiresAt: isVoiceoverTts \? getVoiceoverIntermediateExpiresAt\(\) : undefined/);
-  assert.match(persistence, /if \(fieldName !== 'audioUrl'\) \{[\s\S]*?RemoteUrl/);
-  assert.doesNotMatch(persistence, /mimeType: fieldName === 'audioUrl'/);
-  assert.doesNotMatch(persistence, /executeProviderJob|createTask/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].remoteUrl, providerUrl);
+  assert.equal(calls[0].jobId, 'voiceover-parent-1');
+  assert.equal(calls[0].assetType, 'intermediate');
+  assert.equal(calls[0].expiresAt, 1_700_259_200_000);
+  assert.equal(result.audioUrl, '/api/assets/file/managed-audio-1/tts.wav');
+  assert.equal(result.audioUrlAssetId, 'managed-audio-1');
+  assert.equal('audioUrlRemoteUrl' in result, false);
 });
 
 test('public upload routes do not accept client supplied expiresAt', () => {

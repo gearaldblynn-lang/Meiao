@@ -120,6 +120,7 @@ import {
   resolveServerListenConfig,
 } from './processLifecycle.mjs';
 import { createAuthorizedProviderRecovery } from './jobRecoveryService.mjs';
+import { assertKieTtsParentJob, persistManagedRemoteJobOutput } from './jobOutputAssetPersistence.mjs';
 import { executeProviderJob, uploadAssetViaKieStream } from './providerGateway.mjs';
 import { resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel } from './providerAssetTransfer.mjs';
 import { resolveProviderGenerationMediaUrl } from './providerAssetTransfer.mjs';
@@ -4706,8 +4707,7 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
 
   const pool = lockedPool;
   let result = { ...(output.result || {}) };
-  const isVoiceoverTts = String(job?.taskType || '').trim() === 'kie_tts';
-  const parentJobId = String(job?.payload?.parentJobId || '').trim();
+  assertKieTtsParentJob(job);
   const imageTransform = buildImageOutputTransformFromJob(job);
   const hasInlineImageResult = /^data:image\//i.test(String(result.imageUrl || '').trim());
   if (hasInlineImageResult && !publicBaseUrl) {
@@ -4847,8 +4847,7 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
         remoteUrl: sourceUrl,
         originalName: fallbackName,
         provider: job.provider,
-        jobId: isVoiceoverTts ? parentJobId : job.id,
-        expiresAt: isVoiceoverTts ? getVoiceoverIntermediateExpiresAt() : undefined,
+        jobId: job.id,
       });
     }
     result[fieldName] = persisted.publicUrl;
@@ -4886,9 +4885,14 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
   };
 
   await persistRemoteField('imageUrl', 'result', `${job.taskType || 'result'}.png`);
-  await persistRemoteField('videoUrl', 'video', `${job.taskType || 'result'}.mp4`);
-  await persistRemoteField('audioUrl', 'intermediate', `${job.taskType || 'result'}.mp3`);
-  await persistRemoteField('fileUrl', 'result', `${job.taskType || 'result'}.bin`);
+  result = await persistManagedRemoteJobOutput({
+    job,
+    result,
+    publicBaseUrl,
+    persistRemoteAsset: (options) => persistRemoteAsset({ pool, ...options }),
+    isManagedAssetUrl,
+    getVoiceoverIntermediateExpiresAt,
+  });
   await persistRemoteArrayField('imageResultUrls', 'result', (index) => `${job.taskType || 'result'}_${index + 1}.png`);
   await persistRemoteArrayField('resultUrls', 'result', (index) => `${job.taskType || 'result'}_${index + 1}.png`);
 

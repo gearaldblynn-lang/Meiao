@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -33,6 +33,107 @@ const {
   selectAbandonedPermanentAgentResultAssets,
   collectStoredAssetIdsFromValue,
 } = assetStore;
+
+const testPersistDeps = async (prefix) => {
+  const assetDir = await mkdtemp(path.join(tmpdir(), `${prefix}-`));
+  return {
+    assetDir,
+    deps: {
+      assetDir,
+      createId: () => 'fixed-asset-id',
+      now: () => 1_700_000_000_000,
+    },
+  };
+};
+
+test('persistAssetBuffer preserves a pre-existing wx collision and removes its own file after record failure', async () => {
+  const { assetDir, deps } = await testPersistDeps('meiao-buffer-atomic');
+  const target = path.join(assetDir, 'atomic-user', 'intermediate', '1700000000000', 'fixed-asset-id.mp3');
+  try {
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, Buffer.from('existing'), { flag: 'w' });
+    await assert.rejects(
+      persistAssetBuffer({
+        publicBaseUrl: 'https://meiao.example.com', userId: 'atomic-user', module: 'video', assetType: 'intermediate',
+        originalName: 'tts.mp3', mimeType: 'audio/mpeg', fileBuffer: Buffer.from('new'), deps,
+      }),
+      (error) => error?.code === 'EEXIST',
+    );
+    assert.equal((await readFile(target)).toString(), 'existing');
+
+    await assert.rejects(
+      persistAssetBuffer({
+        pool: { query: async () => { throw new Error('row insert failed'); } },
+        publicBaseUrl: 'https://meiao.example.com', userId: 'atomic-user', module: 'video', assetType: 'intermediate',
+        originalName: 'tts.mp3', mimeType: 'audio/mpeg', fileBuffer: Buffer.from('new'),
+        deps: { ...deps, createId: () => 'created-then-failed' },
+      }),
+      /row insert failed/,
+    );
+    await assert.rejects(access(path.join(assetDir, 'atomic-user', 'intermediate', '1700000000000', 'created-then-failed.mp3')));
+  } finally {
+    await rm(assetDir, { recursive: true, force: true });
+  }
+});
+
+test('persistAssetFile preserves a pre-existing wx collision and removes its own file after record failure', async () => {
+  const { assetDir, deps } = await testPersistDeps('meiao-file-atomic');
+  const sourceDir = await mkdtemp(path.join(tmpdir(), 'meiao-file-source-'));
+  const sourcePath = path.join(sourceDir, 'tts.mp3');
+  const target = path.join(assetDir, 'atomic-user', 'intermediate', '1700000000000', 'fixed-asset-id.mp3');
+  try {
+    await writeFile(sourcePath, Buffer.from('new'));
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, Buffer.from('existing'), { flag: 'w' });
+    await assert.rejects(
+      persistAssetFile({
+        publicBaseUrl: 'https://meiao.example.com', userId: 'atomic-user', module: 'video', assetType: 'intermediate',
+        originalName: 'tts.mp3', mimeType: 'audio/mpeg', sourcePath, deps,
+      }),
+      (error) => error?.code === 'EEXIST',
+    );
+    assert.equal((await readFile(target)).toString(), 'existing');
+
+    await assert.rejects(
+      persistAssetFile({
+        pool: { query: async () => { throw new Error('row insert failed'); } },
+        publicBaseUrl: 'https://meiao.example.com', userId: 'atomic-user', module: 'video', assetType: 'intermediate',
+        originalName: 'tts.mp3', mimeType: 'audio/mpeg', sourcePath,
+        deps: { ...deps, createId: () => 'created-then-failed' },
+      }),
+      /row insert failed/,
+    );
+    await assert.rejects(access(path.join(assetDir, 'atomic-user', 'intermediate', '1700000000000', 'created-then-failed.mp3')));
+  } finally {
+    await rm(assetDir, { recursive: true, force: true });
+    await rm(sourceDir, { recursive: true, force: true });
+  }
+});
+
+test('empty buffers and files are rejected before an asset record can be created', async () => {
+  const { assetDir, deps } = await testPersistDeps('meiao-empty-asset');
+  const sourceDir = await mkdtemp(path.join(tmpdir(), 'meiao-empty-source-'));
+  const sourcePath = path.join(sourceDir, 'empty.mp3');
+  const inserts = [];
+  try {
+    await writeFile(sourcePath, Buffer.alloc(0));
+    const pool = { query: async () => { inserts.push('insert'); return [[]]; } };
+    for (const operation of [
+      () => persistAssetBuffer({ pool, publicBaseUrl: 'https://meiao.example.com', userId: 'empty-user', fileBuffer: Buffer.alloc(0), deps }),
+      () => persistAssetFile({ pool, publicBaseUrl: 'https://meiao.example.com', userId: 'empty-user', sourcePath, deps }),
+      () => assetStore.persistRemoteAsset({
+        publicBaseUrl: 'https://meiao.example.com', userId: 'empty-user', remoteUrl: 'https://provider.example/empty.mp3',
+        deps: { downloadRemoteAsset: async () => ({ fileBuffer: Buffer.alloc(0), contentType: 'audio/mpeg' }) },
+      }),
+    ]) {
+      await assert.rejects(operation(), (error) => error?.code === 'managed_asset_empty');
+    }
+    assert.deepEqual(inserts, []);
+  } finally {
+    await rm(assetDir, { recursive: true, force: true });
+    await rm(sourceDir, { recursive: true, force: true });
+  }
+});
 
 test('persistAssetFile streams a file, verifies sha256, and records explicit ttl', async () => {
   assert.equal(typeof persistAssetFile, 'function');

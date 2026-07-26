@@ -331,6 +331,25 @@ export const getStoredAssetStorageProvider = (asset) => (
   String(asset?.provider || '').trim() === 'tencent_cos' ? 'tencent_cos' : 'internal'
 );
 
+export const isExplicitManagedAssetIdKey = (key) => (
+  key === 'assetId' || (String(key || '').endsWith('AssetId') && key !== 'localAssetId')
+);
+
+export const collectExplicitManagedAssetIds = (value, bucket = new Set()) => {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectExplicitManagedAssetIds(item, bucket));
+    return bucket;
+  }
+  if (!value || typeof value !== 'object') return bucket;
+  for (const [key, child] of Object.entries(value)) {
+    if (isExplicitManagedAssetIdKey(key) && typeof child === 'string' && child.trim()) {
+      bucket.add(child.trim());
+    }
+    collectExplicitManagedAssetIds(child, bucket);
+  }
+  return bucket;
+};
+
 export const collectStoredAssetIdsFromValue = (value) => {
   const ids = new Set();
   const visit = (current) => {
@@ -351,15 +370,11 @@ export const collectStoredAssetIdsFromValue = (value) => {
       return;
     }
     if (typeof current === 'object') {
-      Object.entries(current).forEach(([key, value]) => {
-        if (/assetId$/i.test(key) && typeof value === 'string' && value.trim()) {
-          ids.add(value.trim());
-        }
-        visit(value);
-      });
+      Object.values(current).forEach(visit);
     }
   };
   visit(value);
+  collectExplicitManagedAssetIds(value, ids);
   return Array.from(ids);
 };
 
@@ -778,6 +793,20 @@ export const deleteStoredAssetFile = async (storageKey) => {
   }
 };
 
+const createManagedAssetEmptyError = () => {
+  const error = new Error('托管素材不能为空');
+  error.code = 'managed_asset_empty';
+  error.providerStage = 'asset_persist';
+  error.providerStatus = 'empty';
+  return error;
+};
+
+const getAssetBufferSize = (value) => {
+  if (Buffer.isBuffer(value)) return value.length;
+  if (value instanceof Uint8Array) return value.byteLength;
+  return 0;
+};
+
 export const persistAssetBuffer = async ({
   pool = null,
   publicBaseUrl,
@@ -793,22 +822,26 @@ export const persistAssetBuffer = async ({
   providerSourceUrl = '',
   jobId = '',
   expiresAt,
+  deps = {},
 }) => {
-  const createdAt = now();
+  const createdAt = (deps.now || now)();
   const storedBuffer = shouldOptimizeMp4({ mimeType, originalName })
     ? optimizeMp4BufferForStreaming(fileBuffer)
     : fileBuffer;
-  const id = randomBytes(12).toString('hex');
+  if (getAssetBufferSize(storedBuffer) === 0) throw createManagedAssetEmptyError();
+  const id = (deps.createId || (() => randomBytes(12).toString('hex')))();
   const safeName = sanitizeAssetName(originalName);
   const extension = path.extname(safeName);
   const relativeDir = path.join(String(userId || 'anonymous'), assetType, `${createdAt}`);
   const storageKey = path.join(relativeDir, `${id}${extension || ''}`);
-  const fullPath = path.join(ASSET_DIR, storageKey);
+  const fullPath = path.join(deps.assetDir || ASSET_DIR, storageKey);
+  let createdDestination = false;
 
-  ensureDir(path.dirname(fullPath));
-  await fs.writeFile(fullPath, storedBuffer);
-
-  const record = {
+  try {
+    ensureDir(path.dirname(fullPath));
+    await fs.writeFile(fullPath, storedBuffer, { flag: 'wx' });
+    createdDestination = true;
+    const record = {
     id,
     userId: String(userId || ''),
     module: String(module || 'system').slice(0, 60),
@@ -832,10 +865,18 @@ export const persistAssetBuffer = async ({
     lastAccessedAt: createdAt,
     expiresAt: normalizeAssetExpiresAt({ expiresAt, module, createdAt }),
     deletedAt: null,
-  };
+    };
 
-  await createAssetRecord(pool, record);
-  return record;
+    await createAssetRecord(pool, record);
+    return record;
+  } catch (error) {
+    if (createdDestination) {
+      await fs.unlink(fullPath).catch((unlinkError) => {
+        if (unlinkError?.code !== 'ENOENT') throw unlinkError;
+      });
+    }
+    throw error;
+  }
 };
 
 export const persistAssetFile = async ({
@@ -854,16 +895,18 @@ export const persistAssetFile = async ({
   jobId = '',
   expiresAt,
   expectedSha256 = '',
+  deps = {},
 }) => {
-  const createdAt = now();
-  const id = randomBytes(12).toString('hex');
+  const createdAt = (deps.now || now)();
+  const id = (deps.createId || (() => randomBytes(12).toString('hex')))();
   const safeName = sanitizeAssetName(originalName);
   const extension = path.extname(safeName);
   const relativeDir = path.join(String(userId || 'anonymous'), String(assetType || 'source'), `${createdAt}`);
   const storageKey = path.join(relativeDir, `${id}${extension || ''}`);
-  const fullPath = path.join(ASSET_DIR, storageKey);
+  const fullPath = path.join(deps.assetDir || ASSET_DIR, storageKey);
   const hash = createHash('sha256');
   let fileSize = 0;
+  let createdDestination = false;
 
   try {
     ensureDir(path.dirname(fullPath));
@@ -872,7 +915,12 @@ export const persistAssetFile = async ({
       hash.update(chunk);
       fileSize += chunk.length;
     });
-    await pipeline(source, createWriteStream(fullPath, { flags: 'wx' }));
+    const destination = createWriteStream(fullPath, { flags: 'wx' });
+    destination.once('open', () => {
+      createdDestination = true;
+    });
+    await pipeline(source, destination);
+    if (fileSize === 0) throw createManagedAssetEmptyError();
     const contentHash = hash.digest('hex');
     const normalizedExpectedHash = String(expectedSha256 || '').trim().toLowerCase();
     if (normalizedExpectedHash && contentHash !== normalizedExpectedHash) {
@@ -908,9 +956,11 @@ export const persistAssetFile = async ({
     await createAssetRecord(pool, record);
     return record;
   } catch (error) {
-    await fs.unlink(fullPath).catch((unlinkError) => {
-      if (unlinkError?.code !== 'ENOENT') throw unlinkError;
-    });
+    if (createdDestination) {
+      await fs.unlink(fullPath).catch((unlinkError) => {
+        if (unlinkError?.code !== 'ENOENT') throw unlinkError;
+      });
+    }
     throw error;
   }
 };
@@ -1170,6 +1220,7 @@ export const persistRemoteAsset = async ({
   const downloadRemoteAsset = deps.downloadRemoteAsset || fetchRemoteAssetBufferWithRetry;
   const persistAsset = deps.persistAsset || persistAssetBuffer;
   const downloaded = await downloadRemoteAsset(remoteUrl);
+  if (getAssetBufferSize(downloaded?.fileBuffer) === 0) throw createManagedAssetEmptyError();
   const contentType = mimeType || downloaded.contentType;
   return persistAsset({
     pool,
