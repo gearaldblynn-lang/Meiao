@@ -18,6 +18,7 @@ const sampleProbeJson = JSON.stringify({
     format_name: 'mov,mp4,m4a,3gp,3g2,mj2',
     duration: '5.250000',
     size: '1024000',
+    tags: { major_brand: 'isom' },
   },
   streams: [
     { codec_type: 'video', codec_name: 'hevc', width: 1080, height: 1920, avg_frame_rate: '30000/1001' },
@@ -30,6 +31,7 @@ test('parseFfprobeOutput returns authoritative video metadata', () => {
     kind: 'video',
     durationSeconds: 5.25,
     formatNames: ['mov', 'mp4', 'm4a', '3gp', '3g2', 'mj2'],
+    containerBrand: 'isom',
     videoCodec: 'hevc',
     pixelFormat: null,
     audioCodec: 'aac',

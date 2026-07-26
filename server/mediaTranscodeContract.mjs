@@ -40,6 +40,8 @@ export const MEDIA_TRANSCODE_PROFILES = Object.freeze([
   'voiceover_translation',
 ]);
 
+const VOICEOVER_MP4_BRANDS = new Set(['isom', 'iso2', 'avc1', 'mp41', 'mp42', 'dash', 'cmfc', 'cmfs']);
+
 export function normalizeMediaTranscodeProfile(value = 'seedance_reference') {
   const profile = String(value || 'seedance_reference').trim().toLowerCase();
   if (!MEDIA_TRANSCODE_PROFILES.includes(profile)) {
@@ -411,6 +413,8 @@ export function isMediaCompatibleForProfile(profile, metadata = {}) {
   }
   if (normalizedProfile === 'voiceover_translation') {
     if (metadata.kind !== 'video') return false;
+    const containerBrand = String(metadata.containerBrand || '').trim().toLowerCase();
+    if (!VOICEOVER_MP4_BRANDS.has(containerBrand) || metadata.fastStart !== true) return false;
     try {
       validateTranscodedOutput('video', metadata, normalizedProfile);
       return true;

@@ -236,6 +236,8 @@ test('compatible voiceover sources require H.264 yuv420p AAC MP4 without a durat
     width: 1080,
     height: 1920,
     hasAudio: true,
+    containerBrand: 'isom',
+    fastStart: true,
   }), true);
   assert.equal(isMediaCompatibleForProfile('voiceover_translation', {
     kind: 'video',
@@ -247,6 +249,32 @@ test('compatible voiceover sources require H.264 yuv420p AAC MP4 without a durat
     width: 1080,
     height: 1920,
     hasAudio: false,
+  }), false);
+});
+
+test('voiceover fast path requires a server-proven MP4 container and faststart layout', () => {
+  const canonical = {
+    kind: 'video',
+    durationSeconds: 1800,
+    sizeBytes: 20_000_000,
+    formatNames: ['mov', 'mp4'],
+    videoCodec: 'h264',
+    pixelFormat: 'yuv420p',
+    audioCodec: 'aac',
+    width: 1080,
+    height: 1920,
+    hasAudio: true,
+    containerBrand: 'isom',
+    fastStart: true,
+  };
+  assert.equal(isMediaCompatibleForProfile('voiceover_translation', canonical), true);
+  assert.equal(isMediaCompatibleForProfile('voiceover_translation', {
+    ...canonical,
+    containerBrand: 'qt  ',
+  }), false);
+  assert.equal(isMediaCompatibleForProfile('voiceover_translation', {
+    ...canonical,
+    fastStart: false,
   }), false);
 });
 

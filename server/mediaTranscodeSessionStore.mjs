@@ -43,6 +43,21 @@ export function createMediaTranscodeSessionStore({
   const resolvedRoot = resolve(rootDir);
   const effectiveTtlMs = positiveInteger(ttlMs, 30 * 60 * 1000);
   const effectiveMaxSessions = positiveInteger(maxSessions, 20);
+  const sessionLocks = new Map();
+
+  const withSessionLock = async (sessionId, operation) => {
+    const previous = sessionLocks.get(sessionId) || Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    sessionLocks.set(sessionId, current);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (sessionLocks.get(sessionId) === current) sessionLocks.delete(sessionId);
+    }
+  };
 
   const sessionDirectory = (sessionId) => {
     assertSessionId(sessionId);
@@ -126,13 +141,27 @@ export function createMediaTranscodeSessionStore({
     return hydrate(record);
   };
 
-  const updateOwned = async (sessionId, userId, changes) => {
+  const updateOwned = async (sessionId, userId, changes) => withSessionLock(sessionId, async () => {
     const current = await getOwned(sessionId, userId);
     const { sourcePath: _sourcePath, ...record } = current;
     const next = { ...record, ...changes, updatedAt: clock.now() };
     await writeSidecar(next);
     return hydrate(next);
-  };
+  });
+
+  const transitionOwned = async (sessionId, userId, fromStates, nextState) => withSessionLock(sessionId, async () => {
+    const current = await getOwned(sessionId, userId);
+    if (!fromStates.includes(current.state)) {
+      if (current.state === 'cancelled') {
+        throw createMediaTranscodeError('media_transcode_cancelled', '媒体转码已取消');
+      }
+      throw createMediaTranscodeError('media_session_busy', '媒体处理会话正在执行其他操作');
+    }
+    const { sourcePath: _sourcePath, ...record } = current;
+    const next = { ...record, state: nextState, updatedAt: clock.now() };
+    await writeSidecar(next);
+    return hydrate(next);
+  });
 
   return {
     async create({ userId, kind, profile = 'seedance_reference', fileName, fileBuffer, probe = null }) {
@@ -187,7 +216,35 @@ export function createMediaTranscodeSessionStore({
     },
 
     markConverting(sessionId, userId) {
-      return updateOwned(sessionId, userId, { state: 'converting' });
+      return transitionOwned(sessionId, userId, ['ready'], 'converting');
+    },
+
+    claimConversion(sessionId, userId) {
+      return transitionOwned(sessionId, userId, ['ready'], 'converting');
+    },
+
+    beginPersisting(sessionId, userId) {
+      return transitionOwned(sessionId, userId, ['converting'], 'persisting');
+    },
+
+    requestCancel(sessionId, userId) {
+      return withSessionLock(sessionId, async () => {
+        const current = await getOwned(sessionId, userId);
+        if (current.state === 'persisting') {
+          return { cancelled: false, remove: false, session: current };
+        }
+        if (current.state === 'cancelled') {
+          return { cancelled: true, remove: false, session: current };
+        }
+        const { sourcePath: _sourcePath, ...record } = current;
+        const next = { ...record, state: 'cancelled', updatedAt: clock.now() };
+        await writeSidecar(next);
+        return {
+          cancelled: true,
+          remove: current.state === 'ready' || current.state === 'probing',
+          session: hydrate(next),
+        };
+      });
     },
 
     remove,

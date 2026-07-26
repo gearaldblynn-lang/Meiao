@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { readFile } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 
 import {
   buildAudioTranscodeArgs,
@@ -46,6 +46,47 @@ function parseFrameRate(value) {
   return Number((top / bottom).toFixed(2));
 }
 
+async function inspectMp4Container(filePath) {
+  let handle;
+  try {
+    handle = await open(filePath, 'r');
+    const { size: fileSize } = await handle.stat();
+    let offset = 0;
+    let containerBrand = '';
+    let moovOffset = -1;
+    let firstMdatOffset = -1;
+    const header = Buffer.alloc(16);
+    while (offset + 8 <= fileSize) {
+      const { bytesRead } = await handle.read(header, 0, header.length, offset);
+      if (bytesRead < 8) break;
+      const smallSize = header.readUInt32BE(0);
+      const type = header.toString('latin1', 4, 8);
+      let atomSize = smallSize;
+      let headerSize = 8;
+      if (smallSize === 1) {
+        if (bytesRead < 16) break;
+        atomSize = Number(header.readBigUInt64BE(8));
+        headerSize = 16;
+      } else if (smallSize === 0) {
+        atomSize = fileSize - offset;
+      }
+      if (!Number.isSafeInteger(atomSize) || atomSize < headerSize || offset + atomSize > fileSize) break;
+      if (type === 'ftyp' && bytesRead >= 12) containerBrand = header.toString('latin1', 8, 12).trim().toLowerCase();
+      if (type === 'moov' && moovOffset < 0) moovOffset = offset;
+      if (type === 'mdat' && firstMdatOffset < 0) firstMdatOffset = offset;
+      offset += atomSize;
+    }
+    return {
+      containerBrand,
+      fastStart: Boolean(containerBrand && moovOffset >= 0 && firstMdatOffset >= 0 && moovOffset < firstMdatOffset),
+    };
+  } catch {
+    return { containerBrand: '', fastStart: false };
+  } finally {
+    await handle?.close();
+  }
+}
+
 export function parseFfprobeOutput(stdout, kind) {
   let payload;
   try {
@@ -63,6 +104,7 @@ export function parseFfprobeOutput(stdout, kind) {
     kind,
     durationSeconds: Number(format.duration || 0),
     formatNames: String(format.format_name || '').split(',').map((item) => item.trim()).filter(Boolean),
+    containerBrand: String(format?.tags?.major_brand || '').trim().toLowerCase(),
     audioCodec: audioStream?.codec_name || null,
     sizeBytes: Number(format.size || 0),
   };
@@ -183,7 +225,14 @@ export function createMediaTranscodeService({
     if (exitCode !== 0) {
       throw createMediaTranscodeError('media_probe_failed', '无法读取媒体信息', { exitCode });
     }
-    return parseFfprobeOutput(stdout, kind);
+    const metadata = parseFfprobeOutput(stdout, kind);
+    if (kind !== 'video') return metadata;
+    const container = await inspectMp4Container(filePath);
+    return {
+      ...metadata,
+      containerBrand: container.containerBrand || metadata.containerBrand,
+      fastStart: container.fastStart,
+    };
   };
 
   return {
