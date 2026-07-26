@@ -160,6 +160,27 @@ import {
   selectExpiredAssetsForCleanup,
   selectAbandonedPermanentAgentResultAssets,
 } from './assetStore.mjs';
+import {
+  createVirtualModelDraft,
+  createVirtualModelGenerationJobSnapshot,
+  createVirtualModelVersion,
+  ensureVirtualModelSchema,
+  findOwnedHistoricalVirtualModelSnapshot,
+  getPublishedVirtualModelDetail,
+  listAdminVirtualModels,
+  listPublishedVirtualModels,
+  normalizeVirtualModelLocalStore,
+  publishVirtualModelVersion,
+  replaceDraftVersionAssets,
+  resolveHistoricalVirtualModelSelectedAssets,
+  toVirtualModelPublicSummary,
+  unpublishVirtualModel,
+  updateVirtualModelDraft,
+} from './virtualModelStore.mjs';
+import {
+  handleVirtualModelDeleteApiRequest,
+  respondVirtualModelApiError,
+} from './virtualModelHttpApi.mjs';
 import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
 import {
   getManagedAssetAccessKeyFromUrl,
@@ -2354,6 +2375,9 @@ const ensureLocalStore = () => {
       chatSessions: [],
       chatMessages: [],
       agentUsageLogs: [],
+      virtualModels: [],
+      virtualModelVersions: [],
+      virtualModelAssets: [],
       appStates: {
         [admin.id]: createDefaultState(),
       },
@@ -2386,6 +2410,7 @@ const normalizeLocalStoreShape = (store, options = {}) => {
   })) : [];
   store.chatMessages = Array.isArray(store.chatMessages) ? store.chatMessages : [];
   store.agentUsageLogs = Array.isArray(store.agentUsageLogs) ? store.agentUsageLogs : [];
+  store = normalizeVirtualModelLocalStore(store);
   store.agentVersions = store.agentVersions.map((item) => {
     const allowedChatModels = sanitizeAllowedChatModels(item?.allowedChatModels, [
       item?.defaultChatModel,
@@ -3887,6 +3912,7 @@ const ensureMysqlSchema = async () => {
   await ensureJobsSchema(pool);
   await ensureTaskPlatformSchema(pool);
   await ensureAssetSchema(pool);
+  await ensureVirtualModelSchema(pool);
 
   const [rows] = await pool.query('SELECT id FROM users LIMIT 1');
   if (Array.isArray(rows) && rows.length === 0) {
@@ -4227,6 +4253,111 @@ const scrubLocalJobPayloadBeforeSubmission = async (payload, userId) => {
   return scrubbed && typeof scrubbed === 'object' ? scrubbed : {};
 };
 
+const createLibraryModelJobPayload = async ({
+  payload,
+  pool = null,
+  store = null,
+  user = null,
+}) => {
+  if (payload?.identitySource !== 'library') return payload || {};
+  const historicalSnapshot = {
+    identitySource: 'library',
+    virtualModelId: String(payload.virtualModelId || '').trim(),
+    virtualModelVersionId: String(payload.virtualModelVersionId || '').trim(),
+    publishedAt: Number(payload.publishedAt),
+    selectedAssetIds: Array.isArray(payload.selectedAssetIds)
+      ? payload.selectedAssetIds.map((assetId) => String(assetId || '').trim())
+      : [],
+  };
+  const allowHistoricalPublishedVersion = await findOwnedHistoricalVirtualModelSnapshot({
+    pool,
+    store,
+    userId: user?.id,
+    snapshot: historicalSnapshot,
+  });
+  const snapshot = await createVirtualModelGenerationJobSnapshot({
+    pool,
+    store,
+    virtualModelId: String(payload.virtualModelId || '').trim(),
+    virtualModelVersionId: String(payload.virtualModelVersionId || '').trim(),
+    referenceAnalysis: payload.referenceAnalysis || null,
+    allowHistoricalPublishedVersion,
+    publishedAt: payload.publishedAt,
+    selectedAssetIds: payload.selectedAssetIds,
+  });
+  const {
+    assets,
+    identityProfile,
+    selectedIdentityAssetIds,
+    allowHistoricalPublishedVersion: clientHistoricalFlag,
+    publishedAt,
+    selectedAssetIds,
+    ...safePayload
+  } = payload || {};
+  void assets;
+  void identityProfile;
+  void selectedIdentityAssetIds;
+  void clientHistoricalFlag;
+  void publishedAt;
+  void selectedAssetIds;
+  return { ...safePayload, ...snapshot };
+};
+
+const insertModelReplaceLibraryMetadata = (prompt, metadataBlock) => {
+  const normalizedPrompt = String(prompt || '').trim();
+  const normalizedMetadata = String(metadataBlock || '').trim();
+  if (!normalizedMetadata) return normalizedPrompt;
+  const formatMarker = '\n\nF Format 格式';
+  const formatIndex = normalizedPrompt.indexOf(formatMarker);
+  if (formatIndex < 0) return `${normalizedPrompt}\n\n${normalizedMetadata}`.trim();
+  return `${normalizedPrompt.slice(0, formatIndex)}\n\n${normalizedMetadata}${normalizedPrompt.slice(formatIndex)}`;
+};
+
+const injectLibraryModelAssetsForProvider = async (payload) => {
+  if (payload?.identitySource !== 'library') return payload;
+  const source = shouldUseMysql
+    ? { pool: await getMysqlPool() }
+    : { store: readLocalStore() };
+  const assets = await resolveHistoricalVirtualModelSelectedAssets({
+    ...source,
+    virtualModelId: payload.virtualModelId,
+    virtualModelVersionId: payload.virtualModelVersionId,
+    selectedAssetIds: payload.selectedAssetIds,
+  });
+  const identityAssetSlotLabels = {
+    front_close: '正面近景',
+    left_45_close: '左侧45度近景',
+    right_45_close: '右侧45度近景',
+    profile_close: '侧面近景',
+    three_quarter_half: '四分之三侧向半身',
+    front_half: '正面半身',
+    front_full: '正面全身',
+    three_quarter_full: '四分之三全身',
+  };
+  const identityAnchorConstraint = assets.length > 0
+    ? `【图A实际素材角度】\n${assets
+      .map((asset, index) => `图A-${index + 1}（输入图${index + 1}）：${identityAssetSlotLabels[asset.slot] || asset.slot}。`)
+      .join('\n')}`
+    : '';
+  const identityDescription = String(payload.identityDescription || '').trim();
+  const identityDescriptionConstraint = identityDescription
+    ? `身份档案补充（次于图A-1）：${JSON.stringify(identityDescription)}\n该档案只补充图A-1未清楚展示的身份特征；与图A-1冲突时一律以图A-1为准。`
+    : '';
+  const libraryMetadata = [
+    identityAnchorConstraint,
+    identityDescriptionConstraint,
+  ].filter(Boolean).join('\n\n');
+  return {
+    ...payload,
+    ...(libraryMetadata
+      ? { prompt: insertModelReplaceLibraryMetadata(payload.prompt, libraryMetadata) }
+      : {}),
+    imageUrls: [...assets.map((asset) => asset.url),
+      ...(Array.isArray(payload.imageUrls) ? payload.imageUrls : []),
+    ],
+  };
+};
+
 const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options) => {
   const taskType = String(job?.taskType || '');
   if (taskType === 'upload_asset') {
@@ -4284,8 +4415,11 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
       return mediaTranscodeService.probe(probeTarget, 'video', probeSignal);
     },
   };
+  const providerPayload = await injectLibraryModelAssetsForProvider(
+    stripCreditReservationFromPayload(scrubbedPayload),
+  );
   return await executeProviderJob(
-    { ...job, payload: stripCreditReservationFromPayload(scrubbedPayload) },
+    { ...job, payload: providerPayload },
     env,
     signal,
     { ...options, assetTransferDeps },
@@ -11002,6 +11136,305 @@ const createStudioTestSession = async (user, payload) => {
   };
 };
 
+const getOwnedVirtualModelSourceAsset = async ({ pool, user, assetId }) => {
+  const source = await getStoredAssetById(pool, assetId);
+  if (
+    !source
+    || source.deletedAt
+    || source.module !== 'virtual_model'
+    || source.userId !== user.id
+  ) {
+    throw Object.assign(
+      new Error('Virtual model source asset is unavailable'),
+      { code: 'MODEL_ASSET_UNAVAILABLE' },
+    );
+  }
+  if (!String(source.mimeType || '').toLowerCase().startsWith('image/')) {
+    throw Object.assign(
+      new Error('Virtual model source asset must be an image'),
+      { code: 'MODEL_ASSET_INVALID' },
+    );
+  }
+  return source;
+};
+
+const createVirtualModelPreviewAsset = async ({ req, user, pool, source }) => {
+  const publicBaseUrl = getPersistentAssetBaseUrl(req);
+  if (!isExternallyReachableBaseUrl(publicBaseUrl) && (shouldUseMysql || !publicBaseUrl)) {
+    throw Object.assign(
+      new Error('Virtual model preview storage is unavailable'),
+      { code: 'MODEL_PREVIEW_UNAVAILABLE' },
+    );
+  }
+  const sourcePath = resolveStoredAssetPath(source);
+  let sourceBuffer;
+  if (sourcePath && existsSync(sourcePath)) {
+    sourceBuffer = readFileSync(sourcePath);
+  } else {
+    const sourceReadUrl = await resolveManagedAssetReadUrl(source.publicUrl, {
+      pool,
+      userId: user.id,
+      purpose: 'provider',
+      env: process.env,
+    });
+    sourceBuffer = (await fetchRemoteAssetBufferWithRetry(sourceReadUrl)).fileBuffer;
+  }
+  const sharp = (await import('sharp')).default;
+  const rendered = await sharp(sourceBuffer)
+    .rotate()
+    .resize(480, 640, { fit: 'cover', withoutEnlargement: true })
+    .jpeg({ quality: 78, mozjpeg: true })
+    .toBuffer({ resolveWithObject: true });
+  return persistAssetBuffer({
+    pool,
+    publicBaseUrl,
+    userId: user.id,
+    module: 'virtual_model',
+    assetType: 'preview',
+    originalName: `preview_${source.id}.jpg`,
+    mimeType: 'image/jpeg',
+    fileBuffer: rendered.data,
+    width: rendered.info.width || 0,
+    height: rendered.info.height || 0,
+    provider: 'internal',
+  });
+};
+
+const isOwnedVirtualModelPreviewAsset = async ({
+  pool,
+  user,
+  previewAssetId,
+  previewUrl,
+}) => {
+  const preview = await getStoredAssetById(pool, previewAssetId);
+  return Boolean(
+    preview
+    && !preview.deletedAt
+    && preview.module === 'virtual_model'
+    && preview.assetType === 'preview'
+    && preview.userId === user.id
+    && preview.publicUrl === previewUrl
+  );
+};
+
+const handleVirtualModelApiRequest = async ({
+  req,
+  res,
+  url,
+  user,
+  pool = null,
+  store = null,
+  persist = () => {},
+}) => {
+  const validateSelectionMatch = url.pathname === '/api/virtual-models/validate-selection';
+  const publicDetailMatch = url.pathname.match(/^\/api\/virtual-models\/([^/]+)$/);
+  const adminDetailMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)$/);
+  const adminDeleteMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)$/);
+  const adminVersionMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)\/versions$/);
+  const adminAssetsMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)\/versions\/([^/]+)\/assets$/);
+  const adminPublishMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)\/publish$/);
+  const adminUnpublishMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)\/unpublish$/);
+  const isAdminList = url.pathname === '/api/admin/virtual-models' && req.method === 'GET';
+  const isCreate = url.pathname === '/api/admin/virtual-models' && req.method === 'POST';
+  const isAdminWrite = isCreate
+    || (adminDetailMatch && req.method === 'PATCH')
+    || (adminDeleteMatch && req.method === 'DELETE')
+    || (adminVersionMatch && req.method === 'POST')
+    || (adminAssetsMatch && req.method === 'PUT')
+    || (adminPublishMatch && req.method === 'POST')
+    || (adminUnpublishMatch && req.method === 'POST');
+
+  if (!(
+    url.pathname === '/api/virtual-models'
+    || validateSelectionMatch
+    || publicDetailMatch
+    || isAdminList
+    || isAdminWrite
+  )) return false;
+  const dataSource = { pool, store };
+
+  try {
+    if (url.pathname === '/api/virtual-models' && req.method === 'GET') {
+      const models = await listPublishedVirtualModels(dataSource);
+      json(res, 200, { models: models.map(toVirtualModelPublicSummary) });
+      return true;
+    }
+    if (validateSelectionMatch && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        await createVirtualModelGenerationJobSnapshot({
+          ...dataSource,
+          virtualModelId: String(body?.virtualModelId || '').trim(),
+          virtualModelVersionId: String(body?.virtualModelVersionId || '').trim(),
+        });
+        json(res, 200, { ok: true });
+      } catch {
+        json(res, 200, { ok: false });
+      }
+      return true;
+    }
+    if (publicDetailMatch && req.method === 'GET') {
+      const model = await getPublishedVirtualModelDetail({
+        ...dataSource,
+        virtualModelId: decodeURIComponent(publicDetailMatch[1]),
+      });
+      if (!model) {
+        json(res, 404, {
+          code: 'MODEL_NOT_FOUND',
+          message: 'Virtual model not found.',
+        });
+      } else {
+        json(res, 200, { model: toVirtualModelPublicSummary(model) });
+      }
+      return true;
+    }
+    if (isAdminList) {
+      if (user.role !== 'admin') {
+        json(res, 403, {
+          code: 'MODEL_PERMISSION_DENIED',
+          message: 'Admin only.',
+        });
+        return true;
+      }
+      const models = await listAdminVirtualModels({
+        ...dataSource,
+        status: url.searchParams.get('status') || 'all',
+      });
+      json(res, 200, { models });
+      return true;
+    }
+    if (isAdminWrite && user.role !== 'admin') {
+      json(res, 403, {
+        code: 'MODEL_PERMISSION_DENIED',
+        message: '仅管理员可管理虚拟模特库。',
+      });
+      return true;
+    }
+    if (isCreate) {
+      const body = await readBody(req);
+      const model = await createVirtualModelDraft({
+        ...dataSource,
+        code: body?.code,
+        name: body?.name,
+        tags: body?.tags,
+      });
+      persist();
+      json(res, 201, { model });
+      return true;
+    }
+    if (adminDetailMatch && req.method === 'PATCH') {
+      const body = await readBody(req);
+      const model = await updateVirtualModelDraft({
+        ...dataSource,
+        virtualModelId: decodeURIComponent(adminDetailMatch[1]),
+        code: body?.code,
+        name: body?.name,
+        tags: body?.tags,
+      });
+      persist();
+      json(res, 200, { model });
+      return true;
+    }
+    if (adminDeleteMatch && req.method === 'DELETE') {
+      return await handleVirtualModelDeleteApiRequest({
+        req,
+        res,
+        url,
+        user,
+        ...dataSource,
+        persist,
+      });
+    }
+    if (adminVersionMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      const version = await createVirtualModelVersion({
+        ...dataSource,
+        virtualModelId: decodeURIComponent(adminVersionMatch[1]),
+        identityProfile: body?.identityProfile,
+        createdBy: user.id,
+      });
+      persist();
+      json(res, 201, { version });
+      return true;
+    }
+    if (adminAssetsMatch && req.method === 'PUT') {
+      const body = await readBody(req);
+      const assetsWithPreviews = await Promise.all(
+        (Array.isArray(body?.assets) ? body.assets : []).map(async (asset) => {
+          const source = await getOwnedVirtualModelSourceAsset({
+            pool,
+            user,
+            assetId: String(asset?.assetId || '').trim(),
+          });
+          if (
+            asset?.previewAssetId
+            && asset?.previewUrl
+            && asset.previewAssetId !== asset.assetId
+            && asset.previewUrl !== asset.publicUrl
+            && await isOwnedVirtualModelPreviewAsset({
+              pool,
+              user,
+              previewAssetId: asset.previewAssetId,
+              previewUrl: asset.previewUrl,
+            })
+          ) {
+            return { ...asset, publicUrl: source.publicUrl };
+          }
+          const preview = await createVirtualModelPreviewAsset({
+            req,
+            user,
+            pool,
+            source,
+          });
+          return {
+            ...asset,
+            publicUrl: source.publicUrl,
+            previewAssetId: preview.id,
+            previewUrl: preview.publicUrl,
+          };
+        }),
+      );
+      const assets = await replaceDraftVersionAssets({
+        ...dataSource,
+        virtualModelId: decodeURIComponent(adminAssetsMatch[1]),
+        virtualModelVersionId: decodeURIComponent(adminAssetsMatch[2]),
+        assets: assetsWithPreviews,
+      });
+      persist();
+      json(res, 200, { assets });
+      return true;
+    }
+    if (adminPublishMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      const result = await publishVirtualModelVersion({
+        ...dataSource,
+        virtualModelId: decodeURIComponent(adminPublishMatch[1]),
+        virtualModelVersionId: String(body?.virtualModelVersionId || '').trim(),
+      });
+      persist();
+      json(
+        res,
+        result.ok ? 200 : 400,
+        result.ok ? { result } : { code: 'MODEL_PUBLISH_INVALID', ...result },
+      );
+      return true;
+    }
+    if (adminUnpublishMatch && req.method === 'POST') {
+      const result = await unpublishVirtualModel({
+        ...dataSource,
+        virtualModelId: decodeURIComponent(adminUnpublishMatch[1]),
+      });
+      persist();
+      json(res, 200, { result });
+      return true;
+    }
+  } catch (error) {
+    respondVirtualModelApiError(res, error);
+    return true;
+  }
+  return false;
+};
+
 const handleMysqlRequest = async (req, res, url) => {
   const userDetailMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
   const agentDetailMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
@@ -11037,6 +11470,21 @@ const handleMysqlRequest = async (req, res, url) => {
       resolveRequestUserId: async () => String((await getDbSessionUser(req))?.id || ''),
     });
     return;
+  }
+
+  if (
+    url.pathname.startsWith('/api/virtual-models')
+    || url.pathname.startsWith('/api/admin/virtual-models')
+  ) {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    if (await handleVirtualModelApiRequest({
+      req,
+      res,
+      url,
+      user,
+      pool: await getMysqlPool(),
+    })) return;
   }
 
   if (url.pathname === '/api/assets/download-proxy' && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -13375,7 +13823,10 @@ const handleMysqlRequest = async (req, res, url) => {
       module: body.module,
       taskType: submissionPolicy.taskType,
       provider: submissionPolicy.provider,
-      payload: await scrubDbJobPayloadBeforeSubmission(body.payload, user.id),
+      payload: await scrubDbJobPayloadBeforeSubmission(
+        await createLibraryModelJobPayload({ payload: body.payload, pool, user }),
+        user.id,
+      ),
       priority: body.priority,
       maxRetries: submissionPolicy.maxCreateRetries ?? normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };
@@ -13862,6 +14313,22 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       resolveRequestUserId: async () => String(localGetSessionUser(req, store)?.id || ''),
     });
     return;
+  }
+
+  if (
+    url.pathname.startsWith('/api/virtual-models')
+    || url.pathname.startsWith('/api/admin/virtual-models')
+  ) {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    if (await handleVirtualModelApiRequest({
+      req,
+      res,
+      url,
+      user,
+      store,
+      persist: () => writeLocalStore(store),
+    })) return;
   }
 
   if (url.pathname === '/api/assets/download-proxy' && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -17065,7 +17532,10 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       module: body.module,
       taskType: submissionPolicy.taskType,
       provider: submissionPolicy.provider,
-      payload: await scrubLocalJobPayloadBeforeSubmission(body.payload, user.id),
+      payload: await scrubLocalJobPayloadBeforeSubmission(
+        await createLibraryModelJobPayload({ payload: body.payload, store, user }),
+        user.id,
+      ),
       priority: body.priority,
       maxRetries: submissionPolicy.maxCreateRetries ?? normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };

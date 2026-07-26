@@ -109,9 +109,15 @@ test('job creation scrubs stale managed assets from direct payload submissions',
   assert.match(source, /value\.type === 'image_url'/);
   assert.match(source, /const scrubDbJobPayloadBeforeSubmission = async \(payload, userId\) => \{/);
   assert.match(source, /const scrubLocalJobPayloadBeforeSubmission = async \(payload, userId\) => \{/);
-  assert.match(source, /payload: await scrubDbJobPayloadBeforeSubmission\(body\.payload, user\.id\)/);
+  assert.match(
+    source,
+    /payload: await scrubDbJobPayloadBeforeSubmission\(\s*await createLibraryModelJobPayload\(\{ payload: body\.payload, pool, user \}\),\s*user\.id,\s*\)/,
+  );
   assert.match(source, /const recoveredPayload = await scrubDbJobPayloadBeforeSubmission\(\{/);
-  assert.match(source, /payload: await scrubLocalJobPayloadBeforeSubmission\(body\.payload, user\.id\)/);
+  assert.match(
+    source,
+    /payload: await scrubLocalJobPayloadBeforeSubmission\(\s*await createLibraryModelJobPayload\(\{ payload: body\.payload, store, user \}\),\s*user\.id,\s*\)/,
+  );
   assert.match(source, /const recoveredPayload = await scrubLocalJobPayloadBeforeSubmission\(\{/);
 });
 

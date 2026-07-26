@@ -36,6 +36,7 @@ import {
   analyzeVideoDiagnosis,
   ApiError,
   uploadInternalAssetStream,
+  validateVirtualModelLibrarySelection,
 } from './services/internalApi';
 import type { PersistedAppState } from './utils/appState';
 import type { ShellWorkflowImageResult } from './adapters/shellWorkflow';
@@ -5792,7 +5793,7 @@ const AppContent: React.FC<{
     const generationPrompt = targetModule === AppModuleObj.TRANSLATION ? '' : promptText;
     const allowEmptySkuPrompt = targetModule === AppModuleObj.ONE_CLICK && targetSubFeature === 'sku';
     const allowEmptyRetouchPrompt = targetModule === AppModuleObj.RETOUCH;
-    const allowEmptyEverythingReplacePrompt = targetModule === AppModuleObj.EVERYTHING_REPLACE && (targetSubFeature === 'product_replace' || targetSubFeature === 'background_replace' || targetSubFeature === 'logo_replace');
+    const allowEmptyEverythingReplacePrompt = targetModule === AppModuleObj.EVERYTHING_REPLACE && (targetSubFeature === 'product_replace' || targetSubFeature === 'background_replace' || targetSubFeature === 'logo_replace' || targetSubFeature === 'model_replace');
     const allowEmptyPrompt = allowEmptySkuPrompt || allowEmptyRetouchPrompt || allowEmptyEverythingReplacePrompt || targetModule === AppModuleObj.TRANSLATION;
     if (!generationPrompt.trim() && !allowEmptyPrompt) { addToast('请输入创作描述', 'warning'); return; }
     const generationParams = normalizeParamsForGeneration(targetModule, targetSubFeature, currentParams) as Record<string, string> & {
@@ -5839,6 +5840,28 @@ const AppContent: React.FC<{
     if (isTranslationSubmit && initialTranslationMaterials.length === 0) {
       addToast('请先上传产品素材', 'warning');
       return;
+    }
+    const isModelReplaceSubmit = targetModule === AppModuleObj.EVERYTHING_REPLACE
+      && targetSubFeature === 'model_replace';
+    if (isModelReplaceSubmit && generationParams.identitySource === 'library') {
+      const virtualModelId = String(generationParams.virtualModelId || '').trim();
+      const virtualModelVersionId = String(generationParams.virtualModelVersionId || '').trim();
+      if (!virtualModelId || !virtualModelVersionId) {
+        addToast('请选择公共模特后再生成', 'warning');
+        return;
+      }
+      try {
+        await validateVirtualModelLibrarySelection(
+          virtualModelId,
+          virtualModelVersionId,
+        );
+      } catch (error) {
+        addToast(
+          error instanceof Error ? error.message : '当前公共模特选择已失效，请重新选择。',
+          'error',
+        );
+        return;
+      }
     }
     if (!beginGuardedSubmit()) {
       return;

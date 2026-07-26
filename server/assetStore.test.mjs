@@ -339,8 +339,8 @@ test('ensureAssetSchema accepts provider task ids longer than local entity ids',
     'existing stored_assets.job_id column should be widened during startup migration'
   );
   assert.ok(
-    queries.some((sql) => /UPDATE stored_assets\s+SET expires_at = 0\s+WHERE module IN \('agent_center', 'agent_chat'\)/s.test(sql)),
-    'startup migration should make existing agent chat assets permanent'
+    queries.some((sql) => /UPDATE stored_assets\s+SET expires_at = 0\s+WHERE module IN \('agent_center', 'agent_chat', 'virtual_model'\)/s.test(sql)),
+    'startup migration should make existing agent and virtual-model assets permanent'
   );
   assert.ok(
     queries.some((sql) => /storage_status/i.test(sql)),

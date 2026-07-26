@@ -23,7 +23,7 @@ const __dirname = path.dirname(__filename);
 export const ASSET_RETENTION_MS = 1000 * 60 * 60 * 24 * 3;
 const ASSET_DIR = path.join(__dirname, 'data', 'assets');
 const LOCAL_REGISTRY_PATH = path.join(__dirname, 'data', 'asset-registry.json');
-const PERMANENT_ASSET_MODULES = new Set(['agent_center', 'agent_chat']);
+const PERMANENT_ASSET_MODULES = new Set(['agent_center', 'agent_chat', 'virtual_model']);
 const DEFAULT_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS = 60_000;
 const DEFAULT_RESULT_ASSET_DOWNLOAD_RETRIES = 2;
 const DEFAULT_RESULT_ASSET_DOWNLOAD_RETRY_BASE_MS = 500;
@@ -529,7 +529,7 @@ export const ensureAssetSchema = async (pool) => {
   await pool.query(`
     UPDATE stored_assets
     SET expires_at = 0
-    WHERE module IN ('agent_center', 'agent_chat')
+    WHERE module IN ('agent_center', 'agent_chat', 'virtual_model')
       AND expires_at <> 0
   `);
   await ensureAssetLifecycleSchema(pool);

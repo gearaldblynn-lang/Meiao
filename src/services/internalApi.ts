@@ -2309,3 +2309,17 @@ export const fetchChatwootReportsSummary = async (payload: ChatwootConnectionPay
     dedupe: false,
   });
 };
+
+export const validateVirtualModelLibrarySelection = async (
+  virtualModelId: string,
+  virtualModelVersionId: string,
+) => {
+  const response = await request<{ ok: boolean }>('/api/virtual-models/validate-selection', {
+    method: 'POST',
+    body: JSON.stringify({ virtualModelId, virtualModelVersionId }),
+  });
+  if (response.ok !== true) {
+    throw new Error('当前公共模特选择已失效，请重新选择。');
+  }
+  return response;
+};
