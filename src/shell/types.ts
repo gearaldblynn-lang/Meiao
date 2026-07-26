@@ -98,6 +98,7 @@ export interface VoiceoverCheckpointV1 {
   analysis?: { sourceLanguage: string; speakerCount: number; voiceProfile: VoiceoverVoiceProfile; segments: VoiceoverTranscriptSegment[] };
   translation?: { targetLanguage: string; mode: 'natural' | 'literal'; segments: VoiceoverTranslationSegment[]; selectedVoiceName: string };
   ttsGroups?: Array<{ index: number; attempt: number; childJobId: string; providerTaskId?: string; assetId?: string; status: 'queued' | 'submitted' | 'succeeded' | 'failed'; startMs: number; endMs: number; actualDurationMs?: number; atempo?: number }>;
+  alignedAudioAssetId?: string;
   finalAssetId?: string;
 }
 

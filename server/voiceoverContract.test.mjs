@@ -34,6 +34,8 @@ const validPayload = (overrides = {}) => ({
   ...overrides,
 });
 
+const normalizePayload = (input, context = { actorUserId: 'user-1' }) => normalizeVoiceoverPayload(input, context);
+
 const validCheckpoint = (overrides = {}) => ({
   version: VOICEOVER_CHECKPOINT_VERSION,
   stage: 'voice_separated',
@@ -41,6 +43,7 @@ const validCheckpoint = (overrides = {}) => ({
   originalAudioAssetId: 'asset-audio',
   vocalAssetId: 'asset-vocals',
   backgroundAssetId: 'asset-background',
+  subtitleRemoval: { childJobId: 'subtitle-child-1', attempt: 0, status: 'queued' },
   analysisAttempt: 0,
   ...overrides,
 });
@@ -58,25 +61,33 @@ test('invalid capacity values fall back to conservative defaults', () => {
 });
 
 test('payload only accepts catalog members and a managed source identity', () => {
-  assert.equal(normalizeVoiceoverPayload(validPayload()).targetLanguage, 'en');
-  assert.equal(normalizeVoiceoverPayload(validPayload({ voiceMode: 'preset', voiceName: 'Kore' })).voiceName, 'Kore');
-  assert.throws(() => normalizeVoiceoverPayload(validPayload({ targetLanguage: 'zz' })), (error) => error.code === 'voiceover_language_unsupported');
-  assert.throws(() => normalizeVoiceoverPayload(validPayload({ voiceMode: 'preset', voiceName: 'Unknown' })), (error) => error.code === 'voiceover_analysis_invalid');
-  assert.throws(() => normalizeVoiceoverPayload(validPayload({ sourceAssetId: '', sourceUrl: 'https://untrusted.example/video.mp4' })), (error) => error.code === 'voiceover_analysis_invalid');
-  assert.throws(() => normalizeVoiceoverPayload(validPayload({ sourceUrl: 'https://untrusted.example/video.mp4' })), (error) => error.code === 'voiceover_analysis_invalid');
-  assert.equal(normalizeVoiceoverPayload(validPayload({ sourceAssetId: '', sourceUrl: 'managed://asset-source' })).sourceUrl, 'managed://asset-source');
+  assert.equal(normalizePayload(validPayload()).targetLanguage, 'en');
+  assert.equal(normalizePayload(validPayload({ voiceMode: 'preset', voiceName: 'Kore' })).voiceName, 'Kore');
+  assert.throws(() => normalizePayload(validPayload({ targetLanguage: 'zz' })), (error) => error.code === 'voiceover_language_unsupported');
+  assert.throws(() => normalizePayload(validPayload({ voiceMode: 'preset', voiceName: 'Unknown' })), (error) => error.code === 'voiceover_analysis_invalid');
+  assert.throws(() => normalizePayload(validPayload({ sourceAssetId: '', sourceUrl: 'https://untrusted.example/video.mp4' })), (error) => error.code === 'voiceover_analysis_invalid');
+  assert.throws(() => normalizePayload(validPayload({ sourceUrl: 'https://untrusted.example/video.mp4' })), (error) => error.code === 'voiceover_analysis_invalid');
+  assert.equal(normalizePayload(validPayload({ sourceAssetId: '', sourceUrl: 'managed://asset-source' })).sourceUrl, 'managed://asset-source');
+});
+
+test('payload derives its actor from trusted server context and never from the browser', () => {
+  const actor = { actorUserId: 'actor-1' };
+  assert.equal(normalizeVoiceoverPayload(validPayload({ userId: 'actor-1' }), actor).userId, 'actor-1');
+  assert.equal(normalizeVoiceoverPayload(validPayload({ userId: undefined }), actor).userId, 'actor-1');
+  assert.throws(() => normalizeVoiceoverPayload(validPayload({ userId: 'another-browser-user' }), actor), (error) => error.code === 'voiceover_analysis_invalid');
+  assert.throws(() => normalizeVoiceoverPayload(validPayload(), {}), (error) => error.code === 'voiceover_analysis_invalid');
 });
 
 test('remove text requires a bounded normalized subtitle rectangle', () => {
   assert.deepEqual(
-    normalizeVoiceoverPayload(validPayload({
+    normalizePayload(validPayload({
       removeText: true,
       subtitleRegionNormalized: { x: -1, y: 0.8, width: 4, height: 0.9 },
     })).subtitleRegionNormalized,
     { x: 0, y: 0.8, width: 1, height: 0.2 },
   );
-  assert.throws(() => normalizeVoiceoverPayload(validPayload({ removeText: true })), (error) => error.code === 'voiceover_analysis_invalid');
-  assert.throws(() => normalizeVoiceoverPayload(validPayload({ removeText: 'false' })), (error) => error.code === 'voiceover_analysis_invalid');
+  assert.throws(() => normalizePayload(validPayload({ removeText: true })), (error) => error.code === 'voiceover_analysis_invalid');
+  assert.throws(() => normalizePayload(validPayload({ removeText: 'false' })), (error) => error.code === 'voiceover_analysis_invalid');
 });
 
 test('checkpoint rejects local paths, signed urls, unknown fields, and oversized text', () => {
@@ -102,6 +113,38 @@ test('checkpoint stages are monotonic and carry only fields available at each st
   assert.equal(mergeVoiceoverCheckpoint(current, { stage: 'speech_analyzed', analysis: validAnalysis() }).stage, 'speech_analyzed');
   assert.throws(() => mergeVoiceoverCheckpoint(current, { stage: 'audio_extracted' }), (error) => error.code === 'voiceover_checkpoint_invalid');
   assert.throws(() => normalizeVoiceoverCheckpoint(validCheckpoint({ stage: 'input_prepared', vocalAssetId: 'asset-vocals' })), (error) => error.code === 'voiceover_checkpoint_invalid');
+});
+
+test('each progressed stage requires its durable prerequisite checkpoint data', () => {
+  assert.throws(() => normalizeVoiceoverCheckpoint({ version: 1, stage: 'subtitle_removal', baseVideoAssetId: 'asset-base', analysisAttempt: 0 }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint({ ...validCheckpoint(), stage: 'audio_extracted', originalAudioAssetId: undefined, vocalAssetId: undefined, backgroundAssetId: undefined }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint({ ...validCheckpoint(), stage: 'voice_separated', vocalAssetId: undefined, backgroundAssetId: undefined }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint({ ...validCheckpoint(), stage: 'speech_analysis_submitting', vocalAssetId: undefined, backgroundAssetId: undefined }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint({ ...checkpointAt('speech_analyzed'), analysis: undefined }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint({ ...checkpointAt('translated'), translation: undefined }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint({ ...checkpointAt('tts_generating'), ttsGroups: undefined }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint({ ...checkpointAt('audio_aligned'), alignedAudioAssetId: undefined }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint({ ...checkpointAt('result_persisted'), finalAssetId: undefined }), (error) => error.code === 'voiceover_checkpoint_invalid');
+});
+
+test('checkpoint merging is deep and monotonic for TTS group state and durable anchors', () => {
+  const current = normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', {
+    ttsGroups: [validTtsGroup(0, { status: 'succeeded', providerTaskId: 'provider-1', assetId: 'asset-tts-1' })],
+  }));
+  const merged = mergeVoiceoverCheckpoint(current, {
+    ttsGroups: [validTtsGroup(0, { status: 'queued', providerTaskId: undefined, assetId: undefined })],
+  });
+  assert.equal(merged.ttsGroups[0].status, 'succeeded');
+  assert.equal(merged.ttsGroups[0].providerTaskId, 'provider-1');
+  assert.equal(merged.ttsGroups[0].assetId, 'asset-tts-1');
+  assert.equal(mergeVoiceoverCheckpoint(current, { ttsGroups: [validTtsGroup(1)] }).ttsGroups.length, 2);
+  assert.throws(() => mergeVoiceoverCheckpoint(current, {
+    ttsGroups: [validTtsGroup(0, { status: 'succeeded', providerTaskId: 'provider-other', assetId: 'asset-tts-1' })],
+  }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => mergeVoiceoverCheckpoint(
+    normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', { ttsGroups: [validTtsGroup(0, { attempt: 1 })] })),
+    { ttsGroups: [validTtsGroup(0)] },
+  ), (error) => error.code === 'voiceover_checkpoint_invalid');
 });
 
 test('confirmed chargeable analysis retry is the only checkpoint rewind path', () => {
@@ -140,6 +183,22 @@ test('analysis validates speaker, language, timeline, and transcript limits befo
   assert.throws(() => validateVoiceoverAnalysis(validAnalysis({ speakerCount: 2 }), { durationMs: 2_000 }), (error) => error.code === 'voiceover_multiple_speakers');
   assert.throws(() => validateVoiceoverAnalysis(validAnalysis({ sourceLanguage: 'zz' }), { durationMs: 2_000 }), (error) => error.code === 'voiceover_language_unsupported');
   assert.throws(() => validateVoiceoverAnalysis(validAnalysis({ segments: [validSegment({ startMs: 900, endMs: 500 })] }), { durationMs: 2_000 }), (error) => error.code === 'voiceover_analysis_invalid');
+});
+
+test('analysis overlap and TTS atempo use validated runtime configuration', () => {
+  const overlapping = validAnalysis({ segments: [validSegment({ id: 's1', startMs: 0, endMs: 800 }), validSegment({ id: 's2', startMs: 700, endMs: 1_200 })] });
+  assert.throws(() => validateVoiceoverAnalysis(overlapping, { overlapToleranceMs: 0 }), (error) => error.code === 'voiceover_analysis_invalid');
+  assert.equal(validateVoiceoverAnalysis(overlapping, { overlapToleranceMs: 1_000 }).segments.length, 2);
+  const translated = checkpointAt('translated', { translation: validTranslation({ segments: overlapping.segments }) });
+  assert.throws(() => normalizeVoiceoverCheckpoint(translated, { overlapToleranceMs: 0 }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.equal(normalizeVoiceoverCheckpoint(translated, { overlapToleranceMs: 1_000 }).translation.segments.length, 2);
+  assert.throws(() => normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', { ttsGroups: [validTtsGroup(0, { atempo: 0.7 })] }), { minAtempo: 0.75, maxAtempo: 1.35 }), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', { ttsGroups: [validTtsGroup(0, { atempo: 1.36 })] })), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.equal(normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', { ttsGroups: [validTtsGroup(0, { atempo: 0.7 })] }), { minAtempo: 0.5, maxAtempo: 1.35 }).ttsGroups[0].atempo, 0.7);
+  assert.deepEqual(
+    normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', { ttsGroups: [validTtsGroup(0, { atempo: 0.5 }), validTtsGroup(1, { atempo: 2 })] }), { minAtempo: 0.5, maxAtempo: 2 }).ttsGroups.map((group) => group.atempo),
+    [0.5, 2],
+  );
 });
 
 test('public config cannot leak local paths or credentials', () => {
@@ -183,6 +242,30 @@ function validTranslation(overrides = {}) {
   return { targetLanguage: 'en', mode: 'natural', selectedVoiceName: 'Kore', segments: [validSegment()], ...overrides };
 }
 
-function validTtsGroup(index) {
-  return { index, attempt: 0, childJobId: `child-${index}`, status: 'queued', startMs: index * 100, endMs: index * 100 + 99 };
+const STAGE_WITH_ANALYSIS = new Set(['speech_analyzed', 'translated', 'tts_generating', 'audio_aligned', 'result_persisted']);
+const STAGE_WITH_TRANSLATION = new Set(['translated', 'tts_generating', 'audio_aligned', 'result_persisted']);
+const STAGE_WITH_TTS_GROUPS = new Set(['tts_generating', 'audio_aligned', 'result_persisted']);
+const STAGE_WITH_ALIGNED_AUDIO = new Set(['audio_aligned', 'result_persisted']);
+
+function checkpointAt(stage, overrides = {}) {
+  return {
+    version: VOICEOVER_CHECKPOINT_VERSION,
+    stage,
+    baseVideoAssetId: 'asset-base',
+    subtitleRemoval: { childJobId: 'subtitle-child-1', attempt: 0, status: 'queued' },
+    originalAudioAssetId: 'asset-audio',
+    vocalAssetId: 'asset-vocals',
+    backgroundAssetId: 'asset-background',
+    analysisAttempt: 0,
+    ...(STAGE_WITH_ANALYSIS.has(stage) ? { analysis: validAnalysis() } : {}),
+    ...(STAGE_WITH_TRANSLATION.has(stage) ? { translation: validTranslation() } : {}),
+    ...(STAGE_WITH_TTS_GROUPS.has(stage) ? { ttsGroups: [validTtsGroup(0)] } : {}),
+    ...(STAGE_WITH_ALIGNED_AUDIO.has(stage) ? { alignedAudioAssetId: 'asset-aligned-audio' } : {}),
+    ...(stage === 'result_persisted' ? { finalAssetId: 'asset-final' } : {}),
+    ...overrides,
+  };
+}
+
+function validTtsGroup(index, overrides = {}) {
+  return { index, attempt: 0, childJobId: `child-${index}`, status: 'queued', startMs: index * 100, endMs: index * 100 + 99, ...overrides };
 }
