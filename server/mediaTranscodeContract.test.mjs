@@ -7,6 +7,7 @@ import {
   buildVideoTranscodeArgs,
   calculateVideoCanvas,
   isMediaCompatibleForProfile,
+  validateMediaTranscodeSource,
   validateTranscodedOutput,
   validateTrimRange,
 } from './mediaTranscodeContract.mjs';
@@ -166,6 +167,44 @@ test('subtitle removal ffmpeg keeps the source ratio without pad or forced fps',
   assert.ok(!args.includes('-r'));
 });
 
+test('voiceover profile has no artificial duration cap and requires audio', () => {
+  assert.deepEqual(validateTrimRange({
+    profile: 'voiceover_translation',
+    durationSeconds: 1800,
+    startSeconds: 0,
+    endSeconds: 1800,
+  }), { startSeconds: 0, endSeconds: 1800, durationSeconds: 1800 });
+  assert.throws(
+    () => validateMediaTranscodeSource({
+      profile: 'voiceover_translation',
+      kind: 'video',
+      hasVideo: true,
+      hasAudio: false,
+    }),
+    (error) => error?.code === 'media_audio_track_required',
+  );
+});
+
+test('voiceover transcode keeps aspect ratio and produces compatible MP4', () => {
+  const args = buildVideoTranscodeArgs({
+    profile: 'voiceover_translation',
+    inputPath: '/tmp/input.mov',
+    outputPath: '/tmp/output.mp4',
+    startSeconds: 0,
+    endSeconds: 120,
+    width: 1080,
+    height: 1920,
+    hasAudio: true,
+  });
+  assert.ok(args.includes('scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1'));
+  assert.deepEqual(args.slice(-8), [
+    '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart',
+    '/tmp/output.mp4',
+  ].slice(-8));
+  assert.ok(args.includes('0:a:0'));
+  assert.ok(!args.includes('0:a:0?'));
+});
+
 test('compatible H264 MP4 skips subtitle removal transcode', () => {
   assert.equal(isMediaCompatibleForProfile('subtitle_removal', {
     durationSeconds: 30,
@@ -182,6 +221,32 @@ test('compatible H264 MP4 skips subtitle removal transcode', () => {
     videoCodec: 'hevc',
     width: 1080,
     height: 1920,
+  }), false);
+});
+
+test('compatible voiceover sources require H.264 yuv420p AAC MP4 without a duration cap', () => {
+  assert.equal(isMediaCompatibleForProfile('voiceover_translation', {
+    kind: 'video',
+    durationSeconds: 1800,
+    sizeBytes: 20_000_000,
+    formatNames: ['mov', 'mp4'],
+    videoCodec: 'h264',
+    pixelFormat: 'yuv420p',
+    audioCodec: 'aac',
+    width: 1080,
+    height: 1920,
+    hasAudio: true,
+  }), true);
+  assert.equal(isMediaCompatibleForProfile('voiceover_translation', {
+    kind: 'video',
+    durationSeconds: 1800,
+    sizeBytes: 20_000_000,
+    formatNames: ['mp4'],
+    videoCodec: 'h264',
+    pixelFormat: 'yuv420p',
+    width: 1080,
+    height: 1920,
+    hasAudio: false,
   }), false);
 });
 

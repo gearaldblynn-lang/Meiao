@@ -75,6 +75,60 @@ test('session creation tells the client when the whole source already matches Se
   assert.equal(result.compatibleSource, true);
 });
 
+test('voiceover session rejects an audio-less server probe before upload completion', async () => {
+  const audioLessProbe = { ...canonicalProbe, hasAudio: false, audioCodec: null };
+  const store = createFakeStore();
+  const api = createMediaTranscodeApi({
+    store,
+    service: { probe: async () => audioLessProbe },
+    persistAsset: async () => {},
+  });
+
+  await assert.rejects(
+    () => api.createSession({
+      userId: 'u1', kind: 'video', profile: 'voiceover_translation', fileName: 'silent.mp4', fileBuffer: Buffer.from('source'),
+    }),
+    (error) => error?.code === 'media_audio_track_required',
+  );
+  assert.equal(store.calls.updateProbe.length, 0);
+  assert.deepEqual(store.calls.remove, [session.id]);
+});
+
+test('compatible whole voiceover source takes the owner-checked managed no-op path', async () => {
+  const voiceoverProbe = {
+    ...canonicalProbe,
+    kind: 'video',
+    durationSeconds: 1800,
+    width: 1080,
+    height: 1920,
+    pixelFormat: 'yuv420p',
+    hasAudio: true,
+  };
+  const store = createFakeStore({
+    profile: 'voiceover_translation',
+    fileName: 'voiceover.mp4',
+    probe: voiceoverProbe,
+  });
+  let transcodeCalls = 0;
+  const api = createMediaTranscodeApi({
+    store,
+    service: { transcode: async () => { transcodeCalls += 1; } },
+    readSource: async () => Buffer.from('already-compatible'),
+    persistAsset: async () => ({ assetId: 'asset-voiceover', fileUrl: '/api/assets/asset-voiceover' }),
+  });
+
+  const result = await api.convertSession({
+    userId: 'u1', sessionId: session.id, startSeconds: 0, endSeconds: 1800, module: 'video',
+  });
+
+  assert.equal(transcodeCalls, 0);
+  assert.equal(result.transcoded, false);
+  assert.equal(result.profile, 'voiceover_translation');
+  assert.equal(result.durationSeconds, 1800);
+  assert.equal(result.width, 1080);
+  assert.equal(result.height, 1920);
+});
+
 test('conversion persists only the validated canonical output and removes the session', async () => {
   const store = createFakeStore();
   const persisted = [];

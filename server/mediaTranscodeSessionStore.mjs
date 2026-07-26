@@ -144,6 +144,9 @@ export function createMediaTranscodeSessionStore({
       if (normalizedProfile === 'subtitle_removal' && kind !== 'video') {
         throw createMediaTranscodeError('media_kind_unsupported', '去字幕功能仅支持视频');
       }
+      if (normalizedProfile === 'voiceover_translation' && kind !== 'video') {
+        throw createMediaTranscodeError('media_kind_unsupported', '口播翻译功能仅支持视频');
+      }
       if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) {
         throw createMediaTranscodeError('media_source_empty', '上传的媒体文件为空');
       }

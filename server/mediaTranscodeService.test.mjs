@@ -1,10 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
 
 import {
   createMediaTranscodeService,
   parseFfprobeOutput,
+  runMediaProcess,
 } from './mediaTranscodeService.mjs';
+
+const require = createRequire(import.meta.url);
 
 const sampleProbeJson = JSON.stringify({
   format: {
@@ -147,4 +154,43 @@ test('service uses the subtitle profile for FFmpeg and output validation', async
   assert.ok(!ffmpegArgs.includes('-r'));
   assert.ok(!ffmpegArgs.some((value) => value.includes('pad=')));
   assert.equal(result.metadata.pixelFormat, 'yuv420p');
+});
+
+test('voiceover service preserves a portrait source as H.264 yuv420p AAC MP4', async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'meiao-voiceover-media-'));
+  const sourcePath = join(rootDir, 'source.mov');
+  const outputPath = join(rootDir, 'output.mp4');
+  const ffmpegPath = require('ffmpeg-static');
+  t.after(async () => { await rm(rootDir, { recursive: true, force: true }); });
+
+  await runMediaProcess(ffmpegPath, [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'color=c=blue:size=1080x1920:rate=30',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+    '-t', '3', '-shortest',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+    sourcePath,
+  ], { timeoutMs: 60_000 });
+
+  const service = createMediaTranscodeService({
+    env: { MEIAO_MEDIA_TRANSCODE_ENABLED: '1', MEIAO_MEDIA_TRANSCODE_TIMEOUT_MS: '60000' },
+  });
+  const sourceProbe = await service.probe(sourcePath, 'video');
+  const result = await service.transcode({
+    sessionId: 'voiceover-fixture',
+    profile: 'voiceover_translation',
+    kind: 'video',
+    inputPath: sourcePath,
+    outputPath,
+    startSeconds: 0,
+    endSeconds: 3,
+    width: sourceProbe.width,
+    height: sourceProbe.height,
+    hasAudio: sourceProbe.hasAudio,
+  });
+
+  assert.equal(result.metadata.videoCodec, 'h264');
+  assert.equal(result.metadata.pixelFormat, 'yuv420p');
+  assert.equal(result.metadata.audioCodec, 'aac');
+  assert.equal(result.metadata.width / result.metadata.height, 1080 / 1920);
 });

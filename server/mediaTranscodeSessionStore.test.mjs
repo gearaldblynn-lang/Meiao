@@ -87,6 +87,29 @@ test('session sidecars persist and hydrate the trusted media profile', async (t)
   );
 });
 
+test('voiceover sessions persist only the server-owned video profile', async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'meiao-media-store-'));
+  const store = createMediaTranscodeSessionStore({ rootDir });
+  t.after(async () => { await store.destroy(); });
+  const created = await store.create({
+    userId: 'u1',
+    kind: 'video',
+    profile: 'voiceover_translation',
+    fileName: 'voiceover-source.mp4',
+    fileBuffer: Buffer.from('source'),
+    probe: videoProbe,
+  });
+
+  assert.equal(created.profile, 'voiceover_translation');
+  assert.equal((await store.getOwned(created.id, 'u1')).profile, 'voiceover_translation');
+  await assert.rejects(
+    () => store.create({
+      userId: 'u1', kind: 'audio', profile: 'voiceover_translation', fileName: 'voice.mp3', fileBuffer: Buffer.from('x'),
+    }),
+    (error) => error?.code === 'media_kind_unsupported',
+  );
+});
+
 test('session probe and conversion state updates are atomic and owner-checked', async (t) => {
   const rootDir = await mkdtemp(join(tmpdir(), 'meiao-media-store-'));
   const store = createMediaTranscodeSessionStore({ rootDir });

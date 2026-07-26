@@ -37,6 +37,7 @@ export const MEDIA_LIMITS = Object.freeze({
 export const MEDIA_TRANSCODE_PROFILES = Object.freeze([
   'seedance_reference',
   'subtitle_removal',
+  'voiceover_translation',
 ]);
 
 export function normalizeMediaTranscodeProfile(value = 'seedance_reference') {
@@ -124,6 +125,13 @@ export function validateTrimRange({
   }
 
   const selectedDuration = end - start;
+  if (normalizedProfile === 'voiceover_translation') {
+    return {
+      startSeconds: start,
+      endSeconds: end,
+      durationSeconds: selectedDuration,
+    };
+  }
   if (normalizedProfile === 'subtitle_removal') {
     if (selectedDuration > 600) {
       throw createMediaTranscodeError(
@@ -160,6 +168,25 @@ export function validateTrimRange({
   };
 }
 
+export function validateMediaTranscodeSource({
+  profile = 'seedance_reference',
+  kind,
+  hasVideo = false,
+  hasAudio = false,
+} = {}) {
+  const normalizedProfile = normalizeMediaTranscodeProfile(profile);
+  if (normalizedProfile !== 'voiceover_translation') return;
+  if (kind !== 'video') {
+    throw createMediaTranscodeError('media_kind_unsupported', '口播翻译功能仅支持视频');
+  }
+  if (!hasVideo) {
+    throw createMediaTranscodeError('media_video_track_required', '文件中没有可用的视频画面');
+  }
+  if (!hasAudio) {
+    throw createMediaTranscodeError('media_audio_track_required', '口播翻译视频必须包含音频轨道');
+  }
+}
+
 function ffmpegSeconds(value) {
   return String(Number(Number(value).toFixed(3)));
 }
@@ -176,6 +203,25 @@ export function buildVideoTranscodeArgs({
 }) {
   const normalizedProfile = normalizeMediaTranscodeProfile(profile);
   const duration = Number(endSeconds) - Number(startSeconds);
+  if (normalizedProfile === 'voiceover_translation') {
+    return [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-ss', ffmpegSeconds(startSeconds),
+      '-i', inputPath,
+      '-t', ffmpegSeconds(duration),
+      '-map', '0:v:0',
+      '-map', '0:a:0',
+      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '23',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-movflags', '+faststart',
+      outputPath,
+    ];
+  }
   if (normalizedProfile === 'subtitle_removal') {
     return [
       '-hide_banner', '-loglevel', 'error', '-y',
@@ -240,6 +286,12 @@ export function buildAudioTranscodeArgs({ inputPath, outputPath, startSeconds, e
 
 function validateDuration(kind, metadata, profile) {
   const duration = requirePositiveNumber(metadata.durationSeconds, 'durationSeconds');
+  if (profile === 'voiceover_translation') {
+    if (kind !== 'video') {
+      throw createMediaTranscodeError('media_kind_unsupported', '口播翻译功能仅支持视频');
+    }
+    return;
+  }
   if (profile === 'subtitle_removal') {
     if (kind !== 'video' || duration > 600) {
       throw createMediaTranscodeError(
@@ -262,7 +314,7 @@ function validateDuration(kind, metadata, profile) {
 
 function validateBytes(kind, metadata, profile) {
   const sizeBytes = requirePositiveNumber(metadata.sizeBytes, 'sizeBytes');
-  if (profile === 'subtitle_removal') return sizeBytes;
+  if (profile === 'subtitle_removal' || profile === 'voiceover_translation') return sizeBytes;
   if (sizeBytes > MEDIA_LIMITS[kind].maxBytes) {
     throw createMediaTranscodeError(
       'media_output_too_large',
@@ -295,6 +347,16 @@ export function validateTranscodedOutput(kind, metadata, profile = 'seedance_ref
   }
   const width = requirePositiveNumber(metadata.width, 'width');
   const height = requirePositiveNumber(metadata.height, 'height');
+  if (normalizedProfile === 'voiceover_translation') {
+    const pixelFormat = String(metadata.pixelFormat || '').trim().toLowerCase();
+    if (pixelFormat !== 'yuv420p') {
+      throw createMediaTranscodeError('media_output_invalid_pixel_format', '转码结果不是兼容的 yuv420p 视频');
+    }
+    if (String(metadata.audioCodec || '').trim().toLowerCase() !== 'aac') {
+      throw createMediaTranscodeError('media_audio_track_required', '口播翻译视频必须包含 AAC 音频轨道');
+    }
+    return metadata;
+  }
   if (normalizedProfile === 'subtitle_removal') {
     const pixelFormat = String(metadata.pixelFormat || '').trim().toLowerCase();
     if (pixelFormat && pixelFormat !== 'yuv420p') {
@@ -342,6 +404,15 @@ export function isMediaCompatibleForProfile(profile, metadata = {}) {
     }
     try {
       validateTranscodedOutput(kind, metadata, normalizedProfile);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (normalizedProfile === 'voiceover_translation') {
+    if (metadata.kind !== 'video') return false;
+    try {
+      validateTranscodedOutput('video', metadata, normalizedProfile);
       return true;
     } catch {
       return false;

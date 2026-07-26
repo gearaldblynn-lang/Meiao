@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import {
   createMediaTranscodeError,
   isMediaCompatibleForProfile,
+  validateMediaTranscodeSource,
   validateTranscodedOutput,
   validateTrimRange,
 } from './mediaTranscodeContract.mjs';
@@ -70,6 +71,12 @@ export function createMediaTranscodeApi({
         if (kind === 'audio' && !probe.audioCodec) {
           throw createMediaTranscodeError('media_probe_missing_audio', '文件中没有可用的音频轨道');
         }
+        validateMediaTranscodeSource({
+          profile: created.profile,
+          kind,
+          hasVideo: Boolean(probe.videoCodec),
+          hasAudio: Boolean(probe.hasAudio),
+        });
         const ready = await store.updateProbe(created.id, userId, probe);
         await safeLog(log, {
           action: 'media_transcode_session_created',
