@@ -10,6 +10,7 @@ import {
 } from '../src/utils/maxforaiImageModels.mjs';
 import { normalizeProductRestoreRollout } from '../src/utils/productRestoreRollout.mjs';
 import { getSubtitleRemovalConfig } from './subtitleRemovalContract.mjs';
+import { getVoiceoverPublicConfig } from './voiceoverContract.mjs';
 
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',
@@ -624,6 +625,7 @@ export const buildJobRuntimeLogMeta = ({
 
 export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) => {
   const subtitleRemovalConfig = getSubtitleRemovalConfig(env);
+  const voiceoverTranslationConfig = getVoiceoverPublicConfig(env, overrides?.voiceoverReadiness || {});
   const allowedOrigins = normalizeAllowedOrigins(env.MEIAO_ALLOWED_ORIGINS);
   const publicBaseUrl = normalizeBaseUrl(overrides?.publicBaseUrl || env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || '');
   const chatCatalog = applyRuntimeMediaCapabilities(AGENT_MODEL_CATALOG.chat, env, overrides);
@@ -725,6 +727,7 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       batchPrepConcurrency: subtitleRemovalConfig.batchPrepConcurrency,
       batchSubmitConcurrency: subtitleRemovalConfig.batchSubmitConcurrency,
     },
+    voiceoverTranslation: voiceoverTranslationConfig,
     systemSettings: {
       analysisModel: validConfiguredAnalysisModel,
       userAnalysisModel: validConfiguredUserAnalysisModel,

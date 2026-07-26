@@ -46,7 +46,73 @@ export type OneClickSubMode = 'first_image' | 'main_image' | 'detail_page' | 'sk
 
 export type BuyerShowSubMode = 'integrated' | 'pure_text';
 
-export type VideoSubMode = 'long_video' | 'veo' | 'storyboard' | 'diagnosis';
+export type VideoSubMode = 'long_video' | 'veo' | 'storyboard' | 'diagnosis' | 'voiceover_translation';
+
+export interface VoiceoverVoiceProfile {
+  pitch: 'low' | 'medium' | 'high';
+  brightness: 'dark' | 'balanced' | 'bright';
+  energy: 'calm' | 'balanced' | 'energetic';
+  pace: 'slow' | 'natural' | 'fast';
+  accentDescription: string;
+}
+
+export interface VoiceoverTranscriptSegment {
+  id: string;
+  startMs: number;
+  endMs: number;
+  sourceText: string;
+  targetText: string;
+}
+
+export interface VoiceoverTranslationSegment extends VoiceoverTranscriptSegment {}
+
+export interface VoiceoverTranslationPayload {
+  taskType: 'voiceover_translate_video';
+  taskPurpose: 'voiceover_translation';
+  userId: string;
+  sourceAssetId?: string;
+  sourceUrl?: string;
+  sourceProjectId?: string;
+  sourceResultId?: string;
+  shellProjectId: string;
+  shellProjectName: string;
+  shellResultId: string;
+  clientSubmissionKey: string;
+  targetLanguage: string;
+  translationMode: 'natural' | 'literal';
+  voiceMode: 'auto' | 'preset';
+  voiceName?: string;
+  removeText: boolean;
+  subtitleRegionNormalized?: { x: number; y: number; width: number; height: number };
+}
+
+export interface VoiceoverCheckpointV1 {
+  version: 1;
+  stage: 'input_prepared' | 'subtitle_removal' | 'audio_extracted' | 'voice_separated' | 'speech_analysis_submitting' | 'speech_analyzed' | 'translated' | 'tts_generating' | 'audio_aligned' | 'result_persisted';
+  baseVideoAssetId: string;
+  originalAudioAssetId?: string;
+  vocalAssetId?: string;
+  backgroundAssetId?: string;
+  subtitleRemoval?: { childJobId: string; providerTaskId?: string; resultAssetId?: string; attempt: number; status: 'queued' | 'submitted' | 'succeeded' | 'failed' };
+  analysisAttempt: number;
+  analysis?: { sourceLanguage: string; speakerCount: number; voiceProfile: VoiceoverVoiceProfile; segments: VoiceoverTranscriptSegment[] };
+  translation?: { targetLanguage: string; mode: 'natural' | 'literal'; segments: VoiceoverTranslationSegment[]; selectedVoiceName: string };
+  ttsGroups?: Array<{ index: number; attempt: number; childJobId: string; providerTaskId?: string; assetId?: string; status: 'queued' | 'submitted' | 'succeeded' | 'failed'; startMs: number; endMs: number; actualDurationMs?: number; atempo?: number }>;
+  finalAssetId?: string;
+}
+
+export interface VoiceoverTranslationResult {
+  videoUrl: string;
+  sourceUrl: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  translationMode: 'natural' | 'literal';
+  voiceName: string;
+  sourceTranscript: string;
+  translatedTranscript: string;
+  voiceoverStage: VoiceoverCheckpointV1['stage'];
+  finalAssetId: string;
+}
 
 export type AspectRatio =
   | 'auto'

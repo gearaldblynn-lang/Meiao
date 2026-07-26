@@ -163,6 +163,26 @@ test('subtitle removal readiness exposes booleans without leaking provider confi
   assert.doesNotMatch(healthBlock, /GOLDEN_SUBTITLE_API_TOKEN|authorization|baseUrl|pollIntervalMs|timeoutMs/i);
 });
 
+test('buildPublicSystemConfig publishes the frozen public voiceover contract only', () => {
+  const config = buildPublicSystemConfig({
+    MEIAO_VOICEOVER_TRANSLATION_ENABLED: '1',
+    MEIAO_VOICEOVER_SEPARATION_PYTHON: '/Users/private/voiceover/bin/python',
+    MEIAO_VOICEOVER_DEMUCS_MODEL_DIR: '/Users/private/models',
+    KIE_API_KEY: 'private-kie-token',
+  }, {}, {
+    voiceoverReadiness: { pythonReady: true, modelReady: true, ffmpegReady: true },
+  });
+
+  assert.deepEqual(Object.keys(config.voiceoverTranslation).sort(), ['enabled', 'languages', 'limits', 'model', 'readiness', 'ready', 'voices']);
+  assert.deepEqual(config.voiceoverTranslation.readiness, {
+    pythonReady: true,
+    modelReady: true,
+    ffmpegReady: true,
+    separationConcurrency: 1,
+  });
+  assert.equal(JSON.stringify(config.voiceoverTranslation).match(/private|\/Users|token|apiKey/i), null);
+});
+
 test('buildPublicSystemConfig exposes the normalized Product Restoration rollout', () => {
   const envKey = 'MEIAO_PRODUCT_RESTORE_ROLLOUT';
   const hadOriginalValue = Object.prototype.hasOwnProperty.call(process.env, envKey);
