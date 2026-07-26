@@ -49,15 +49,15 @@ const STAGE_INDEX = new Map(STAGES.map((stage, index) => [stage, index]));
 const STATUS_INDEX = new Map([['queued', 0], ['submitted', 1], ['succeeded', 2], ['failed', 2]]);
 const CHECKPOINT_REQUIRED_FIELDS = Object.freeze([
   ['baseVideoAssetId'],
-  ['baseVideoAssetId', 'subtitleRemoval'],
-  ['baseVideoAssetId', 'subtitleRemoval', 'originalAudioAssetId'],
-  ['baseVideoAssetId', 'subtitleRemoval', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId'],
-  ['baseVideoAssetId', 'subtitleRemoval', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId'],
-  ['baseVideoAssetId', 'subtitleRemoval', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'analysis'],
-  ['baseVideoAssetId', 'subtitleRemoval', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'analysis', 'translation'],
-  ['baseVideoAssetId', 'subtitleRemoval', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'analysis', 'translation', 'ttsGroups'],
-  ['baseVideoAssetId', 'subtitleRemoval', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'analysis', 'translation', 'ttsGroups', 'alignedAudioAssetId'],
-  ['baseVideoAssetId', 'subtitleRemoval', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'analysis', 'translation', 'ttsGroups', 'alignedAudioAssetId', 'finalAssetId'],
+  ['baseVideoAssetId'],
+  ['baseVideoAssetId', 'originalAudioAssetId'],
+  ['baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId'],
+  ['baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId'],
+  ['baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'analysis'],
+  ['baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'analysis', 'translation'],
+  ['baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'analysis', 'translation', 'ttsGroups'],
+  ['baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'analysis', 'translation', 'ttsGroups', 'alignedAudioAssetId'],
+  ['baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'analysis', 'translation', 'ttsGroups', 'alignedAudioAssetId', 'finalAssetId'],
 ]);
 const MAX_SEGMENTS = 200;
 const MAX_TEXT_BYTES = 20_000;
@@ -164,8 +164,14 @@ const normalizedValidationOptions = (options = {}) => {
     overlapToleranceMs: boundedNumber(options.overlapToleranceMs, VOICEOVER_DEFAULTS.overlapToleranceMs, VOICEOVER_BOUNDS.overlapToleranceMs, true),
     minAtempo: minAtempo <= maxAtempo ? minAtempo : VOICEOVER_DEFAULTS.minAtempo,
     maxAtempo: minAtempo <= maxAtempo ? maxAtempo : VOICEOVER_DEFAULTS.maxAtempo,
+    removeText: options.removeText === true,
   });
 };
+
+const requiredCheckpointFields = (stageIndex, options) => Object.freeze([
+  ...CHECKPOINT_REQUIRED_FIELDS[stageIndex],
+  ...(options.removeText && stageIndex >= STAGE_INDEX.get('subtitle_removal') ? ['subtitleRemoval'] : []),
+]);
 
 const normalizeRectangle = (value) => {
   if (!plainObject(value)) throw buildVoiceoverError('voiceover_analysis_invalid', '去文案区域无效');
@@ -323,6 +329,10 @@ const normalizeTtsGroups = (groups, validationOptions = normalizedValidationOpti
   });
 };
 
+/**
+ * Validates a durable worker checkpoint. `options.removeText` must come from the
+ * normalized parent payload, never from browser data persisted in the checkpoint.
+ */
 export function normalizeVoiceoverCheckpoint(value, options = {}) {
   const validationOptions = normalizedValidationOptions(options);
   const allowed = new Set(['version', 'stage', 'baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'subtitleRemoval', 'analysis', 'translation', 'ttsGroups', 'alignedAudioAssetId', 'finalAssetId', 'analysisAttempt']);
@@ -365,7 +375,7 @@ export function normalizeVoiceoverCheckpoint(value, options = {}) {
     if (stageIndex < 9 || !isAssetId(value.finalAssetId)) throw buildVoiceoverError('voiceover_checkpoint_invalid', '结果阶段无效');
     output.finalAssetId = value.finalAssetId;
   }
-  for (const field of CHECKPOINT_REQUIRED_FIELDS[stageIndex]) {
+  for (const field of requiredCheckpointFields(stageIndex, validationOptions)) {
     if (output[field] === undefined || (Array.isArray(output[field]) && output[field].length === 0)) {
       throw buildVoiceoverError('voiceover_checkpoint_invalid', `阶段缺少 ${field}`);
     }
@@ -434,6 +444,15 @@ const mergeTtsGroups = (current, patch, options) => {
   return [...merged.values()].sort((left, right) => left.index - right.index || left.attempt - right.attempt);
 };
 
+const mergeImmutableResult = (current, patch, normalize, field) => {
+  if (patch === undefined) return current;
+  const normalizedPatch = normalize(patch);
+  if (current !== undefined && JSON.stringify(current) !== JSON.stringify(normalizedPatch)) {
+    throw buildVoiceoverError('voiceover_checkpoint_invalid', `${field} 不能被替换`);
+  }
+  return current === undefined ? normalizedPatch : current;
+};
+
 export function mergeVoiceoverCheckpoint(current, patch = {}, options = {}) {
   const validationOptions = normalizedValidationOptions(options);
   const currentCheckpoint = normalizeVoiceoverCheckpoint(current, validationOptions);
@@ -447,14 +466,28 @@ export function mergeVoiceoverCheckpoint(current, patch = {}, options = {}) {
   }
   merged.analysisAttempt = Math.max(currentCheckpoint.analysisAttempt, Number(patch.analysisAttempt ?? currentCheckpoint.analysisAttempt));
   merged.subtitleRemoval = mergeChildCheckpoint(currentCheckpoint.subtitleRemoval, patch.subtitleRemoval);
-  merged.analysis = patch.analysis === undefined ? currentCheckpoint.analysis : patch.analysis;
-  merged.translation = patch.translation === undefined ? currentCheckpoint.translation : patch.translation;
+  merged.analysis = mergeImmutableResult(
+    currentCheckpoint.analysis,
+    patch.analysis,
+    (value) => validateVoiceoverAnalysis(value, validationOptions),
+    'analysis',
+  );
+  merged.translation = mergeImmutableResult(
+    currentCheckpoint.translation,
+    patch.translation,
+    (value) => normalizeTranslation(value, validationOptions),
+    'translation',
+  );
   merged.ttsGroups = mergeTtsGroups(currentCheckpoint.ttsGroups, patch.ttsGroups, validationOptions);
   return normalizeVoiceoverCheckpoint(merged, validationOptions);
 }
 
-export function prepareVoiceoverRetryCheckpoint(checkpoint, retryPlan = {}) {
-  const current = normalizeVoiceoverCheckpoint(checkpoint);
+/**
+ * The only server-side rewind path. Pass the normalized parent payload's
+ * `removeText` setting as options so Golden checkpoint requirements remain intact.
+ */
+export function prepareVoiceoverRetryCheckpoint(checkpoint, retryPlan = {}, options = {}) {
+  const current = normalizeVoiceoverCheckpoint(checkpoint, options);
   if (current.stage !== 'speech_analysis_submitting') {
     throw buildVoiceoverError('voiceover_analysis_invalid', '当前阶段不能重新提交语音分析');
   }
@@ -470,5 +503,5 @@ export function prepareVoiceoverRetryCheckpoint(checkpoint, retryPlan = {}) {
     ...(current.backgroundAssetId ? { backgroundAssetId: current.backgroundAssetId } : {}),
     ...(current.subtitleRemoval ? { subtitleRemoval: current.subtitleRemoval } : {}),
     analysisAttempt: current.analysisAttempt + 1,
-  });
+  }, options);
 }
