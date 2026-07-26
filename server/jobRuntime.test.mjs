@@ -131,6 +131,30 @@ test('buildPublicSystemConfig exposes MaxForAI video readiness without leaking i
   assert.equal(JSON.stringify(config).includes('private-video-secret'), false);
 });
 
+test('voiceover TTS audio output persistence uses managed intermediate ownership and never returns provider URLs', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const persistence = source.match(/const persistJobOutputAssetsIfEnabled = async[\s\S]*?const persistRuntimeRemoteAssetIfEnabled/)?.[0] || '';
+
+  assert.match(persistence, /persistRemoteField\('audioUrl', 'intermediate', `\$\{job\.taskType \|\| 'result'\}\.mp3`\)/);
+  assert.match(persistence, /const parentJobId = String\(job\?\.payload\?\.parentJobId \|\| ''\)\.trim\(\)/);
+  assert.match(persistence, /jobId: isVoiceoverTts \? parentJobId : job\.id/);
+  assert.match(persistence, /expiresAt: isVoiceoverTts \? getVoiceoverIntermediateExpiresAt\(\) : undefined/);
+  assert.match(persistence, /if \(fieldName !== 'audioUrl'\) \{[\s\S]*?RemoteUrl/);
+  assert.doesNotMatch(persistence, /mimeType: fieldName === 'audioUrl'/);
+  assert.doesNotMatch(persistence, /executeProviderJob|createTask/);
+});
+
+test('public upload routes do not accept client supplied expiresAt', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const mysqlUpload = source.match(/if \(url\.pathname === '\/api\/assets\/upload' && req\.method === 'POST'\) \{[\s\S]*?\n  \}/)?.[0] || '';
+  const localUploadStart = source.lastIndexOf("if (url.pathname === '/api/assets/upload' && req.method === 'POST')");
+  const localUpload = source.slice(localUploadStart, source.indexOf("if (url.pathname === '/api/assets/upload-stream'", localUploadStart));
+  assert.doesNotMatch(mysqlUpload, /expiresAt/);
+  assert.doesNotMatch(localUpload, /expiresAt/);
+  const publicConfig = buildPublicSystemConfig({ MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS: '3600000' });
+  assert.equal(JSON.stringify(publicConfig).includes('expiresAt'), false);
+});
+
 test('subtitle removal readiness exposes booleans without leaking provider configuration', () => {
   const token = 'golden-private-token';
   const baseUrl = 'https://subtitle-provider.invalid/private-api';

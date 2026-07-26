@@ -139,6 +139,7 @@ import {
   ensureAssetSchema,
   extractStoredAssetIdFromPublicUrl,
   fetchRemoteAssetBufferWithRetry,
+  getVoiceoverIntermediateExpiresAt,
   getPublicBaseUrl,
   getActiveManagedAssetRunIds,
   getStoredAssetById,
@@ -4705,6 +4706,8 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
 
   const pool = lockedPool;
   let result = { ...(output.result || {}) };
+  const isVoiceoverTts = String(job?.taskType || '').trim() === 'kie_tts';
+  const parentJobId = String(job?.payload?.parentJobId || '').trim();
   const imageTransform = buildImageOutputTransformFromJob(job);
   const hasInlineImageResult = /^data:image\//i.test(String(result.imageUrl || '').trim());
   if (hasInlineImageResult && !publicBaseUrl) {
@@ -4844,12 +4847,15 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
         remoteUrl: sourceUrl,
         originalName: fallbackName,
         provider: job.provider,
-        jobId: job.id,
+        jobId: isVoiceoverTts ? parentJobId : job.id,
+        expiresAt: isVoiceoverTts ? getVoiceoverIntermediateExpiresAt() : undefined,
       });
     }
     result[fieldName] = persisted.publicUrl;
     result[`${fieldName}AssetId`] = persisted.id;
-    result[`${fieldName}RemoteUrl`] = sourceUrl;
+    if (fieldName !== 'audioUrl') {
+      result[`${fieldName}RemoteUrl`] = sourceUrl;
+    }
   };
 
   const persistRemoteArrayField = async (fieldName, assetType, fallbackNameBuilder) => {
@@ -4881,6 +4887,7 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
 
   await persistRemoteField('imageUrl', 'result', `${job.taskType || 'result'}.png`);
   await persistRemoteField('videoUrl', 'video', `${job.taskType || 'result'}.mp4`);
+  await persistRemoteField('audioUrl', 'intermediate', `${job.taskType || 'result'}.mp3`);
   await persistRemoteField('fileUrl', 'result', `${job.taskType || 'result'}.bin`);
   await persistRemoteArrayField('imageResultUrls', 'result', (index) => `${job.taskType || 'result'}_${index + 1}.png`);
   await persistRemoteArrayField('resultUrls', 'result', (index) => `${job.taskType || 'result'}_${index + 1}.png`);

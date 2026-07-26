@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import * as assetStore from './assetStore.mjs';
 
@@ -20,6 +24,7 @@ const {
   markStoredAssetStorageStatus,
   optimizeMp4BufferForStreaming,
   persistAssetBuffer,
+  persistAssetFile,
   persistUploadedAssetBuffer,
   requestStoredAssetDeletion,
   sanitizeAssetName,
@@ -28,6 +33,197 @@ const {
   selectAbandonedPermanentAgentResultAssets,
   collectStoredAssetIdsFromValue,
 } = assetStore;
+
+test('persistAssetFile streams a file, verifies sha256, and records explicit ttl', async () => {
+  assert.equal(typeof persistAssetFile, 'function');
+  const fixtureDir = await mkdtemp(path.join(tmpdir(), 'meiao-asset-store-'));
+  const sourcePath = path.join(fixtureDir, 'vocals.wav');
+  const contents = Buffer.from('voiceover-vocals-fixture');
+  const expectedSha256 = createHash('sha256').update(contents).digest('hex');
+  const expiresAt = 1_700_259_200_000;
+  const inserted = [];
+  await writeFile(sourcePath, contents);
+
+  let persisted;
+  try {
+    persisted = await persistAssetFile({
+      pool: { query: async (_sql, values) => { inserted.push(values); return [[]]; } },
+      publicBaseUrl: 'http://127.0.0.1:3001',
+      userId: 'task3-stream-user',
+      module: 'video',
+      assetType: 'intermediate',
+      originalName: 'vocals.wav',
+      mimeType: 'audio/wav',
+      sourcePath,
+      jobId: 'parent-1',
+      expiresAt,
+      expectedSha256,
+    });
+
+    assert.equal(persisted.contentHash, expectedSha256);
+    assert.equal(persisted.expiresAt, expiresAt);
+    assert.equal(persisted.jobId, 'parent-1');
+    assert.equal(persisted.assetType, 'intermediate');
+    assert.ok(persisted.assetType.length <= 20);
+    assert.equal((await readFile(assetStore.resolveStoredAssetPath(persisted))).toString(), contents.toString());
+    assert.equal(inserted.length, 1);
+  } finally {
+    if (persisted) await deleteStoredAssetFile(persisted.storageKey);
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test('persistAssetFile hash mismatch removes only its copied destination and creates no asset record', async () => {
+  assert.equal(typeof persistAssetFile, 'function');
+  const fixtureDir = await mkdtemp(path.join(tmpdir(), 'meiao-asset-store-'));
+  const sourcePath = path.join(fixtureDir, 'vocals.wav');
+  const inserted = [];
+  await writeFile(sourcePath, Buffer.from('voiceover-vocals-fixture'));
+
+  try {
+    await assert.rejects(
+      persistAssetFile({
+        pool: { query: async (_sql, values) => { inserted.push(values); return [[]]; } },
+        publicBaseUrl: 'http://127.0.0.1:3001',
+        userId: 'task3-mismatch-user',
+        module: 'video',
+        assetType: 'intermediate',
+        originalName: 'vocals.wav',
+        mimeType: 'audio/wav',
+        sourcePath,
+        expectedSha256: '0'.repeat(64),
+      }),
+      (error) => error?.code === 'managed_asset_hash_mismatch',
+    );
+    assert.equal(inserted.length, 0);
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test('persistAssetFile stream errors leave no asset record', async () => {
+  assert.equal(typeof persistAssetFile, 'function');
+  const inserted = [];
+  await assert.rejects(
+    persistAssetFile({
+      pool: { query: async (_sql, values) => { inserted.push(values); return [[]]; } },
+      publicBaseUrl: 'http://127.0.0.1:3001',
+      userId: 'task3-stream-error-user',
+      module: 'video',
+      assetType: 'intermediate',
+      originalName: 'missing.wav',
+      mimeType: 'audio/wav',
+      sourcePath: path.join(tmpdir(), 'not-a-real-meiao-voiceover-file.wav'),
+    }),
+  );
+  assert.equal(inserted.length, 0);
+});
+
+test('explicit server expiry applies to trusted buffer persistence without changing final video result retention', async () => {
+  const before = Date.now();
+  const expiresAt = 1_700_259_200_000;
+  const intermediate = await persistAssetBuffer({
+    pool: { query: async () => [[]] },
+    publicBaseUrl: 'https://meiao.example.com',
+    userId: 'task3-retention-user',
+    module: 'video',
+    assetType: 'intermediate',
+    originalName: 'tts.mp3',
+    mimeType: 'audio/mpeg',
+    fileBuffer: Buffer.from('tts-audio'),
+    expiresAt,
+  });
+  const finalResult = await persistAssetBuffer({
+    pool: { query: async () => [[]] },
+    publicBaseUrl: 'https://meiao.example.com',
+    userId: 'task3-retention-user',
+    module: 'video',
+    assetType: 'result',
+    originalName: 'final.mp4',
+    mimeType: 'video/mp4',
+    fileBuffer: Buffer.from('final-video'),
+  });
+  try {
+    assert.equal(intermediate.expiresAt, expiresAt);
+    assert.ok(finalResult.expiresAt >= before + ASSET_RETENTION_MS);
+    assert.equal(finalResult.contentHash, createHash('sha256').update(Buffer.from('final-video')).digest('hex'));
+  } finally {
+    await deleteStoredAssetFile(intermediate.storageKey);
+    await deleteStoredAssetFile(finalResult.storageKey);
+  }
+});
+
+test('voiceover intermediate ttl uses a bounded environment value and falls back conservatively', () => {
+  assert.equal(assetStore.getVoiceoverIntermediateTtlMs({ MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS: '3600000' }), 3_600_000);
+  assert.equal(assetStore.getVoiceoverIntermediateTtlMs({ MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS: '1' }), ASSET_RETENTION_MS);
+});
+
+test('checkpoint asset references protect expired voiceover intermediates while unreferenced intermediates expire', () => {
+  const now = 1_700_000_000_000;
+  const checkpoint = {
+    voiceoverCheckpoint: {
+      stages: [{ vocalAssetId: 'voiceover-vocals', ttsAssetId: 'voiceover-tts-0' }],
+    },
+  };
+  const referenced = new Set(collectStoredAssetIdsFromValue(checkpoint));
+  const rows = [
+    { id: 'voiceover-vocals', expiresAt: now - 1, deletedAt: null, isReferenced: referenced.has('voiceover-vocals') },
+    { id: 'voiceover-tts-0', expiresAt: now - 1, deletedAt: null, isReferenced: referenced.has('voiceover-tts-0') },
+    { id: 'voiceover-expired', expiresAt: now - 1, deletedAt: null, isReferenced: false },
+  ];
+  assert.deepEqual(selectExpiredAssetsForCleanup(rows, now).map((item) => item.id), ['voiceover-expired']);
+});
+
+test('remote audio persistence uses the downloaded content type and can retry without creating a provider task', async () => {
+  const downloads = [];
+  const persistedOptions = [];
+  const remoteUrl = 'https://provider.example/group-0.wav';
+  const persisted = await assetStore.persistRemoteAsset({
+    publicBaseUrl: 'https://meiao.example.com',
+    userId: 'user-1',
+    module: 'video',
+    assetType: 'intermediate',
+    remoteUrl,
+    originalName: 'kie_tts.mp3',
+    provider: 'kie',
+    jobId: 'voiceover-parent-1',
+    expiresAt: 1_700_259_200_000,
+    deps: {
+      downloadRemoteAsset: async (url) => {
+        downloads.push(url);
+        return { fileBuffer: Buffer.from('wav-bytes'), contentType: 'audio/wav' };
+      },
+      persistAsset: async (options) => {
+        persistedOptions.push(options);
+        return { id: 'asset-audio-1', publicUrl: '/api/assets/file/asset-audio-1/kie_tts.mp3' };
+      },
+    },
+  });
+
+  assert.equal(downloads.length, 1);
+  assert.deepEqual(downloads, [remoteUrl]);
+  assert.equal(persisted.id, 'asset-audio-1');
+  assert.equal(persistedOptions.length, 1);
+  assert.equal(persistedOptions[0].mimeType, 'audio/wav');
+  assert.equal(persistedOptions[0].providerSourceUrl, remoteUrl);
+  assert.equal(persistedOptions[0].jobId, 'voiceover-parent-1');
+  assert.equal(persistedOptions[0].expiresAt, 1_700_259_200_000);
+});
+
+test('remote download failure creates no persistence record', async () => {
+  let persisted = 0;
+  await assert.rejects(
+    assetStore.persistRemoteAsset({
+      remoteUrl: 'https://provider.example/missing.mp3',
+      deps: {
+        downloadRemoteAsset: async () => { throw Object.assign(new Error('download failed'), { code: 'provider_network_error' }); },
+        persistAsset: async () => { persisted += 1; },
+      },
+    }),
+    (error) => error?.code === 'provider_network_error',
+  );
+  assert.equal(persisted, 0);
+});
 
 test('inline image result is decoded and replaced by a managed asset URL', async () => {
   assert.equal(typeof assetStore.persistInlineImageResult, 'function');
@@ -254,7 +450,7 @@ test('agent chat and generated result assets are permanent until their chat sess
 
   try {
     assert.equal(record.expiresAt, 0);
-    assert.equal(insertedValues?.[19], 0);
+    assert.equal(insertedValues?.[20], 0);
   } finally {
     await deleteStoredAssetFile(record.storageKey);
   }
@@ -345,6 +541,10 @@ test('ensureAssetSchema accepts provider task ids longer than local entity ids',
   assert.ok(
     queries.some((sql) => /storage_status/i.test(sql)),
     'stored assets need an explicit backwards-compatible storage status'
+  );
+  assert.ok(
+    queries.some((sql) => /ADD COLUMN content_hash CHAR\(64\) NULL AFTER file_size/.test(sql)),
+    'startup migration should add the content hash column idempotently'
   );
   assert.ok(
     queries.some((sql) => /CREATE TABLE IF NOT EXISTS asset_cleanup_tasks/i.test(sql)),
