@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 
 import {
   createMediaTranscodeService,
+  inspectMp4Container,
   parseFfprobeOutput,
   runMediaProcess,
 } from './mediaTranscodeService.mjs';
@@ -85,6 +86,29 @@ test('service probe passes structured FFprobe arguments and parses stdout', asyn
   assert.deepEqual(calls[0], {
     command: '/private/ffprobe',
     args: ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', '/tmp/source.mov'],
+  });
+});
+
+test('MP4 container inspection caps malformed atom walks and fails closed', async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'meiao-mp4-atoms-'));
+  const fixturePath = join(rootDir, 'many-atoms.mp4');
+  t.after(async () => { await rm(rootDir, { recursive: true, force: true }); });
+  const atom = (type, payload = Buffer.alloc(0)) => {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(header.length + payload.length, 0);
+    header.write(type, 4, 4, 'latin1');
+    return Buffer.concat([header, payload]);
+  };
+  await writeFile(fixturePath, Buffer.concat([
+    atom('ftyp', Buffer.from('isom')),
+    ...Array.from({ length: 64 }, () => atom('free')),
+  ]));
+
+  assert.deepEqual(await inspectMp4Container(fixturePath, { maxAtoms: 4 }), {
+    containerBrand: 'isom',
+    fastStart: false,
+    atomCount: 4,
+    capped: true,
   });
 });
 
@@ -194,5 +218,7 @@ test('voiceover service preserves a portrait source as H.264 yuv420p AAC MP4', a
   assert.equal(result.metadata.videoCodec, 'h264');
   assert.equal(result.metadata.pixelFormat, 'yuv420p');
   assert.equal(result.metadata.audioCodec, 'aac');
+  assert.ok(['isom', 'iso2', 'avc1', 'mp41', 'mp42'].includes(result.metadata.containerBrand));
+  assert.equal(result.metadata.fastStart, true);
   assert.equal(result.metadata.width / result.metadata.height, 1080 / 1920);
 });

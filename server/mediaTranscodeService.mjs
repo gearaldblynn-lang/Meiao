@@ -46,7 +46,10 @@ function parseFrameRate(value) {
   return Number((top / bottom).toFixed(2));
 }
 
-async function inspectMp4Container(filePath) {
+const MAX_MP4_CONTAINER_ATOMS = 4_096;
+
+export async function inspectMp4Container(filePath, { maxAtoms = MAX_MP4_CONTAINER_ATOMS } = {}) {
+  const effectiveMaxAtoms = parsePositiveInteger(maxAtoms, MAX_MP4_CONTAINER_ATOMS);
   let handle;
   try {
     handle = await open(filePath, 'r');
@@ -54,34 +57,49 @@ async function inspectMp4Container(filePath) {
     let offset = 0;
     let containerBrand = '';
     let moovOffset = -1;
-    let firstMdatOffset = -1;
+    let atomCount = 0;
     const header = Buffer.alloc(16);
     while (offset + 8 <= fileSize) {
+      if (atomCount >= effectiveMaxAtoms) {
+        return { containerBrand, fastStart: false, atomCount, capped: true };
+      }
       const { bytesRead } = await handle.read(header, 0, header.length, offset);
-      if (bytesRead < 8) break;
+      atomCount += 1;
+      if (bytesRead < 8) return { containerBrand, fastStart: false, atomCount, capped: false };
       const smallSize = header.readUInt32BE(0);
       const type = header.toString('latin1', 4, 8);
       let atomSize = smallSize;
       let headerSize = 8;
       if (smallSize === 1) {
-        if (bytesRead < 16) break;
+        if (bytesRead < 16) return { containerBrand, fastStart: false, atomCount, capped: false };
         atomSize = Number(header.readBigUInt64BE(8));
         headerSize = 16;
       } else if (smallSize === 0) {
         atomSize = fileSize - offset;
       }
-      if (!Number.isSafeInteger(atomSize) || atomSize < headerSize || offset + atomSize > fileSize) break;
+      if (!Number.isSafeInteger(atomSize) || atomSize < headerSize || offset + atomSize > fileSize) {
+        return { containerBrand, fastStart: false, atomCount, capped: false };
+      }
       if (type === 'ftyp' && bytesRead >= 12) containerBrand = header.toString('latin1', 8, 12).trim().toLowerCase();
       if (type === 'moov' && moovOffset < 0) moovOffset = offset;
-      if (type === 'mdat' && firstMdatOffset < 0) firstMdatOffset = offset;
+      if (type === 'mdat') {
+        return {
+          containerBrand,
+          fastStart: Boolean(containerBrand && moovOffset >= 0 && moovOffset < offset),
+          atomCount,
+          capped: false,
+        };
+      }
       offset += atomSize;
     }
     return {
       containerBrand,
-      fastStart: Boolean(containerBrand && moovOffset >= 0 && firstMdatOffset >= 0 && moovOffset < firstMdatOffset),
+      fastStart: false,
+      atomCount,
+      capped: false,
     };
   } catch {
-    return { containerBrand: '', fastStart: false };
+    return { containerBrand: '', fastStart: false, atomCount: 0, capped: false };
   } finally {
     await handle?.close();
   }

@@ -27,7 +27,7 @@ const session = {
 
 const canonicalProbe = {
   kind: 'video', durationSeconds: 5, formatNames: ['mov', 'mp4'], videoCodec: 'h264', audioCodec: 'aac',
-  width: 720, height: 1280, frameRate: 30, sizeBytes: 2_000_000, hasAudio: true,
+  width: 720, height: 1280, frameRate: 30, sizeBytes: 2_000_000, hasAudio: true, containerBrand: 'isom', fastStart: true,
 };
 
 function createFakeStore(sessionOverride = {}) {
@@ -429,6 +429,40 @@ test('cancel wins while a conversion is in progress and prevents persistence', a
     () => store.getOwned(created.id, 'u1'),
     (error) => error?.code === 'media_session_not_found',
   );
+});
+
+test('an aged active conversion remains cancellable through the service', async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'meiao-media-api-'));
+  let now = 1_000;
+  const store = createMediaTranscodeSessionStore({ rootDir, ttlMs: 100, clock: { now: () => now } });
+  t.after(async () => { await store.destroy(); });
+  const created = await store.create({
+    userId: 'u1', kind: 'video', fileName: 'source.mov', fileBuffer: Buffer.from('source'), probe: session.probe,
+  });
+  let started = false;
+  let cancelCalls = 0;
+  let releaseTranscode;
+  const gate = new Promise((resolve) => { releaseTranscode = resolve; });
+  const api = createMediaTranscodeApi({
+    store,
+    service: {
+      transcode: async () => {
+        started = true;
+        await gate;
+        return { fileBuffer: Buffer.from('canonical'), metadata: canonicalProbe, mimeType: 'video/mp4' };
+      },
+      cancel: async () => { cancelCalls += 1; return true; },
+    },
+    persistAsset: async () => { throw new Error('must not persist'); },
+  });
+
+  const conversion = api.convertSession({ userId: 'u1', sessionId: created.id, startSeconds: 1, endSeconds: 6 });
+  await waitFor(() => started);
+  now = 10_000;
+  assert.deepEqual(await api.cancelSession({ userId: 'u1', sessionId: created.id }), { cancelled: true });
+  assert.equal(cancelCalls, 1);
+  releaseTranscode();
+  await assert.rejects(conversion, (error) => error?.code === 'media_transcode_cancelled');
 });
 
 test('a genuine MOV voiceover source is transcoded instead of being relabelled as MP4', async (t) => {

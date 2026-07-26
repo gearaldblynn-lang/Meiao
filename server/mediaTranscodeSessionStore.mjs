@@ -44,6 +44,7 @@ export function createMediaTranscodeSessionStore({
   const effectiveTtlMs = positiveInteger(ttlMs, 30 * 60 * 1000);
   const effectiveMaxSessions = positiveInteger(maxSessions, 20);
   const sessionLocks = new Map();
+  const activeLeases = new Set();
 
   const withSessionLock = async (sessionId, operation) => {
     const previous = sessionLocks.get(sessionId) || Promise.resolve();
@@ -96,14 +97,21 @@ export function createMediaTranscodeSessionStore({
   const remove = async (sessionId) => {
     const directory = sessionDirectory(sessionId);
     try {
-      await stat(directory);
-    } catch (error) {
-      if (error?.code === 'ENOENT') return false;
-      throw error;
+      try {
+        await stat(directory);
+      } catch (error) {
+        if (error?.code === 'ENOENT') return false;
+        throw error;
+      }
+      await rm(directory, { recursive: true, force: true });
+      return true;
+    } finally {
+      activeLeases.delete(sessionId);
     }
-    await rm(directory, { recursive: true, force: true });
-    return true;
   };
+
+  const isExpired = (sessionId, record) => !activeLeases.has(sessionId)
+    && Number(record.updatedAt || record.createdAt || 0) + effectiveTtlMs <= clock.now();
 
   const cleanupExpired = async () => {
     await mkdir(resolvedRoot, { recursive: true, mode: 0o700 });
@@ -111,14 +119,16 @@ export function createMediaTranscodeSessionStore({
     let removed = 0;
     await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
       if (!UUID_PATTERN.test(entry.name)) return;
-      try {
-        const record = await readSidecar(entry.name);
-        if (Number(record.updatedAt || record.createdAt || 0) + effectiveTtlMs <= clock.now()) {
-          if (await remove(entry.name)) removed += 1;
+      await withSessionLock(entry.name, async () => {
+        try {
+          const record = await readSidecar(entry.name);
+          if (isExpired(entry.name, record) && await remove(entry.name)) {
+            removed += 1;
+          }
+        } catch (error) {
+          if (error?.code === 'media_session_not_found' && await remove(entry.name)) removed += 1;
         }
-      } catch (error) {
-        if (error?.code === 'media_session_not_found' && await remove(entry.name)) removed += 1;
-      }
+      });
     }));
     return { removed };
   };
@@ -134,7 +144,7 @@ export function createMediaTranscodeSessionStore({
     if (record.userId !== userId) {
       throw createMediaTranscodeError('media_session_forbidden', '无权访问这个媒体处理会话');
     }
-    if (Number(record.updatedAt || record.createdAt || 0) + effectiveTtlMs <= clock.now()) {
+    if (isExpired(sessionId, record)) {
       await remove(sessionId);
       throw createMediaTranscodeError('media_session_expired', '媒体处理会话已过期，请重新上传');
     }
@@ -149,7 +159,7 @@ export function createMediaTranscodeSessionStore({
     return hydrate(next);
   });
 
-  const transitionOwned = async (sessionId, userId, fromStates, nextState) => withSessionLock(sessionId, async () => {
+  const transitionOwned = async (sessionId, userId, fromStates, nextState, { acquireLease = false } = {}) => withSessionLock(sessionId, async () => {
     const current = await getOwned(sessionId, userId);
     if (!fromStates.includes(current.state)) {
       if (current.state === 'cancelled') {
@@ -160,6 +170,7 @@ export function createMediaTranscodeSessionStore({
     const { sourcePath: _sourcePath, ...record } = current;
     const next = { ...record, state: nextState, updatedAt: clock.now() };
     await writeSidecar(next);
+    if (acquireLease) activeLeases.add(sessionId);
     return hydrate(next);
   });
 
@@ -216,11 +227,11 @@ export function createMediaTranscodeSessionStore({
     },
 
     markConverting(sessionId, userId) {
-      return transitionOwned(sessionId, userId, ['ready'], 'converting');
+      return transitionOwned(sessionId, userId, ['ready'], 'converting', { acquireLease: true });
     },
 
     claimConversion(sessionId, userId) {
-      return transitionOwned(sessionId, userId, ['ready'], 'converting');
+      return transitionOwned(sessionId, userId, ['ready'], 'converting', { acquireLease: true });
     },
 
     beginPersisting(sessionId, userId) {
@@ -252,7 +263,11 @@ export function createMediaTranscodeSessionStore({
     count,
 
     async destroy() {
-      await rm(resolvedRoot, { recursive: true, force: true });
+      try {
+        await rm(resolvedRoot, { recursive: true, force: true });
+      } finally {
+        activeLeases.clear();
+      }
     },
   };
 }

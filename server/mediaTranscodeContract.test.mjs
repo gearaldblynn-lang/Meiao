@@ -278,6 +278,30 @@ test('voiceover fast path requires a server-proven MP4 container and faststart l
   }), false);
 });
 
+test('voiceover transcoded output requires a trusted faststart MP4 container', () => {
+  const canonical = {
+    durationSeconds: 1800,
+    sizeBytes: 20_000_000,
+    formatNames: ['mov', 'mp4'],
+    videoCodec: 'h264',
+    pixelFormat: 'yuv420p',
+    audioCodec: 'aac',
+    width: 1080,
+    height: 1920,
+    containerBrand: 'isom',
+    fastStart: true,
+  };
+  assert.doesNotThrow(() => validateTranscodedOutput('video', canonical, 'voiceover_translation'));
+  assert.throws(
+    () => validateTranscodedOutput('video', { ...canonical, containerBrand: 'qt  ' }, 'voiceover_translation'),
+    (error) => error?.code === 'media_output_invalid_container',
+  );
+  assert.throws(
+    () => validateTranscodedOutput('video', { ...canonical, fastStart: false }, 'voiceover_translation'),
+    (error) => error?.code === 'media_output_invalid_container',
+  );
+});
+
 test('compatible short Seedance media can skip redundant FFmpeg conversion', () => {
   assert.equal(isMediaCompatibleForProfile('seedance_reference', {
     kind: 'video',

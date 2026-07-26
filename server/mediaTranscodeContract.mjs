@@ -350,6 +350,10 @@ export function validateTranscodedOutput(kind, metadata, profile = 'seedance_ref
   const width = requirePositiveNumber(metadata.width, 'width');
   const height = requirePositiveNumber(metadata.height, 'height');
   if (normalizedProfile === 'voiceover_translation') {
+    const containerBrand = String(metadata.containerBrand || '').trim().toLowerCase();
+    if (!VOICEOVER_MP4_BRANDS.has(containerBrand) || metadata.fastStart !== true) {
+      throw createMediaTranscodeError('media_output_invalid_container', '转码结果不是可流式播放的 MP4 容器');
+    }
     const pixelFormat = String(metadata.pixelFormat || '').trim().toLowerCase();
     if (pixelFormat !== 'yuv420p') {
       throw createMediaTranscodeError('media_output_invalid_pixel_format', '转码结果不是兼容的 yuv420p 视频');
