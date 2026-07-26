@@ -12,6 +12,14 @@ const createVoiceoverParentJobError = () => {
   return error;
 };
 
+const createPersistentAssetBaseUnavailableError = () => {
+  const error = new Error('配音结果缺少可安全持久化的公网素材地址');
+  error.code = 'managed_asset_public_base_unavailable';
+  error.providerStage = 'asset_persist';
+  error.providerStatus = 'public_base_unavailable';
+  return error;
+};
+
 const normalizeVoiceoverParentJobId = (value) => String(value || '').trim();
 
 export const isKieTtsJob = (job) => String(job?.taskType || '').trim() === 'kie_tts';
@@ -23,6 +31,24 @@ export const assertKieTtsParentJob = (job) => {
     throw createVoiceoverParentJobError();
   }
   return parentJobId;
+};
+
+export const prepareKieTtsOutputForPersistence = ({
+  job,
+  result = {},
+  publicBaseUrl,
+  isManagedAssetUrl = defaultIsManagedAssetUrl,
+} = {}) => {
+  const nextResult = { ...(result || {}) };
+  if (!isKieTtsJob(job)) return nextResult;
+
+  assertKieTtsParentJob(job);
+  delete nextResult.audioUrlRemoteUrl;
+  const audioUrl = String(nextResult.audioUrl || '').trim();
+  if (isRemoteUrl(audioUrl) && !isManagedAssetUrl(audioUrl) && !String(publicBaseUrl || '').trim()) {
+    throw createPersistentAssetBaseUnavailableError();
+  }
+  return nextResult;
 };
 
 export const persistManagedRemoteJobOutput = async ({
@@ -38,7 +64,7 @@ export const persistManagedRemoteJobOutput = async ({
 
   const isVoiceoverTts = isKieTtsJob(job);
   const parentJobId = assertKieTtsParentJob(job);
-  const nextResult = { ...(result || {}) };
+  const nextResult = prepareKieTtsOutputForPersistence({ job, result, publicBaseUrl, isManagedAssetUrl });
   const fields = [
     ['videoUrl', 'video', `${job?.taskType || 'result'}.mp4`, true],
     ['audioUrl', 'intermediate', `${job?.taskType || 'result'}.mp3`, false],

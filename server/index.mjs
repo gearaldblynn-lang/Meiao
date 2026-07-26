@@ -120,7 +120,7 @@ import {
   resolveServerListenConfig,
 } from './processLifecycle.mjs';
 import { createAuthorizedProviderRecovery } from './jobRecoveryService.mjs';
-import { assertKieTtsParentJob, persistManagedRemoteJobOutput } from './jobOutputAssetPersistence.mjs';
+import { prepareKieTtsOutputForPersistence, persistManagedRemoteJobOutput } from './jobOutputAssetPersistence.mjs';
 import { executeProviderJob, uploadAssetViaKieStream } from './providerGateway.mjs';
 import { resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel } from './providerAssetTransfer.mjs';
 import { resolveProviderGenerationMediaUrl } from './providerAssetTransfer.mjs';
@@ -4707,7 +4707,7 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
 
   const pool = lockedPool;
   let result = { ...(output.result || {}) };
-  assertKieTtsParentJob(job);
+  result = prepareKieTtsOutputForPersistence({ job, result, publicBaseUrl, isManagedAssetUrl });
   const imageTransform = buildImageOutputTransformFromJob(job);
   const hasInlineImageResult = /^data:image\//i.test(String(result.imageUrl || '').trim());
   if (hasInlineImageResult && !publicBaseUrl) {

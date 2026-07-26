@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { persistManagedRemoteJobOutput } from './jobOutputAssetPersistence.mjs';
+import { persistManagedRemoteJobOutput, prepareKieTtsOutputForPersistence } from './jobOutputAssetPersistence.mjs';
 
 test('kie tts audio persistence retries the same provider URL and returns only a managed result after persistence', async () => {
   const remoteUrl = 'https://provider.example/group-0.wav';
@@ -64,6 +64,30 @@ test('kie tts output rejects an invalid parent job before persistence', async ()
     (error) => error?.code === 'voiceover_parent_job_missing',
   );
   assert.equal(calls, 0);
+});
+
+test('kie tts external audio fails closed without a persistent public base', () => {
+  assert.throws(
+    () => prepareKieTtsOutputForPersistence({
+      job: { taskType: 'kie_tts', payload: { parentJobId: 'voiceover-parent-1' } },
+      result: { audioUrl: 'https://provider.example/group-0.mp3' },
+      publicBaseUrl: '',
+    }),
+    (error) => error?.code === 'managed_asset_public_base_unavailable',
+  );
+});
+
+test('kie tts managed audio may pass without a public base but never retains a remote URL leak', () => {
+  const prepared = prepareKieTtsOutputForPersistence({
+    job: { taskType: 'kie_tts', payload: { parentJobId: 'voiceover-parent-1' } },
+    result: {
+      audioUrl: '/api/assets/file/managed-audio-1/group-0.wav',
+      audioUrlRemoteUrl: 'https://provider.example/group-0.wav',
+    },
+    publicBaseUrl: '',
+  });
+  assert.equal(prepared.audioUrl, '/api/assets/file/managed-audio-1/group-0.wav');
+  assert.equal('audioUrlRemoteUrl' in prepared, false);
 });
 
 test('video and file remote outputs retain existing managed URL and remote URL behavior', async () => {

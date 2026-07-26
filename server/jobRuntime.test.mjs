@@ -159,6 +159,15 @@ test('voiceover TTS audio output persistence hands off only managed audio after 
   assert.equal('audioUrlRemoteUrl' in result, false);
 });
 
+test('index prepares KIE TTS audio before the unavailable-public-base early return', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const persistence = source.match(/const persistJobOutputAssetsIfEnabled = async[\s\S]*?const persistRuntimeRemoteAssetIfEnabled/)?.[0] || '';
+  const prepareIndex = persistence.indexOf('prepareKieTtsOutputForPersistence({');
+  const earlyReturnIndex = persistence.indexOf('if (!publicBaseUrl) {');
+  assert.ok(prepareIndex >= 0, 'job output path delegates TTS preconditions to the shared helper');
+  assert.ok(earlyReturnIndex > prepareIndex, 'TTS preconditions run before an unavailable-base return');
+});
+
 test('public upload routes do not accept client supplied expiresAt', () => {
   const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
   const mysqlUpload = source.match(/if \(url\.pathname === '\/api\/assets\/upload' && req\.method === 'POST'\) \{[\s\S]*?\n  \}/)?.[0] || '';

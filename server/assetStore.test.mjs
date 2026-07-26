@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -32,6 +32,7 @@ const {
   selectExpiredAssetsForCleanup,
   selectAbandonedPermanentAgentResultAssets,
   collectStoredAssetIdsFromValue,
+  writeAtomicJsonFile,
 } = assetStore;
 
 const testPersistDeps = async (prefix) => {
@@ -73,6 +74,104 @@ test('persistAssetBuffer preserves a pre-existing wx collision and removes its o
     await assert.rejects(access(path.join(assetDir, 'atomic-user', 'intermediate', '1700000000000', 'created-then-failed.mp3')));
   } finally {
     await rm(assetDir, { recursive: true, force: true });
+  }
+});
+
+test('persistAssetBuffer removes a partial destination when exclusive open succeeds but writing fails', async () => {
+  const { assetDir, deps } = await testPersistDeps('meiao-buffer-partial-write');
+  const target = path.join(assetDir, 'atomic-user', 'intermediate', '1700000000000', 'fixed-asset-id.mp3');
+  let closeCalls = 0;
+  try {
+    await assert.rejects(
+      persistAssetBuffer({
+        publicBaseUrl: 'https://meiao.example.com', userId: 'atomic-user', module: 'video', assetType: 'intermediate',
+        originalName: 'tts.mp3', mimeType: 'audio/mpeg', fileBuffer: Buffer.from('new'),
+        deps: {
+          ...deps,
+          openFile: async (filePath, flags) => {
+            const handle = await open(filePath, flags);
+            return {
+              writeFile: async () => {
+                await handle.writeFile(Buffer.from('partial'));
+                throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+              },
+              close: async () => { closeCalls += 1; await handle.close(); },
+            };
+          },
+        },
+      }),
+      (error) => error?.code === 'ENOSPC',
+    );
+    assert.equal(closeCalls, 1);
+    await assert.rejects(access(target));
+  } finally {
+    await rm(assetDir, { recursive: true, force: true });
+  }
+});
+
+test('buffer and streamed-file cleanup diagnostics never replace the original failure', async () => {
+  const { assetDir, deps } = await testPersistDeps('meiao-cleanup-diagnostics');
+  const sourceDir = await mkdtemp(path.join(tmpdir(), 'meiao-cleanup-source-'));
+  const sourcePath = path.join(sourceDir, 'tts.mp3');
+  const cleanupFailure = () => Object.assign(new Error('unlink denied'), { code: 'EPERM' });
+  try {
+    await writeFile(sourcePath, Buffer.from('new'));
+    for (const operation of [
+      () => persistAssetBuffer({
+        pool: { query: async () => { throw Object.assign(new Error('row insert failed'), { code: 'ROW_FAILED' }); } },
+        publicBaseUrl: 'https://meiao.example.com', userId: 'atomic-user', fileBuffer: Buffer.from('new'),
+        deps: { ...deps, unlinkFile: async () => { throw cleanupFailure(); } },
+      }),
+      () => persistAssetFile({
+        publicBaseUrl: 'https://meiao.example.com', userId: 'atomic-user', sourcePath, expectedSha256: '0'.repeat(64),
+        deps: { ...deps, createId: () => 'streamed-cleanup-id', unlinkFile: async () => { throw cleanupFailure(); } },
+      }),
+    ]) {
+      await assert.rejects(
+        operation(),
+        (error) => ['ROW_FAILED', 'managed_asset_hash_mismatch'].includes(error?.code)
+          && error?.cleanupErrors?.[0]?.code === 'EPERM',
+      );
+    }
+  } finally {
+    await rm(assetDir, { recursive: true, force: true });
+    await rm(sourceDir, { recursive: true, force: true });
+  }
+});
+
+test('atomic JSON registry writer preserves the current registry and cleans temp files on write or rename failure', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'meiao-registry-atomic-'));
+  const registryPath = path.join(directory, 'asset-registry.json');
+  const tempPath = path.join(directory, '.asset-registry.json.test.tmp');
+  const original = JSON.stringify({ assets: [{ id: 'existing' }] }, null, 2);
+  try {
+    await writeFile(registryPath, original, 'utf8');
+    for (const failure of ['write', 'rename']) {
+      await assert.rejects(
+        writeAtomicJsonFile(registryPath, { assets: [{ id: 'replacement' }] }, {
+          createTempPath: () => tempPath,
+          openFile: async (filePath, flags) => {
+            const handle = await open(filePath, flags);
+            if (failure !== 'write') return handle;
+            return {
+              writeFile: async () => {
+                await handle.writeFile('{"assets":');
+                throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+              },
+              close: () => handle.close(),
+            };
+          },
+          renameFile: failure === 'rename'
+            ? async () => { throw Object.assign(new Error('rename failed'), { code: 'EIO' }); }
+            : undefined,
+        }),
+        (error) => error?.code === (failure === 'write' ? 'ENOSPC' : 'EIO'),
+      );
+      assert.equal(await readFile(registryPath, 'utf8'), original);
+      await assert.rejects(access(tempPath));
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

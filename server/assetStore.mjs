@@ -494,19 +494,79 @@ const ensureLocalRegistry = () => {
   }
 };
 
+const appendCleanupDiagnostic = (originalError, operation, cleanupError) => {
+  if (!cleanupError || cleanupError.code === 'ENOENT') return;
+  const cleanupErrors = Array.isArray(originalError.cleanupErrors) ? originalError.cleanupErrors : [];
+  cleanupErrors.push({
+    operation,
+    code: String(cleanupError.code || ''),
+    message: String(cleanupError.message || ''),
+  });
+  originalError.cleanupErrors = cleanupErrors;
+};
+
+const cleanupOwnedPath = async (originalError, filePath, unlinkFile = fs.unlink) => {
+  try {
+    await unlinkFile(filePath);
+  } catch (cleanupError) {
+    appendCleanupDiagnostic(originalError, 'unlink', cleanupError);
+  }
+};
+
+const createLocalRegistryCorruptError = (cause) => {
+  const error = new Error('本地素材注册表损坏，已拒绝覆盖现有元数据');
+  error.code = 'managed_asset_registry_corrupt';
+  error.cause = cause;
+  return error;
+};
+
 const readLocalRegistry = () => {
   ensureLocalRegistry();
   try {
     const parsed = JSON.parse(readFileSync(LOCAL_REGISTRY_PATH, 'utf8'));
-    return Array.isArray(parsed.assets) ? parsed.assets : [];
-  } catch {
-    return [];
+    if (!Array.isArray(parsed.assets)) throw new Error('assets must be an array');
+    return parsed.assets;
+  } catch (error) {
+    throw createLocalRegistryCorruptError(error);
   }
 };
 
-const writeLocalRegistry = (assets) => {
+export const writeAtomicJsonFile = async (filePath, value, deps = {}) => {
+  const openFile = deps.openFile || fs.open;
+  const renameFile = deps.renameFile || fs.rename;
+  const unlinkFile = deps.unlinkFile || fs.unlink;
+  const createTempPath = deps.createTempPath || ((targetPath) => path.join(
+    path.dirname(targetPath),
+    `.${path.basename(targetPath)}.${randomBytes(8).toString('hex')}.tmp`,
+  ));
+  const tempPath = createTempPath(filePath);
+  const serialized = JSON.stringify(value, null, 2);
+  let tempHandle = null;
+  let tempCreated = false;
+  try {
+    tempHandle = await openFile(tempPath, 'wx');
+    tempCreated = true;
+    await tempHandle.writeFile(serialized, 'utf8');
+    await tempHandle.close();
+    tempHandle = null;
+    await renameFile(tempPath, filePath);
+    tempCreated = false;
+  } catch (error) {
+    if (tempHandle) {
+      try {
+        await tempHandle.close();
+      } catch (cleanupError) {
+        appendCleanupDiagnostic(error, 'close', cleanupError);
+      }
+    }
+    if (tempCreated) await cleanupOwnedPath(error, tempPath, unlinkFile);
+    throw error;
+  }
+};
+
+const writeLocalRegistry = async (assets) => {
   ensureLocalRegistry();
-  writeFileSync(LOCAL_REGISTRY_PATH, JSON.stringify({ assets }, null, 2), 'utf8');
+  await writeAtomicJsonFile(LOCAL_REGISTRY_PATH, { assets });
 };
 
 let localRegistryMutationTail = Promise.resolve();
@@ -514,7 +574,7 @@ const mutateLocalRegistry = (operation) => {
   const run = localRegistryMutationTail.catch(() => null).then(async () => {
     const assets = readLocalRegistry();
     const result = await operation(assets);
-    writeLocalRegistry(assets);
+    await writeLocalRegistry(assets);
     return result;
   });
   localRegistryMutationTail = run.then(() => undefined, () => undefined);
@@ -835,12 +895,18 @@ export const persistAssetBuffer = async ({
   const relativeDir = path.join(String(userId || 'anonymous'), assetType, `${createdAt}`);
   const storageKey = path.join(relativeDir, `${id}${extension || ''}`);
   const fullPath = path.join(deps.assetDir || ASSET_DIR, storageKey);
+  const openFile = deps.openFile || fs.open;
+  const unlinkFile = deps.unlinkFile || fs.unlink;
   let createdDestination = false;
+  let destinationHandle = null;
 
   try {
     ensureDir(path.dirname(fullPath));
-    await fs.writeFile(fullPath, storedBuffer, { flag: 'wx' });
+    destinationHandle = await openFile(fullPath, 'wx');
     createdDestination = true;
+    await destinationHandle.writeFile(storedBuffer);
+    await destinationHandle.close();
+    destinationHandle = null;
     const record = {
     id,
     userId: String(userId || ''),
@@ -870,11 +936,14 @@ export const persistAssetBuffer = async ({
     await createAssetRecord(pool, record);
     return record;
   } catch (error) {
-    if (createdDestination) {
-      await fs.unlink(fullPath).catch((unlinkError) => {
-        if (unlinkError?.code !== 'ENOENT') throw unlinkError;
-      });
+    if (destinationHandle) {
+      try {
+        await destinationHandle.close();
+      } catch (cleanupError) {
+        appendCleanupDiagnostic(error, 'close', cleanupError);
+      }
     }
+    if (createdDestination) await cleanupOwnedPath(error, fullPath, unlinkFile);
     throw error;
   }
 };
@@ -907,6 +976,7 @@ export const persistAssetFile = async ({
   const hash = createHash('sha256');
   let fileSize = 0;
   let createdDestination = false;
+  const unlinkFile = deps.unlinkFile || fs.unlink;
 
   try {
     ensureDir(path.dirname(fullPath));
@@ -956,11 +1026,7 @@ export const persistAssetFile = async ({
     await createAssetRecord(pool, record);
     return record;
   } catch (error) {
-    if (createdDestination) {
-      await fs.unlink(fullPath).catch((unlinkError) => {
-        if (unlinkError?.code !== 'ENOENT') throw unlinkError;
-      });
-    }
+    if (createdDestination) await cleanupOwnedPath(error, fullPath, unlinkFile);
     throw error;
   }
 };
