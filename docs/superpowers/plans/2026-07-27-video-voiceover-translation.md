@@ -1506,6 +1506,8 @@ Also test:
 - cancellation before paid stages and after a provider task ID exists.
 - a limited-credit account with fewer than 5 available credits is rejected at parent creation before Golden, Gemini, or KIE is called.
 - parent creation reserves the existing 5-credit video estimate even though its provider is `internal`; public UI does not display it as provider pricing.
+- with `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND=16`, a one-second segment whose `targetText` is 50 ASCII bytes fails with `voiceover_analysis_invalid` before `child:tts:*:create`; the recorded events contain no TTS child creation or TTS provider side effect.
+- non-default env values prove the runner propagates the normalized overlap tolerance, target-text density rate, group gap, and TTS token limit into the parser/group planner instead of falling back to helper defaults.
 - temp directory cleanup after intermediate persistence.
 - logs contain IDs/stages/durations but no signed URL, full provider body, transcript, key, authorization header, or local path.
 
@@ -1520,12 +1522,34 @@ Expected: FAIL because the runner does not exist.
 The runner begins with:
 
 ```js
+const config = getVoiceoverConfig(env);
 let checkpoint = normalizeVoiceoverCheckpoint(job.result?.voiceoverCheckpoint);
 const persistStage = async (patch) => {
   checkpoint = mergeVoiceoverCheckpoint(checkpoint, patch);
   await onResultCheckpoint({ voiceoverCheckpoint: checkpoint });
 };
 ```
+
+Runtime analysis and grouping must pass normalized config values explicitly:
+
+```js
+const analysis = parseVoiceoverAnalysis(content, {
+  durationMs,
+  targetLanguage: job.payload.targetLanguage,
+  translationMode: job.payload.translationMode,
+  overlapToleranceMs: config.overlapToleranceMs,
+  maxTargetTextBytesPerSecond: config.maxTargetTextBytesPerSecond,
+});
+
+const groups = buildVoiceoverTtsGroups({
+  segments: analysis.segments,
+  selectedVoiceName,
+  maxInputTokens: config.ttsMaxInputTokens,
+  groupGapMs: config.groupGapMs,
+});
+```
+
+Helper defaults are direct-call fallbacks only; the runtime runner must not let them override normalized env configuration.
 
 Every stage follows:
 

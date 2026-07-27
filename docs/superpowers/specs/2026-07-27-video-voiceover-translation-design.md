@@ -259,6 +259,7 @@ type VoiceoverCheckpointV1 = {
 - 创建请求连接中断且无法确认上游是否接单时，子任务进入 `provider_submission_unknown`，父任务停止，不自动重提。
 - Gemini 同步分析调用在请求前写 `stage='speech_analysis_submitting'` 检查点，成功后写 `stage='speech_analyzed'` 和完整分析结果。进程若在两者之间丢失，进入 `voiceover_analysis_submission_unknown`，由用户明确重试，避免静默产生第二次计费调用。
 - 本地 Demucs 不产生外部费用；如果进程在输出耐久保存前中断，可以安全重新计算。
+- 口播 runner 开始时只调用一次 `const config = getVoiceoverConfig(env)`，并显式向分析解析器传入 `overlapToleranceMs: config.overlapToleranceMs`、`maxTargetTextBytesPerSecond: config.maxTargetTextBytesPerSecond`，向 TTS 分组器传入 `maxInputTokens: config.ttsMaxInputTokens`、`groupGapMs: config.groupGapMs`。helper 默认值只供直接调用时兜底，不能覆盖 runner 已归一化的 env 配置。
 
 ## 7. 本地人声分离
 
