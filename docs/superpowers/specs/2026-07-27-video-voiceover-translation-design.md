@@ -299,6 +299,7 @@ type VoiceoverCheckpointV1 = {
 - `MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS`：默认 `8192`，只允许降低当前模型目录声明的上限。
 - `MEIAO_VOICEOVER_GROUP_GAP_MS`：默认 `800`，限制 `0..3000`。
 - `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS`：默认 `150`，限制 `0..1000`。
+- `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND`：默认 `96`，限制 `16..512`；只是按口播时间窗拦截异常译文字节密度的保守安全门，不是精确语速或 tokenizer。
 - `MEIAO_VOICEOVER_DUCKING_DB`：默认 `4`，限制 `0..12`。
 - `MEIAO_VOICEOVER_FADE_MS`：默认 `40`，限制 `0..200`。
 - `MEIAO_VOICEOVER_DURATION_TOLERANCE_MS`：默认 `100`，限制 `20..500`。
@@ -339,7 +340,12 @@ type VoiceoverAnalysis = {
 
 - `speakerCount !== 1` 时在 KIE TTS 前失败。
 - 片段必须按时间升序、位于视频范围内、`endMs > startMs`，并且不能存在超出容差的重叠。
+- Prompt 必须列出版本化目录中的全部允许源语言代码，并明确普通话只使用 `cmn`，禁止输出 `zh` 或 `zh-CN`；Example 不放任何具体语言的 `targetText` 内容，避免误导非英语翻译。
+- 严格 JSON 解析在 `JSON.parse` 前执行资源有界、最大深度受限且按转义后键名判重的结构扫描；根、音色和分段对象的重复键一律拒绝，字符串正文中的字段名不得误报。
+- `segments` 只有在结构确认为数组后才能分类无人声；`speakerCount=0 + []` 为 `voiceover_no_speech_detected`，缺失、空值、字符串结构或 0 人却含非空分段均为 `voiceover_analysis_invalid`。
+- shared normalization 后源语言与目标语言相同时直接失败，不进入 TTS。
 - `natural` 模式要求译文适配原时间预算；`literal` 模式优先保持原意，但仍不得生成无法安全对齐的异常长度。
+- 两种模式都在分组前按 `ceil(rate * max(1, segmentSeconds))` 检查 normalized `targetText` 的 UTF-8 字节数；超限返回 `voiceover_analysis_invalid`。该门禁只识别明显异常密度，不代表精确可说时长。
 - 解析失败、语言不支持、空口播或时间轴非法都不能进入 TTS。
 
 ### 8.2 语言目录
@@ -384,6 +390,7 @@ type VoiceoverAnalysis = {
 ### 10.1 口播组
 
 - 相邻间隔不超过 `MEIAO_VOICEOVER_GROUP_GAP_MS` 且总输入未超模型限制的片段合并为一个 TTS 组。
+- 规划与 checkpoint 共用 `VOICEOVER_MAX_TTS_GROUPS=100`；恰好 100 组允许，第 101 组在任何 provider 提交前以 `voiceover_tts_input_too_large` 拒绝。
 - 每组保存目标起止时间、译文、预计语速、实际音频时长和安全变速比。
 - TTS 提交前根据目标时间预算选择 `pace`。
 - TTS 完成后使用 FFmpeg `atempo` 做无变调时间适配。
@@ -486,7 +493,7 @@ type VoiceoverAnalysis = {
 
 - RTCFE prompt 保留严格 JSON 字段和解析锚点。
 - 单人、多人、无人声、空文本、未知语言和不支持语言。
-- 时间段越界、倒序、超过 `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS` 的重叠和超长译文。
+- 时间段越界、倒序、超过 `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS` 的重叠、重复 JSON 键、同源/目标语言和超过 `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND` 保守密度门的译文。
 - 两种翻译模式的长度预算和语义约束。
 - 分析提交状态未知时不自动重提。
 

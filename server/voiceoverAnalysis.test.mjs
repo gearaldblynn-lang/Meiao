@@ -6,6 +6,8 @@ import {
   estimateVoiceoverTtsInputTokens,
   parseVoiceoverAnalysis,
 } from './voiceoverAnalysis.mjs';
+import { VOICEOVER_LANGUAGES } from '../src/utils/voiceoverCatalog.mjs';
+import { VOICEOVER_MAX_TTS_GROUPS } from './voiceoverContract.mjs';
 
 const validProfile = (patch = {}) => ({
   pitch: 'medium',
@@ -113,6 +115,24 @@ test('natural and literal prompts preserve distinct translation priorities and s
   assert.match(literal, /targetText.*requested target language/is);
 });
 
+test('analysis prompt lists every supported source code, pins Mandarin to cmn, and uses no language-content example', () => {
+  const allowedCodes = VOICEOVER_LANGUAGES.map(({ code }) => code).join(', ');
+  for (const targetLanguage of ['ja', 'ko', 'cmn']) {
+    const prompt = buildVoiceoverAnalysisMessages({
+      vocalOnlyVideoUrl: 'https://managed.example/vocal-only.mp4',
+      targetLanguage,
+      translationMode: 'natural',
+      durationMs: 12_000,
+    })[0].content[1].text;
+
+    assert.match(prompt, new RegExp(`Allowed sourceLanguage codes: ${allowedCodes.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.`));
+    assert.match(prompt, /Mandarin Chinese must use sourceLanguage "cmn"/);
+    assert.match(prompt, /Do not use "zh" or "zh-CN"/);
+    assert.match(prompt, /E Example\s+No language-content example; follow F Format only\./s);
+    assert.doesNotMatch(prompt, /Example translation|示例原文/);
+  }
+});
+
 test('analysis prompt rejects invalid input instead of constructing an ambiguous provider request', () => {
   assert.throws(
     () => buildVoiceoverAnalysisMessages({
@@ -176,6 +196,26 @@ test('parser rejects prose, multiple objects, arrays, malformed JSON, unknown fi
   }
 });
 
+test('strict JSON scanner rejects canonical duplicate keys without misreading string contents', () => {
+  const profile = JSON.stringify(validProfile());
+  const segment = JSON.stringify(validSegment());
+  const duplicateRoot = String.raw`{"sourceLanguage":"cmn","source\u004canguage":"en","speakerCount":1,"voiceProfile":${profile},"segments":[${segment}]}`;
+  const duplicateProfile = String.raw`{"sourceLanguage":"cmn","speakerCount":1,"voiceProfile":{"pitch":"medium","p\u0069tch":"high","brightness":"balanced","energy":"balanced","pace":"natural","accentDescription":"clear"},"segments":[${segment}]}`;
+  const duplicateSegment = String.raw`{"sourceLanguage":"cmn","speakerCount":1,"voiceProfile":${profile},"segments":[{"id":"s1","\u0069d":"s2","startMs":100,"endMs":900,"sourceText":"原文","targetText":"Translated line."}]}`;
+  const excessiveDepth = `{"sourceLanguage":"cmn","speakerCount":1,"voiceProfile":${profile},"segments":[${segment}],"extra":${'['.repeat(40)}null${']'.repeat(40)}}`;
+
+  for (const content of [duplicateRoot, duplicateProfile, duplicateSegment, excessiveDepth]) {
+    assert.throws(
+      () => parse(content),
+      (error) => error.code === 'voiceover_analysis_invalid',
+    );
+  }
+
+  assert.equal(parse(validAnalysis({
+    segments: [validSegment({ targetText: 'Say "sourceLanguage" and "id" literally.' })],
+  })).segments[0].targetText, 'Say "sourceLanguage" and "id" literally.');
+});
+
 test('unknown fields fail as invalid analysis before semantic no-speech or speaker errors', () => {
   assert.throws(
     () => parse(validAnalysis({ speakerCount: 2, extra: true })),
@@ -220,6 +260,54 @@ test('parser maps no speech, multiple speakers, and unsupported languages to the
   );
 });
 
+test('speakerCount zero is no-speech only when segments is a structurally valid empty array', () => {
+  for (const segments of [undefined, null, 'not-an-array']) {
+    assert.throws(
+      () => parse(validAnalysis({ speakerCount: 0, segments })),
+      (error) => error.code === 'voiceover_analysis_invalid',
+    );
+  }
+  assert.throws(
+    () => parse(validAnalysis({ speakerCount: 0, segments: [] })),
+    (error) => error.code === 'voiceover_no_speech_detected',
+  );
+});
+
+test('parser rejects same source and target language before TTS', () => {
+  assert.throws(
+    () => parse(validAnalysis({ sourceLanguage: 'en' }), parserOptions({ targetLanguage: 'en' })),
+    (error) => error.code === 'voiceover_analysis_invalid',
+  );
+  assert.throws(
+    () => parse(validAnalysis({ sourceLanguage: 'cmn' }), parserOptions({ targetLanguage: 'cmn' })),
+    (error) => error.code === 'voiceover_analysis_invalid',
+  );
+  assert.equal(parse(validAnalysis({ sourceLanguage: 'cmn' }), parserOptions({ targetLanguage: 'en' })).sourceLanguage, 'cmn');
+});
+
+test('parser rejects abnormal target-text byte density in natural and literal modes', () => {
+  for (const translationMode of ['natural', 'literal']) {
+    assert.throws(
+      () => parse(validAnalysis({
+        segments: [validSegment({
+          startMs: 0,
+          endMs: 100,
+          targetText: 'a'.repeat(5_000),
+        })],
+      }), parserOptions({ translationMode })),
+      (error) => error.code === 'voiceover_analysis_invalid',
+    );
+  }
+
+  assert.equal(parse(validAnalysis({
+    sourceLanguage: 'en',
+    segments: [validSegment({ startMs: 0, endMs: 100, sourceText: 'Hello', targetText: '你好。' })],
+  }), parserOptions({ targetLanguage: 'cmn' })).segments[0].targetText, '你好。');
+  assert.equal(parse(validAnalysis({
+    segments: [validSegment({ startMs: 0, endMs: 1_000, targetText: 'A concise translated line.' })],
+  })).segments[0].targetText, 'A concise translated line.');
+});
+
 test('parser fails closed for invalid options, speech text, profile, duplicate ids, and speaker counts', () => {
   const invalidOptions = [
     parserOptions({ durationMs: 0 }),
@@ -227,6 +315,8 @@ test('parser fails closed for invalid options, speech text, profile, duplicate i
     parserOptions({ translationMode: 'freeform' }),
     parserOptions({ overlapToleranceMs: -1 }),
     parserOptions({ overlapToleranceMs: 1001 }),
+    parserOptions({ maxTargetTextBytesPerSecond: 15 }),
+    parserOptions({ maxTargetTextBytesPerSecond: 513 }),
   ];
   for (const options of invalidOptions) {
     assert.throws(
@@ -432,4 +522,30 @@ test('one oversized segment and invalid grouping configuration fail before provi
       (error) => error.code === 'voiceover_analysis_invalid',
     );
   }
+});
+
+test('TTS grouping shares the checkpoint group limit and fails before a 101st provider group', () => {
+  const separatedSegments = (count) => Array.from({ length: count }, (_, index) => validSegment({
+    id: `s${index}`,
+    startMs: index * 2_000,
+    endMs: index * 2_000 + 500,
+    sourceText: `source ${index}`,
+    targetText: `target ${index}`,
+  }));
+  const groups = buildVoiceoverTtsGroups({
+    segments: separatedSegments(VOICEOVER_MAX_TTS_GROUPS),
+    selectedVoiceName: 'Kore',
+    maxInputTokens: 8_192,
+    groupGapMs: 0,
+  });
+  assert.equal(groups.length, VOICEOVER_MAX_TTS_GROUPS);
+  assert.throws(
+    () => buildVoiceoverTtsGroups({
+      segments: separatedSegments(VOICEOVER_MAX_TTS_GROUPS + 1),
+      selectedVoiceName: 'Kore',
+      maxInputTokens: 8_192,
+      groupGapMs: 0,
+    }),
+    (error) => error.code === 'voiceover_tts_input_too_large',
+  );
 });

@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  VOICEOVER_BOUNDS,
   VOICEOVER_CHECKPOINT_VERSION,
+  VOICEOVER_DEFAULTS,
+  VOICEOVER_MAX_TTS_GROUPS,
   buildVoiceoverError,
   getVoiceoverConfig,
   getVoiceoverPublicConfig,
@@ -53,10 +56,18 @@ test('invalid capacity values fall back to conservative defaults', () => {
     MEIAO_VOICEOVER_SEPARATION_CONCURRENCY: '99',
     MEIAO_VOICEOVER_MIN_ATEMPO: 'oops',
     MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS: '9000',
+    MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND: '513',
   });
   assert.equal(config.separationConcurrency, 1);
   assert.equal(config.minAtempo, 0.75);
   assert.equal(config.ttsMaxInputTokens, 8192);
+  assert.equal(config.maxTargetTextBytesPerSecond, 96);
+  assert.equal(VOICEOVER_DEFAULTS.maxTargetTextBytesPerSecond, 96);
+  assert.deepEqual(VOICEOVER_BOUNDS.maxTargetTextBytesPerSecond, [16, 512]);
+  assert.equal(VOICEOVER_MAX_TTS_GROUPS, 100);
+  assert.equal(getVoiceoverConfig({
+    MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND: '128',
+  }).maxTargetTextBytesPerSecond, 128);
 });
 
 test('payload only accepts catalog members and a managed source identity', () => {
@@ -206,8 +217,14 @@ test('checkpoint bounds segments, TTS groups, and serialized size', () => {
     stage: 'tts_generating',
     analysis: validAnalysis(),
     translation: validTranslation(),
-    ttsGroups: Array.from({ length: 101 }, (_, index) => validTtsGroup(index)),
+    ttsGroups: Array.from({ length: VOICEOVER_MAX_TTS_GROUPS + 1 }, (_, index) => validTtsGroup(index)),
   })), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.equal(normalizeVoiceoverCheckpoint(validCheckpoint({
+    stage: 'tts_generating',
+    analysis: validAnalysis(),
+    translation: validTranslation(),
+    ttsGroups: Array.from({ length: VOICEOVER_MAX_TTS_GROUPS }, (_, index) => validTtsGroup(index)),
+  })).ttsGroups.length, VOICEOVER_MAX_TTS_GROUPS);
   const oversizedAnalysis = validAnalysis({
     segments: Array.from({ length: 200 }, (_, index) => validSegment({
       id: `large-${index}`,
@@ -253,6 +270,8 @@ test('public config cannot leak local paths or credentials', () => {
   assert.deepEqual(Object.keys(config).sort(), ['enabled', 'languages', 'limits', 'model', 'readiness', 'ready', 'voices']);
   assert.doesNotMatch(serialized, /SEPARATION_PYTHON|MODEL_DIR|apiKey|token|\/Users\//);
   assert.deepEqual(config.readiness, { pythonReady: true, modelReady: true, ffmpegReady: true, separationConcurrency: 1 });
+  assert.equal(config.limits.maxTargetTextBytesPerSecond, 96);
+  assert.equal(config.limits.ttsGroupLimit, VOICEOVER_MAX_TTS_GROUPS);
 });
 
 test('all documented voiceover error codes are structured errors', () => {

@@ -8,6 +8,7 @@ import {
 } from '../src/utils/voiceoverCatalog.mjs';
 
 export const VOICEOVER_CHECKPOINT_VERSION = 1;
+export const VOICEOVER_MAX_TTS_GROUPS = 100;
 
 export const VOICEOVER_DEFAULTS = Object.freeze({
   enabled: false,
@@ -19,6 +20,7 @@ export const VOICEOVER_DEFAULTS = Object.freeze({
   ttsMaxInputTokens: 8192,
   groupGapMs: 800,
   overlapToleranceMs: 150,
+  maxTargetTextBytesPerSecond: 96,
   duckingDb: 4,
   fadeMs: 40,
   durationToleranceMs: 100,
@@ -35,6 +37,7 @@ export const VOICEOVER_BOUNDS = Object.freeze({
   ttsMaxInputTokens: Object.freeze([1, 8192]),
   groupGapMs: Object.freeze([0, 3000]),
   overlapToleranceMs: Object.freeze([0, 1000]),
+  maxTargetTextBytesPerSecond: Object.freeze([16, 512]),
   duckingDb: Object.freeze([0, 12]),
   fadeMs: Object.freeze([0, 200]),
   durationToleranceMs: Object.freeze([20, 500]),
@@ -61,7 +64,6 @@ const CHECKPOINT_REQUIRED_FIELDS = Object.freeze([
 ]);
 const MAX_SEGMENTS = 200;
 const MAX_TEXT_BYTES = 20_000;
-const MAX_TTS_GROUPS = 100;
 const MAX_CHECKPOINT_BYTES = 256 * 1024;
 const ERROR_CODES = new Set([
   'voiceover_unavailable', 'voiceover_source_has_no_audio', 'voiceover_no_speech_detected', 'voiceover_multiple_speakers',
@@ -105,6 +107,12 @@ export function getVoiceoverConfig(env = {}) {
     ttsMaxInputTokens: boundedNumber(env.MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS, VOICEOVER_DEFAULTS.ttsMaxInputTokens, VOICEOVER_BOUNDS.ttsMaxInputTokens, true),
     groupGapMs: boundedNumber(env.MEIAO_VOICEOVER_GROUP_GAP_MS, VOICEOVER_DEFAULTS.groupGapMs, VOICEOVER_BOUNDS.groupGapMs, true),
     overlapToleranceMs: boundedNumber(env.MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS, VOICEOVER_DEFAULTS.overlapToleranceMs, VOICEOVER_BOUNDS.overlapToleranceMs, true),
+    maxTargetTextBytesPerSecond: boundedNumber(
+      env.MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND,
+      VOICEOVER_DEFAULTS.maxTargetTextBytesPerSecond,
+      VOICEOVER_BOUNDS.maxTargetTextBytesPerSecond,
+      true,
+    ),
     duckingDb: boundedNumber(env.MEIAO_VOICEOVER_DUCKING_DB, VOICEOVER_DEFAULTS.duckingDb, VOICEOVER_BOUNDS.duckingDb),
     fadeMs: boundedNumber(env.MEIAO_VOICEOVER_FADE_MS, VOICEOVER_DEFAULTS.fadeMs, VOICEOVER_BOUNDS.fadeMs, true),
     durationToleranceMs: boundedNumber(env.MEIAO_VOICEOVER_DURATION_TOLERANCE_MS, VOICEOVER_DEFAULTS.durationToleranceMs, VOICEOVER_BOUNDS.durationToleranceMs, true),
@@ -136,6 +144,8 @@ export function getVoiceoverPublicConfig(env = {}, readiness = {}) {
       minAtempo: config.minAtempo,
       maxAtempo: config.maxAtempo,
       overlapToleranceMs: config.overlapToleranceMs,
+      maxTargetTextBytesPerSecond: config.maxTargetTextBytesPerSecond,
+      ttsGroupLimit: VOICEOVER_MAX_TTS_GROUPS,
       durationToleranceMs: config.durationToleranceMs,
     }),
     readiness: publicReadiness,
@@ -309,7 +319,7 @@ const normalizeTranslation = (value, validationOptions = normalizedValidationOpt
 };
 
 const normalizeTtsGroups = (groups, validationOptions = normalizedValidationOptions()) => {
-  if (!Array.isArray(groups) || !groups.length || groups.length > MAX_TTS_GROUPS) throw buildVoiceoverError('voiceover_checkpoint_invalid', 'TTS 分组无效');
+  if (!Array.isArray(groups) || !groups.length || groups.length > VOICEOVER_MAX_TTS_GROUPS) throw buildVoiceoverError('voiceover_checkpoint_invalid', 'TTS 分组无效');
   const identities = new Set();
   return groups.map((group) => {
     assertKnownKeys(group, new Set(['index', 'attempt', 'childJobId', 'providerTaskId', 'assetId', 'status', 'startMs', 'endMs', 'actualDurationMs', 'atempo']), 'voiceover_checkpoint_invalid');

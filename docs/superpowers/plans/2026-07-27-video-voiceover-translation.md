@@ -120,9 +120,10 @@
 **Interfaces:**
 
 - Export `VOICEOVER_TTS_MODEL`, `VOICEOVER_MODEL_MAX_INPUT_TOKENS`, `VOICEOVER_LANGUAGES`, `VOICEOVER_VOICES`, `getVoiceoverLanguage(code)`, `getVoiceoverVoice(name)`, `listVoiceoverLanguages()`, and `selectAutomaticVoice(profile)`.
-- Export `VOICEOVER_CHECKPOINT_VERSION`, `getVoiceoverConfig(env)`, `getVoiceoverPublicConfig(env, readiness)`, `normalizeVoiceoverPayload(input)`, `normalizeVoiceoverCheckpoint(value)`, `mergeVoiceoverCheckpoint(current, patch)`, `validateVoiceoverAnalysis(value, options)`, and `buildVoiceoverError(code, message, details)`.
+- Export `VOICEOVER_CHECKPOINT_VERSION`, `VOICEOVER_MAX_TTS_GROUPS`, `getVoiceoverConfig(env)`, `getVoiceoverPublicConfig(env, readiness)`, `normalizeVoiceoverPayload(input)`, `normalizeVoiceoverCheckpoint(value)`, `mergeVoiceoverCheckpoint(current, patch)`, `validateVoiceoverAnalysis(value, options)`, and `buildVoiceoverError(code, message, details)`.
 - Add TypeScript contracts `VoiceoverVoiceProfile`, `VoiceoverTranscriptSegment`, `VoiceoverTranslationSegment`, `VoiceoverTranslationPayload`, `VoiceoverCheckpointV1`, and `VoiceoverTranslationResult`.
 - Public config shape is exactly `{ enabled, ready, model, languages, voices, limits, readiness }`; `readiness` contains booleans and concurrency only.
+- Public `limits` includes non-sensitive `maxTargetTextBytesPerSecond` and `ttsGroupLimit` values derived from the normalized config and shared group constant.
 
 - [ ] **Step 1: Add failing catalog tests**
 
@@ -178,10 +179,12 @@ test('invalid capacity values fall back to conservative defaults', () => {
     MEIAO_VOICEOVER_SEPARATION_CONCURRENCY: '99',
     MEIAO_VOICEOVER_MIN_ATEMPO: 'oops',
     MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS: '9000',
+    MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND: '513',
   });
   assert.equal(config.separationConcurrency, 1);
   assert.equal(config.minAtempo, 0.75);
   assert.equal(config.ttsMaxInputTokens, 8192);
+  assert.equal(config.maxTargetTextBytesPerSecond, 96);
 });
 
 test('checkpoint rejects local paths, signed urls, unknown fields, and oversized text', () => {
@@ -213,7 +216,7 @@ Also cover:
 - `removeText=true` requiring a clamped normalized rectangle.
 - `sourceAssetId` or managed `sourceUrl` identity, but never an arbitrary `http(s)` URL.
 - checkpoint stage monotonicity and allowed fields per stage.
-- at most 200 segments, 20,000 UTF-8 bytes per source/target transcript field, 100 TTS groups, and 256 KB serialized checkpoint.
+- at most 200 segments, 20,000 UTF-8 bytes per source/target transcript field, the shared `VOICEOVER_MAX_TTS_GROUPS=100`, and 256 KB serialized checkpoint.
 - all error codes in design section 12.
 
 - [ ] **Step 6: Run contract tests and confirm RED**
@@ -237,6 +240,7 @@ export const VOICEOVER_DEFAULTS = Object.freeze({
   ttsMaxInputTokens: 8192,
   groupGapMs: 800,
   overlapToleranceMs: 150,
+  maxTargetTextBytesPerSecond: 96,
   duckingDb: 4,
   fadeMs: 40,
   durationToleranceMs: 100,
@@ -253,6 +257,7 @@ export const VOICEOVER_BOUNDS = Object.freeze({
   ttsMaxInputTokens: [1, 8192],
   groupGapMs: [0, 3000],
   overlapToleranceMs: [0, 1000],
+  maxTargetTextBytesPerSecond: [16, 512],
   duckingDb: [0, 12],
   fadeMs: [0, 200],
   durationToleranceMs: [20, 500],
@@ -776,7 +781,7 @@ git commit -m "feat(video): add local demucs separation runtime"
 **Interfaces:**
 
 - Export `buildVoiceoverAnalysisMessages({ vocalOnlyVideoUrl, targetLanguage, translationMode, durationMs })`.
-- Export `parseVoiceoverAnalysis(content, { durationMs, targetLanguage, translationMode, overlapToleranceMs })`.
+- Export `parseVoiceoverAnalysis(content, { durationMs, targetLanguage, translationMode, overlapToleranceMs, maxTargetTextBytesPerSecond? })`; omitted target-text density uses `VOICEOVER_DEFAULTS.maxTargetTextBytesPerSecond`.
 - Export `buildVoiceoverTtsGroups({ segments, selectedVoiceName, maxInputTokens, groupGapMs })`.
 - Export `estimateVoiceoverTtsInputTokens(input)` as a documented conservative UTF-8 upper-bound estimator, not an exact tokenizer.
 
@@ -813,7 +818,7 @@ test('parser rejects multiple speakers before TTS planning', () => {
 });
 ```
 
-Cover Markdown-fenced JSON stripping, malformed JSON, empty speech, unsupported source/target language, missing text, `endMs <= startMs`, out-of-bounds times, non-monotonic segments, overlap beyond tolerance, natural/literal mode prompt differences, and bounded accent description.
+Cover the complete versioned source-language code list, the exact `cmn` Mandarin code (never `zh`/`zh-CN`), no language-content Example, Markdown-fenced JSON stripping, canonical duplicate JSON keys (including escaped keys), bounded nesting, malformed JSON, structurally invalid `segments`, empty speech, unsupported or same source/target language, missing text, `endMs <= startMs`, out-of-bounds times, non-monotonic segments, overlap beyond tolerance, natural/literal mode differences, conservative target-text byte density, and bounded accent description.
 
 - [ ] **Step 2: Run analysis tests and confirm RED**
 
@@ -837,6 +842,8 @@ Use the existing Gemini chat/file contract:
 }
 ```
 
+Generate the prompt's complete allowed `sourceLanguage` code list from `VOICEOVER_LANGUAGES`. State that Mandarin Chinese is `cmn` and reject `zh`/`zh-CN`. The `E Example` section contains no language content and only directs the model to follow `F Format`, so Japanese, Korean, Mandarin, and other targets are not biased by an English `targetText` sample.
+
 The parser returns:
 
 ```js
@@ -853,6 +860,18 @@ The parser returns:
   })),
 }
 ```
+
+Before `JSON.parse`, scan the already byte-bounded JSON structure with a maximum nesting depth and reject duplicate keys by their decoded key value. A root/profile/segment key repeated through escapes such as `source\u004canguage` is still a duplicate. Regex matching over raw strings is forbidden because transcript text may legitimately contain field names.
+
+After shared normalization, reject `sourceLanguage === targetLanguage`. For every segment, reject abnormal translated-text density before grouping:
+
+```js
+const allowedBytes = Math.ceil(
+  maxTargetTextBytesPerSecond * Math.max(1, (endMs - startMs) / 1000),
+);
+```
+
+This is a conservative anomaly guard, not an exact speaking-rate model or tokenizer.
 
 - [ ] **Step 4: Add failing grouping and input-budget tests**
 
@@ -881,6 +900,8 @@ test('one segment larger than the budget fails before provider submission', () =
 });
 ```
 
+Also assert that exactly `VOICEOVER_MAX_TTS_GROUPS` separated groups pass and the next group fails with `voiceover_tts_input_too_large` before any provider child can be created.
+
 - [ ] **Step 5: Implement conservative budget and group payloads**
 
 Estimate all serialized fields:
@@ -899,6 +920,7 @@ const estimatedInputTokens = Buffer.byteLength(serialized, 'utf8');
 ```
 
 Label the value `estimatedInputTokens`; never expose it as an exact Gemini token count. A group may merge adjacent segments only when gap `<= groupGapMs` and the merged serialized estimate is `<= maxInputTokens`.
+Both checkpoint normalization and group planning import the same exported `VOICEOVER_MAX_TTS_GROUPS`; do not duplicate the literal `100`.
 
 - [ ] **Step 6: Update RTCFE map and run Task 5 tests**
 
@@ -1991,6 +2013,7 @@ MEIAO_VOICEOVER_MAX_ATEMPO
 MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS
 MEIAO_VOICEOVER_GROUP_GAP_MS
 MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS
+MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND
 MEIAO_VOICEOVER_DUCKING_DB
 MEIAO_VOICEOVER_FADE_MS
 MEIAO_VOICEOVER_DURATION_TOLERANCE_MS

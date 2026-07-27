@@ -1,18 +1,23 @@
 import {
+  VOICEOVER_LANGUAGES,
   VOICEOVER_MODEL_MAX_INPUT_TOKENS,
   getVoiceoverLanguage,
   getVoiceoverVoice,
 } from '../src/utils/voiceoverCatalog.mjs';
 import {
   VOICEOVER_BOUNDS,
+  VOICEOVER_DEFAULTS,
+  VOICEOVER_MAX_TTS_GROUPS,
   buildVoiceoverError,
   validateVoiceoverAnalysis,
 } from './voiceoverContract.mjs';
 
 const MAX_ANALYSIS_CONTENT_BYTES = 256 * 1024;
+const MAX_JSON_NESTING_DEPTH = 32;
 const SPEAKER = 'Speaker 1';
 const GROUP_SCENE = 'Translated product voiceover with natural, controlled pacing.';
 const GROUP_SAMPLE_CONTEXT = 'Use one consistent narrator and preserve punctuation and pauses.';
+const ALLOWED_SOURCE_LANGUAGE_CODES = VOICEOVER_LANGUAGES.map(({ code }) => code).join(', ');
 const JSON_FENCE = /^```json[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu;
 const ANALYSIS_KEYS = new Set(['sourceLanguage', 'speakerCount', 'voiceProfile', 'segments']);
 const PROFILE_KEYS = new Set(['pitch', 'brightness', 'energy', 'pace', 'accentDescription']);
@@ -52,6 +57,16 @@ const validateOverlapToleranceMs = (value) => {
     throw invalidAnalysis('时间轴重叠容差无效');
   }
   return tolerance;
+};
+
+const validateTargetTextBytesPerSecond = (value) => {
+  if (value === undefined) return VOICEOVER_DEFAULTS.maxTargetTextBytesPerSecond;
+  const rate = Number(value);
+  const [minimum, maximum] = VOICEOVER_BOUNDS.maxTargetTextBytesPerSecond;
+  if (!Number.isSafeInteger(rate) || rate < minimum || rate > maximum) {
+    throw invalidAnalysis('译文异常密度门限无效');
+  }
+  return rate;
 };
 
 const validateManagedVideoUrl = (value) => {
@@ -125,6 +140,8 @@ export function buildVoiceoverAnalysisMessages({
     `4. ${modeConstraint}`,
     '5. Every targetText must be non-empty and written in the requested target language.',
     '6. Segments must be ordered, have unique ids, remain within the video duration, and use endMs greater than startMs.',
+    `7. Allowed sourceLanguage codes: ${ALLOWED_SOURCE_LANGUAGE_CODES}.`,
+    '8. Mandarin Chinese must use sourceLanguage "cmn". Do not use "zh" or "zh-CN".',
     '',
     'F Format',
     'Output one strict JSON object only. Output no prose, commentary, Markdown, or additional JSON objects.',
@@ -135,7 +152,7 @@ export function buildVoiceoverAnalysisMessages({
     'Each segment must contain exactly: id, startMs, endMs, sourceText, targetText.',
     '',
     'E Example',
-    '{"sourceLanguage":"cmn","speakerCount":1,"voiceProfile":{"pitch":"medium","brightness":"balanced","energy":"balanced","pace":"natural","accentDescription":"clear neutral delivery"},"segments":[{"id":"s1","startMs":120,"endMs":980,"sourceText":"示例原文","targetText":"Example translation."}]}',
+    'No language-content example; follow F Format only.',
   ].join('\n');
 
   return Object.freeze([
@@ -148,6 +165,121 @@ export function buildVoiceoverAnalysisMessages({
     }),
   ]);
 }
+
+const scanStrictJsonStructure = (json) => {
+  let index = 0;
+  const fail = () => {
+    throw new Error('invalid JSON structure');
+  };
+  const skipWhitespace = () => {
+    while (index < json.length && /[\t\n\r ]/u.test(json[index])) index += 1;
+  };
+  const scanString = () => {
+    if (json[index] !== '"') fail();
+    const start = index;
+    index += 1;
+    while (index < json.length) {
+      const code = json.charCodeAt(index);
+      if (code === 0x22) {
+        index += 1;
+        return JSON.parse(json.slice(start, index));
+      }
+      if (code < 0x20) fail();
+      if (code === 0x5c) {
+        index += 1;
+        if (index >= json.length) fail();
+        const escape = json[index];
+        if ('"\\/bfnrt'.includes(escape)) {
+          index += 1;
+          continue;
+        }
+        if (escape !== 'u' || !/^[0-9a-fA-F]{4}$/u.test(json.slice(index + 1, index + 5))) fail();
+        index += 5;
+        continue;
+      }
+      index += 1;
+    }
+    fail();
+  };
+  const scanValue = (depth) => {
+    if (depth > MAX_JSON_NESTING_DEPTH) fail();
+    skipWhitespace();
+    const character = json[index];
+    if (character === '"') {
+      scanString();
+      return;
+    }
+    if (character === '{') {
+      scanObject(depth + 1);
+      return;
+    }
+    if (character === '[') {
+      scanArray(depth + 1);
+      return;
+    }
+    for (const literal of ['true', 'false', 'null']) {
+      if (json.startsWith(literal, index)) {
+        index += literal.length;
+        return;
+      }
+    }
+    const number = json.slice(index).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/u)?.[0];
+    if (!number) fail();
+    index += number.length;
+  };
+  const scanObject = (depth) => {
+    if (depth > MAX_JSON_NESTING_DEPTH || json[index] !== '{') fail();
+    index += 1;
+    skipWhitespace();
+    if (json[index] === '}') {
+      index += 1;
+      return;
+    }
+    const keys = new Set();
+    while (index < json.length) {
+      skipWhitespace();
+      const key = scanString();
+      if (keys.has(key)) fail();
+      keys.add(key);
+      skipWhitespace();
+      if (json[index] !== ':') fail();
+      index += 1;
+      scanValue(depth);
+      skipWhitespace();
+      if (json[index] === '}') {
+        index += 1;
+        return;
+      }
+      if (json[index] !== ',') fail();
+      index += 1;
+    }
+    fail();
+  };
+  const scanArray = (depth) => {
+    if (depth > MAX_JSON_NESTING_DEPTH || json[index] !== '[') fail();
+    index += 1;
+    skipWhitespace();
+    if (json[index] === ']') {
+      index += 1;
+      return;
+    }
+    while (index < json.length) {
+      scanValue(depth);
+      skipWhitespace();
+      if (json[index] === ']') {
+        index += 1;
+        return;
+      }
+      if (json[index] !== ',') fail();
+      index += 1;
+    }
+    fail();
+  };
+
+  scanValue(0);
+  skipWhitespace();
+  if (index !== json.length) fail();
+};
 
 const parseStrictJsonObject = (content) => {
   if (typeof content !== 'string' || !content.trim()) {
@@ -164,6 +296,7 @@ const parseStrictJsonObject = (content) => {
   }
   let parsed;
   try {
+    scanStrictJsonStructure(json);
     parsed = JSON.parse(json);
   } catch {
     throw invalidAnalysis('语音分析 JSON 无效');
@@ -179,18 +312,19 @@ export function parseVoiceoverAnalysis(content, {
   targetLanguage,
   translationMode,
   overlapToleranceMs,
+  maxTargetTextBytesPerSecond,
 } = {}) {
   const safeDurationMs = validateDurationMs(durationMs);
-  validateTargetLanguage(targetLanguage);
+  const safeTargetLanguage = validateTargetLanguage(targetLanguage);
   validateTranslationMode(translationMode);
   const safeOverlapToleranceMs = validateOverlapToleranceMs(overlapToleranceMs);
+  const safeTargetTextBytesPerSecond = validateTargetTextBytesPerSecond(maxTargetTextBytesPerSecond);
   const parsed = parseStrictJsonObject(content);
 
   assertNoUnknownFields(parsed, ANALYSIS_KEYS);
   assertNoUnknownFields(parsed.voiceProfile, PROFILE_KEYS);
-  if (Array.isArray(parsed.segments)) {
-    for (const segment of parsed.segments) assertNoUnknownFields(segment, SEGMENT_KEYS);
-  }
+  if (!Array.isArray(parsed.segments)) throw invalidAnalysis('口播分段结构无效');
+  for (const segment of parsed.segments) assertNoUnknownFields(segment, SEGMENT_KEYS);
   if (!Number.isInteger(parsed.speakerCount) || parsed.speakerCount < 0) {
     throw invalidAnalysis('说话人数无效');
   }
@@ -215,6 +349,16 @@ export function parseVoiceoverAnalysis(content, {
     durationMs: safeDurationMs,
     overlapToleranceMs: safeOverlapToleranceMs,
   });
+  if (validated.sourceLanguage === safeTargetLanguage.code) {
+    throw invalidAnalysis('源语言与目标语言不能相同');
+  }
+  for (const segment of validated.segments) {
+    const speechWindowSeconds = Math.max(1, (segment.endMs - segment.startMs) / 1000);
+    const maximumTargetTextBytes = Math.ceil(safeTargetTextBytesPerSecond * speechWindowSeconds);
+    if (Buffer.byteLength(segment.targetText, 'utf8') > maximumTargetTextBytes) {
+      throw invalidAnalysis('译文长度超过当前口播时间段的异常密度安全门');
+    }
+  }
   return Object.freeze({
     sourceLanguage: validated.sourceLanguage,
     speakerCount: validated.speakerCount,
@@ -334,6 +478,9 @@ export function buildVoiceoverTtsGroups({
   };
 
   const publish = (groupSegments, data) => {
+    if (plannedGroups.length >= VOICEOVER_MAX_TTS_GROUPS) {
+      throw buildVoiceoverError('voiceover_tts_input_too_large', '口播分组数量超过当前安全上限');
+    }
     const frozenSegments = Object.freeze(groupSegments.slice());
     plannedGroups.push(Object.freeze({
       groupIndex: plannedGroups.length,

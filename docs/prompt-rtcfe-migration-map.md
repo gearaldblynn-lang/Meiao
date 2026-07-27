@@ -689,6 +689,8 @@ E Example 示例
 - 关键约束：
   - RTCFE 使用 `C Context / Constraint` 标题，同时保留 Context 锚点与 Constraint 语义。
   - 只能输出一个严格 JSON 对象，不得包含前后文、额外对象或未知字段。
+  - Prompt 从版本化目录列出全部允许的 `sourceLanguage` 代码，明确普通话为 `cmn` 而不是 `zh` / `zh-CN`。
+  - E 不放任何具体语言内容，仅要求按 F 输出，避免非英语目标被英文 `targetText` 样例误导。
   - `natural` 可为自然口播调整措辞；`literal` 优先原意与句式；两者都必须满足安全时间预算，并以请求的目标语言输出 `targetText`。
   - `voiceProfile` 不推断敏感身份属性。
 - 防回归测试：`server/voiceoverAnalysis.test.mjs`；`src/services/videoStoryboardService.test.mjs` 同时锁定与当前视频分析共用的 `input_file` / `file_url` 合同。
