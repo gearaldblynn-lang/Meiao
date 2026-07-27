@@ -174,3 +174,18 @@ test('视频去字幕服务端配置同步到模板、总览和云上部署文�
   assert.match(deployDoc, /仅写入服务端/);
   assert.match(deployDoc, /单次付费探针/);
 });
+
+test('口播翻译一次性安装网络旋钮同步到模板、总览和云上部署文档', () => {
+  const requiredKeys = [
+    'MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS',
+    'MEIAO_VOICEOVER_PIP_RETRIES',
+  ];
+
+  for (const key of requiredKeys) {
+    assert.match(envExample, new RegExp(key));
+    assert.match(projectOverview, new RegExp(key));
+    assert.match(deployDoc, new RegExp(key));
+  }
+  assert.match(envExample, /一次性安装/);
+  assert.match(projectOverview, /一次性安装/);
+});
