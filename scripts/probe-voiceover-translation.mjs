@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   getVoiceoverConfig,
+  normalizeVoiceoverCheckpoint,
 } from '../server/voiceoverContract.mjs';
 import {
   createMediaTranscodeService,
@@ -354,8 +355,7 @@ const summarizeTtsStatuses = (groups) => {
   return summary;
 };
 
-const buildSafeCheckpointEvidence = (job) => {
-  const checkpoint = resolveVoiceoverCheckpoint(job);
+const buildSafeCheckpointEvidenceFromCheckpoint = (checkpoint) => {
   const subtitleRemoval = checkpoint?.subtitleRemoval
     && typeof checkpoint.subtitleRemoval === 'object'
     && !Array.isArray(checkpoint.subtitleRemoval)
@@ -386,6 +386,10 @@ const buildSafeCheckpointEvidence = (job) => {
   };
 };
 
+const buildSafeCheckpointEvidence = (job) => buildSafeCheckpointEvidenceFromCheckpoint(
+  resolveVoiceoverCheckpoint(job),
+);
+
 const buildSafeLiveEvidence = (job) => {
   const parentJobId = clean(job?.id);
   return {
@@ -395,20 +399,12 @@ const buildSafeLiveEvidence = (job) => {
 };
 
 const resolveFinalManagedIdentity = (job, baseUrl) => {
-  const result = job?.result && typeof job.result === 'object' ? job.result : {};
-  const checkpoint = resolveVoiceoverCheckpoint(job);
-  const finalAssetId = clean(
-    result.finalAssetId
-    || result.final_asset_id
-    || checkpoint?.finalAssetId,
-  );
-  const videoUrl = clean(result.videoUrl || result.video_url);
-  const stage = clean(
-    result.voiceoverStage
-    || result.voiceover_stage
-    || checkpoint?.stage,
-  );
-  if (!MANAGED_ID_PATTERN.test(finalAssetId) || !videoUrl || stage !== 'result_persisted') {
+  const result = job?.result && typeof job.result === 'object' && !Array.isArray(job.result)
+    ? job.result
+    : {};
+  const finalAssetId = clean(result.finalAssetId);
+  const videoUrl = clean(result.videoUrl);
+  if (!MANAGED_ID_PATTERN.test(finalAssetId) || !videoUrl) {
     throw new Error('口播翻译终态缺少有效的托管最终素材。');
   }
   let parsed;
@@ -469,10 +465,83 @@ const defaultVerifyFinalResult = async (identity, remote, deps) => {
       aac: metadata.audioCodec === 'aac',
       rangeReadable,
       ftypPresent: Boolean(container.containerBrand),
+      durationMs: Math.round(Number(metadata.durationSeconds) * 1000),
     };
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
+};
+
+const verifiedDurationMs = (value) => {
+  const durationMs = Number(value);
+  return Number.isSafeInteger(durationMs) && durationMs > 0 ? durationMs : 0;
+};
+
+const latestTtsGroups = (groups) => {
+  const latestByIndex = new Map();
+  for (const group of groups) {
+    const previous = latestByIndex.get(group.index);
+    if (!previous || group.attempt > previous.attempt) latestByIndex.set(group.index, group);
+  }
+  return [...latestByIndex.values()];
+};
+
+const requireCanonicalLiveCheckpoint = ({
+  job,
+  removeText,
+  finalIdentity,
+  durationMs,
+  env,
+}) => {
+  const rawCheckpoint = job?.result?.voiceoverCheckpoint;
+  if (!rawCheckpoint || typeof rawCheckpoint !== 'object' || Array.isArray(rawCheckpoint)) {
+    throw new Error('口播翻译成功任务缺少规范的持久化检查点。');
+  }
+  const config = getVoiceoverConfig(env);
+  const checkpoint = normalizeVoiceoverCheckpoint(rawCheckpoint, {
+    durationMs,
+    overlapToleranceMs: config.overlapToleranceMs,
+    minAtempo: config.minAtempo,
+    maxAtempo: config.maxAtempo,
+    removeText,
+  });
+  if (
+    checkpoint.stage !== 'result_persisted'
+    || checkpoint.finalAssetId !== finalIdentity.assetId
+    || checkpoint.analysisAttempt < 1
+    || !checkpoint.analysis
+    || !checkpoint.translation
+  ) {
+    throw new Error('口播翻译持久化检查点尚未形成可验证终态。');
+  }
+  const latestGroups = latestTtsGroups(checkpoint.ttsGroups);
+  if (
+    latestGroups.length === 0
+    || latestGroups.some((group) => (
+      group.status !== 'succeeded'
+      || !INTERNAL_JOB_ID_PATTERN.test(group.childJobId)
+      || !MANAGED_ID_PATTERN.test(group.providerTaskId)
+      || !MANAGED_ID_PATTERN.test(group.assetId)
+    ))
+  ) {
+    throw new Error('口播翻译持久化检查点缺少已成功的最新 TTS 子任务证据。');
+  }
+  const subtitleRemoval = checkpoint.subtitleRemoval;
+  if (
+    removeText
+    && (
+      subtitleRemoval?.status !== 'succeeded'
+      || !INTERNAL_JOB_ID_PATTERN.test(subtitleRemoval?.childJobId)
+      || !MANAGED_ID_PATTERN.test(subtitleRemoval?.providerTaskId)
+      || !MANAGED_ID_PATTERN.test(subtitleRemoval?.resultAssetId)
+    )
+  ) {
+    throw new Error('口播翻译持久化检查点缺少已成功的 Golden 去文案证据。');
+  }
+  if (!removeText && subtitleRemoval !== undefined) {
+    throw new Error('未启用去文案时不能接受 Golden 去文案检查点。');
+  }
+  return checkpoint;
 };
 
 const assertLocalRangeReadable = async (filePath) => {
@@ -624,10 +693,12 @@ const buildLiveRequest = (args, deps) => {
   };
 };
 
-const liveSummary = (job, args, verification) => {
+const liveSummary = (job, args, verification, checkpoint) => {
+  const parentJobId = clean(job?.id);
   return {
     mode: 'live',
-    ...buildSafeLiveEvidence(job),
+    ...(INTERNAL_JOB_ID_PATTERN.test(parentJobId) ? { parentJobId } : {}),
+    ...buildSafeCheckpointEvidenceFromCheckpoint(checkpoint),
     parentJobCreated: true,
     parentJobCompleted: job?.status === 'succeeded',
     finalManagedAssetPresent: verification.managedAsset === true,
@@ -820,18 +891,27 @@ export async function runVoiceoverProbe(argv = [], deps = {}) {
     const verifyFinal = deps.verifyFinalResult
       || ((identity) => defaultVerifyFinalResult(identity, remote, { ...deps, env }));
     const verification = await verifyFinal(finalIdentity, remote);
+    const durationMs = verifiedDurationMs(verification?.durationMs);
     if (
       verification?.managedAsset !== true
       || verification?.h264 !== true
       || verification?.aac !== true
       || verification?.rangeReadable !== true
       || verification?.ftypPresent !== true
+      || durationMs === 0
     ) {
-      throw new Error('口播翻译最终托管视频未通过 H.264/AAC/Range/ftyp 验证。');
+      throw new Error('口播翻译最终托管视频未通过 H.264/AAC/Range/ftyp/时长验证。');
     }
+    const checkpoint = requireCanonicalLiveCheckpoint({
+      job,
+      removeText: args.removeText,
+      finalIdentity,
+      durationMs,
+      env,
+    });
     return {
       exitCode: 0,
-      stdout: `${JSON.stringify(liveSummary(job, args, verification))}\n`,
+      stdout: `${JSON.stringify(liveSummary(job, args, verification, checkpoint))}\n`,
       stderr: '',
     };
   } catch (error) {
@@ -865,12 +945,18 @@ const isDirectExecution = process.argv[1]
 
 if (isDirectExecution) {
   const invocationLiveConfirmation = process.env.MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED;
+  const invocationSessionToken = process.env.MEIAO_VOICEOVER_PROBE_SESSION_TOKEN;
   loadServerEnvFile({ envPath: path.resolve('.env.server') });
   loadServerEnvFile({ envPath: path.resolve('.env.local') });
   if (invocationLiveConfirmation === undefined) {
     delete process.env.MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED;
   } else {
     process.env.MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED = invocationLiveConfirmation;
+  }
+  if (invocationSessionToken === undefined) {
+    delete process.env.MEIAO_VOICEOVER_PROBE_SESSION_TOKEN;
+  } else {
+    process.env.MEIAO_VOICEOVER_PROBE_SESSION_TOKEN = invocationSessionToken;
   }
   const result = await runVoiceoverProbe(process.argv.slice(2));
   if (result.stdout) process.stdout.write(result.stdout);

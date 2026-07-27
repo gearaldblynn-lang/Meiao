@@ -19,6 +19,67 @@ const readyLocal = Object.freeze({
   ffmpegReady: true,
 });
 
+const canonicalVoiceoverCheckpoint = ({ removeText = false, ...overrides } = {}) => {
+  const segment = {
+    id: 'segment-1',
+    startMs: 0,
+    endMs: 800,
+    sourceText: '源文',
+    targetText: 'Translation',
+  };
+  return {
+    version: 1,
+    stage: 'result_persisted',
+    baseVideoAssetId: 'asset-base',
+    originalAudioAssetId: 'asset-original-audio',
+    vocalAssetId: 'asset-vocals',
+    backgroundAssetId: 'asset-background',
+    analysisAttempt: 1,
+    ...(removeText ? {
+      subtitleRemoval: {
+        childJobId: 'voiceover-child-golden-safe',
+        providerTaskId: 'golden-provider-never-print',
+        resultAssetId: 'asset-golden-result',
+        attempt: 0,
+        status: 'succeeded',
+      },
+    } : {}),
+    analysis: {
+      sourceLanguage: 'cmn',
+      speakerCount: 1,
+      voiceProfile: {
+        pitch: 'medium',
+        brightness: 'balanced',
+        energy: 'balanced',
+        pace: 'natural',
+        accentDescription: 'clear',
+      },
+      segments: [{ ...segment }],
+    },
+    translation: {
+      targetLanguage: 'en',
+      mode: 'natural',
+      selectedVoiceName: 'Kore',
+      segments: [{ ...segment }],
+    },
+    ttsGroups: [{
+      index: 0,
+      attempt: 0,
+      childJobId: 'voiceover-child-tts-safe',
+      providerTaskId: 'tts-provider-never-print',
+      assetId: 'asset-tts-safe',
+      status: 'succeeded',
+      startMs: 0,
+      endMs: 800,
+      actualDurationMs: 780,
+      atempo: 1,
+    }],
+    alignedAudioAssetId: 'asset-aligned-audio',
+    finalAssetId: 'managed-final',
+    ...overrides,
+  };
+};
+
 test('direct CLI loads server env files without overriding or leaking their values', async (t) => {
   const workingDirectory = await mkdtemp(path.join(tmpdir(), 'meiao-voiceover-probe-env-'));
   t.after(() => rm(workingDirectory, { recursive: true, force: true }));
@@ -76,6 +137,34 @@ test('direct CLI never accepts persisted live confirmation', async (t) => {
   assert.match(result.stderr, /Golden/);
   assert.match(result.stderr, /MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1/);
   assert.doesNotMatch(result.stderr, /SESSION_TOKEN|BASE_URL/);
+  assert.equal(result.stdout, '');
+});
+
+test('direct CLI never accepts a persisted remote session token', async (t) => {
+  const workingDirectory = await mkdtemp(path.join(tmpdir(), 'meiao-voiceover-probe-session-'));
+  t.after(() => rm(workingDirectory, { recursive: true, force: true }));
+  await writeFile(path.join(workingDirectory, '.env.server'), [
+    'MEIAO_VOICEOVER_PROBE_SESSION_TOKEN=server-session-must-be-ignored',
+  ].join('\n'));
+  await writeFile(path.join(workingDirectory, '.env.local'), [
+    'MEIAO_VOICEOVER_PROBE_SESSION_TOKEN=local-session-must-be-ignored',
+  ].join('\n'));
+  const childEnv = { ...process.env };
+  delete childEnv.MEIAO_VOICEOVER_PROBE_SESSION_TOKEN;
+  delete childEnv.MEIAO_VOICEOVER_PROBE_BASE_URL;
+  const scriptPath = fileURLToPath(new URL('./probe-voiceover-translation.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [
+    scriptPath,
+    '--resume-parent-job-id', 'parent-job-safe',
+  ], {
+    cwd: workingDirectory,
+    env: childEnv,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /MEIAO_VOICEOVER_PROBE_SESSION_TOKEN/);
+  assert.doesNotMatch(result.stderr, /server-session|local-session/);
   assert.equal(result.stdout, '');
 });
 
@@ -155,16 +244,7 @@ const probeDeps = ({
           id: 'parent-job-safe',
           status: 'succeeded',
           result: {
-            voiceoverCheckpoint: {
-              stage: 'result_persisted',
-              analysisAttempt: 1,
-              ttsGroups: [{
-                childJobId: 'voiceover-child-tts-safe',
-                providerTaskId: 'provider-task-never-print',
-                status: 'succeeded',
-              }],
-              finalAssetId: 'managed-final',
-            },
+            voiceoverCheckpoint: canonicalVoiceoverCheckpoint(),
             finalAssetId: 'managed-final',
             videoUrl: '/api/assets/file/managed-final?accessKey=never-print',
           },
@@ -180,6 +260,7 @@ const probeDeps = ({
         aac: true,
         rangeReadable: true,
         ftypPresent: true,
+        durationMs: 1_000,
       };
     },
     queryLiveJob: async () => {
@@ -465,25 +546,30 @@ test('successful live evidence contains only bounded internal checkpoint identit
         id: 'parent-job-evidence',
         status: 'succeeded',
         result: {
-          voiceoverCheckpoint: {
-            stage: 'result_persisted',
+          voiceoverCheckpoint: canonicalVoiceoverCheckpoint({
+            removeText: true,
             analysisAttempt: 3,
-            subtitleRemoval: {
-              childJobId: 'voiceover-child-golden',
-              providerTaskId: 'golden-provider-never-print',
-              status: 'succeeded',
-            },
             ttsGroups: [{
+              index: 0,
+              attempt: 0,
               childJobId: 'voiceover-child-tts-0',
               providerTaskId: 'tts-provider-zero-never-print',
+              assetId: 'asset-tts-zero',
               status: 'succeeded',
+              startMs: 0,
+              endMs: 400,
             }, {
+              index: 1,
+              attempt: 0,
               childJobId: 'voiceover-child-tts-1',
               providerTaskId: 'tts-provider-one-never-print',
-              status: 'submitted',
+              assetId: 'asset-tts-one',
+              status: 'succeeded',
+              startMs: 400,
+              endMs: 800,
             }],
-            finalAssetId: 'managed-final',
-          },
+          }),
+          finalAssetId: 'managed-final',
           videoUrl: '/api/assets/file/managed-final?accessKey=never-print',
           transcript: 'translated words never print',
           providerResponse: { raw: 'never print provider body' },
@@ -505,15 +591,15 @@ test('successful live evidence contains only bounded internal checkpoint identit
   assert.equal(output.finalCheckpointStage, 'result_persisted');
   assert.equal(output.analysisAttempt, 3);
   assert.deepEqual(output.childJobIds, [
-    'voiceover-child-golden',
+    'voiceover-child-golden-safe',
     'voiceover-child-tts-0',
     'voiceover-child-tts-1',
   ]);
   assert.deepEqual(output.ttsSummary, {
     total: 2,
     queued: 0,
-    submitted: 1,
-    succeeded: 1,
+    submitted: 0,
+    succeeded: 2,
     failed: 0,
     unknown: 0,
   });
@@ -522,6 +608,153 @@ test('successful live evidence contains only bounded internal checkpoint identit
     result.stdout,
     /providerTaskId|golden-provider|tts-provider|translated words|provider body|accessKey|session-secret/,
   );
+});
+
+test('succeeded live jobs fail closed unless the authoritative final checkpoint is canonical and complete', async () => {
+  const liveEnv = {
+    MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED: '1',
+    MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
+    MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+  };
+  const baseTtsGroup = canonicalVoiceoverCheckpoint().ttsGroups[0];
+  const cases = [{
+    name: 'no checkpoint',
+    removeText: false,
+    result: {
+      finalAssetId: 'managed-final',
+      videoUrl: '/api/assets/file/managed-final',
+    },
+  }, {
+    name: 'result-level-only stage and final asset',
+    removeText: false,
+    result: {
+      voiceoverStage: 'result_persisted',
+      finalAssetId: 'managed-final',
+      videoUrl: '/api/assets/file/managed-final',
+    },
+  }, {
+    name: 'malformed checkpoint',
+    removeText: false,
+    result: {
+      voiceoverCheckpoint: canonicalVoiceoverCheckpoint({ unexpectedField: 'must-fail' }),
+      finalAssetId: 'managed-final',
+      videoUrl: '/api/assets/file/managed-final',
+    },
+  }, {
+    name: 'checkpoint final asset mismatch',
+    removeText: false,
+    result: {
+      voiceoverCheckpoint: canonicalVoiceoverCheckpoint({ finalAssetId: 'managed-other' }),
+      finalAssetId: 'managed-final',
+      videoUrl: '/api/assets/file/managed-final',
+    },
+  }, {
+    name: 'analysis attempt never submitted',
+    removeText: false,
+    result: {
+      voiceoverCheckpoint: canonicalVoiceoverCheckpoint({ analysisAttempt: 0 }),
+      finalAssetId: 'managed-final',
+      videoUrl: '/api/assets/file/managed-final',
+    },
+  }, {
+    name: 'latest TTS attempt submitted',
+    removeText: false,
+    result: {
+      voiceoverCheckpoint: canonicalVoiceoverCheckpoint({
+        ttsGroups: [
+          baseTtsGroup,
+          {
+            ...baseTtsGroup,
+            attempt: 1,
+            childJobId: 'voiceover-child-tts-latest',
+            providerTaskId: 'tts-provider-latest-never-print',
+            assetId: undefined,
+            status: 'submitted',
+          },
+        ],
+      }),
+      finalAssetId: 'managed-final',
+      videoUrl: '/api/assets/file/managed-final',
+    },
+  }, {
+    name: 'failed Golden child',
+    removeText: true,
+    result: {
+      voiceoverCheckpoint: canonicalVoiceoverCheckpoint({
+        removeText: true,
+        subtitleRemoval: {
+          childJobId: 'voiceover-child-golden-failed',
+          providerTaskId: 'golden-provider-never-print',
+          resultAssetId: 'asset-golden-result',
+          attempt: 0,
+          status: 'failed',
+        },
+      }),
+      finalAssetId: 'managed-final',
+      videoUrl: '/api/assets/file/managed-final',
+    },
+  }, {
+    name: 'removeText false with Golden checkpoint',
+    removeText: false,
+    result: {
+      voiceoverCheckpoint: canonicalVoiceoverCheckpoint({ removeText: true }),
+      finalAssetId: 'managed-final',
+      videoUrl: '/api/assets/file/managed-final',
+    },
+  }, {
+    name: 'removeText true without Golden checkpoint',
+    removeText: true,
+    result: {
+      voiceoverCheckpoint: canonicalVoiceoverCheckpoint(),
+      finalAssetId: 'managed-final',
+      videoUrl: '/api/assets/file/managed-final',
+    },
+  }];
+
+  for (const item of cases) {
+    const deps = probeDeps({
+      env: liveEnv,
+      liveResult: {
+        job: {
+          id: `parent-${item.name.replaceAll(' ', '-').replaceAll(/[^\w-]/gu, '')}`,
+          status: 'succeeded',
+          result: item.result,
+        },
+      },
+    });
+    const result = await runVoiceoverProbe([
+      '--live',
+      '--source-asset-id', 'owned-managed-asset',
+      '--target-language', 'en',
+      ...(item.removeText ? ['--remove-text'] : []),
+    ], deps);
+
+    assert.equal(result.exitCode, 1, item.name);
+    assert.equal(deps.calls.providerCreate, 1, item.name);
+    assert.equal(JSON.parse(result.stderr).parentJobId.startsWith('parent-'), true, item.name);
+    assert.doesNotMatch(result.stderr, /providerTaskId|provider-never-print|provider-latest/, item.name);
+  }
+
+  const invalidDuration = probeDeps({ env: liveEnv });
+  invalidDuration.verifyFinalResult = async () => {
+    invalidDuration.calls.finalVerify += 1;
+    return {
+      managedAsset: true,
+      h264: true,
+      aac: true,
+      rangeReadable: true,
+      ftypPresent: true,
+      durationMs: 0,
+    };
+  };
+  const invalidDurationResult = await runVoiceoverProbe([
+    '--live',
+    '--source-asset-id', 'owned-managed-asset',
+    '--target-language', 'en',
+  ], invalidDuration);
+  assert.equal(invalidDurationResult.exitCode, 1);
+  assert.equal(invalidDuration.calls.providerCreate, 1);
+  assert.equal(JSON.parse(invalidDurationResult.stderr).parentJobId, 'parent-job-safe');
 });
 
 test('post-create timeout and terminal failure preserve safe parent recovery evidence without recreating', async () => {
@@ -635,6 +868,7 @@ test('live success fails closed without a canonical final asset or verified H.26
       aac: false,
       rangeReadable: true,
       ftypPresent: true,
+      durationMs: 1_000,
     };
   };
   const invalidMediaResult = await runVoiceoverProbe([
