@@ -97,9 +97,34 @@ test('media sessions are cancelled promptly on convert failure, validation failu
   assert.match(source, /createdSessionId = probe\.sessionId/);
   assert.match(source, /conversionCompleted = true/);
   assert.match(source, /createdSessionId\s*&& !conversionCompleted/);
-  assert.match(source, /await cancelMediaTranscodeSession\(\{ sessionId: createdSessionId \}\)/);
-  assert.match(source, /const clearSource = useCallback[\s\S]*cancelMediaTranscodeSession\(\{ sessionId \}\)/);
-  assert.match(source, /return \(\) => \{[\s\S]*sessionIdRef\.current = ''[\s\S]*cancelMediaTranscodeSession/);
+  assert.match(source, /await cancelMediaSessionOnce\(createdSessionId\)/);
+  assert.match(source, /const cancelMediaSessionOnce = useCallback[\s\S]*await cancelMediaTranscodeSession/);
+  assert.match(source, /const clearSource = useCallback[\s\S]*cancelMediaSessionOnce\(sessionId\)/);
+  assert.match(source, /return \(\) => \{[\s\S]*sessionIdRef\.current = ''[\s\S]*cancelMediaSessionOnce\(sessionId\)/);
+});
+
+test('each preparation owns its async UI and session mutations, including a late probe and initial-source cleanup', () => {
+  const prepareStart = source.indexOf('const prepareFile = useCallback');
+  const prepareEnd = source.indexOf('const chooseFile = useCallback', prepareStart);
+  const prepareBlock = source.slice(prepareStart, prepareEnd);
+  const localSessionIndex = prepareBlock.indexOf('createdSessionId = probe.sessionId');
+  const lateProbeGuardIndex = prepareBlock.indexOf('if (!ownsPreparation()) return', localSessionIndex);
+  const sharedSessionWriteIndex = prepareBlock.indexOf('sessionIdRef.current = createdSessionId', localSessionIndex);
+
+  assert.match(prepareBlock, /lifecycleSignal\?: AbortSignal/);
+  assert.match(prepareBlock, /const ownsPreparation = \(\) => \(\s*mountedRef\.current\s*&& controllerRef\.current === controller\s*&& !controller\.signal\.aborted/);
+  assert.match(prepareBlock, /lifecycleSignal\?\.addEventListener\('abort', abortForLifecycle, \{ once: true \}\)/);
+  assert.ok(localSessionIndex >= 0);
+  assert.ok(localSessionIndex < lateProbeGuardIndex);
+  assert.ok(lateProbeGuardIndex < sharedSessionWriteIndex);
+  assert.match(prepareBlock, /onUploadProgress:[\s\S]*if \(!ownsPreparation\(\)\) return/);
+  assert.match(prepareBlock, /if \(!ownsPreparation\(\)\) return;\s*conversionCompleted = true/);
+  assert.match(prepareBlock, /catch \(error\) \{\s*if \(!ownsPreparation\(\)\) return/);
+  assert.match(prepareBlock, /const ownsFinalMutation = controllerRef\.current === controller/);
+  assert.match(prepareBlock, /if \(mountedRef\.current && ownsFinalMutation\) setPreparing\(false\)/);
+  assert.match(prepareBlock, /lifecycleSignal\?\.removeEventListener\('abort', abortForLifecycle\)/);
+  assert.match(source, /await prepareFile\(file, initialSource!, controller\.signal\)/);
+  assert.match(source, /const cancelledSessionIdsRef = useRef\(new Set<string>\(\)\)/);
 });
 
 test('account changes remount only the voiceover workspace so source and media session state cannot cross users', () => {

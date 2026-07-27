@@ -115,6 +115,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
   const inputRef = useRef<HTMLInputElement | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef('');
+  const cancelledSessionIdsRef = useRef(new Set<string>());
   const consumedInitialSourceRef = useRef('');
   const submitLockRef = useRef(false);
   const mountedRef = useRef(true);
@@ -154,6 +155,12 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       ? ''
       : '口播翻译当前未就绪，暂时不能创建新任务；历史项目仍可查看和下载。'
   );
+  const cancelMediaSessionOnce = useCallback(async (sessionId: string) => {
+    const normalizedSessionId = String(sessionId || '').trim();
+    if (!normalizedSessionId || cancelledSessionIdsRef.current.has(normalizedSessionId)) return;
+    cancelledSessionIdsRef.current.add(normalizedSessionId);
+    await cancelMediaTranscodeSession({ sessionId: normalizedSessionId }).catch(() => undefined);
+  }, []);
 
   useLayoutEffect(() => {
     const nextTarget = active && typeof document !== 'undefined'
@@ -180,15 +187,17 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       const sessionId = sessionIdRef.current;
       sessionIdRef.current = '';
       if (sessionId) {
-        void cancelMediaTranscodeSession({ sessionId }).catch(() => undefined);
+        void cancelMediaSessionOnce(sessionId);
       }
     };
-  }, []);
+  }, [cancelMediaSessionOnce]);
 
   const prepareFile = useCallback(async (
     file: File,
     origin?: VoiceoverTranslationSource,
+    lifecycleSignal?: AbortSignal,
   ) => {
+    if (lifecycleSignal?.aborted) return;
     if (!canCreate) {
       setErrorMessage(creationBlockMessage);
       return;
@@ -199,12 +208,19 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     }
     controllerRef.current?.abort();
     const previousSessionId = sessionIdRef.current;
+    sessionIdRef.current = '';
     if (previousSessionId) {
-      void cancelMediaTranscodeSession({ sessionId: previousSessionId }).catch(() => undefined);
+      void cancelMediaSessionOnce(previousSessionId);
     }
     const controller = new AbortController();
     controllerRef.current = controller;
-    sessionIdRef.current = '';
+    const abortForLifecycle = () => controller.abort();
+    lifecycleSignal?.addEventListener('abort', abortForLifecycle, { once: true });
+    const ownsPreparation = () => (
+      mountedRef.current
+      && controllerRef.current === controller
+      && !controller.signal.aborted
+    );
     setPreparing(true);
     setUploadProgress(0);
     setErrorMessage('');
@@ -217,12 +233,13 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
         profile: 'voiceover_translation',
         signal: controller.signal,
         onUploadProgress: (progress) => {
-          if (!mountedRef.current || controller.signal.aborted) return;
+          if (!ownsPreparation()) return;
           setUploadProgress(Math.round(progress.ratio * 100));
         },
       });
       if (!probe.sessionId) throw new Error('服务端未返回媒体处理会话');
       createdSessionId = probe.sessionId;
+      if (!ownsPreparation()) return;
       sessionIdRef.current = createdSessionId;
       if (probe.hasAudio !== true) throw new Error('视频没有可用音轨，无法进行口播翻译');
       const result = await convertMediaTranscodeSession({
@@ -253,28 +270,28 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       if (!prepared.durationSeconds || !prepared.width || !prepared.height) {
         throw new Error('无法读取处理后视频的权威时长或分辨率');
       }
-      if (!mountedRef.current || controller.signal.aborted) return;
+      if (!ownsPreparation()) return;
       conversionCompleted = true;
       if (sessionIdRef.current === createdSessionId) sessionIdRef.current = '';
       setSource(prepared);
       setUploadProgress(100);
       if (origin) onClearInitialSource();
     } catch (error) {
-      if (!mountedRef.current || controller.signal.aborted) return;
+      if (!ownsPreparation()) return;
       setErrorMessage(error instanceof Error ? error.message : '视频处理失败，请重试');
     } finally {
-      if (
-        createdSessionId
-        && !conversionCompleted
-        && sessionIdRef.current === createdSessionId
-      ) {
-        sessionIdRef.current = '';
-        await cancelMediaTranscodeSession({ sessionId: createdSessionId }).catch(() => undefined);
+      lifecycleSignal?.removeEventListener('abort', abortForLifecycle);
+      if (createdSessionId && !conversionCompleted) {
+        if (sessionIdRef.current === createdSessionId) sessionIdRef.current = '';
+        await cancelMediaSessionOnce(createdSessionId);
       }
-      if (controllerRef.current === controller) controllerRef.current = null;
-      if (mountedRef.current) setPreparing(false);
+      const ownsFinalMutation = controllerRef.current === controller;
+      if (ownsFinalMutation) {
+        controllerRef.current = null;
+      }
+      if (mountedRef.current && ownsFinalMutation) setPreparing(false);
     }
-  }, [canCreate, creationBlockMessage, onClearInitialSource]);
+  }, [canCreate, cancelMediaSessionOnce, creationBlockMessage, onClearInitialSource]);
 
   useEffect(() => {
     if (!canCreate) return undefined;
@@ -295,7 +312,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
           fileNameFromSource(initialSource!.sourceUrl),
           { type: blob.type || 'video/mp4' },
         );
-        await prepareFile(file, initialSource!);
+        await prepareFile(file, initialSource!, controller.signal);
       } catch (error) {
         if (!controller.signal.aborted) {
           setErrorMessage(error instanceof Error ? error.message : '带入视频处理失败');
@@ -327,13 +344,13 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     const sessionId = sessionIdRef.current;
     sessionIdRef.current = '';
     if (sessionId) {
-      void cancelMediaTranscodeSession({ sessionId }).catch(() => undefined);
+      void cancelMediaSessionOnce(sessionId);
     }
     setSource(null);
     setErrorMessage('');
     setUploadProgress(0);
     onClearInitialSource();
-  }, [onClearInitialSource]);
+  }, [cancelMediaSessionOnce, onClearInitialSource]);
 
   const selectedLanguage = languages.find((language) => language.code === targetLanguage);
   const selectedVoice = voices.find((voice) => voice.name === voiceName);
