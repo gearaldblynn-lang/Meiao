@@ -282,6 +282,34 @@ test('historical full-person retries accept the legacy close-first snapshot for 
   assert.equal(replay.replacementScope, 'full_person');
 });
 
+test('historical full-person retries fail closed when the trusted snapshot has no complete body source', async () => {
+  const { store, model, version } = await createPublishedModel();
+  const legacy = await createVirtualModelGenerationJobSnapshot({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: version.id,
+    referenceAnalysis: { framing: 'half_body', faceDirection: 'front' },
+    replacementScope: 'identity_only',
+  });
+  assert.deepEqual(legacy.selectedIdentitySlots, [
+    'front_close', 'left_45_close', 'right_45_close',
+  ]);
+
+  await assert.rejects(
+    () => createVirtualModelGenerationJobSnapshot({
+      store,
+      virtualModelId: model.id,
+      virtualModelVersionId: version.id,
+      referenceAnalysis: { framing: 'half_body', faceDirection: 'front' },
+      replacementScope: 'full_person',
+      allowHistoricalPublishedVersion: true,
+      publishedAt: legacy.publishedAt,
+      selectedAssetIds: legacy.selectedAssetIds,
+    }),
+    (error) => error?.code === 'MODEL_FULL_PERSON_SOURCE_INCOMPLETE',
+  );
+});
+
 test('historical four-image library jobs remain replayable after new jobs adopt three images', async () => {
   const { store, model, version } = await createPublishedModel();
   const legacySelections = [

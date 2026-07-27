@@ -117,3 +117,19 @@ test('full-person provider payload migrates a trusted legacy close-first snapsho
   assert.match(result.payload.prompt, /图A-1（输入图1）：四分之三全身/);
   assert.deepEqual([...result.authorizedManagedAssetIds], ['full-id', 'front-id', 'close-id']);
 });
+
+test('full-person provider payload fails closed before submission when trusted assets have no body source', () => {
+  assert.throws(
+    () => buildVirtualModelProviderPayload({
+      identitySource: 'library',
+      replacementScope: 'full_person',
+      prompt: '图A-1是唯一主人物来源图\n\nF Format 格式',
+      imageUrls: ['https://managed/reference.png'],
+    }, [
+      { assetId: 'front-id', slot: 'front_close', url: 'https://managed/front.png' },
+      { assetId: 'left-id', slot: 'left_45_close', url: 'https://managed/left.png' },
+      { assetId: 'right-id', slot: 'right_45_close', url: 'https://managed/right.png' },
+    ]),
+    (error) => error?.code === 'MODEL_FULL_PERSON_SOURCE_INCOMPLETE',
+  );
+});
