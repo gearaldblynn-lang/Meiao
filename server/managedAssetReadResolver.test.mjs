@@ -84,6 +84,41 @@ test('historical KIE-labelled result assets still use the local read path', asyn
   assert.equal(result, '');
 });
 
+test('server-validated public virtual-model assets can be read by a different task user', async () => {
+  const result = await resolveManagedAssetReadUrl('/api/assets/file/asset-model-1/identity.png', {
+    purpose: 'provider',
+    userId: 'task-user',
+    authorizedSharedAssetIds: new Set(['asset-model-1']),
+    getAsset: async () => cosAsset({
+      id: 'asset-model-1',
+      userId: 'model-admin',
+      module: 'virtual_model',
+      provider: 'internal',
+      storageKey: 'model-admin/source/identity.png',
+    }),
+    createCosReadUrl: async () => { throw new Error('COS signer must not run'); },
+  });
+
+  assert.equal(result, '');
+});
+
+test('a shared allowlist never bypasses ownership for non-library assets', async () => {
+  await assert.rejects(
+    () => resolveManagedAssetReadUrl('/api/assets/file/asset-private-1/image.png', {
+      purpose: 'provider',
+      userId: 'task-user',
+      authorizedSharedAssetIds: new Set(['asset-private-1']),
+      getAsset: async () => cosAsset({
+        id: 'asset-private-1',
+        userId: 'other-user',
+        module: 'everything_replace',
+        provider: 'internal',
+      }),
+    }),
+    (error) => error?.code === 'managed_asset_forbidden',
+  );
+});
+
 test('COS reads sign with the persisted bucket and region snapshot after config rotation', async () => {
   let signedEnv = null;
   await resolveManagedAssetReadUrl('/api/assets/file/asset-cos-1/image.png', {

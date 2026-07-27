@@ -4449,6 +4449,14 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
     originalPayload: job?.payload,
     scrubbedPayload,
   });
+  const providerPayload = await injectLibraryModelAssetsForProvider(
+    stripCreditReservationFromPayload(scrubbedPayload),
+  );
+  const authorizedLibraryManagedAssetIds = new Set(
+    providerPayload?.identitySource === 'library' && Array.isArray(providerPayload.selectedAssetIds)
+      ? providerPayload.selectedAssetIds
+      : [],
+  );
   const assetPool = shouldUseMysql ? await getMysqlPool() : null;
   const inheritedAssetTransferDeps = options?.assetTransferDeps || {};
   const resolveJobManagedAssetReadUrl = async (value, readOptions = {}) => resolveManagedAssetReadUrl(value, {
@@ -4457,6 +4465,7 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
     userId: job?.userId,
     purpose: 'provider',
     env,
+    authorizedSharedAssetIds: authorizedLibraryManagedAssetIds,
   });
   const assetTransferDeps = {
     ...inheritedAssetTransferDeps,
@@ -4489,9 +4498,6 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
       return mediaTranscodeService.probe(probeTarget, 'video', probeSignal);
     },
   };
-  const providerPayload = await injectLibraryModelAssetsForProvider(
-    stripCreditReservationFromPayload(scrubbedPayload),
-  );
   return await executeProviderJob(
     { ...job, payload: providerPayload },
     env,
