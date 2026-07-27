@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { createLocalJobRecord, getLocalJobById } from './localJobStore.mjs';
 import { createLocalTemporalActivities, createMysqlTemporalActivities } from './temporalWorker.mjs';
+
+const temporalWorkflowSource = readFileSync(new URL('./temporal/workflows.mjs', import.meta.url), 'utf8');
 
 const createStore = () => ({
   users: [{ id: 'user-1', username: 'user-1', displayName: 'User 1', role: 'admin' }],
@@ -261,6 +264,9 @@ const createMysqlHarness = (initialJob, options = {}) => {
       if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1/.test(sql)) {
         return [[state.job]];
       }
+      if (/SELECT \* FROM internal_jobs[\s\S]+WHERE id = \? AND user_id = \?[\s\S]+FOR UPDATE/.test(sql)) {
+        return [[state.job]];
+      }
       if (/SELECT \*\s+FROM internal_jobs\s+WHERE status = 'running' AND user_id = \? AND id <> \?/.test(sql)) {
         return [state.runningRows];
       }
@@ -273,6 +279,11 @@ const createMysqlHarness = (initialJob, options = {}) => {
         setColumn('updated_at', params[1]);
         setColumn('error_code', null);
         setColumn('error_message', null);
+        return [{ affectedRows: 1 }];
+      }
+      if (/UPDATE internal_jobs[\s\S]+status = 'running' AND started_at = \?/.test(sql)) {
+        setColumn('result_json', params[0]);
+        setColumn('updated_at', params[1]);
         return [{ affectedRows: 1 }];
       }
       if (/SELECT MAX\(attempt_no\) AS attempt_no/.test(sql)) {
@@ -709,4 +720,193 @@ test('mysql temporal provider checkpoint starts a fresh recovery retry budget', 
   assert.equal(result.providerTaskId, 'provider-task-new');
   assert.equal(result.retryCount, 1);
   assert.equal(state.job.retry_count, 1);
+});
+
+const voiceoverParentJob = (status = 'queued') => ({
+  id: 'voiceover-parent-temporal',
+  userId: 'user-1',
+  module: 'video',
+  taskType: 'voiceover_translate_video',
+  provider: 'internal',
+  status,
+  priority: 0,
+  payload: { taskPurpose: 'voiceover_translation', removeText: false },
+  providerTaskId: '',
+  result: {
+    audit: 'keep',
+    voiceoverCheckpoint: {
+      version: 1,
+      stage: 'input_prepared',
+      baseVideoAssetId: 'asset-base',
+      analysisAttempt: 0,
+    },
+  },
+  retryCount: 0,
+  maxRetries: 0,
+  createdAt: 1_000,
+  updatedAt: 1_000,
+  startedAt: status === 'running' ? 1_000 : null,
+  finishedAt: null,
+  cancelRequestedAt: null,
+});
+
+const parentOwnedTemporalChild = () => ({
+  id: 'voiceover-child-temporal',
+  userId: 'user-1',
+  module: 'video',
+  taskType: 'kie_tts',
+  provider: 'kie',
+  status: 'queued',
+  priority: 0,
+  payload: {
+    executionOwner: 'parent',
+    parentJobId: 'voiceover-parent-temporal',
+    childKey: 'tts:0:attempt:0',
+    clientSubmissionKey: 'voiceover-child:voiceover-parent-temporal:tts:0:attempt:0',
+  },
+  providerTaskId: '',
+  result: null,
+  retryCount: 0,
+  maxRetries: 0,
+  createdAt: 1_000,
+  updatedAt: 1_000,
+  startedAt: null,
+  finishedAt: null,
+  cancelRequestedAt: null,
+});
+
+test('local temporal activity awaits and preserves a parent result checkpoint before continuing', async () => {
+  const store = createStore();
+  store.jobs = [voiceoverParentJob()];
+  const sideEffects = [];
+  const activities = createLocalTemporalActivities({
+    readStore: () => store,
+    writeStore: () => {},
+    mutateStore: async (operation) => operation(store),
+    executeJob: async (_job, _signal, { onResultCheckpoint }) => {
+      await onResultCheckpoint({
+        voiceoverCheckpoint: {
+          stage: 'audio_extracted',
+          originalAudioAssetId: 'asset-audio',
+        },
+      });
+      assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
+      sideEffects.push('paid-call');
+      throw Object.assign(new Error('lost'), { code: 'provider_network_error' });
+    },
+    createLog: async () => {},
+    findUserById: () => store.users[0],
+  });
+
+  const result = await activities.executeLocalJobAttemptActivity({ jobId: 'voiceover-parent-temporal' });
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(sideEffects, ['paid-call']);
+  assert.equal(store.jobs[0].result.audit, 'keep');
+  assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
+});
+
+test('local temporal activity refuses to claim a parent-owned child', async () => {
+  const store = createStore();
+  store.jobs = [parentOwnedTemporalChild()];
+  let executeCalls = 0;
+  const activities = createLocalTemporalActivities({
+    readStore: () => store,
+    writeStore: () => {},
+    mutateStore: async (operation) => operation(store),
+    executeJob: async () => { executeCalls += 1; },
+    createLog: async () => {},
+    findUserById: () => store.users[0],
+  });
+
+  const result = await activities.executeLocalJobAttemptActivity({ jobId: 'voiceover-child-temporal' });
+  assert.equal(result.status, 'queued');
+  assert.equal(store.jobs[0].status, 'queued');
+  assert.equal(executeCalls, 0);
+});
+
+test('mysql temporal activity awaits a guarded parent result checkpoint before continuing', async () => {
+  const parent = voiceoverParentJob();
+  const { state, pool } = createMysqlHarness({
+    id: parent.id,
+    user_id: parent.userId,
+    module: parent.module,
+    task_type: parent.taskType,
+    provider: parent.provider,
+    status: 'queued',
+    priority: 0,
+    payload_json: JSON.stringify(parent.payload),
+    result_json: JSON.stringify(parent.result),
+    retry_count: 0,
+    max_retries: 0,
+    created_at: 1_000,
+    updated_at: 1_000,
+  });
+  const sideEffects = [];
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async (_job, _signal, { onResultCheckpoint }) => {
+      await onResultCheckpoint({
+        voiceoverCheckpoint: {
+          stage: 'audio_extracted',
+          originalAudioAssetId: 'asset-audio',
+        },
+      });
+      assert.equal(JSON.parse(state.job.result_json).voiceoverCheckpoint.stage, 'audio_extracted');
+      sideEffects.push('paid-call');
+      throw Object.assign(new Error('lost'), { code: 'provider_network_error' });
+    },
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: parent.id,
+    workflowId: 'workflow-parent',
+    runId: 'run-parent',
+  });
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(sideEffects, ['paid-call']);
+  assert.equal(JSON.parse(state.job.result_json).audit, 'keep');
+  assert.equal(JSON.parse(state.job.result_json).voiceoverCheckpoint.stage, 'audio_extracted');
+});
+
+test('mysql temporal activity refuses to claim a parent-owned child', async () => {
+  const child = parentOwnedTemporalChild();
+  const { state, pool } = createMysqlHarness({
+    id: child.id,
+    user_id: child.userId,
+    module: child.module,
+    task_type: child.taskType,
+    provider: child.provider,
+    status: child.status,
+    priority: 0,
+    payload_json: JSON.stringify(child.payload),
+    retry_count: 0,
+    max_retries: 0,
+    created_at: 1_000,
+    updated_at: 1_000,
+  });
+  let executeCalls = 0;
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async () => { executeCalls += 1; },
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: child.id,
+    workflowId: 'workflow-child',
+    runId: 'run-child',
+  });
+  assert.equal(result.status, 'queued');
+  assert.equal(state.job.status, 'queued');
+  assert.equal(executeCalls, 0);
+});
+
+test('voiceover parent always selects Temporal maximumAttempts one independently of provider', () => {
+  assert.match(
+    temporalWorkflowSource,
+    /SINGLE_ATTEMPT_TASK_TYPES[\s\S]*voiceover_translate_video[\s\S]*input\?\.taskType[\s\S]*singleAttemptActivities/,
+  );
 });

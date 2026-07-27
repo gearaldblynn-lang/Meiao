@@ -5,6 +5,11 @@ import { canRecoverProviderTaskById, KIE_RECOVERY_SOURCE_TASK_TYPES } from './jo
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { findReusableJobSubmission, normalizeSubmissionSettlementInput, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
 import { isDeployDrainActive } from './deployDrain.mjs';
+import {
+  isParentOwnedChildJob,
+  persistLocalVoiceoverParentCheckpoint,
+  prepareVoiceoverJobRetryResult,
+} from './voiceoverChildJobStore.mjs';
 
 const now = () => Date.now();
 const LOCAL_ACTIVE_JOB_STATUSES = new Set(['queued', 'running', 'retry_waiting']);
@@ -69,6 +74,7 @@ export const reconcileRestartedLocalJobs = (jobs) => {
   return jobs.map((job) => {
     const normalized = normalizeJob(job);
     if (normalized.status !== 'running') return normalized;
+    if (isParentOwnedChildJob(normalized)) return normalized;
     const updatedAt = now();
     const canRecoverProviderTask = canRecoverProviderTaskById(normalized);
     const canSafelyRequeueInternal = String(normalized.provider || '').trim() === 'internal';
@@ -96,11 +102,20 @@ export const normalizeLocalJobs = (jobs) => {
     .map(compactLocalJobRecord)
     .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
   const active = normalized.filter((job) => LOCAL_ACTIVE_JOB_STATUSES.has(job.status));
-  const terminalLimit = Math.max(0, 500 - active.length);
+  const activeVoiceoverParentIds = new Set(active
+    .filter((job) => job.taskType === 'voiceover_translate_video' && job.provider === 'internal')
+    .map((job) => job.id));
+  const protectedChildren = normalized.filter((job) => (
+    !LOCAL_ACTIVE_JOB_STATUSES.has(job.status)
+    && isParentOwnedChildJob(job)
+    && activeVoiceoverParentIds.has(String(job.payload?.parentJobId || ''))
+  ));
+  const protectedChildIds = new Set(protectedChildren.map((job) => job.id));
+  const terminalLimit = Math.max(0, 500 - active.length - protectedChildren.length);
   const terminal = normalized
-    .filter((job) => !LOCAL_ACTIVE_JOB_STATUSES.has(job.status))
+    .filter((job) => !LOCAL_ACTIVE_JOB_STATUSES.has(job.status) && !protectedChildIds.has(job.id))
     .slice(0, terminalLimit);
-  return [...active, ...terminal]
+  return [...active, ...protectedChildren, ...terminal]
     .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
 };
 
@@ -307,6 +322,7 @@ export const listLocalJobsForUser = (store, userId, options = {}) => {
   return ensureStoreJobs(store)
     .filter((job) => job.userId === userId)
     .filter((job) => job.taskType !== 'upload_asset')
+    .filter((job) => !isParentOwnedChildJob(job))
     .slice(0, limit)
     .map(normalizeJob)
     .map(compactLocalJobRecord);
@@ -315,6 +331,7 @@ export const listLocalJobsForUser = (store, userId, options = {}) => {
 export const getLocalJobQueueStats = (store) => {
   const jobs = ensureStoreJobs(store);
   return jobs.reduce((acc, job) => {
+    if (isParentOwnedChildJob(job)) return acc;
     if (job.status === 'running') acc.running += 1;
     if (job.status === 'queued' || job.status === 'retry_waiting') acc.queued += 1;
     return acc;
@@ -351,16 +368,29 @@ export const requestLocalRetryJob = (store, jobId, options = {}) => {
   const index = findJobIndex(store, jobId);
   if (index < 0) return null;
 
+  const current = normalizeJob(store.jobs[index]);
+  if (current.taskType === 'voiceover_translate_video' && current.provider === 'internal' && current.status !== 'failed') {
+    throw Object.assign(new Error('只有失败的口播翻译父任务可以重试。'), {
+      code: 'job_state_changed',
+      statusCode: 409,
+    });
+  }
   const updatedAt = now();
+  const retryResult = current.taskType === 'voiceover_translate_video' && current.provider === 'internal'
+    ? prepareVoiceoverJobRetryResult(current, options.voiceoverRetryPlan, {
+      env: options.env,
+      resolveVoiceoverConfig: options.resolveVoiceoverConfig,
+    })
+    : null;
   const next = normalizeJob({
-    ...store.jobs[index],
+    ...current,
     ...(options.payload && typeof options.payload === 'object' ? { payload: options.payload } : {}),
     ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
     status: 'queued',
     errorCode: '',
     errorMessage: '',
     errorDetail: '',
-    result: null,
+    result: retryResult,
     startedAt: null,
     finishedAt: null,
     cancelRequestedAt: null,
@@ -380,10 +410,12 @@ export const takeNextLocalExecutableJobs = (store, availableSlots, options = {})
   if (availableSlots <= 0) return [];
   const jobs = ensureStoreJobs(store);
   const candidates = jobs
+    .filter((job) => !isParentOwnedChildJob(job))
     .filter((job) => job.status === 'queued' || job.status === 'retry_waiting')
     .sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0) || Number(a.createdAt || 0) - Number(b.createdAt || 0));
 
   const runningUserIds = jobs
+    .filter((job) => !isParentOwnedChildJob(job))
     .filter((job) => job.status === 'running')
     .map((job) => job.userId);
 
@@ -423,6 +455,7 @@ export const claimLocalJobForExecution = (store, jobId) => {
   const index = findJobIndex(store, jobId);
   if (index < 0) return null;
   const current = store.jobs[index];
+  if (isParentOwnedChildJob(current)) return null;
   if (current.status !== 'queued' && current.status !== 'retry_waiting') {
     return normalizeJob(current);
   }
@@ -482,11 +515,21 @@ export const markLocalJobCompleted = (store, jobId, output, aborted = false) => 
   if (index < 0) return null;
   const finishedAt = now();
   const current = store.jobs[index];
+  const outputResult = output?.result && typeof output.result === 'object' ? cloneValue(output.result) : null;
+  const result = current.taskType === 'voiceover_translate_video' && current.provider === 'internal'
+    ? {
+      ...(current.result && typeof current.result === 'object' ? cloneValue(current.result) : {}),
+      ...(outputResult || {}),
+      ...(current.result?.voiceoverCheckpoint
+        ? { voiceoverCheckpoint: cloneValue(current.result.voiceoverCheckpoint) }
+        : {}),
+    }
+    : outputResult;
   const next = normalizeJob({
     ...current,
     status: aborted ? 'cancelled' : 'succeeded',
     providerTaskId: output?.providerTaskId || current.providerTaskId || '',
-    result: output?.result || null,
+    result,
     errorCode: aborted ? 'request_cancelled' : '',
     errorMessage: aborted ? '任务已取消' : '',
     errorDetail: '',
@@ -537,6 +580,16 @@ export const markLocalJobFailed = (store, jobId, error) => {
     errorCode: errorFields.errorCode,
     providerStatus: error?.providerStatus,
   });
+  const rejectedResult = getProviderCompletedRejectedOutput(error)?.result;
+  const result = current.taskType === 'voiceover_translate_video' && current.provider === 'internal'
+    ? {
+      ...(current.result && typeof current.result === 'object' ? cloneValue(current.result) : {}),
+      ...(rejectedResult && typeof rejectedResult === 'object' ? cloneValue(rejectedResult) : {}),
+      ...(current.result?.voiceoverCheckpoint
+        ? { voiceoverCheckpoint: cloneValue(current.result.voiceoverCheckpoint) }
+        : {}),
+    }
+    : rejectedResult || current.result || null;
   const next = normalizeJob({
     ...current,
     status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
@@ -545,7 +598,7 @@ export const markLocalJobFailed = (store, jobId, error) => {
     errorCode: persistedErrorCode,
     errorMessage: errorFields.errorMessage,
     errorDetail: errorFields.errorDetail,
-    result: getProviderCompletedRejectedOutput(error)?.result || current.result || null,
+    result,
     updatedAt: finishedAt,
     finishedAt: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
   });
@@ -564,6 +617,8 @@ export const createLocalJobWorker = ({
   settleJobCredits,
   releaseJobCredits,
   isExecutionPaused = isDeployDrainActive,
+  voiceoverEnv = process.env,
+  resolveVoiceoverConfig,
 }) => {
   let timer = null;
   let draining = false;
@@ -610,8 +665,21 @@ export const createLocalJobWorker = ({
               notifiedProviderTaskId = value;
               await mutate((providerStore) => updateLocalJobProviderTaskId(providerStore, refreshedJob.id, value));
             };
+            const onResultCheckpoint = async (resultPatch) => {
+              await mutate((checkpointStore) => persistLocalVoiceoverParentCheckpoint(checkpointStore, {
+                jobId: refreshedJob.id,
+                userId: refreshedJob.userId,
+                startedAt: refreshedJob.startedAt,
+                resultPatch,
+                env: voiceoverEnv,
+                resolveVoiceoverConfig,
+              }));
+            };
 
-            const output = await executeJob(refreshedJob, controller.signal, { onProviderTaskId });
+            const output = await executeJob(refreshedJob, controller.signal, {
+              onProviderTaskId,
+              onResultCheckpoint,
+            });
             const finishedJob = await mutate((completeStore) => {
               const nextJob = markLocalJobCompleted(completeStore, refreshedJob.id, output, controller.signal.aborted);
               try {

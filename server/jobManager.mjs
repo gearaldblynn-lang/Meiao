@@ -6,6 +6,12 @@ import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import { isDeployDrainActive } from './deployDrain.mjs';
 import { runWithDeployJobClaimLock } from './deployClaimLock.mjs';
+import {
+  isParentOwnedChildJob,
+  PARENT_OWNED_CHILD_SQL_EXCLUSION,
+  persistMysqlVoiceoverParentCheckpoint,
+  prepareVoiceoverJobRetryResult,
+} from './voiceoverChildJobStore.mjs';
 
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
@@ -29,6 +35,25 @@ const parseJsonValue = (value, fallback = null) => {
 };
 
 const serializeJsonValue = (value) => JSON.stringify(value ?? null);
+
+const isSameMysqlClaim = (job, claimedAt) => (
+  String(job?.status || '') === 'running'
+  && Number(job?.startedAt || 0) === Number(claimedAt || 0)
+);
+
+const preserveVoiceoverCheckpoint = (job, nextResult) => {
+  if (
+    String(job?.taskType || '') !== 'voiceover_translate_video'
+    || !job?.result?.voiceoverCheckpoint
+  ) {
+    return nextResult ?? null;
+  }
+  return {
+    ...(job.result && typeof job.result === 'object' && !Array.isArray(job.result) ? job.result : {}),
+    ...(nextResult && typeof nextResult === 'object' && !Array.isArray(nextResult) ? nextResult : {}),
+    voiceoverCheckpoint: job.result.voiceoverCheckpoint,
+  };
+};
 
 const normalizeReusablePayload = (value) => {
   if (Array.isArray(value)) return value.map(normalizeReusablePayload);
@@ -165,6 +190,7 @@ const getJobTimestamp = (job, camelKey, snakeKey = camelKey) => {
 
 export const isRunningJobConcurrencyBlocking = (job, options = {}) => {
   if (String(getJobValue(job, 'status') || '') !== 'running') return false;
+  if (isParentOwnedChildJob(job)) return false;
 
   const referenceTime = Number(options.referenceTime || now());
   const providerTaskId = String(getJobValue(job, 'providerTaskId', 'provider_task_id') || '').trim();
@@ -242,6 +268,7 @@ export const selectJobsWithinConcurrencyLimits = ({
   const selected = [];
   for (const job of candidates) {
     if (selected.length >= availableSlots) break;
+    if (isParentOwnedChildJob(job)) continue;
     const userId = String(job?.userId || '');
     const currentRunning = runningCountByUser.get(userId) || 0;
     const limit = toSafeJobConcurrency(getUserConcurrency(userId), DEFAULT_JOB_CONCURRENCY);
@@ -281,6 +308,7 @@ export const findReusableJobSubmission = ({
 
   const matches = jobs
     .filter((job) => (
+      !isParentOwnedChildJob(job) &&
       String(job?.userId || '') === String(userId || '') &&
       String(job?.module || '') === normalizedModule &&
       String(job?.taskType || '') === normalizedTaskType &&
@@ -321,6 +349,7 @@ export const reconcileRestartedMysqlJobs = (jobs, referenceTime = now()) => {
   if (!Array.isArray(jobs)) return [];
   return jobs
     .filter((job) => String(job?.status || '') === 'running')
+    .filter((job) => !isParentOwnedChildJob(job))
     .map((job) => {
       const updatedAt = Number(referenceTime || now());
       const canRecoverProviderTask = canRecoverProviderTaskById(job);
@@ -349,6 +378,7 @@ export const reconcileStaleProviderlessRunningMysqlJobs = (
   const resolvedReferenceTime = Number(referenceTime || now());
   const baseStaleMs = Math.max(1, Number(staleMs || DEFAULT_PROVIDERLESS_RUNNING_STALE_MS));
   return jobs
+    .filter((job) => !isParentOwnedChildJob(job))
     .filter((job) => {
       const taskType = String(job?.taskType || '').trim();
       const taskMinStaleMs = MIN_PROVIDERLESS_RUNNING_STALE_MS_BY_TASK_TYPE.get(taskType) || 0;
@@ -383,6 +413,7 @@ export const reconcileStaleSubmittedRunningMysqlJobs = (
   const resolvedReferenceTime = Number(referenceTime || now());
   const cutoff = resolvedReferenceTime - Math.max(1, Number(staleMs || DEFAULT_SUBMITTED_RUNNING_STALE_MS));
   return jobs
+    .filter((job) => !isParentOwnedChildJob(job))
     .filter((job) => {
       const jobUpdatedAt = Number(job?.updatedAt || job?.startedAt || job?.createdAt || 0);
       return (
@@ -416,6 +447,7 @@ export const reconcileStaleCancelledRunningMysqlJobs = (
   if (!Array.isArray(jobs)) return [];
   const cutoff = Number(referenceTime || now()) - Math.max(1, Number(staleMs || DEFAULT_CANCELLED_RUNNING_STALE_MS));
   return jobs
+    .filter((job) => !isParentOwnedChildJob(job))
     .filter((job) => {
       const cancelRequestedAt = Number(job?.cancelRequestedAt || 0);
       return (
@@ -552,6 +584,7 @@ export const findReusableJobRecord = async (pool, user, payload, dedupeWindowMs 
          AND status IN (${includeTerminalSubtitleReplay
     ? "'queued', 'running', 'retry_waiting', 'failed', 'succeeded', 'cancelled'"
     : "'queued', 'running', 'retry_waiting'"})
+         AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
          AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.clientSubmissionKey')) = ?
        ORDER BY created_at DESC`,
       [user.id, normalizedModule, normalizedTaskType, normalizedProvider, clientSubmissionKey]
@@ -563,6 +596,7 @@ export const findReusableJobRecord = async (pool, user, payload, dedupeWindowMs 
        AND task_type = ?
        AND provider = ?
        AND status IN ('queued', 'running', 'retry_waiting')
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
        AND created_at >= ?
      ORDER BY created_at DESC
      LIMIT 20`,
@@ -589,6 +623,7 @@ export const getSubtitleRemovalSubmissionGuardState = async (pool, userId, paylo
      FROM internal_jobs
      WHERE user_id = ?
        AND task_type = 'subtitle_remove_video'
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
        AND status IN ('queued', 'running', 'retry_waiting')`,
     [normalizedUserId],
   );
@@ -596,6 +631,7 @@ export const getSubtitleRemovalSubmissionGuardState = async (pool, userId, paylo
     `SELECT * FROM internal_jobs
      WHERE user_id = ?
        AND task_type = 'subtitle_remove_video'
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
        AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.batchId')) = ?
      ORDER BY created_at DESC`,
     [normalizedUserId, batchId],
@@ -604,6 +640,7 @@ export const getSubtitleRemovalSubmissionGuardState = async (pool, userId, paylo
     `SELECT * FROM internal_jobs
      WHERE user_id = ?
        AND task_type = 'subtitle_remove_video'
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
        AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.clientSubmissionKey')) = ?
      ORDER BY created_at DESC
      LIMIT 1`,
@@ -838,6 +875,7 @@ export const listJobsForUser = async (pool, userId, options = {}) => {
   const [rows] = await pool.query(
     `SELECT * FROM internal_jobs
      WHERE user_id = ?
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
      ORDER BY created_at DESC
      LIMIT ?`,
     [userId, limit]
@@ -853,7 +891,9 @@ export const listJobsByIdsForUser = async (pool, userId, jobIds = []) => {
   if (normalizedIds.length === 0) return [];
   const [rows] = await pool.query(
     `SELECT * FROM internal_jobs
-     WHERE user_id = ? AND id IN (${normalizedIds.map(() => '?').join(', ')})`,
+     WHERE user_id = ?
+       AND id IN (${normalizedIds.map(() => '?').join(', ')})
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}`,
     [String(userId || ''), ...normalizedIds],
   );
   return rows.map(mapJobRow);
@@ -864,6 +904,7 @@ export const getJobQueueStats = async (pool) => {
     `SELECT status, COUNT(*) AS count
      FROM internal_jobs
      WHERE status IN ('queued', 'retry_waiting', 'running')
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
      GROUP BY status`
   );
 
@@ -878,7 +919,11 @@ export const getJobQueueStats = async (pool) => {
 };
 
 export const reconcileRestartedRunningJobs = async (pool) => {
-  const [rows] = await pool.query(`SELECT * FROM internal_jobs WHERE status = 'running'`);
+  const [rows] = await pool.query(
+    `SELECT * FROM internal_jobs
+     WHERE status = 'running'
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}`,
+  );
   const reconciled = reconcileRestartedMysqlJobs(rows.map(mapJobRow), now());
   for (const job of reconciled) {
     await updateJobFields(pool, job.id, {
@@ -897,6 +942,7 @@ export const reconcileRestartedProviderlessRunningJobs = async (pool) => {
   const [rows] = await pool.query(
     `SELECT * FROM internal_jobs
      WHERE status = 'running'
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
        AND (provider_task_id IS NULL OR provider_task_id = '')`
   );
   const reconciled = reconcileRestartedMysqlJobs(rows.map(mapJobRow), now());
@@ -920,6 +966,7 @@ export const reconcileStaleProviderlessRunningJobs = async (pool, options = {}) 
     `SELECT *
      FROM internal_jobs
      WHERE status = 'running'
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
        AND (provider_task_id IS NULL OR provider_task_id = '')
        AND started_at IS NOT NULL
        AND started_at <= ?`,
@@ -987,6 +1034,7 @@ export const reconcileStaleSubmittedRunningJobs = async (pool, options = {}) => 
     `SELECT *
      FROM internal_jobs
      WHERE status = 'running'
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
        AND provider_task_id IS NOT NULL
        AND provider_task_id <> ''
        AND updated_at IS NOT NULL
@@ -1055,6 +1103,7 @@ export const reconcileStaleCancelledRunningJobs = async (pool, options = {}) => 
     `SELECT *
      FROM internal_jobs
      WHERE status = 'running'
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
        AND cancel_requested_at IS NOT NULL
        AND cancel_requested_at <= ?`,
     [referenceTime - staleMs]
@@ -1397,7 +1446,15 @@ export const resolveSubmissionUnknownJob = async ({
 export const requestRetryJob = async (pool, job, actor) => {
   const updatedAt = now();
   const resetProviderTaskId = Boolean(actor?.resetProviderTaskId);
-  await updateJobFields(pool, job.id, {
+  const isVoiceoverParent = String(job?.taskType || '') === 'voiceover_translate_video'
+    && String(job?.provider || '') === 'internal';
+  const retryResult = isVoiceoverParent
+    ? prepareVoiceoverJobRetryResult(job, actor?.voiceoverRetryPlan, {
+      env: actor?.env,
+      resolveVoiceoverConfig: actor?.resolveVoiceoverConfig,
+    })
+    : null;
+  const fields = {
     status: 'queued',
     error_code: null,
     error_message: null,
@@ -1405,10 +1462,35 @@ export const requestRetryJob = async (pool, job, actor) => {
     finished_at: null,
     started_at: null,
     cancel_requested_at: null,
-    result_json: null,
+    result_json: retryResult ? serializeJsonValue(retryResult) : null,
     updated_at: updatedAt,
     ...(resetProviderTaskId ? { provider_task_id: null, retry_count: 0 } : {}),
-  });
+  };
+  let result;
+  if (isVoiceoverParent) {
+    const assignments = [];
+    const values = [];
+    for (const [key, value] of Object.entries(fields)) {
+      assignments.push(`${key} = ?`);
+      values.push(value);
+    }
+    values.push(job.id);
+    const [updateResult] = await pool.query(
+      `UPDATE internal_jobs
+       SET ${assignments.join(', ')}
+       WHERE id = ? AND status = 'failed'`,
+      values,
+    );
+    if (Number(updateResult?.affectedRows || 0) !== 1) {
+      throw Object.assign(new Error('任务状态已变化，未重复创建新的付费尝试。'), {
+        code: 'job_state_changed',
+        statusCode: 409,
+      });
+    }
+    result = updateResult;
+  } else {
+    result = await updateJobFields(pool, job.id, fields);
+  }
 
   if (actor?.createLog) {
     await actor.createLog({
@@ -1425,6 +1507,7 @@ export const requestRetryJob = async (pool, job, actor) => {
       },
     });
   }
+  return result;
 };
 
 export const createJobWorker = ({
@@ -1440,6 +1523,8 @@ export const createJobWorker = ({
   getSubmittedRunningStaleMs = () => DEFAULT_SUBMITTED_RUNNING_STALE_MS,
   getCancelledRunningStaleMs = () => DEFAULT_CANCELLED_RUNNING_STALE_MS,
   isExecutionPaused = isDeployDrainActive,
+  voiceoverEnv = process.env,
+  resolveVoiceoverConfig,
 }) => {
   const activeControllers = new Map();
   let timer = null;
@@ -1463,7 +1548,8 @@ export const createJobWorker = ({
       const [runningRows] = await pool.query(
         `SELECT *
          FROM internal_jobs
-         WHERE status = 'running'`
+         WHERE status = 'running'
+           AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}`
       );
       const referenceTime = now();
       const runningConcurrencyOptions = {
@@ -1479,6 +1565,7 @@ export const createJobWorker = ({
       const [rows] = await pool.query(
         `SELECT * FROM internal_jobs
          WHERE status IN ('queued', 'retry_waiting')
+           AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}
          ORDER BY priority DESC, created_at ASC
          LIMIT ?`,
         [Math.max(availableSlots * 10, 50)]
@@ -1515,7 +1602,8 @@ export const createJobWorker = ({
           claim: (connection) => connection.query(
             `UPDATE internal_jobs
              SET status = 'running', started_at = ?, updated_at = ?, error_code = NULL, error_message = NULL, error_detail = NULL
-             WHERE id = ? AND status IN ('queued', 'retry_waiting')`,
+             WHERE id = ? AND status IN ('queued', 'retry_waiting')
+               AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}`,
             [claimedAt, claimedAt, job.id],
           ),
         });
@@ -1566,6 +1654,17 @@ export const createJobWorker = ({
                 meta: { providerTaskId: value },
               }));
             };
+            const onResultCheckpoint = async (resultPatch) => {
+              await persistMysqlVoiceoverParentCheckpoint({
+                pool,
+                jobId: refreshedJob.id,
+                userId: refreshedJob.userId,
+                startedAt: claimedAt,
+                resultPatch,
+                env: voiceoverEnv,
+                resolveVoiceoverConfig,
+              });
+            };
 
             await runTaskPlatformWrite(() => recordJobEvent(pool, refreshedJob, {
               attemptId: attempt?.id,
@@ -1597,13 +1696,20 @@ export const createJobWorker = ({
               });
             }
 
-            const output = await executeJob(refreshedJob, controller.signal, { onProviderTaskId });
+            const output = await executeJob(refreshedJob, controller.signal, {
+              onProviderTaskId,
+              onResultCheckpoint,
+            });
             const finishedAt = now();
-            const finalProviderTaskId = output?.providerTaskId || notifiedProviderTaskId || refreshedJob.providerTaskId || '';
+            const latestBeforeComplete = await getJobById(pool, refreshedJob.id);
+            if (!latestBeforeComplete || !isSameMysqlClaim(latestBeforeComplete, claimedAt)) {
+              return;
+            }
+            const finalProviderTaskId = output?.providerTaskId || notifiedProviderTaskId || latestBeforeComplete.providerTaskId || '';
             await updateJobFields(pool, refreshedJob.id, {
               status: controller.signal.aborted ? 'cancelled' : 'succeeded',
               provider_task_id: finalProviderTaskId || null,
-              result_json: serializeJsonValue(output?.result || null),
+              result_json: serializeJsonValue(preserveVoiceoverCheckpoint(latestBeforeComplete, output?.result)),
               error_code: controller.signal.aborted ? 'request_cancelled' : null,
               error_message: controller.signal.aborted ? '任务已取消' : null,
               error_detail: null,
@@ -1695,7 +1801,10 @@ export const createJobWorker = ({
               error_message: errorFields.errorMessage,
               error_detail: errorFields.errorDetail || null,
               result_json: isProviderCompletedOutputRejectedError(error)
-                ? serializeJsonValue(getProviderCompletedRejectedOutput(error)?.result || null)
+                ? serializeJsonValue(preserveVoiceoverCheckpoint(
+                  latestJob,
+                  getProviderCompletedRejectedOutput(error)?.result,
+                ))
                 : latestJob?.result ? serializeJsonValue(latestJob.result) : null,
               updated_at: finishedAt,
               finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,

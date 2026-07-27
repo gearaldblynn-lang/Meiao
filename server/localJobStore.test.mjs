@@ -22,6 +22,7 @@ import {
   takeNextLocalExecutableJobs,
   updateLocalJobProviderTaskId,
 } from './localJobStore.mjs';
+import { isParentOwnedChildJob } from './voiceoverChildJobStore.mjs';
 
 const createStore = () => ({
   users: [],
@@ -732,4 +733,290 @@ test('provider task checkpoint resets create-stage retry count for independent r
 
   assert.equal(checkpointed.providerTaskId, 'provider-task-1');
   assert.equal(checkpointed.retryCount, 0);
+});
+
+const createVoiceoverParent = (overrides = {}) => ({
+  id: 'voiceover-parent-1',
+  userId: 'user-1',
+  module: 'video',
+  taskType: 'voiceover_translate_video',
+  provider: 'internal',
+  status: 'running',
+  priority: 0,
+  payload: {
+    taskPurpose: 'voiceover_translation',
+    removeText: false,
+  },
+  result: {
+    audit: 'keep',
+    voiceoverCheckpoint: {
+      version: 1,
+      stage: 'input_prepared',
+      baseVideoAssetId: 'asset-base',
+      analysisAttempt: 0,
+    },
+  },
+  providerTaskId: '',
+  retryCount: 0,
+  maxRetries: 0,
+  createdAt: 1,
+  updatedAt: 2,
+  startedAt: 2,
+  finishedAt: null,
+  cancelRequestedAt: null,
+  ...overrides,
+});
+
+const createParentOwnedChild = (overrides = {}) => ({
+  id: 'voiceover-child-1',
+  userId: 'user-1',
+  module: 'video',
+  taskType: 'kie_tts',
+  provider: 'kie',
+  status: 'succeeded',
+  priority: 0,
+  payload: {
+    executionOwner: 'parent',
+    parentJobId: 'voiceover-parent-1',
+    childKey: 'tts:0:attempt:0',
+    clientSubmissionKey: 'voiceover-child:voiceover-parent-1:tts:0:attempt:0',
+  },
+  providerTaskId: 'provider-1',
+  result: { assetId: 'asset-tts', audioUrl: '/api/assets/file/asset-tts' },
+  retryCount: 0,
+  maxRetries: 0,
+  createdAt: 1,
+  updatedAt: 2,
+  startedAt: 1,
+  finishedAt: 2,
+  cancelRequestedAt: null,
+  ...overrides,
+});
+
+test('local generic execution, restart recovery, queue stats, and user listing exclude parent-owned children', () => {
+  const parent = createVoiceoverParent({ status: 'queued', startedAt: null });
+  const child = createParentOwnedChild({ status: 'running', finishedAt: null });
+  const store = createStore();
+  store.jobs = [parent, child];
+
+  assert.equal(isParentOwnedChildJob(child), true);
+  assert.deepEqual(takeNextLocalExecutableJobs(store, 2).map((job) => job.id), [parent.id]);
+  assert.deepEqual(getLocalJobQueueStats(store), { queued: 0, running: 1 });
+  assert.deepEqual(listLocalJobsForUser(store, 'user-1').map((job) => job.id), [parent.id]);
+  const reconciledChild = reconcileRestartedLocalJobs([child])[0];
+  assert.equal(reconciledChild.status, 'running');
+  assert.equal(claimLocalJobForExecution({ jobs: [child] }, child.id), null);
+});
+
+test('local compaction retains a terminal parent-owned child while its parent remains nonterminal', () => {
+  const parent = createVoiceoverParent({ status: 'retry_waiting', startedAt: null });
+  const requiredChild = createParentOwnedChild({ createdAt: 1 });
+  const crowdedHistory = Array.from({ length: 600 }, (_, index) => ({
+    ...createParentOwnedChild({
+      id: `ordinary-${index}`,
+      taskType: 'local_probe',
+      provider: 'internal',
+      payload: {},
+      createdAt: index + 2,
+    }),
+  }));
+  const normalized = normalizeLocalJobs([...crowdedHistory, requiredChild, parent]);
+
+  assert.ok(normalized.some((job) => job.id === requiredChild.id));
+  assert.ok(normalized.some((job) => job.id === parent.id));
+});
+
+test('local voiceover retry preserves checkpoint and only server-confirmed analysis retry rewinds it', () => {
+  const reusableStore = createStore();
+  reusableStore.jobs = [createVoiceoverParent({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 3,
+    errorCode: 'voiceover_mix_failed',
+  })];
+  const reused = requestLocalRetryJob(reusableStore, 'voiceover-parent-1', {
+    voiceoverRetryPlan: { kind: 'reuse' },
+  });
+  assert.equal(reused.result.audit, 'keep');
+  assert.equal(reused.result.voiceoverCheckpoint.stage, 'input_prepared');
+
+  const analysisStore = createStore();
+  analysisStore.jobs = [createVoiceoverParent({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 3,
+    errorCode: 'voiceover_analysis_submission_unknown',
+    result: {
+      audit: 'keep',
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'speech_analysis_submitting',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-audio',
+        vocalAssetId: 'asset-vocal',
+        backgroundAssetId: 'asset-background',
+        analysisAttempt: 0,
+      },
+    },
+  })];
+  assert.throws(
+    () => requestLocalRetryJob(analysisStore, 'voiceover-parent-1', {
+      voiceoverRetryPlan: { kind: 'analysis', userConfirmed: false },
+    }),
+    (error) => error.code === 'voiceover_analysis_submission_unknown',
+  );
+  const retried = requestLocalRetryJob(analysisStore, 'voiceover-parent-1', {
+    voiceoverRetryPlan: { kind: 'analysis', userConfirmed: true },
+  });
+  assert.equal(retried.result.audit, 'keep');
+  assert.equal(retried.result.voiceoverCheckpoint.stage, 'voice_separated');
+  assert.equal(retried.result.voiceoverCheckpoint.analysisAttempt, 1);
+});
+
+test('local voiceover paid retry derives the next TTS attempt once from the durable checkpoint', () => {
+  const segment = {
+    id: 's1',
+    startMs: 0,
+    endMs: 800,
+    sourceText: '源文',
+    targetText: 'Translation',
+  };
+  const store = createStore();
+  store.jobs = [createVoiceoverParent({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 3,
+    errorCode: 'provider_submission_unknown',
+    result: {
+      audit: 'keep',
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'tts_generating',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-audio',
+        vocalAssetId: 'asset-vocal',
+        backgroundAssetId: 'asset-background',
+        analysisAttempt: 0,
+        analysis: {
+          sourceLanguage: 'cmn',
+          speakerCount: 1,
+          voiceProfile: {
+            pitch: 'medium',
+            brightness: 'balanced',
+            energy: 'balanced',
+            pace: 'natural',
+            accentDescription: 'clear',
+          },
+          segments: [segment],
+        },
+        translation: {
+          targetLanguage: 'en',
+          mode: 'natural',
+          selectedVoiceName: 'Kore',
+          segments: [segment],
+        },
+        ttsGroups: [{
+          index: 0,
+          attempt: 0,
+          childJobId: 'child-attempt-0',
+          status: 'failed',
+          startMs: 0,
+          endMs: 800,
+        }],
+      },
+    },
+  })];
+  assert.throws(
+    () => requestLocalRetryJob(store, 'voiceover-parent-1', {
+      voiceoverRetryPlan: { kind: 'reuse' },
+    }),
+    (error) => error.code === 'voiceover_retry_confirmation_required',
+  );
+  store.jobs[0].errorCode = 'provider_bad_request';
+  assert.throws(
+    () => requestLocalRetryJob(store, 'voiceover-parent-1', {
+      voiceoverRetryPlan: { kind: 'reuse' },
+    }),
+    (error) => error.code === 'voiceover_retry_confirmation_required',
+  );
+  assert.throws(
+    () => requestLocalRetryJob(store, 'voiceover-parent-1', {
+      voiceoverRetryPlan: {
+        kind: 'provider',
+        target: 'tts',
+        groupIndex: 0,
+        userConfirmed: false,
+        nextChildJobId: 'child-attempt-1',
+      },
+    }),
+    (error) => error.code === 'voiceover_retry_confirmation_required',
+  );
+  const retried = requestLocalRetryJob(store, 'voiceover-parent-1', {
+    voiceoverRetryPlan: {
+      kind: 'provider',
+      target: 'tts',
+      groupIndex: 0,
+      userConfirmed: true,
+      nextChildJobId: 'child-attempt-1',
+    },
+  });
+  assert.equal(retried.status, 'queued');
+  assert.deepEqual(
+    retried.result.voiceoverCheckpoint.ttsGroups.map(({ attempt, childJobId, status }) => ({
+      attempt,
+      childJobId,
+      status,
+    })),
+    [
+      { attempt: 0, childJobId: 'child-attempt-0', status: 'failed' },
+      { attempt: 1, childJobId: 'child-attempt-1', status: 'queued' },
+    ],
+  );
+  assert.throws(
+    () => requestLocalRetryJob(store, 'voiceover-parent-1', {
+      voiceoverRetryPlan: {
+        kind: 'provider',
+        target: 'tts',
+        groupIndex: 0,
+        userConfirmed: true,
+        nextChildJobId: 'child-attempt-2',
+      },
+    }),
+    (error) => error.code === 'job_state_changed',
+  );
+});
+
+test('classic local worker awaits parent checkpoint before the next side effect and preserves it after failure', async () => {
+  const store = createStore();
+  store.users.push(createUser());
+  store.jobs = [createVoiceoverParent({ status: 'queued', startedAt: null })];
+  const events = [];
+  const worker = createLocalJobWorker({
+    readStore: () => store,
+    writeStore: () => {},
+    mutateStore: async (operation) => operation(store),
+    executeJob: async (_job, _signal, { onResultCheckpoint }) => {
+      await onResultCheckpoint({
+        voiceoverCheckpoint: {
+          stage: 'audio_extracted',
+          originalAudioAssetId: 'asset-audio',
+        },
+      });
+      assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
+      events.push('paid-call');
+      throw Object.assign(new Error('lost'), { code: 'provider_network_error' });
+    },
+    getMaxConcurrency: () => 1,
+    createLog: () => {},
+    findUserById: (userId) => store.users.find((user) => user.id === userId),
+    isExecutionPaused: () => false,
+  });
+  worker.start(5);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  worker.stop();
+
+  assert.deepEqual(events, ['paid-call']);
+  assert.equal(store.jobs[0].status, 'failed');
+  assert.equal(store.jobs[0].result.audit, 'keep');
+  assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
 });
