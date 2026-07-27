@@ -23,7 +23,12 @@ export const resolveManagedAssetReadUrl = async (value, options = {}) => {
     throw createReadError('managed_asset_unavailable', '图片素材不存在或已不可用', 404);
   }
   const userId = String(options.userId || '').trim();
-  if (asset.userId && (!userId || String(asset.userId) !== userId)) {
+  const authorizedSharedAssetIds = options.authorizedSharedAssetIds instanceof Set
+    ? options.authorizedSharedAssetIds
+    : new Set();
+  const isAuthorizedSharedVirtualModelAsset = String(asset.module || '') === 'virtual_model'
+    && authorizedSharedAssetIds.has(assetId);
+  if (asset.userId && (!userId || String(asset.userId) !== userId) && !isAuthorizedSharedVirtualModelAsset) {
     throw createReadError('managed_asset_forbidden', '没有权限读取该图片素材', 403);
   }
   if (getStoredAssetStorageProvider(asset) === 'internal') {

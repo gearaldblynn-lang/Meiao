@@ -285,6 +285,19 @@ test('worker resolves library assets only immediately before provider execution'
   assert.doesNotMatch(intake, /selectedIdentityAssetIds/);
 });
 
+test('worker grants provider reads only to the server-validated virtual-model asset ids', async () => {
+  const source = await readFile(new URL('./index.mjs', import.meta.url), 'utf8');
+  const worker = source.slice(
+    source.indexOf('const executeProviderJobWithManagedAssetScrub'),
+    source.indexOf('const prepareAgentModelImageUrl'),
+  );
+  const injectionIndex = worker.indexOf('await injectLibraryModelAssetsForProvider');
+  const allowlistIndex = worker.indexOf('authorizedSharedAssetIds: authorizedLibraryManagedAssetIds');
+  assert.ok(injectionIndex >= 0, 'library assets must be resolved from the trusted server snapshot');
+  assert.ok(allowlistIndex > injectionIndex, 'the trusted library ids must be passed only after server resolution');
+  assert.match(worker, /new Set\([\s\S]*providerPayload\.selectedAssetIds/);
+});
+
 test('library prompt metadata is inserted before format and example sections', async () => {
   const source = await readFile(new URL('./index.mjs', import.meta.url), 'utf8');
   const helperBlock = source.match(/const insertModelReplaceLibraryMetadata = \(prompt, metadataBlock\) => \{[\s\S]*?^};/m)?.[0] || '';
@@ -385,4 +398,3 @@ test('library selection is validated before the shell creates an optimistic proj
   assert.ok(validation >= 0 && validation < projectCreation);
   assert.ok(validation < taskCreation);
 });
-
