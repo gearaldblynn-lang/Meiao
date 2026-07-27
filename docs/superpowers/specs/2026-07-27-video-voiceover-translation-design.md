@@ -411,7 +411,7 @@ type VoiceoverAnalysis = {
 - `no_vocals` 保持双声道并统一为 48 kHz。
 - 每个新口播组按原始 `startMs` 放置，首尾按 `MEIAO_VOICEOVER_FADE_MS` 淡入淡出，避免拼接爆音。
 - 口播存在时按 `MEIAO_VOICEOVER_DUCKING_DB` 对背景轨做轻度 sidechain ducking；FFmpeg readiness 必须验证所用 filter，不能上线后才发现构建不支持。
-- 混合轨做峰值保护，禁止削波。
+- 混合轨使用 `alimiter=limit=0.8912509381:level=0` 做峰值保护，禁止削波；必须保持 `level=0` 关闭 auto level compensation，避免 FFmpeg 把受限信号重新增益到 0 dBFS 而破坏 -1 dBFS ceiling。
 - 最终画面使用：
   - `removeText=false`：规范化原视频。
   - `removeText=true`：Golden 去字幕托管结果。

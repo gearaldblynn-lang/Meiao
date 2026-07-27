@@ -1232,7 +1232,7 @@ Build the audio graph:
 [narration]aresample=48000,pan=stereo|c0=c0|c1=c0[narr];
 [bg][narr]sidechaincompress=threshold=0.02:ratio=${duckingRatio}:attack=20:release=250:makeup=1[ducked];
 [ducked][narr]amix=inputs=2:duration=longest:normalize=0,
-alimiter=limit=0.8912509381,
+alimiter=limit=0.8912509381:level=0,
 atrim=duration=${videoSeconds}[mixed]
 ```
 
