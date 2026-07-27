@@ -103,8 +103,9 @@ const defaultSleep = (ms, signal, providerTaskId = '') => new Promise((resolve, 
 });
 
 const normalizeTemperature = (value) => {
-  const temperature = value === undefined ? 1 : Number(value);
-  if (!Number.isFinite(temperature)
+  const temperature = value === undefined ? 1 : value;
+  if (typeof temperature !== 'number'
+    || !Number.isFinite(temperature)
     || temperature < 0
     || temperature > 2
     || Math.abs(temperature * 100 - Math.round(temperature * 100)) > Number.EPSILON * 100) {
@@ -133,7 +134,7 @@ const normalizePayload = (job, env) => {
   const parentJobId = String(payload.parentJobId || '').trim();
   const childKey = String(payload.childKey || '').trim();
   const childMatch = childKey.match(/^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d*)$/u);
-  const groupIndex = Number(payload.groupIndex);
+  const groupIndex = payload.groupIndex;
   const attemptIndex = Number(childMatch?.[2]);
   if (payload.executionOwner !== 'parent'
     || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/u.test(parentJobId)
@@ -499,10 +500,11 @@ export async function runKieTtsJob({
       throw normalizeQueryError(error, providerTaskId);
     }
     const body = await readJsonResponse(response);
-    const responseCode = Number(response?.ok ? body?.code : response?.status);
-    if (!response?.ok
-      && responseCode === 404
-      && now() - startedAt <= operational.notFoundGraceMs
+    const isNotFound = response?.status === 404
+      || (response?.ok && Number(body?.code) === 404);
+    if (isNotFound
+      && operational.notFoundGraceMs > 0
+      && now() - startedAt < operational.notFoundGraceMs
       && attempt + 1 < operational.pollMaxAttempts) {
       await sleep(operational.pollIntervalMs, signal, providerTaskId);
       continue;

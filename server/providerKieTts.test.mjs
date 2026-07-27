@@ -322,6 +322,58 @@ test('adapter validates the parent-owned child payload before network activity',
   }
 });
 
+test('groupIndex rejects null and other non-number values before network activity', async () => {
+  for (const groupIndex of [null, '0', false]) {
+    const deps = fakeKieTts();
+    await assert.rejects(
+      runKieTtsJob({
+        job: newTtsJob({
+          payload: { ...newTtsJob().payload, groupIndex },
+        }),
+        env: enabledEnv(),
+        onProviderTaskId: async () => {},
+        deps,
+      }),
+      (error) => error?.code === 'provider_bad_request'
+        && error?.providerStage === 'validation',
+      `groupIndex=${String(groupIndex)}`,
+    );
+    assert.deepEqual(deps.calls, { create: 0, query: 0, sleep: 0 });
+  }
+});
+
+test('temperature defaults only when undefined and rejects other non-number values before network activity', async () => {
+  for (const temperature of [null, '1', true]) {
+    const deps = fakeKieTts();
+    await assert.rejects(
+      runKieTtsJob({
+        job: newTtsJob({
+          payload: { ...newTtsJob().payload, temperature },
+        }),
+        env: enabledEnv(),
+        onProviderTaskId: async () => {},
+        deps,
+      }),
+      (error) => error?.code === 'provider_bad_request'
+        && error?.providerStage === 'validation',
+      `temperature=${String(temperature)}`,
+    );
+    assert.deepEqual(deps.calls, { create: 0, query: 0, sleep: 0 });
+  }
+
+  const defaultedDeps = fakeKieTts();
+  const payload = { ...newTtsJob().payload };
+  delete payload.temperature;
+  const result = await runKieTtsJob({
+    job: newTtsJob({ payload }),
+    env: enabledEnv(),
+    onProviderTaskId: async () => {},
+    deps: defaultedDeps,
+  });
+  assert.equal(result.providerStatus, 'success');
+  assert.equal(defaultedDeps.calls.create, 1);
+});
+
 test('adapter recomputes the full provider input budget and ignores caller estimates', async () => {
   const deps = fakeKieTts();
   await assert.rejects(
@@ -505,6 +557,38 @@ test('recordInfo 404 is tolerated only inside the configured warm-up window', as
     }),
     (error) => error?.code === 'task_not_found' && error?.providerTaskId === 'tts-existing',
   );
+});
+
+test('recordInfo body code 404 uses only a positive configured warm-up window', async () => {
+  const bodyCode404 = { status: 200, body: { code: 404, msg: 'not ready' } };
+  const graceDeps = fakeKieTts({
+    states: [bodyCode404, 'success'],
+    nowValues: [0, 500],
+  });
+  const result = await runKieTtsJob({
+    job: newTtsJob({ providerTaskId: 'tts-existing' }),
+    env: enabledEnv(),
+    deps: graceDeps,
+  });
+  assert.equal(result.providerTaskId, 'tts-existing');
+  assert.equal(graceDeps.calls.query, 2);
+  assert.equal(graceDeps.calls.sleep, 1);
+
+  const zeroGraceDeps = fakeKieTts({
+    states: [bodyCode404],
+    nowValues: [0, 0],
+  });
+  await assert.rejects(
+    runKieTtsJob({
+      job: newTtsJob({ providerTaskId: 'tts-existing' }),
+      env: enabledEnv({ MEIAO_KIE_TTS_NOT_FOUND_GRACE_MS: '0' }),
+      deps: zeroGraceDeps,
+    }),
+    (error) => error?.code === 'task_not_found'
+      && error?.providerTaskId === 'tts-existing',
+  );
+  assert.equal(zeroGraceDeps.calls.query, 1);
+  assert.equal(zeroGraceDeps.calls.sleep, 0);
 });
 
 test('operational TTS bounds use conservative defaults for invalid env values', async () => {
