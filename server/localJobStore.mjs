@@ -6,6 +6,7 @@ import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { findReusableJobSubmission, normalizeSubmissionSettlementInput, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
 import { isDeployDrainActive } from './deployDrain.mjs';
 import {
+  assertGenericJobMutationAllowed,
   isParentOwnedChildJob,
   persistLocalVoiceoverParentCheckpoint,
   prepareVoiceoverJobRetryResult,
@@ -15,6 +16,24 @@ const now = () => Date.now();
 const LOCAL_ACTIVE_JOB_STATUSES = new Set(['queued', 'running', 'retry_waiting']);
 
 const cloneValue = (value) => JSON.parse(JSON.stringify(value ?? null));
+
+const createJobStateChangedError = () => Object.assign(
+  new Error('任务执行归属已变化，终态结果未写入。'),
+  { code: 'job_state_changed', statusCode: 409 },
+);
+
+const assertLocalRunningClaim = (job, expectedClaim) => {
+  if (!expectedClaim) return job;
+  if (
+    String(job?.id || '') !== String(expectedClaim.id || '')
+    || String(job?.userId || '') !== String(expectedClaim.userId || '')
+    || String(job?.status || '') !== 'running'
+    || Number(job?.startedAt) !== Number(expectedClaim.startedAt)
+  ) {
+    throw createJobStateChangedError();
+  }
+  return job;
+};
 
 const normalizeJobCreditsConsumed = (value) => {
   const parsed = Number(value);
@@ -313,6 +332,7 @@ export const findLocalJobByProviderTaskIdForUser = (store, userId, providerTaskI
 export const deleteLocalJobRecord = (store, jobId) => {
   const index = findJobIndex(store, jobId);
   if (index < 0) return null;
+  assertGenericJobMutationAllowed(store.jobs[index]);
   const [deleted] = store.jobs.splice(index, 1);
   return deleted ? normalizeJob(deleted) : null;
 };
@@ -344,6 +364,7 @@ export const requestLocalCancelJob = (store, jobId) => {
 
   const updatedAt = now();
   const current = store.jobs[index];
+  assertGenericJobMutationAllowed(current);
   const next = {
     ...current,
     updatedAt,
@@ -369,6 +390,7 @@ export const requestLocalRetryJob = (store, jobId, options = {}) => {
   if (index < 0) return null;
 
   const current = normalizeJob(store.jobs[index]);
+  assertGenericJobMutationAllowed(current);
   if (current.taskType === 'voiceover_translate_video' && current.provider === 'internal' && current.status !== 'failed') {
     throw Object.assign(new Error('只有失败的口播翻译父任务可以重试。'), {
       code: 'job_state_changed',
@@ -510,11 +532,17 @@ export const updateLocalJobResult = (store, jobId, resultPatch = {}) => {
   return next;
 };
 
-export const markLocalJobCompleted = (store, jobId, output, aborted = false) => {
+export const markLocalJobCompleted = (
+  store,
+  jobId,
+  output,
+  aborted = false,
+  expectedClaim,
+) => {
   const index = findJobIndex(store, jobId);
   if (index < 0) return null;
   const finishedAt = now();
-  const current = store.jobs[index];
+  const current = assertLocalRunningClaim(store.jobs[index], expectedClaim);
   const outputResult = output?.result && typeof output.result === 'object' ? cloneValue(output.result) : null;
   const result = current.taskType === 'voiceover_translate_video' && current.provider === 'internal'
     ? {
@@ -554,10 +582,10 @@ export const updateLocalJobProviderTaskId = (store, jobId, providerTaskId) => {
   return next;
 };
 
-export const markLocalJobFailed = (store, jobId, error) => {
+export const markLocalJobFailed = (store, jobId, error, expectedClaim) => {
   const index = findJobIndex(store, jobId);
   if (index < 0) return null;
-  const current = store.jobs[index];
+  const current = assertLocalRunningClaim(store.jobs[index], expectedClaim);
   const errorFields = buildJobFailureErrorFields(error);
   const providerTaskId = String(error?.providerTaskId || current.providerTaskId || '');
   const failure = getNextJobFailureState({
@@ -648,6 +676,11 @@ export const createLocalJobWorker = ({
 
         const controller = new AbortController();
         activeControllers.set(job.id, controller);
+        const expectedClaim = Object.freeze({
+          id: job.id,
+          userId: job.userId,
+          startedAt: job.startedAt,
+        });
 
         void (async () => {
           try {
@@ -669,7 +702,7 @@ export const createLocalJobWorker = ({
               await mutate((checkpointStore) => persistLocalVoiceoverParentCheckpoint(checkpointStore, {
                 jobId: refreshedJob.id,
                 userId: refreshedJob.userId,
-                startedAt: refreshedJob.startedAt,
+                startedAt: expectedClaim.startedAt,
                 resultPatch,
                 env: voiceoverEnv,
                 resolveVoiceoverConfig,
@@ -681,7 +714,13 @@ export const createLocalJobWorker = ({
               onResultCheckpoint,
             });
             const finishedJob = await mutate((completeStore) => {
-              const nextJob = markLocalJobCompleted(completeStore, refreshedJob.id, output, controller.signal.aborted);
+              const nextJob = markLocalJobCompleted(
+                completeStore,
+                refreshedJob.id,
+                output,
+                controller.signal.aborted,
+                expectedClaim,
+              );
               try {
                 settleJobCredits?.({ store: completeStore, job: nextJob, output, aborted: controller.signal.aborted });
               } catch (creditError) {
@@ -703,8 +742,17 @@ export const createLocalJobWorker = ({
               });
             }
           } catch (error) {
-            const failedJob = await mutate((failureStore) => {
-              const nextJob = markLocalJobFailed(failureStore, job.id, error);
+            const failureOutcome = await mutate((failureStore) => {
+              let nextJob;
+              try {
+                nextJob = markLocalJobFailed(failureStore, job.id, error, expectedClaim);
+              } catch (failureError) {
+                if (failureError?.code !== 'job_state_changed') throw failureError;
+                return {
+                  stale: true,
+                  job: getLocalJobById(failureStore, job.id),
+                };
+              }
               try {
                 if (isProviderCompletedOutputRejectedError(error)) {
                   settleJobCredits?.({
@@ -720,8 +768,10 @@ export const createLocalJobWorker = ({
               } catch (creditError) {
                 console.error('Account credit finalization failed after local job failure.', creditError);
               }
-              return nextJob;
+              return { stale: false, job: nextJob };
             });
+            if (failureOutcome.stale) return;
+            const failedJob = failureOutcome.job;
 
             const user = failedJob ? findUserById(failedJob.userId) : null;
             void maybeRecordCreditAlertLog({ error, job: failedJob, user, createLog });

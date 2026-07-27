@@ -7,6 +7,7 @@ import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobE
 import { isDeployDrainActive } from './deployDrain.mjs';
 import { runWithDeployJobClaimLock } from './deployClaimLock.mjs';
 import {
+  assertGenericJobMutationAllowed,
   isParentOwnedChildJob,
   PARENT_OWNED_CHILD_SQL_EXCLUSION,
   persistMysqlVoiceoverParentCheckpoint,
@@ -847,6 +848,7 @@ export const deleteJobById = async (pool, jobId, options = {}) => {
       if (!job || (options.userId && String(job.userId) !== String(options.userId))) {
         return { job: null, action: 'not_found', deleted: false };
       }
+      assertGenericJobMutationAllowed(job);
       const pendingReservation = typeof options.hasPendingReservation === 'function'
         ? Boolean(await options.hasPendingReservation(connection, job))
         : false;
@@ -1173,6 +1175,32 @@ export const updateJobFields = async (pool, jobId, fields) => {
   return result;
 };
 
+export const updateRunningJobForClaim = async (pool, expectedClaim, fields) => {
+  const assignments = [];
+  const values = [];
+  for (const [key, value] of Object.entries(fields)) {
+    assignments.push(`${key} = ?`);
+    values.push(value);
+  }
+  values.push(
+    expectedClaim.id,
+    expectedClaim.userId,
+    Number(expectedClaim.startedAt),
+  );
+  const [result] = await pool.query(
+    `UPDATE internal_jobs SET ${assignments.join(', ')}
+     WHERE id = ? AND user_id = ? AND status = 'running' AND started_at = ?`,
+    values,
+  );
+  if (Number(result?.affectedRows || 0) !== 1) {
+    throw Object.assign(new Error('任务执行归属已变化，终态结果未写入。'), {
+      code: 'job_state_changed',
+      statusCode: 409,
+    });
+  }
+  return result;
+};
+
 export const requestCancelJob = async (pool, job, actor) => {
   const updatedAt = now();
   const connection = await pool.getConnection();
@@ -1190,6 +1218,7 @@ export const requestCancelJob = async (pool, job, actor) => {
         error.statusCode = 404;
         throw error;
       }
+      assertGenericJobMutationAllowed(freshJob);
 
       if (freshJob.status === 'queued' || freshJob.status === 'retry_waiting') {
         const [result] = await connection.query(
@@ -1444,6 +1473,7 @@ export const resolveSubmissionUnknownJob = async ({
 };
 
 export const requestRetryJob = async (pool, job, actor) => {
+  assertGenericJobMutationAllowed(job);
   const updatedAt = now();
   const resetProviderTaskId = Boolean(actor?.resetProviderTaskId);
   const isVoiceoverParent = String(job?.taskType || '') === 'voiceover_translate_video'
@@ -1706,7 +1736,7 @@ export const createJobWorker = ({
               return;
             }
             const finalProviderTaskId = output?.providerTaskId || notifiedProviderTaskId || latestBeforeComplete.providerTaskId || '';
-            await updateJobFields(pool, refreshedJob.id, {
+            await updateRunningJobForClaim(pool, latestBeforeComplete, {
               status: controller.signal.aborted ? 'cancelled' : 'succeeded',
               provider_task_id: finalProviderTaskId || null,
               result_json: serializeJsonValue(preserveVoiceoverCheckpoint(latestBeforeComplete, output?.result)),
@@ -1770,6 +1800,9 @@ export const createJobWorker = ({
           } catch (error) {
             const poolAgain = await getPool();
             const latestJob = await getJobById(poolAgain, job.id);
+            if (!latestJob || !isSameMysqlClaim(latestJob, claimedAt)) {
+              return;
+            }
             const errorFields = buildJobFailureErrorFields(error);
             const providerTaskId = String(error?.providerTaskId || notifiedProviderTaskId || latestJob?.providerTaskId || '');
             const failure = getNextJobFailureState({
@@ -1793,22 +1826,27 @@ export const createJobWorker = ({
               providerStatus: error?.providerStatus,
             });
 
-            await updateJobFields(poolAgain, job.id, {
-              status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
-              provider_task_id: providerTaskId || null,
-              retry_count: error?.code === 'request_cancelled' ? latestJob?.retryCount ?? 0 : failure.retryCount,
-              error_code: persistedErrorCode,
-              error_message: errorFields.errorMessage,
-              error_detail: errorFields.errorDetail || null,
-              result_json: isProviderCompletedOutputRejectedError(error)
-                ? serializeJsonValue(preserveVoiceoverCheckpoint(
-                  latestJob,
-                  getProviderCompletedRejectedOutput(error)?.result,
-                ))
-                : latestJob?.result ? serializeJsonValue(latestJob.result) : null,
-              updated_at: finishedAt,
-              finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
-            });
+            try {
+              await updateRunningJobForClaim(poolAgain, latestJob, {
+                status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
+                provider_task_id: providerTaskId || null,
+                retry_count: error?.code === 'request_cancelled' ? latestJob.retryCount ?? 0 : failure.retryCount,
+                error_code: persistedErrorCode,
+                error_message: errorFields.errorMessage,
+                error_detail: errorFields.errorDetail || null,
+                result_json: isProviderCompletedOutputRejectedError(error)
+                  ? serializeJsonValue(preserveVoiceoverCheckpoint(
+                    latestJob,
+                    getProviderCompletedRejectedOutput(error)?.result,
+                  ))
+                  : latestJob.result ? serializeJsonValue(latestJob.result) : null,
+                updated_at: finishedAt,
+                finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
+              });
+            } catch (persistError) {
+              if (persistError?.code === 'job_state_changed') return;
+              throw persistError;
+            }
             try {
               if (isProviderCompletedOutputRejectedError(error)) {
                 await settleJobCredits?.({

@@ -808,6 +808,37 @@ test('local generic execution, restart recovery, queue stats, and user listing e
   assert.equal(claimLocalJobForExecution({ jobs: [child] }, child.id), null);
 });
 
+test('local generic cancel, retry, and delete cannot mutate a parent-owned child', () => {
+  const operations = [
+    {
+      name: 'cancel',
+      child: createParentOwnedChild({ status: 'queued' }),
+      run: (store, child) => requestLocalCancelJob(store, child.id),
+    },
+    {
+      name: 'retry',
+      child: createParentOwnedChild({ status: 'failed', finishedAt: 2_000 }),
+      run: (store, child) => requestLocalRetryJob(store, child.id),
+    },
+    {
+      name: 'delete',
+      child: createParentOwnedChild({ status: 'succeeded', finishedAt: 2_000 }),
+      run: (store, child) => deleteLocalJobRecord(store, child.id),
+    },
+  ];
+
+  for (const operation of operations) {
+    const store = { jobs: normalizeLocalJobs([structuredClone(operation.child)]) };
+    const before = structuredClone(store.jobs);
+    assert.throws(
+      () => operation.run(store, operation.child),
+      (error) => error.code === 'parent_owned_child_immutable',
+      operation.name,
+    );
+    assert.deepEqual(store.jobs, before, operation.name);
+  }
+});
+
 test('local compaction retains a terminal parent-owned child while its parent remains nonterminal', () => {
   const parent = createVoiceoverParent({ status: 'retry_waiting', startedAt: null });
   const requiredChild = createParentOwnedChild({ createdAt: 1 });
@@ -986,6 +1017,123 @@ test('local voiceover paid retry derives the next TTS attempt once from the dura
   );
 });
 
+test('local voiceover reuse follows the current provider attempt instead of historical failures', () => {
+  const segment = {
+    id: 's1',
+    startMs: 0,
+    endMs: 800,
+    sourceText: '源文',
+    targetText: 'Translation',
+  };
+  const checkpoint = {
+    version: 1,
+    stage: 'audio_aligned',
+    baseVideoAssetId: 'asset-base',
+    originalAudioAssetId: 'asset-audio',
+    vocalAssetId: 'asset-vocal',
+    backgroundAssetId: 'asset-background',
+    analysisAttempt: 0,
+    analysis: {
+      sourceLanguage: 'cmn',
+      speakerCount: 1,
+      voiceProfile: {
+        pitch: 'medium',
+        brightness: 'balanced',
+        energy: 'balanced',
+        pace: 'natural',
+        accentDescription: 'clear',
+      },
+      segments: [segment],
+    },
+    translation: {
+      targetLanguage: 'en',
+      mode: 'natural',
+      selectedVoiceName: 'Kore',
+      segments: [segment],
+    },
+    ttsGroups: [
+      {
+        index: 0,
+        attempt: 0,
+        childJobId: 'child-attempt-0',
+        status: 'failed',
+        startMs: 0,
+        endMs: 800,
+      },
+      {
+        index: 0,
+        attempt: 1,
+        childJobId: 'child-attempt-1',
+        status: 'succeeded',
+        assetId: 'asset-tts-1',
+        startMs: 0,
+        endMs: 800,
+      },
+    ],
+    alignedAudioAssetId: 'asset-aligned',
+  };
+  const mixStore = createStore();
+  mixStore.jobs = [createVoiceoverParent({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 4_000,
+    errorCode: 'voiceover_mix_failed',
+    result: { audit: 'keep', voiceoverCheckpoint: checkpoint },
+  })];
+  const mixRetry = requestLocalRetryJob(mixStore, 'voiceover-parent-1', {
+    voiceoverRetryPlan: { kind: 'reuse' },
+  });
+  assert.equal(mixRetry.status, 'queued');
+  assert.equal(mixRetry.result.voiceoverCheckpoint.ttsGroups.at(-1).status, 'succeeded');
+
+  const queryCheckpoint = {
+    ...checkpoint,
+    stage: 'tts_generating',
+    ttsGroups: [{
+      index: 0,
+      attempt: 1,
+      childJobId: 'child-attempt-1',
+      status: 'submitted',
+      startMs: 0,
+      endMs: 800,
+    }],
+  };
+  delete queryCheckpoint.alignedAudioAssetId;
+  const queryStore = createStore();
+  queryStore.jobs = [createVoiceoverParent({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 4_000,
+    providerTaskId: 'provider-attempt-1',
+    errorCode: 'provider_submission_unknown',
+    result: {
+      audit: 'keep',
+      voiceoverCheckpoint: queryCheckpoint,
+    },
+  })];
+  const queryRetry = requestLocalRetryJob(queryStore, 'voiceover-parent-1', {
+    voiceoverRetryPlan: { kind: 'reuse' },
+  });
+  assert.equal(queryRetry.status, 'queued');
+  assert.equal(queryRetry.providerTaskId, 'provider-attempt-1');
+
+  const unknownStore = createStore();
+  unknownStore.jobs = [createVoiceoverParent({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 4_000,
+    providerTaskId: '',
+    errorCode: 'provider_submission_unknown',
+    result: queryStore.jobs[0].result,
+  })];
+  assert.throws(
+    () => requestLocalRetryJob(unknownStore, 'voiceover-parent-1', {
+      voiceoverRetryPlan: { kind: 'reuse' },
+    }),
+    (error) => error.code === 'voiceover_retry_confirmation_required',
+  );
+});
+
 test('classic local worker awaits parent checkpoint before the next side effect and preserves it after failure', async () => {
   const store = createStore();
   store.users.push(createUser());
@@ -1019,4 +1167,48 @@ test('classic local worker awaits parent checkpoint before the next side effect 
   assert.equal(store.jobs[0].status, 'failed');
   assert.equal(store.jobs[0].result.audit, 'keep');
   assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
+});
+
+test('classic local worker cannot complete or fail a newer running claim', async () => {
+  for (const outcome of ['complete', 'fail']) {
+    const store = createStore();
+    store.users.push(createUser());
+    store.jobs = [createVoiceoverParent({ status: 'queued', startedAt: null })];
+    const creditFinalizations = [];
+    const worker = createLocalJobWorker({
+      readStore: () => store,
+      writeStore: () => {},
+      mutateStore: async (operation) => operation(store),
+      executeJob: async (claimedJob) => {
+        const current = store.jobs.find((job) => job.id === claimedJob.id);
+        Object.assign(current, {
+          status: 'running',
+          startedAt: Number(claimedJob.startedAt) + 1,
+          result: { newerClaim: outcome },
+          errorCode: '',
+          errorMessage: '',
+        });
+        if (outcome === 'fail') {
+          throw Object.assign(new Error('stale executor failed'), { code: 'provider_network_error' });
+        }
+        return { result: { staleExecutor: true } };
+      },
+      getMaxConcurrency: () => 1,
+      createLog: () => {},
+      findUserById: (userId) => store.users.find((user) => user.id === userId),
+      settleJobCredits: () => creditFinalizations.push('settle'),
+      releaseJobCredits: () => creditFinalizations.push('release'),
+      isExecutionPaused: () => false,
+    });
+    worker.start(5);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    worker.stop();
+
+    const persisted = store.jobs[0];
+    assert.equal(persisted.status, 'running', outcome);
+    assert.equal(persisted.result.newerClaim, outcome);
+    assert.equal(persisted.result.staleExecutor, undefined);
+    assert.equal(persisted.errorCode, '', outcome);
+    assert.deepEqual(creditFinalizations, [], outcome);
+  }
 });

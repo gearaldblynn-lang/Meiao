@@ -10,7 +10,12 @@ import {
   markLocalJobFailed,
   updateLocalJobProviderTaskId,
 } from './localJobStore.mjs';
-import { getJobById, isRunningJobConcurrencyBlocking, updateJobFields } from './jobManager.mjs';
+import {
+  getJobById,
+  isRunningJobConcurrencyBlocking,
+  updateJobFields,
+  updateRunningJobForClaim,
+} from './jobManager.mjs';
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode, getProviderCompletedRejectedOutput, isProviderCompletedOutputRejectedError } from './jobRuntime.mjs';
 import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
@@ -228,6 +233,11 @@ export const createLocalTemporalActivities = ({
     if (isTerminalJobStatus(claimedJob.status)) {
       return toActivityResult(claimedJob);
     }
+    const expectedClaim = Object.freeze({
+      id: claimedJob.id,
+      userId: claimedJob.userId,
+      startedAt: claimedJob.startedAt,
+    });
 
     const controller = new AbortController();
     if (claimedJob.cancelRequestedAt) {
@@ -251,7 +261,7 @@ export const createLocalTemporalActivities = ({
       await mutate((checkpointStore) => persistLocalVoiceoverParentCheckpoint(checkpointStore, {
         jobId: claimedJob.id,
         userId: claimedJob.userId,
-        startedAt: claimedJob.startedAt,
+        startedAt: expectedClaim.startedAt,
         resultPatch,
         env: voiceoverEnv,
         resolveVoiceoverConfig,
@@ -264,7 +274,13 @@ export const createLocalTemporalActivities = ({
         onResultCheckpoint,
       });
       const finishedJob = await mutate((completeStore) => {
-        const nextJob = markLocalJobCompleted(completeStore, claimedJob.id, output, controller.signal.aborted);
+        const nextJob = markLocalJobCompleted(
+          completeStore,
+          claimedJob.id,
+          output,
+          controller.signal.aborted,
+          expectedClaim,
+        );
         try {
           settleJobCredits?.({ store: completeStore, job: nextJob, output, aborted: controller.signal.aborted });
         } catch (creditError) {
@@ -291,8 +307,17 @@ export const createLocalTemporalActivities = ({
       }
       return toActivityResult(finishedJob);
     } catch (error) {
-      const failedJob = await mutate((failureStore) => {
-        const nextJob = markLocalJobFailed(failureStore, claimedJob.id, error);
+      const failureOutcome = await mutate((failureStore) => {
+        let nextJob;
+        try {
+          nextJob = markLocalJobFailed(failureStore, claimedJob.id, error, expectedClaim);
+        } catch (failureError) {
+          if (failureError?.code !== 'job_state_changed') throw failureError;
+          return {
+            stale: true,
+            job: getLocalJobById(failureStore, claimedJob.id),
+          };
+        }
         try {
           if (isProviderCompletedOutputRejectedError(error)) {
             settleJobCredits?.({
@@ -308,8 +333,12 @@ export const createLocalTemporalActivities = ({
         } catch (creditError) {
           console.error('Account credit finalization failed after local Temporal job failure.', creditError);
         }
-        return nextJob;
+        return { stale: false, job: nextJob };
       });
+      if (failureOutcome.stale) {
+        return toActivityResult(failureOutcome.job || claimedJob);
+      }
+      const failedJob = failureOutcome.job;
 
       const user = failedJob ? findUserById(failedJob.userId) : null;
       if (user && createLog && failedJob) {
@@ -537,7 +566,7 @@ export const createMysqlTemporalActivities = ({
         return toActivityResult(latestBeforeComplete || refreshedJob);
       }
       const finalProviderTaskId = output?.providerTaskId || notifiedProviderTaskId || refreshedJob.providerTaskId || '';
-      await updateJobFields(pool, refreshedJob.id, {
+      await updateRunningJobForClaim(pool, latestBeforeComplete, {
         status: controller.signal.aborted ? 'cancelled' : 'succeeded',
         provider_task_id: finalProviderTaskId || null,
         result_json: serializeJsonValue(preserveVoiceoverCheckpoint(latestBeforeComplete, output?.result)),
@@ -629,22 +658,30 @@ export const createMysqlTemporalActivities = ({
         providerStatus: error?.providerStatus,
       });
 
-      await updateJobFields(pool, latestJob.id, {
-        status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
-        provider_task_id: providerTaskId || null,
-        retry_count: error?.code === 'request_cancelled' ? latestJob.retryCount ?? 0 : failure.retryCount,
-        error_code: persistedErrorCode,
-        error_message: errorFields.errorMessage,
-        error_detail: errorFields.errorDetail || null,
-        result_json: isProviderCompletedOutputRejectedError(error)
-          ? serializeJsonValue(preserveVoiceoverCheckpoint(
-            latestJob,
-            getProviderCompletedRejectedOutput(error)?.result,
-          ))
-          : latestJob.result ? serializeJsonValue(latestJob.result) : null,
-        updated_at: finishedAt,
-        finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
-      });
+      try {
+        await updateRunningJobForClaim(pool, latestJob, {
+          status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
+          provider_task_id: providerTaskId || null,
+          retry_count: error?.code === 'request_cancelled' ? latestJob.retryCount ?? 0 : failure.retryCount,
+          error_code: persistedErrorCode,
+          error_message: errorFields.errorMessage,
+          error_detail: errorFields.errorDetail || null,
+          result_json: isProviderCompletedOutputRejectedError(error)
+            ? serializeJsonValue(preserveVoiceoverCheckpoint(
+              latestJob,
+              getProviderCompletedRejectedOutput(error)?.result,
+            ))
+            : latestJob.result ? serializeJsonValue(latestJob.result) : null,
+          updated_at: finishedAt,
+          finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
+        });
+      } catch (persistError) {
+        if (persistError?.code === 'job_state_changed') {
+          const latestAfterRace = await getJobById(pool, latestJob.id);
+          return toActivityResult(latestAfterRace || latestJob);
+        }
+        throw persistError;
+      }
       try {
         if (isProviderCompletedOutputRejectedError(error)) {
           await settleJobCredits?.({

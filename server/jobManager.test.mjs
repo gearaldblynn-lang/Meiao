@@ -1999,6 +1999,76 @@ test('pure mysql restart and stale reconcilers ignore parent-owned child jobs', 
   assert.deepEqual(reconcileStaleCancelledRunningMysqlJobs([cancelled], 10_000, 1), []);
 });
 
+test('mysql generic cancel, retry, and delete cannot mutate a parent-owned child', async () => {
+  const toRow = (job) => ({
+    id: job.id,
+    user_id: job.userId,
+    module: job.module,
+    task_type: job.taskType,
+    provider: job.provider,
+    status: job.status,
+    payload_json: JSON.stringify(job.payload),
+    provider_task_id: job.providerTaskId || null,
+    result_json: job.result ? JSON.stringify(job.result) : null,
+    retry_count: job.retryCount,
+    max_retries: job.maxRetries,
+    created_at: job.createdAt,
+    updated_at: job.updatedAt,
+    started_at: job.startedAt,
+    finished_at: job.finishedAt,
+    cancel_requested_at: job.cancelRequestedAt,
+  });
+
+  for (const operation of ['cancel', 'delete']) {
+    const child = parentOwnedMysqlJob({
+      status: operation === 'cancel' ? 'queued' : 'succeeded',
+      startedAt: null,
+      finishedAt: operation === 'delete' ? 2 : null,
+    });
+    let mutations = 0;
+    const connection = {
+      async beginTransaction() {},
+      async commit() {},
+      async rollback() {},
+      release() {},
+      async query(sql) {
+        if (/SELECT \* FROM internal_jobs WHERE id = \?/.test(sql)) return [[toRow(child)]];
+        if (/^(?:UPDATE|DELETE) internal_jobs/.test(sql.trim())) {
+          mutations += 1;
+          return [{ affectedRows: 1 }];
+        }
+        throw new Error(`Unhandled SQL: ${sql}`);
+      },
+    };
+    const pool = { async getConnection() { return connection; } };
+    await assert.rejects(
+      operation === 'cancel'
+        ? requestCancelJob(pool, child, {})
+        : deleteJobById(pool, child.id, { userId: child.userId }),
+      (error) => error.code === 'parent_owned_child_immutable',
+      operation,
+    );
+    assert.equal(mutations, 0, operation);
+  }
+
+  const failedChild = parentOwnedMysqlJob({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 2,
+  });
+  let retryMutations = 0;
+  await assert.rejects(
+    requestRetryJob({
+      async query() {
+        retryMutations += 1;
+        return [{ affectedRows: 1 }];
+      },
+    }, failedChild, {}),
+    (error) => error.code === 'parent_owned_child_immutable',
+  );
+  assert.equal(retryMutations, 0);
+});
+
 test('mysql queue stats query excludes parent-owned children at the database boundary', async () => {
   let observedSql = '';
   const counts = await getJobQueueStats({
@@ -2152,7 +2222,7 @@ test('classic mysql worker awaits a guarded parent checkpoint before the next si
       }
       if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1/.test(sql)) return [[row]];
       if (/SELECT \* FROM internal_jobs[\s\S]+user_id = \?[\s\S]+FOR UPDATE/.test(sql)) return [[row]];
-      if (/UPDATE internal_jobs[\s\S]+status = 'running' AND started_at = \?/.test(sql)) {
+      if (/UPDATE internal_jobs[\s\S]+SET result_json = \?[\s\S]+status = 'running' AND started_at = \?/.test(sql)) {
         setColumn('result_json', params[0]);
         setColumn('updated_at', params[1]);
         return [{ affectedRows: 1 }];
@@ -2198,4 +2268,134 @@ test('classic mysql worker awaits a guarded parent checkpoint before the next si
   assert.equal(row.status, 'failed');
   assert.equal(JSON.parse(row.result_json).audit, 'keep');
   assert.equal(JSON.parse(row.result_json).voiceoverCheckpoint.stage, 'audio_extracted');
+});
+
+test('classic mysql worker cannot complete or fail after its terminal claim guard loses a race', async () => {
+  for (const outcome of ['complete', 'fail']) {
+    const row = {
+      id: `parent-classic-stale-${outcome}`,
+      user_id: 'user-1',
+      module: 'video',
+      task_type: 'voiceover_translate_video',
+      provider: 'internal',
+      status: 'queued',
+      priority: 0,
+      payload_json: JSON.stringify({ taskPurpose: 'voiceover_translation', removeText: false }),
+      provider_task_id: null,
+      result_json: JSON.stringify({
+        voiceoverCheckpoint: {
+          version: 1,
+          stage: 'input_prepared',
+          baseVideoAssetId: 'asset-base',
+          analysisAttempt: 0,
+        },
+      }),
+      error_code: null,
+      error_message: null,
+      error_detail: null,
+      retry_count: 0,
+      max_retries: 0,
+      created_at: 1_000,
+      updated_at: 1_000,
+      started_at: null,
+      finished_at: null,
+      cancel_requested_at: null,
+    };
+    let driftBeforeTerminalUpdate = false;
+    let claimDrifted = false;
+    let attemptFinishes = 0;
+    const terminalEvents = [];
+    const creditFinalizations = [];
+    const setColumn = (column, value) => {
+      row[column] = value;
+    };
+    const query = async (sql, params = []) => {
+      if (/SELECT GET_LOCK/.test(sql)) return [[{ acquired: 1 }]];
+      if (/SELECT RELEASE_LOCK/.test(sql)) return [[{ released: 1 }]];
+      if (/SELECT \*\s+FROM internal_jobs\s+WHERE status = 'running'/.test(sql)) {
+        return [row.status === 'running' ? [row] : []];
+      }
+      if (/SELECT \* FROM internal_jobs\s+WHERE status IN \('queued', 'retry_waiting'\)/.test(sql)) {
+        return [row.status === 'queued' ? [row] : []];
+      }
+      if (/UPDATE internal_jobs\s+SET status = 'running'/.test(sql)) {
+        setColumn('status', 'running');
+        setColumn('started_at', params[0]);
+        setColumn('updated_at', params[1]);
+        return [{ affectedRows: 1 }];
+      }
+      if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1/.test(sql)) return [[row]];
+      if (/SELECT MAX\(attempt_no\) AS attempt_no/.test(sql)) return [[{ attempt_no: 0 }]];
+      if (/INSERT INTO internal_job_attempts/.test(sql)) return [{ affectedRows: 1 }];
+      if (/INSERT INTO internal_job_events/.test(sql)) {
+        if (claimDrifted && ['job_completed', 'job_failed'].includes(params[5])) {
+          terminalEvents.push(params[5]);
+        }
+        return [{ affectedRows: 1 }];
+      }
+      if (/UPDATE internal_job_attempts/.test(sql)) {
+        if (claimDrifted) attemptFinishes += 1;
+        return [{ affectedRows: 1 }];
+      }
+      if (/UPDATE internal_jobs SET /.test(sql)) {
+        const assignments = sql.match(/UPDATE internal_jobs SET ([\s\S]+) WHERE id = \?/)?.[1]
+          .split(',')
+          .map((item) => item.trim().replace(/\s*= \?$/, '')) || [];
+        if (assignments.includes('status') && driftBeforeTerminalUpdate) {
+          driftBeforeTerminalUpdate = false;
+          claimDrifted = true;
+          setColumn('status', 'running');
+          setColumn('started_at', Number(row.started_at) + 1);
+          setColumn('result_json', JSON.stringify({ newerClaim: outcome }));
+          setColumn('error_code', null);
+          setColumn('error_message', null);
+          if (/user_id = \? AND status = 'running' AND started_at = \?/.test(sql)) {
+            return [{ affectedRows: 0 }];
+          }
+        }
+        assignments.forEach((column, index) => setColumn(column, params[index]));
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unhandled SQL: ${sql}`);
+    };
+    const pool = {
+      query,
+      async getConnection() {
+        return {
+          query,
+          async beginTransaction() {},
+          async commit() {},
+          async rollback() {},
+          release() {},
+        };
+      },
+    };
+    const worker = createJobWorker({
+      getPool: async () => pool,
+      executeJob: async () => {
+        driftBeforeTerminalUpdate = true;
+        if (outcome === 'fail') {
+          throw Object.assign(new Error('stale executor failed'), { code: 'provider_network_error' });
+        }
+        return { result: { staleExecutor: true } };
+      },
+      getMaxConcurrency: () => 1,
+      createLog: async () => {},
+      findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+      settleJobCredits: () => creditFinalizations.push('settle'),
+      releaseJobCredits: () => creditFinalizations.push('release'),
+      getTaskEngineMode: () => 'mysql',
+      isExecutionPaused: () => false,
+    });
+    worker.start(5);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    worker.stop();
+
+    assert.equal(row.status, 'running', outcome);
+    assert.deepEqual(JSON.parse(row.result_json), { newerClaim: outcome }, outcome);
+    assert.equal(row.error_code, null, outcome);
+    assert.deepEqual(creditFinalizations, [], outcome);
+    assert.equal(attemptFinishes, 0, outcome);
+    assert.deepEqual(terminalEvents, [], outcome);
+  }
 });

@@ -231,8 +231,10 @@ const createMysqlHarness = (initialJob, options = {}) => {
       cancel_requested_at: initialJob.cancel_requested_at ?? null,
     },
     attempts: [],
+    attemptFinishes: 0,
     events: [],
     runningRows: options.runningRows || [],
+    driftBeforeTerminalUpdate: false,
   };
   const toCamel = (column) => ({
     user_id: 'userId',
@@ -281,7 +283,7 @@ const createMysqlHarness = (initialJob, options = {}) => {
         setColumn('error_message', null);
         return [{ affectedRows: 1 }];
       }
-      if (/UPDATE internal_jobs[\s\S]+status = 'running' AND started_at = \?/.test(sql)) {
+      if (/UPDATE internal_jobs[\s\S]+SET result_json = \?[\s\S]+status = 'running' AND started_at = \?/.test(sql)) {
         setColumn('result_json', params[0]);
         setColumn('updated_at', params[1]);
         return [{ affectedRows: 1 }];
@@ -298,19 +300,37 @@ const createMysqlHarness = (initialJob, options = {}) => {
         return [{ affectedRows: 1 }];
       }
       if (/UPDATE internal_job_attempts/.test(sql)) {
+        state.attemptFinishes += 1;
         return [{ affectedRows: 1 }];
       }
       if (/UPDATE internal_jobs SET /.test(sql)) {
         const assignments = sql.match(/UPDATE internal_jobs SET ([\s\S]+) WHERE id = \?/)?.[1]
           .split(',')
           .map((item) => item.trim().replace(/\s*= \?$/, '')) || [];
+        if (assignments.includes('status') && state.driftBeforeTerminalUpdate) {
+          state.driftBeforeTerminalUpdate = false;
+          setColumn('status', 'running');
+          setColumn('started_at', Number(state.job.started_at) + 1);
+          setColumn('result_json', JSON.stringify({ newerClaim: true }));
+          setColumn('error_code', null);
+          setColumn('error_message', null);
+          if (/user_id = \? AND status = 'running' AND started_at = \?/.test(sql)) {
+            return [{ affectedRows: 0 }];
+          }
+        }
         assignments.forEach((column, index) => setColumn(column, params[index]));
         return [{ affectedRows: 1 }];
       }
       throw new Error(`Unhandled SQL in test harness: ${sql}`);
     },
   };
-  return { state, pool };
+  return {
+    state,
+    pool,
+    driftBeforeTerminalUpdate() {
+      state.driftBeforeTerminalUpdate = true;
+    },
+  };
 };
 
 test('mysql temporal activity leaves queued work unclaimed while deployment drain is active', async () => {
@@ -805,6 +825,47 @@ test('local temporal activity awaits and preserves a parent result checkpoint be
   assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
 });
 
+test('local temporal activity cannot complete or fail a newer running claim', async () => {
+  for (const outcome of ['complete', 'fail']) {
+    const store = createStore();
+    store.jobs = [voiceoverParentJob()];
+    const creditFinalizations = [];
+    const activities = createLocalTemporalActivities({
+      readStore: () => store,
+      writeStore: () => {},
+      mutateStore: async (operation) => operation(store),
+      executeJob: async (claimedJob) => {
+        const current = store.jobs.find((job) => job.id === claimedJob.id);
+        Object.assign(current, {
+          status: 'running',
+          startedAt: Number(claimedJob.startedAt) + 1,
+          result: { newerClaim: outcome },
+          errorCode: '',
+          errorMessage: '',
+        });
+        if (outcome === 'fail') {
+          throw Object.assign(new Error('stale executor failed'), { code: 'provider_network_error' });
+        }
+        return { result: { staleExecutor: true } };
+      },
+      createLog: async () => {},
+      findUserById: () => store.users[0],
+      settleJobCredits: () => creditFinalizations.push('settle'),
+      releaseJobCredits: () => creditFinalizations.push('release'),
+    });
+
+    const result = await activities.executeLocalJobAttemptActivity({
+      jobId: 'voiceover-parent-temporal',
+    });
+    assert.equal(result.status, 'running', outcome);
+    assert.equal(store.jobs[0].status, 'running', outcome);
+    assert.equal(store.jobs[0].result.newerClaim, outcome);
+    assert.equal(store.jobs[0].result.staleExecutor, undefined);
+    assert.equal(store.jobs[0].errorCode, '', outcome);
+    assert.deepEqual(creditFinalizations, [], outcome);
+  }
+});
+
 test('local temporal activity refuses to claim a parent-owned child', async () => {
   const store = createStore();
   store.jobs = [parentOwnedTemporalChild()];
@@ -868,6 +929,59 @@ test('mysql temporal activity awaits a guarded parent result checkpoint before c
   assert.deepEqual(sideEffects, ['paid-call']);
   assert.equal(JSON.parse(state.job.result_json).audit, 'keep');
   assert.equal(JSON.parse(state.job.result_json).voiceoverCheckpoint.stage, 'audio_extracted');
+});
+
+test('mysql temporal activity cannot complete or fail after its terminal claim guard loses a race', async () => {
+  for (const outcome of ['complete', 'fail']) {
+    const parent = voiceoverParentJob();
+    const harness = createMysqlHarness({
+      id: parent.id,
+      user_id: parent.userId,
+      module: parent.module,
+      task_type: parent.taskType,
+      provider: parent.provider,
+      status: 'queued',
+      priority: 0,
+      payload_json: JSON.stringify(parent.payload),
+      result_json: JSON.stringify(parent.result),
+      retry_count: 0,
+      max_retries: 0,
+      created_at: 1_000,
+      updated_at: 1_000,
+    });
+    const creditFinalizations = [];
+    const activities = createMysqlTemporalActivities({
+      getPool: async () => harness.pool,
+      executeJob: async () => {
+        harness.driftBeforeTerminalUpdate();
+        if (outcome === 'fail') {
+          throw Object.assign(new Error('stale executor failed'), { code: 'provider_network_error' });
+        }
+        return { result: { staleExecutor: true } };
+      },
+      createLog: async () => {},
+      findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+      settleJobCredits: () => creditFinalizations.push('settle'),
+      releaseJobCredits: () => creditFinalizations.push('release'),
+    });
+
+    const result = await activities.executeMysqlJobAttemptActivity({
+      jobId: parent.id,
+      workflowId: `workflow-stale-${outcome}`,
+      runId: `run-stale-${outcome}`,
+    });
+    assert.equal(result.status, 'running', outcome);
+    assert.equal(harness.state.job.status, 'running', outcome);
+    assert.deepEqual(JSON.parse(harness.state.job.result_json), { newerClaim: true }, outcome);
+    assert.equal(harness.state.job.error_code, null, outcome);
+    assert.deepEqual(creditFinalizations, [], outcome);
+    assert.equal(harness.state.attemptFinishes, 0, outcome);
+    assert.equal(
+      harness.state.events.some((params) => ['job_completed', 'job_failed'].includes(params[5])),
+      false,
+      outcome,
+    );
+  }
 });
 
 test('mysql temporal activity refuses to claim a parent-owned child', async () => {

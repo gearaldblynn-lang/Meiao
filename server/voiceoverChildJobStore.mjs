@@ -107,6 +107,17 @@ export const isParentOwnedChildJob = (job) => {
     && String(payload?.clientSubmissionKey || '').trim() === childSubmissionKey(parentJobId, childKey);
 };
 
+export const assertGenericJobMutationAllowed = (job) => {
+  if (isParentOwnedChildJob(job)) {
+    throw createStoreError(
+      'parent_owned_child_immutable',
+      '父任务持有的子任务只能由口播翻译账本更新。',
+      409,
+    );
+  }
+  return job;
+};
+
 const assertVoiceoverParent = (job, expected = {}) => {
   const normalized = mapJobRow(job);
   if (
@@ -305,10 +316,11 @@ const normalizeTtsPayload = (payload, childKey) => {
     'sampleContext',
   ]));
   const keyMatch = String(childKey || '').match(CHILD_KEY_TTS);
-  const groupIndex = Number(payload.groupIndex);
+  const groupIndex = payload.groupIndex;
   const attempt = Number(keyMatch?.[2]);
   if (
     !keyMatch
+    || typeof groupIndex !== 'number'
     || !Number.isInteger(groupIndex)
     || groupIndex !== Number(keyMatch[1])
     || groupIndex < 0
@@ -334,11 +346,12 @@ const normalizeTtsPayload = (payload, childKey) => {
     }
     return { speaker: 'Speaker 1', text: turn.text };
   });
-  const temperature = payload.temperature === undefined ? 1 : Number(payload.temperature);
+  const temperature = payload.temperature === undefined ? 1 : payload.temperature;
   const scene = String(payload.scene || '');
   const sampleContext = String(payload.sampleContext || '');
   if (
-    !Number.isFinite(temperature)
+    typeof temperature !== 'number'
+    || !Number.isFinite(temperature)
     || temperature < 0
     || temperature > 2
     || Math.abs(temperature * 100 - Math.round(temperature * 100)) > Number.EPSILON * 100
@@ -373,12 +386,11 @@ const normalizeManagedSourceUrl = (value, assetId) => {
   throw createStoreError('child_job_invalid', 'Golden 子任务源视频不是托管素材。', 400);
 };
 
-const positiveNumber = (value, field) => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw createStoreError('child_job_invalid', `${field} 无效。`, 400);
+const positiveNumber = (value, field, code = 'child_job_invalid') => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw createStoreError(code, `${field} 无效。`, 400);
   }
-  return parsed;
+  return value;
 };
 
 const normalizeGoldenPayload = (payload, childKey, parentJob) => {
@@ -411,9 +423,12 @@ const normalizeGoldenPayload = (payload, childKey, parentJob) => {
   const sourceAssetId = assertSafeId(payload.sourceAssetId, 'sourceAssetId');
   const region = payload.subtitleRegionNormalized;
   assertKnownKeys(region, new Set(['x', 'y', 'width', 'height']));
-  const normalizedRegion = Object.fromEntries(
-    ['x', 'y', 'width', 'height'].map((key) => [key, Number(region[key])]),
-  );
+  const normalizedRegion = Object.fromEntries(['x', 'y', 'width', 'height'].map((key) => {
+    if (typeof region[key] !== 'number' || !Number.isFinite(region[key])) {
+      throw createStoreError('child_job_invalid', 'Golden 字幕区域无效。', 400);
+    }
+    return [key, region[key]];
+  }));
   if (
     Object.values(normalizedRegion).some((value) => !Number.isFinite(value))
     || normalizedRegion.x < 0
@@ -426,8 +441,12 @@ const normalizeGoldenPayload = (payload, childKey, parentJob) => {
     throw createStoreError('child_job_invalid', 'Golden 字幕区域无效。', 400);
   }
   if (
-    Number(payload.batchIndex) !== 0
-    || Number(payload.batchCount) !== 1
+    typeof payload.batchIndex !== 'number'
+    || !Number.isInteger(payload.batchIndex)
+    || payload.batchIndex !== 0
+    || typeof payload.batchCount !== 'number'
+    || !Number.isInteger(payload.batchCount)
+    || payload.batchCount !== 1
     || String(payload.batchId || '') !== parentJob.id
   ) {
     throw createStoreError('child_job_invalid', 'Golden 批次身份无效。', 400);
@@ -584,8 +603,11 @@ const normalizeManagedOutput = (child, output) => {
     ) {
       throw createStoreError('child_output_unmanaged', 'TTS 成功结果必须是梅奥托管素材。', 400);
     }
-    const durationMs = output.durationMs === undefined ? undefined : Number(output.durationMs);
-    if (durationMs !== undefined && (!Number.isInteger(durationMs) || durationMs <= 0)) {
+    const durationMs = output.durationMs;
+    if (
+      durationMs !== undefined
+      && (typeof durationMs !== 'number' || !Number.isInteger(durationMs) || durationMs <= 0)
+    ) {
       throw createStoreError('child_output_unmanaged', 'TTS 音频时长无效。', 400);
     }
     return {
@@ -611,7 +633,9 @@ const normalizeManagedOutput = (child, output) => {
     assetId,
     resultAssetId: assetId,
     videoUrl,
-    ...(output.durationMs !== undefined ? { durationMs: positiveNumber(output.durationMs, 'durationMs') } : {}),
+    ...(output.durationMs !== undefined
+      ? { durationMs: positiveNumber(output.durationMs, 'durationMs', 'child_output_unmanaged') }
+      : {}),
   };
 };
 
@@ -969,11 +993,27 @@ export const prepareVoiceoverJobRetryResult = (job, voiceoverRetryPlan = {}, opt
       throw createStoreError('voiceover_retry_invalid', 'provider 重试目标无效。', 400);
     }
   } else if (kind === 'reuse') {
-    const hasDefinitiveChildFailure = current.subtitleRemoval?.status === 'failed'
-      || (current.ttsGroups || []).some((group) => group.status === 'failed');
+    const latestTtsAttemptByGroup = new Map();
+    for (const group of current.ttsGroups || []) {
+      const previous = latestTtsAttemptByGroup.get(group.index);
+      if (!previous || group.attempt > previous.attempt) {
+        latestTtsAttemptByGroup.set(group.index, group);
+      }
+    }
+    const currentProviderAttempts = [
+      ...(current.subtitleRemoval ? [current.subtitleRemoval] : []),
+      ...latestTtsAttemptByGroup.values(),
+    ];
+    const hasDefinitiveChildFailure = currentProviderAttempts.some(
+      (attempt) => attempt.status === 'failed',
+    );
+    const hasUnqueryableRunningAttempt = !normalized.providerTaskId
+      && currentProviderAttempts.some((attempt) => attempt.status === 'submitted');
     if (
       hasDefinitiveChildFailure
-      || ['provider_submission_unknown', 'voiceover_analysis_submission_unknown'].includes(normalized.errorCode)
+      || hasUnqueryableRunningAttempt
+      || normalized.errorCode === 'voiceover_analysis_submission_unknown'
+      || (normalized.errorCode === 'provider_submission_unknown' && !normalized.providerTaskId)
     ) {
       throw createStoreError(
         'voiceover_retry_confirmation_required',

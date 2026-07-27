@@ -359,6 +359,89 @@ test('ledger rejects ineligible parents, mismatched keys, unknown fields, and pa
   assert.equal(harness.store.jobs.filter((job) => isParentOwnedChildJob(job)).length, 0);
 });
 
+test('ledger rejects coercible and non-finite TTS numeric inputs before persistence', async () => {
+  const invalidGroupIndexes = ['0', '1', null, true, false, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
+  for (const groupIndex of invalidGroupIndexes) {
+    const harness = createLocalHarness();
+    const ledger = createLocalLedger(harness);
+    await assert.rejects(
+      ledger.getOrCreate({
+        parentJob: validParent(),
+        childKey: 'tts:0:attempt:0',
+        taskType: 'kie_tts',
+        provider: 'kie',
+        payload: validTtsPayload({ groupIndex }),
+      }),
+      (error) => error.code === 'child_job_invalid',
+      `groupIndex=${String(groupIndex)}`,
+    );
+    assert.equal(harness.store.jobs.length, 1);
+  }
+
+  const invalidTemperatures = ['1', null, true, false, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
+  for (const temperature of invalidTemperatures) {
+    const harness = createLocalHarness();
+    const ledger = createLocalLedger(harness);
+    await assert.rejects(
+      ledger.getOrCreate({
+        parentJob: validParent(),
+        childKey: 'tts:0:attempt:0',
+        taskType: 'kie_tts',
+        provider: 'kie',
+        payload: validTtsPayload({ temperature }),
+      }),
+      (error) => error.code === 'child_job_invalid',
+      `temperature=${String(temperature)}`,
+    );
+    assert.equal(harness.store.jobs.length, 1);
+  }
+});
+
+test('ledger rejects coercible and non-finite Golden numeric inputs before persistence', async () => {
+  const invalidNumbers = ['1', null, true, false, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
+  const cases = [
+    ['subtitleRegionNormalized.x', (value) => ({
+      subtitleRegionNormalized: { x: value, y: 0.7, width: 1, height: 0.3 },
+    })],
+    ['subtitleRegionNormalized.y', (value) => ({
+      subtitleRegionNormalized: { x: 0, y: value, width: 1, height: 0.3 },
+    })],
+    ['subtitleRegionNormalized.width', (value) => ({
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: value, height: 0.3 },
+    })],
+    ['subtitleRegionNormalized.height', (value) => ({
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: value },
+    })],
+    ['batchIndex', (value) => ({ batchIndex: value })],
+    ['batchCount', (value) => ({ batchCount: value })],
+    ['sizeBytes', (value) => ({ sizeBytes: value })],
+    ['durationSeconds', (value) => ({ durationSeconds: value })],
+    ['width', (value) => ({ width: value })],
+    ['height', (value) => ({ height: value })],
+  ];
+  for (const [field, buildOverride] of cases) {
+    for (const invalid of invalidNumbers) {
+      const parent = validParent({
+        payload: validParentPayload({ removeText: true }),
+      });
+      const harness = createLocalHarness([parent]);
+      const ledger = createLocalLedger(harness);
+      await assert.rejects(
+        ledger.getOrCreate({
+          parentJob: parent,
+          childKey: 'golden:attempt:0',
+          taskType: 'subtitle_remove_video',
+          provider: 'golden_subtitle',
+          payload: validGoldenPayload(buildOverride(invalid)),
+        }),
+        (error) => error.code === 'child_job_invalid',
+        `${field}=${String(invalid)}`,
+      );
+      assert.equal(harness.store.jobs.length, 1);
+    }
+  }
+});
+
 test('provider task id is immutable and failed children retain stable audit metadata', async () => {
   const harness = createLocalHarness();
   const ledger = createLocalLedger(harness);
@@ -409,6 +492,14 @@ test('child success accepts only managed and scrubbed outputs', async () => {
     }),
     (error) => error.code === 'child_output_unmanaged',
   );
+  await assert.rejects(
+    ledger.markSucceeded(tts.id, {
+      assetId: 'asset-tts-1',
+      audioUrl: '/api/assets/file/asset-tts-1',
+      durationMs: '1000',
+    }),
+    (error) => error.code === 'child_output_unmanaged',
+  );
   const succeeded = await ledger.markSucceeded(tts.id, {
     assetId: 'asset-tts-1',
     audioUrl: '/api/assets/file/asset-tts-1',
@@ -419,6 +510,39 @@ test('child success accepts only managed and scrubbed outputs', async () => {
     assetId: 'asset-tts-1',
     audioUrl: '/api/assets/file/asset-tts-1',
     durationMs: 1_000,
+  });
+
+  const goldenParent = validParent({
+    payload: validParentPayload({ removeText: true }),
+  });
+  const goldenHarness = createLocalHarness([goldenParent]);
+  const goldenLedger = createLocalLedger(goldenHarness);
+  const golden = await goldenLedger.getOrCreate({
+    parentJob: goldenParent,
+    childKey: 'golden:attempt:0',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: validGoldenPayload(),
+  });
+  await assert.rejects(
+    goldenLedger.markSucceeded(golden.id, {
+      assetId: 'asset-video-1',
+      videoUrl: '/api/assets/file/asset-video-1',
+      durationMs: '8000',
+    }),
+    (error) => error.code === 'child_output_unmanaged',
+  );
+  const goldenSucceeded = await goldenLedger.markSucceeded(golden.id, {
+    assetId: 'asset-video-1',
+    videoUrl: '/api/assets/file/asset-video-1',
+    durationMs: 8_000,
+  });
+  assert.equal(goldenSucceeded.status, 'succeeded');
+  assert.deepEqual(goldenSucceeded.result, {
+    assetId: 'asset-video-1',
+    resultAssetId: 'asset-video-1',
+    videoUrl: '/api/assets/file/asset-video-1',
+    durationMs: 8_000,
   });
 });
 
