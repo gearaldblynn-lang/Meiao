@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { createReadStream, mkdirSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFile, mkdir as mkdirAsync, mkdtemp, rm } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +91,7 @@ import {
 import { buildSubmissionResolutionCapability, ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import {
   attachLocalJobWorkflowExecution,
+  assertGenericJobResultPatchAllowed,
   createLocalJobRecord,
   createLocalJobWorker,
   deleteLocalJobRecord,
@@ -106,6 +108,7 @@ import {
   requestLocalCancelJob,
   requestLocalRetryJob,
   resolveLocalSubmissionUnknownJob,
+  withLocalJobRetryRollback,
 } from './localJobStore.mjs';
 import {
   assertDeployRequestAllowed,
@@ -120,6 +123,7 @@ import {
   resolveServerListenConfig,
 } from './processLifecycle.mjs';
 import { createAuthorizedProviderRecovery } from './jobRecoveryService.mjs';
+import { prepareKieTtsOutputForPersistence, persistManagedRemoteJobOutput } from './jobOutputAssetPersistence.mjs';
 import { executeProviderJob, uploadAssetViaKieStream } from './providerGateway.mjs';
 import { resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel } from './providerAssetTransfer.mjs';
 import { resolveProviderGenerationMediaUrl } from './providerAssetTransfer.mjs';
@@ -130,7 +134,7 @@ import {
   shouldRequireAgentImageInput,
 } from './agentImagePlan.mjs';
 import { compactAppStateForStorage, mergeAppStateForStorage, trimAppStateForStorage, writeMergedAppStateUnderUserLock } from './appStateMerge.mjs';
-import { buildJobRuntimeLogMeta, buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins, runWithTransientRetry, getReconcileBackoffMs, shouldSettleProviderCompletedRejectedJob } from './jobRuntime.mjs';
+import { buildJobRuntimeLogMeta, buildPublicSystemConfig, buildVoiceoverHealthSnapshot, dispatchApplicationJob, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins, runWithTransientRetry, getReconcileBackoffMs, shouldSettleProviderCompletedRejectedJob } from './jobRuntime.mjs';
 import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../src/utils/gptImage2.mjs';
 import { isExternallyReachableBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import {
@@ -139,6 +143,7 @@ import {
   ensureAssetSchema,
   extractStoredAssetIdFromPublicUrl,
   fetchRemoteAssetBufferWithRetry,
+  getVoiceoverIntermediateExpiresAt,
   getPublicBaseUrl,
   getActiveManagedAssetRunIds,
   getStoredAssetById,
@@ -152,6 +157,7 @@ import {
   markStoredAssetDeleted,
   normalizeStoredAssetJobId,
   persistAssetBuffer,
+  persistAssetFile,
   persistUploadedAssetBuffer,
   persistInlineImageResult,
   persistRemoteAsset,
@@ -160,6 +166,33 @@ import {
   selectExpiredAssetsForCleanup,
   selectAbandonedPermanentAgentResultAssets,
 } from './assetStore.mjs';
+import {
+  createVoiceoverChildJobLedger,
+  deriveVoiceoverRetryPlan,
+  normalizeVoiceoverRetryRequestBody,
+  prepareVoiceoverJobRetryResult,
+} from './voiceoverChildJobStore.mjs';
+import {
+  getVoiceoverConfig,
+} from './voiceoverContract.mjs';
+import { probeVoiceoverManagedMedia } from './voiceoverMediaProbe.mjs';
+import {
+  checkVoiceoverSeparationReadiness,
+  separateVoiceover,
+} from './voiceoverSeparation.mjs';
+import {
+  alignVoiceoverGroups,
+  buildVocalOnlyAnalysisVideo,
+  extractVoiceoverAudio,
+  mixVoiceoverResult,
+} from './voiceoverAudio.mjs';
+import {
+  getVoiceoverSourceMaxBytes,
+  prepareVoiceoverSubmission as prepareVoiceoverSubmissionInput,
+  runVoiceoverTranslationJob,
+  streamVoiceoverAssetToFile,
+  withVoiceoverProbeWorkspace,
+} from './voiceoverTranslationRunner.mjs';
 import {
   createVirtualModelDraft,
   createVirtualModelGenerationJobSnapshot,
@@ -450,6 +483,12 @@ let mediaTranscodeReadiness = {
   enabled: mediaTranscodeService.getStatus().enabled,
   ffmpegReady: false,
   ffprobeReady: false,
+};
+let voiceoverTranslationReadiness = {
+  ready: false,
+  pythonReady: false,
+  modelReady: false,
+  ffmpegReady: false,
 };
 const mediaTranscodeApi = createMediaTranscodeApi({
   store: mediaTranscodeSessionStore,
@@ -1806,8 +1845,16 @@ const normalizeUserAnalysisModel = (value = '') => {
 const canUseVideoGenerationFeature = (user) =>
   user?.role === 'admin' || normalizeFeaturePermissions(user?.featurePermissions).videoGeneration;
 
-const resolveAuthorizedJobSubmissionPolicy = (user, body, { submissionOperation = 'create' } = {}) => {
+const resolveAuthorizedJobSubmissionPolicy = (
+  user,
+  body,
+  {
+    submissionOperation = 'create',
+    voiceoverSourceProbe = {},
+  } = {},
+) => {
   const subtitleRemovalConfig = getSubtitleRemovalConfig(process.env);
+  const voiceoverConfig = getVoiceoverConfig(process.env);
   return resolveJobSubmissionPolicy({
     module: body?.module,
     taskType: body?.taskType,
@@ -1822,6 +1869,12 @@ const resolveAuthorizedJobSubmissionPolicy = (user, body, { submissionOperation 
     subtitleRemovalEnabled: subtitleRemovalConfig.enabled,
     subtitleRemovalConfigured: subtitleRemovalConfig.configured,
     subtitleRemovalBatchMaxItems: subtitleRemovalConfig.batchMaxItems,
+    voiceoverEnabled: voiceoverConfig.enabled,
+    voiceoverKieConfigured: Boolean(
+      String(process.env.KIE_API_KEY || process.env.MEIAO_KIE_API_KEY || '').trim(),
+    ),
+    voiceoverReadiness: voiceoverTranslationReadiness,
+    voiceoverSourceProbe,
   });
 };
 
@@ -2527,6 +2580,27 @@ const readBody = async (req, options = {}) => {
   }
   if (!chunks.length) return {};
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+};
+
+const readJobRetryRequest = async (req, { voiceoverParent = false } = {}) => {
+  if (!voiceoverParent) {
+    return { confirmNewProviderAttempt: false };
+  }
+  try {
+    return normalizeVoiceoverRetryRequestBody(await readBody(req, { maxBytes: 1024 }));
+  } catch (error) {
+    if (error?.message === 'REQUEST_BODY_TOO_LARGE') {
+      throw Object.assign(new Error('重试请求内容过大。'), {
+        code: 'job_retry_request_too_large',
+        statusCode: 413,
+      });
+    }
+    if (error?.statusCode) throw error;
+    throw Object.assign(new Error('重试请求参数无效。'), {
+      code: 'voiceover_retry_invalid',
+      statusCode: 400,
+    });
+  }
 };
 
 const MULTIPART_FILE_PREFIX_MAX_BYTES = 1024 * 1024;
@@ -4426,6 +4500,360 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
   );
 };
 
+const voiceoverAssetIdFromIdentity = ({ assetId = '', sourceUrl = '' } = {}) => {
+  const explicit = String(assetId || '').trim();
+  if (explicit) return explicit;
+  const managedMatch = String(sourceUrl || '').trim().match(
+    /^(?:managed|asset):\/\/([A-Za-z0-9][A-Za-z0-9._:-]{0,199})$/u,
+  );
+  return managedMatch?.[1] || extractStoredAssetIdFromPublicUrl(sourceUrl) || '';
+};
+
+const resolveOwnedVoiceoverAsset = async ({
+  userId,
+  assetId = '',
+  sourceUrl = '',
+  pool = null,
+} = {}) => {
+  const resolvedAssetId = voiceoverAssetIdFromIdentity({ assetId, sourceUrl });
+  if (!resolvedAssetId) {
+    const error = new Error('请选择当前账号拥有的托管视频');
+    error.code = 'managed_asset_invalid';
+    error.statusCode = 400;
+    throw error;
+  }
+  const asset = await getStoredAssetById(pool, resolvedAssetId);
+  if (
+    !asset
+    || asset.deletedAt
+    || String(asset.storageStatus || 'active') !== 'active'
+    || String(asset.userId || '') !== String(userId || '')
+  ) {
+    const error = new Error('托管素材不存在或不属于当前账号');
+    error.code = 'managed_asset_forbidden';
+    error.statusCode = 403;
+    throw error;
+  }
+  return { ...asset, assetId: asset.id };
+};
+
+const materializeOwnedVoiceoverAsset = async ({
+  asset,
+  userId,
+  destinationPath,
+  pool = null,
+  env = process.env,
+  signal,
+} = {}) => {
+  const internalPath = getStoredAssetStorageProvider(asset) === 'internal'
+    ? resolveStoredAssetPath(asset)
+    : '';
+  const maxBytes = getVoiceoverSourceMaxBytes(env);
+  const declaredBytes = Number(asset?.fileSize || 0);
+  if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+    const error = new Error('源视频文件超过本地处理上限');
+    error.code = 'voiceover_source_too_large';
+    error.statusCode = 400;
+    throw error;
+  }
+  await mkdirAsync(path.dirname(destinationPath), { recursive: true, mode: 0o700 });
+  let sizeBytes = declaredBytes;
+  if (internalPath && existsSync(internalPath)) {
+    sizeBytes = Number(statSync(internalPath).size || 0);
+    if (sizeBytes > maxBytes) {
+      const error = new Error('源视频文件超过本地处理上限');
+      error.code = 'voiceover_source_too_large';
+      error.statusCode = 400;
+      throw error;
+    }
+    await copyFile(internalPath, destinationPath);
+    sizeBytes = Number(statSync(destinationPath).size || 0);
+    if (sizeBytes > maxBytes) {
+      await rm(destinationPath, { force: true });
+      const error = new Error('源视频文件超过本地处理上限');
+      error.code = 'voiceover_source_too_large';
+      error.statusCode = 400;
+      throw error;
+    }
+  } else {
+    const readUrl = await resolveManagedAssetReadUrl(asset.publicUrl, {
+      pool,
+      userId,
+      purpose: 'provider',
+      env,
+    });
+    const streamed = await streamVoiceoverAssetToFile({
+      remoteUrl: readUrl,
+      destinationPath,
+      maxBytes,
+      signal,
+      timeoutMs: Number.parseInt(
+        String(env.MEIAO_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS || ''),
+        10,
+      ) || 120_000,
+    });
+    sizeBytes = streamed.sizeBytes;
+  }
+  return {
+    ...asset,
+    assetId: asset.id,
+    url: asset.publicUrl,
+    path: destinationPath,
+    sizeBytes,
+  };
+};
+
+const probeOwnedVoiceoverAsset = async ({
+  asset,
+  userId,
+  pool = null,
+  signal,
+} = {}) => {
+  const probeParent = path.join(dataDir, 'voiceover-submission-probes');
+  await mkdirAsync(probeParent, { recursive: true, mode: 0o700 });
+  return withVoiceoverProbeWorkspace({
+    createWorkRoot: () => mkdtemp(path.join(probeParent, 'probe-')),
+    cleanupWorkRoot: (probeRoot) => rm(probeRoot, { recursive: true, force: true }),
+    operation: async (probeRoot) => {
+      const localAsset = await materializeOwnedVoiceoverAsset({
+        asset,
+        userId,
+        destinationPath: path.join(probeRoot, 'source.mp4'),
+        pool,
+        signal,
+      });
+      const metadata = await mediaTranscodeService.probe(localAsset.path, 'video', signal);
+      return {
+        durationMs: Number(metadata?.durationSeconds) * 1000,
+        hasAudio: metadata?.hasAudio === true,
+        width: Number(metadata?.width || 0),
+        height: Number(metadata?.height || 0),
+      };
+    },
+  });
+};
+
+const prepareVoiceoverSubmission = async ({
+  body,
+  user,
+  pool = null,
+  signal,
+} = {}) => prepareVoiceoverSubmissionInput({
+  body,
+  userId: user?.id,
+  signal,
+  resolveOwnedAsset: (identity) => resolveOwnedVoiceoverAsset({
+    ...identity,
+    pool,
+  }),
+  probeVideo: (asset, probeSignal) => probeOwnedVoiceoverAsset({
+    asset,
+    userId: user?.id,
+    pool,
+    signal: probeSignal,
+  }),
+});
+
+const createVoiceoverRunnerDependencies = async (job, env) => {
+  const pool = shouldUseMysql ? await getMysqlPool() : null;
+  const childJobs = createVoiceoverChildJobLedger({
+    mode: shouldUseMysql ? 'mysql' : 'local',
+    ...(shouldUseMysql
+      ? { pool }
+      : {
+          readLocalStore,
+          mutateLocalStore,
+        }),
+    env,
+  });
+  const persistManagedFile = async ({
+    filePath,
+    userId,
+    parentJobId,
+    stage,
+  }) => {
+    const isFinal = stage === 'result_persisted';
+    const originalName = isFinal
+      ? 'voiceover-translated.mp4'
+      : `${stage}${stage.includes('video') || stage === 'speech_analysis_media' ? '.mp4' : '.wav'}`;
+    const persist = (lockedPool) => persistAssetFile({
+      pool: lockedPool,
+      publicBaseUrl: getPersistentAssetBaseUrl(),
+      userId,
+      module: 'video',
+      assetType: isFinal ? 'result' : 'intermediate',
+      originalName,
+      mimeType: originalName.endsWith('.mp4') ? 'video/mp4' : 'audio/wav',
+      sourcePath: filePath,
+      provider: 'internal',
+      jobId: parentJobId,
+      ...(isFinal ? {} : { expiresAt: getVoiceoverIntermediateExpiresAt(env) }),
+    });
+    const assertActiveOwner = (owner) => {
+      if (owner && owner.status === 'active') return;
+      const error = new Error('账号已停用或不存在，未保存口播翻译结果');
+      error.code = 'managed_asset_owner_unavailable';
+      error.statusCode = 409;
+      throw error;
+    };
+    const persisted = shouldUseMysql
+      ? await withManagedAssetUserLock(userId, async (lockedPool) => {
+          assertActiveOwner(await findAnyDbUserById(userId, lockedPool));
+          return persist(lockedPool);
+        })
+      : await withLocalManagedAssetUserLock(userId, async () => {
+          assertActiveOwner(findLocalUserById(userId));
+          return persist(null);
+        });
+    return {
+      assetId: persisted.id,
+      url: persisted.publicUrl,
+      path: filePath,
+    };
+  };
+  const persistChildProviderOutput = async (child, output) => (
+    persistJobOutputAssetsIfEnabled(child, output)
+  );
+  return {
+    createWorkRoot: async ({ jobId }) => {
+      const parent = path.join(dataDir, 'voiceover-jobs');
+      await mkdirAsync(parent, { recursive: true, mode: 0o700 });
+      return mkdtemp(path.join(parent, `${String(jobId || 'job').replace(/[^A-Za-z0-9_-]/gu, '_')}-`));
+    },
+    cleanupWorkRoot: (workRoot) => rm(workRoot, { recursive: true, force: true }),
+    resolveOwnedAsset: async ({
+      userId,
+      assetId,
+      sourceUrl,
+      destinationPath,
+      expectedKind,
+      expectedDurationMs,
+      durationToleranceMs,
+      signal,
+    }) => {
+      const owned = await resolveOwnedVoiceoverAsset({
+        userId,
+        assetId,
+        sourceUrl,
+        pool,
+      });
+      const materialized = await materializeOwnedVoiceoverAsset({
+        asset: owned,
+        userId,
+        destinationPath,
+        pool,
+        env,
+        signal,
+      });
+      const metadata = await probeVoiceoverManagedMedia({
+        filePath: materialized.path,
+        expectedKind,
+        expectedDurationMs,
+        durationToleranceMs,
+        signal,
+        probe: (filePath, mediaKind, probeSignal) => (
+          mediaTranscodeService.probe(filePath, mediaKind, probeSignal)
+        ),
+      });
+      return {
+        ...materialized,
+        ...metadata,
+      };
+    },
+    probeMedia: async ({ filePath, signal }) => {
+      return probeVoiceoverManagedMedia({
+        filePath,
+        expectedKind: 'source_video',
+        signal,
+        probe: (probePath, mediaKind, probeSignal) => (
+          mediaTranscodeService.probe(probePath, mediaKind, probeSignal)
+        ),
+      });
+    },
+    persistManagedFile,
+    childJobs,
+    extractAudio: ({ config: _config, ...options }) => extractVoiceoverAudio({
+      ...options,
+      deps: { env },
+    }),
+    separateVoice: (options) => separateVoiceover(options),
+    buildVocalOnlyVideo: ({ config, ...options }) => buildVocalOnlyAnalysisVideo({
+      ...options,
+      config,
+      deps: { env },
+    }),
+    analyzeSpeech: async ({ messages, signal }) => {
+      const systemSettings = shouldUseMysql
+        ? await getDbSystemSettings()
+        : getLocalSystemSettings(readLocalStore());
+      const model = resolveConfiguredVideoAnalysisModel(systemSettings);
+      return executeProviderJobWithManagedAssetScrub({
+        id: `${job.id}:analysis`,
+        userId: job.userId,
+        module: 'video',
+        taskType: 'kie_chat',
+        provider: 'kie',
+        payload: { messages, model },
+      }, env, signal);
+    },
+    runGolden: (options) => executeProviderJobWithManagedAssetScrub(
+      options.job,
+      env,
+      options.signal,
+      {
+        onProviderTaskId: options.onProviderTaskId,
+      },
+    ),
+    persistGoldenOutput: async ({ child, output }) => {
+      const persisted = await persistChildProviderOutput(child, output);
+      return {
+        assetId: persisted?.result?.videoUrlAssetId,
+        url: persisted?.result?.videoUrl,
+        durationMs: persisted?.result?.durationMs,
+      };
+    },
+    runTts: (options) => executeProviderJobWithManagedAssetScrub(
+      options.job,
+      env,
+      options.signal,
+      {
+        onProviderTaskId: options.onProviderTaskId,
+        voiceoverConfig: options.config,
+      },
+    ),
+    persistTtsOutput: async ({ child, output }) => {
+      const persisted = await persistChildProviderOutput(child, output);
+      return persisted?.result || {};
+    },
+    alignAudio: ({ config, ...options }) => alignVoiceoverGroups({
+      ...options,
+      config,
+      deps: { env },
+    }),
+    mixAudio: ({ config, ...options }) => mixVoiceoverResult({
+      ...options,
+      config,
+      deps: { env },
+    }),
+    logger: {
+      info: (entry) => console.info('[voiceover]', entry),
+      error: (entry) => console.error('[voiceover]', entry),
+    },
+  };
+};
+
+const executeApplicationJob = async (job, env, signal, options = {}) => dispatchApplicationJob({
+  job,
+  executeVoiceover: async () => runVoiceoverTranslationJob({
+    job,
+    env,
+    signal,
+    onResultCheckpoint: options.onResultCheckpoint,
+    deps: await createVoiceoverRunnerDependencies(job, env),
+  }),
+  executeDefault: () => executeProviderJobWithManagedAssetScrub(job, env, signal, options),
+});
+
 const prepareAgentModelImageUrl = (userId) => async (url) => {
   const resolved = await resolveProviderChatMediaUrlForModel(url, {
     env: process.env,
@@ -4705,6 +5133,7 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
 
   const pool = lockedPool;
   let result = { ...(output.result || {}) };
+  result = prepareKieTtsOutputForPersistence({ job, result, publicBaseUrl, isManagedAssetUrl });
   const imageTransform = buildImageOutputTransformFromJob(job);
   const hasInlineImageResult = /^data:image\//i.test(String(result.imageUrl || '').trim());
   if (hasInlineImageResult && !publicBaseUrl) {
@@ -4849,7 +5278,9 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
     }
     result[fieldName] = persisted.publicUrl;
     result[`${fieldName}AssetId`] = persisted.id;
-    result[`${fieldName}RemoteUrl`] = sourceUrl;
+    if (fieldName !== 'audioUrl') {
+      result[`${fieldName}RemoteUrl`] = sourceUrl;
+    }
   };
 
   const persistRemoteArrayField = async (fieldName, assetType, fallbackNameBuilder) => {
@@ -4880,8 +5311,14 @@ const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, l
   };
 
   await persistRemoteField('imageUrl', 'result', `${job.taskType || 'result'}.png`);
-  await persistRemoteField('videoUrl', 'video', `${job.taskType || 'result'}.mp4`);
-  await persistRemoteField('fileUrl', 'result', `${job.taskType || 'result'}.bin`);
+  result = await persistManagedRemoteJobOutput({
+    job,
+    result,
+    publicBaseUrl,
+    persistRemoteAsset: (options) => persistRemoteAsset({ pool, ...options }),
+    isManagedAssetUrl,
+    getVoiceoverIntermediateExpiresAt,
+  });
   await persistRemoteArrayField('imageResultUrls', 'result', (index) => `${job.taskType || 'result'}_${index + 1}.png`);
   await persistRemoteArrayField('resultUrls', 'result', (index) => `${job.taskType || 'result'}_${index + 1}.png`);
 
@@ -6040,15 +6477,47 @@ const reserveLocalJobCredits = (store, user, jobPayload) => {
   });
 };
 
+const isVoiceoverCreditParent = (job) => (
+  String(job?.taskType || job?.task_type || '') === 'voiceover_translate_video'
+  && String(job?.provider || '') === 'internal'
+);
+
+const listDbVoiceoverCreditChildren = async (pool, job) => {
+  if (!isVoiceoverCreditParent(job) || !pool || typeof pool.query !== 'function') return [];
+  const parentJobId = String(job?.id || '').trim();
+  const userId = String(job?.userId ?? job?.user_id ?? '').trim();
+  if (!parentJobId || !userId) return [];
+  const [rows] = await pool.query(
+    `SELECT *
+     FROM internal_jobs
+     WHERE user_id = ?
+       AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.executionOwner')) = 'parent'
+       AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.parentJobId')) = ?`,
+    [userId, parentJobId],
+  );
+  return Array.isArray(rows) ? rows : [];
+};
+
+const listLocalVoiceoverCreditChildren = (store, job) => {
+  if (!isVoiceoverCreditParent(job) || !Array.isArray(store?.jobs)) return [];
+  return store.jobs;
+};
+
 const settleDbJobCredits = async ({ pool, job, output, finishedAt, aborted, rejected = false }) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
   if (aborted) {
+    const voiceoverChildJobs = await listDbVoiceoverCreditChildren(pool, job);
     const creditJob = {
       ...job,
       providerTaskId: String(output?.providerTaskId || job?.providerTaskId || ''),
     };
-    if (!shouldReleaseJobCreditReservation({ job: creditJob, error: { code: 'request_cancelled' }, aborted: true })) {
+    if (!shouldReleaseJobCreditReservation({
+      job: creditJob,
+      error: { code: 'request_cancelled' },
+      aborted: true,
+      voiceoverChildJobs,
+    })) {
       return null;
     }
     return await releaseDbAccountCredits(pool, reservation, {
@@ -6072,7 +6541,13 @@ const settleDbJobCredits = async ({ pool, job, output, finishedAt, aborted, reje
 const releaseDbJobCredits = async ({ pool, job, error, finishedAt, retryWaiting }) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
-  if (!shouldReleaseJobCreditReservation({ job, error, retryWaiting })) return null;
+  const voiceoverChildJobs = await listDbVoiceoverCreditChildren(pool, job);
+  if (!shouldReleaseJobCreditReservation({
+    job,
+    error,
+    retryWaiting,
+    voiceoverChildJobs,
+  })) return null;
   return await releaseDbAccountCredits(pool, reservation, {
     module: job.module,
     taskType: job.taskType,
@@ -6090,11 +6565,17 @@ const settleLocalJobCredits = ({ store, job, output, aborted, rejected = false }
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
   if (aborted) {
+    const voiceoverChildJobs = listLocalVoiceoverCreditChildren(store, job);
     const creditJob = {
       ...job,
       providerTaskId: String(output?.providerTaskId || job?.providerTaskId || ''),
     };
-    if (!shouldReleaseJobCreditReservation({ job: creditJob, error: { code: 'request_cancelled' }, aborted: true })) {
+    if (!shouldReleaseJobCreditReservation({
+      job: creditJob,
+      error: { code: 'request_cancelled' },
+      aborted: true,
+      voiceoverChildJobs,
+    })) {
       return null;
     }
     return releaseLocalAccountCredits(store, reservation, {
@@ -6116,7 +6597,13 @@ const settleLocalJobCredits = ({ store, job, output, aborted, rejected = false }
 const releaseLocalJobCredits = ({ store, job, error, retryWaiting }) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
-  if (!shouldReleaseJobCreditReservation({ job, error, retryWaiting })) return null;
+  const voiceoverChildJobs = listLocalVoiceoverCreditChildren(store, job);
+  if (!shouldReleaseJobCreditReservation({
+    job,
+    error,
+    retryWaiting,
+    voiceoverChildJobs,
+  })) return null;
   return releaseLocalAccountCredits(store, reservation, {
     module: job.module,
     taskType: job.taskType,
@@ -13498,6 +13985,7 @@ const handleMysqlRequest = async (req, res, url) => {
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings,
         userSettings: { analysisModel: user.analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -13526,6 +14014,7 @@ const handleMysqlRequest = async (req, res, url) => {
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings: nextSettings,
         userSettings: { analysisModel: admin.analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -13595,6 +14084,7 @@ const handleMysqlRequest = async (req, res, url) => {
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings: currentSettings,
         userSettings: { analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -13805,20 +14295,29 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/jobs' && req.method === 'POST') {
     const user = await requireDbUser(req, res);
     if (!user) return;
-    const body = await readBody(req);
+    let body = await readBody(req);
     if (!body?.taskType || !body?.provider) {
       json(res, 400, { message: '任务类型和 provider 不能为空。' });
       return;
     }
+    const pool = await getMysqlPool();
     let submissionPolicy;
     try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
+      const prepared = await prepareVoiceoverSubmission({
+        body,
+        user,
+        pool,
+        signal: req.signal,
+      });
+      body = prepared.body;
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body, {
+        voiceoverSourceProbe: prepared.sourceProbe || {},
+      });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
     }
 
-    const pool = await getMysqlPool();
     const jobPayload = {
       module: body.module,
       taskType: submissionPolicy.taskType,
@@ -13930,6 +14429,7 @@ const handleMysqlRequest = async (req, res, url) => {
         error.statusCode = 404;
         throw error;
       }
+      assertGenericJobResultPatchAllowed(freshJob);
       const freshResult = {
         ...(freshJob.result && typeof freshJob.result === 'object' ? freshJob.result : {}),
         ...resultPatch,
@@ -14110,9 +14610,32 @@ const handleMysqlRequest = async (req, res, url) => {
       json(res, 404, { message: '任务不存在。' });
       return;
     }
+    const isVoiceoverRetryRequest = job.taskType === 'voiceover_translate_video'
+      && job.provider === 'internal';
+    let retryRequest;
+    try {
+      retryRequest = await readJobRetryRequest(req, {
+        voiceoverParent: isVoiceoverRetryRequest,
+      });
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
     let submissionPolicy;
     try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, job, { submissionOperation: 'retry' });
+      const prepared = await prepareVoiceoverSubmission({
+        body: {
+          ...job,
+          payload: stripCreditReservationFromPayload(job.payload),
+        },
+        user,
+        pool,
+        signal: req.signal,
+      });
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, prepared.body, {
+        submissionOperation: 'retry',
+        voiceoverSourceProbe: prepared.sourceProbe || {},
+      });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
@@ -14130,7 +14653,11 @@ const handleMysqlRequest = async (req, res, url) => {
           error.statusCode = 409;
           throw error;
         }
-        assertSubmissionKnownBeforeRetry(currentJob);
+        const isVoiceoverParent = currentJob.taskType === 'voiceover_translate_video'
+          && currentJob.provider === 'internal';
+        if (!isVoiceoverParent) {
+          assertSubmissionKnownBeforeRetry(currentJob);
+        }
         if (currentJob.taskType === 'subtitle_remove_video') {
           const guardState = await getSubtitleRemovalSubmissionGuardState(connection, user.id, currentJob.payload);
           assertSubtitleRemovalRetryAllowed({
@@ -14139,6 +14666,12 @@ const handleMysqlRequest = async (req, res, url) => {
           });
         }
 
+        const voiceoverRetryPlan = isVoiceoverParent
+          ? deriveVoiceoverRetryPlan(currentJob, retryRequest)
+          : null;
+        if (isVoiceoverParent) {
+          prepareVoiceoverJobRetryResult(currentJob, voiceoverRetryPlan);
+        }
         const currentReservation = getCreditReservationFromJob(currentJob);
         const reservationProcessed = currentReservation
           ? await hasDbProcessedCreditReservation(connection, currentReservation)
@@ -14147,6 +14680,7 @@ const handleMysqlRequest = async (req, res, url) => {
           job: currentJob,
           reservationProcessed,
           providerTaskRecoverable: canRecoverProviderTaskById(currentJob),
+          voiceoverRetryPlan,
         });
         if (reservationAction === 'block') {
           const error = new Error('任务的原积分预留仍在处理中，为防止重复扣费已停止重新提交。');
@@ -14175,6 +14709,7 @@ const handleMysqlRequest = async (req, res, url) => {
         });
         await requestRetryJob(connection, { ...currentJob, payload: retryPayload }, {
           resetProviderTaskId: reservationAction === 'reserve',
+          ...(isVoiceoverParent ? { voiceoverRetryPlan } : {}),
         });
       }), { timeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env) });
     } catch (error) {
@@ -17198,6 +17733,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings,
         userSettings: { analysisModel: user.analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -17225,6 +17761,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings: nextSettings,
         userSettings: { analysisModel: admin.analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -17295,6 +17832,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings: currentSettings,
         userSettings: { analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -17515,14 +18053,22 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
   if (url.pathname === '/api/jobs' && req.method === 'POST') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
-    const body = await readBody(req);
+    let body = await readBody(req);
     if (!body?.taskType || !body?.provider) {
       json(res, 400, { message: '任务类型和 provider 不能为空。' });
       return;
     }
     let submissionPolicy;
     try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
+      const prepared = await prepareVoiceoverSubmission({
+        body,
+        user,
+        signal: req.signal,
+      });
+      body = prepared.body;
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body, {
+        voiceoverSourceProbe: prepared.sourceProbe || {},
+      });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
@@ -17596,6 +18142,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       json(res, 404, { message: '任务不存在。' });
       return;
     }
+    assertGenericJobResultPatchAllowed(job);
     const updatedJob = updateLocalJobResult(store, job.id, resultPatch);
     writeLocalStore(store);
     json(res, 200, { job: updatedJob || job });
@@ -17741,8 +18288,21 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       json(res, 409, { message: '只有已失败或已取消的任务可以重试。', code: 'job_retry_not_allowed' });
       return;
     }
+    const isVoiceoverRetryRequest = job.taskType === 'voiceover_translate_video'
+      && job.provider === 'internal';
+    let retryRequest;
     try {
-      assertSubmissionKnownBeforeRetry(job);
+      retryRequest = await readJobRetryRequest(req, {
+        voiceoverParent: isVoiceoverRetryRequest,
+      });
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
+    try {
+      if (!isVoiceoverRetryRequest) {
+        assertSubmissionKnownBeforeRetry(job);
+      }
       if (job.taskType === 'subtitle_remove_video') {
         assertSubtitleRemovalRetryAllowed({
           jobs: store.jobs,
@@ -17756,16 +18316,41 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     }
     let submissionPolicy;
     try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, job, { submissionOperation: 'retry' });
+      const prepared = await prepareVoiceoverSubmission({
+        body: {
+          ...job,
+          payload: stripCreditReservationFromPayload(job.payload),
+        },
+        user,
+        signal: req.signal,
+      });
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, prepared.body, {
+        submissionOperation: 'retry',
+        voiceoverSourceProbe: prepared.sourceProbe || {},
+      });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
     }
+    const isVoiceoverParent = job.taskType === 'voiceover_translate_video'
+      && job.provider === 'internal';
+    let voiceoverRetryPlan = null;
+    try {
+      if (isVoiceoverParent) {
+        voiceoverRetryPlan = deriveVoiceoverRetryPlan(job, retryRequest);
+        prepareVoiceoverJobRetryResult(job, voiceoverRetryPlan);
+      }
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
+
     const currentReservation = getCreditReservationFromJob(job);
     const reservationAction = getJobCreditRetryReservationAction({
       job,
       reservationProcessed: getLocalCreditReservationState(store, currentReservation) === 'processed',
       providerTaskRecoverable: canRecoverProviderTaskById(job),
+      voiceoverRetryPlan,
     });
     if (reservationAction === 'block') {
       json(res, 409, {
@@ -17775,53 +18360,46 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       return;
     }
 
-    let replacementReservation = null;
-    let retryPayload = job.payload;
-    if (reservationAction === 'reserve') {
-      const retryJobPayload = {
-        module: job.module,
-        taskType: submissionPolicy.taskType,
-        provider: submissionPolicy.provider,
-        payload: stripCreditReservationFromPayload(job.payload),
-        maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
-      };
-      replacementReservation = reserveLocalJobCredits(store, user, retryJobPayload);
-      retryPayload = attachCreditReservationToJobPayload(retryJobPayload, replacementReservation).payload;
-    }
-    const retriedJob = requestLocalRetryJob(store, jobId, {
-      payload: retryPayload,
-      maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
-      resetProviderTaskId: reservationAction === 'reserve',
-    });
-    appendLocalLog(store, {
-      user,
-      level: 'info',
-      module: job.module,
-      action: 'job_retried',
-      message: `重新排队任务：${job.id}`,
-      status: 'started',
-      meta: {
-        jobId: job.id,
-        providerTaskId: job.providerTaskId || '',
-        provider: job.provider,
-        taskType: job.taskType,
-        jobCreatedAt: job.createdAt,
-      },
-    });
-    if (retriedJob) {
-      try {
-        await startLocalJobWorkflowIfEnabled(store, retriedJob);
-      } catch (error) {
-        if (replacementReservation) {
-          releaseLocalAccountCredits(store, replacementReservation, {
-            reason: 'job_retry_prepare_failed',
-            errorCode: error?.code || '',
-          });
-        }
-        throw error;
+    let retriedJob;
+    await withLocalJobRetryRollback(store, async () => {
+      let retryPayload = job.payload;
+      if (reservationAction === 'reserve') {
+        const retryJobPayload = {
+          module: job.module,
+          taskType: submissionPolicy.taskType,
+          provider: submissionPolicy.provider,
+          payload: stripCreditReservationFromPayload(job.payload),
+          maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
+        };
+        const replacementReservation = reserveLocalJobCredits(store, user, retryJobPayload);
+        retryPayload = attachCreditReservationToJobPayload(retryJobPayload, replacementReservation).payload;
       }
-    }
-    writeLocalStore(store);
+      retriedJob = requestLocalRetryJob(store, jobId, {
+        payload: retryPayload,
+        maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
+        resetProviderTaskId: reservationAction === 'reserve',
+        ...(isVoiceoverParent ? { voiceoverRetryPlan } : {}),
+      });
+      appendLocalLog(store, {
+        user,
+        level: 'info',
+        module: job.module,
+        action: 'job_retried',
+        message: `重新排队任务：${job.id}`,
+        status: 'started',
+        meta: {
+          jobId: job.id,
+          providerTaskId: job.providerTaskId || '',
+          provider: job.provider,
+          taskType: job.taskType,
+          jobCreatedAt: job.createdAt,
+        },
+      });
+      if (retriedJob) {
+        await startLocalJobWorkflowIfEnabled(store, retriedJob);
+      }
+      writeLocalStore(store);
+    }, { persist: writeLocalStore });
     if (!shouldUseTemporalForLocalExecution()) {
       localJobWorker?.trigger?.();
     }
@@ -17896,6 +18474,10 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/api/health' && req.method === 'GET') {
       const taskEngine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
       const subtitleRemovalConfig = getSubtitleRemovalConfig(process.env);
+      const voiceoverHealth = buildVoiceoverHealthSnapshot(
+        process.env,
+        voiceoverTranslationReadiness,
+      );
       // worker 字段暴露 Temporal poller 存活状态(S1):poller 静默死亡时 HTTP 仍活着,
       // 只看 ok:true 会误判健康。health 本身永远 HTTP 200,消费方看 worker.healthy。
       const worker = taskEngine === 'temporal'
@@ -17925,6 +18507,14 @@ const server = createServer(async (req, res) => {
         subtitleRemoval: {
           enabled: subtitleRemovalConfig.enabled,
           configured: subtitleRemovalConfig.configured,
+        },
+        voiceoverTranslation: {
+          enabled: voiceoverHealth.enabled,
+          ready: voiceoverHealth.ready,
+          pythonReady: voiceoverHealth.pythonReady,
+          modelReady: voiceoverHealth.modelReady,
+          ffmpegReady: voiceoverHealth.ffmpegReady,
+          separationConcurrency: voiceoverHealth.separationConcurrency,
         },
         ...(Object.keys(creditAlert).length ? { creditAlert } : {}),
       });
@@ -18072,6 +18662,18 @@ const bootstrap = async () => {
   if (mediaTranscodeReadiness.enabled && (!mediaTranscodeReadiness.ffmpegReady || !mediaTranscodeReadiness.ffprobeReady)) {
     console.warn('[media-transcode] runtime is enabled but a binary readiness check failed', mediaTranscodeReadiness);
   }
+  if (getVoiceoverConfig(process.env).enabled) {
+    voiceoverTranslationReadiness = await checkVoiceoverSeparationReadiness({
+      env: process.env,
+    });
+    if (!voiceoverTranslationReadiness.ready) {
+      console.warn('[voiceover] runtime is enabled but local separation readiness failed', {
+        pythonReady: voiceoverTranslationReadiness.pythonReady,
+        modelReady: voiceoverTranslationReadiness.modelReady,
+        ffmpegReady: voiceoverTranslationReadiness.ffmpegReady,
+      });
+    }
+  }
   if (shouldUseMysql) {
     await ensureMysqlSchema();
     const pool = await getMysqlPool();
@@ -18097,7 +18699,7 @@ const bootstrap = async () => {
         activities: createMysqlTemporalActivities({
           getPool: getMysqlPool,
           executeJob: async (job, signal, options) => {
-            const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
+            const output = await executeApplicationJob(job, process.env, signal, options);
             return persistJobOutputAssetsIfEnabled(job, output);
           },
           getMaxConcurrency: getDbWorkerConcurrency,
@@ -18125,7 +18727,7 @@ const bootstrap = async () => {
       jobWorker = createJobWorker({
         getPool: getMysqlPool,
         executeJob: async (job, signal, options) => {
-          const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
+          const output = await executeApplicationJob(job, process.env, signal, options);
           return persistJobOutputAssetsIfEnabled(job, output);
         },
         getMaxConcurrency: getDbWorkerConcurrency,
@@ -18169,7 +18771,7 @@ const bootstrap = async () => {
           writeStore: writeLocalStore,
           mutateStore: mutateLocalStore,
           executeJob: async (job, signal, options) => {
-            const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
+            const output = await executeApplicationJob(job, process.env, signal, options);
             return persistJobOutputAssetsIfEnabled(job, output);
           },
           createLog: (payload) => mutateLocalStore((store) => {
@@ -18188,7 +18790,7 @@ const bootstrap = async () => {
         writeStore: writeLocalStore,
         mutateStore: mutateLocalStore,
         executeJob: async (job, signal, options) => {
-          const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
+          const output = await executeApplicationJob(job, process.env, signal, options);
           return persistJobOutputAssetsIfEnabled(job, output);
         },
         getMaxConcurrency: getLocalWorkerConcurrency,

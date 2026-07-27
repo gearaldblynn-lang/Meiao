@@ -62,6 +62,25 @@ test('account scope guards deferred state updates and queued persistence writes'
   assert.match(shellSource, /sharedStateScopeRef\.current\?\.invalidate\(\)/);
 });
 
+test('voiceover submissions bind one account epoch and drop every stale async continuation', () => {
+  const submitStart = shellSource.indexOf('const handleVoiceoverTranslationSubmit = useCallback');
+  const submitEnd = shellSource.indexOf('const handleClearVoiceoverInitialSource', submitStart);
+  const submitBody = shellSource.slice(submitStart, submitEnd);
+  const resetBody = shellSource.match(
+    /const resetShellWorkspaceForUser = useCallback\(\(userId\?: string \| null\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/,
+  )?.[1] || '';
+
+  assert.match(shellSource, /const voiceoverSubmissionScopeRef = useRef<ReturnType<typeof createAsyncScopeGuard>/);
+  assert.match(submitBody, /const submissionAccountIsCurrent = voiceoverSubmissionScopeRef\.current!\.capture\(\)/);
+  assert.match(submitBody, /const isSubmissionCurrent = \(\) => \(\s*submissionAccountIsCurrent\(\)\s*&& currentShellScopeUserIdRef\.current === userId/);
+  assert.match(submitBody, /persistSyncedProjectsToSharedState\(\s*\[checkpointProject\],\s*isSubmissionCurrent,\s*\)/);
+  assert.match(submitBody, /persistDeletionToSharedState\(\{\s*projectId: shellProjectId,\s*\}, isSubmissionCurrent\)/);
+  assert.match(submitBody, /if \(!isSubmissionCurrent\(\)\) return/);
+  assert.match(submitBody, /if \(!isSubmissionCurrent\(\)\) return previousProjects/);
+  assert.match(submitBody, /if \(voiceoverSubmitLockRef\.current === submissionOwner\)/);
+  assert.match(resetBody, /voiceoverSubmissionScopeRef\.current\?\.invalidate\(\)/);
+});
+
 test('every shared-state writer captures and enqueues an account-scoped guard', () => {
   const writerNames = [
     'persistVideoMemoryToSharedState',

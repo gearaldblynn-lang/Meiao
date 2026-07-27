@@ -82,6 +82,9 @@ const buildRetouchComparisonItems = () => [];
 const isRetouchComparisonScope = (module, subFeature) => (
   module === 'retouch' && ['original', 'white_bg', 'product_restore'].includes(subFeature)
 );
+const buildVoiceoverTranslationEntryActions = () => [];
+const resolveSafeVoiceoverResultMedia = () => ({});
+const runVoiceoverRetryRequest = async () => undefined;
 const PlanEditor = EmptyComponent;
 const useToast = () => ({ addToast: () => undefined });
 const ProductRestoreResultCreditBadge = EmptyComponent;

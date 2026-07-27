@@ -10,6 +10,7 @@ import {
 } from '../src/utils/maxforaiImageModels.mjs';
 import { normalizeProductRestoreRollout } from '../src/utils/productRestoreRollout.mjs';
 import { getSubtitleRemovalConfig } from './subtitleRemovalContract.mjs';
+import { getVoiceoverPublicConfig } from './voiceoverContract.mjs';
 
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',
@@ -25,6 +26,32 @@ const TRANSIENT_MYSQL_CONNECTION_ERROR_CODES = new Set([
   'ETIMEDOUT',
   'EPIPE',
 ]);
+
+export const dispatchApplicationJob = async ({
+  job,
+  executeVoiceover,
+  executeDefault,
+} = {}) => {
+  if (typeof executeVoiceover !== 'function' || typeof executeDefault !== 'function') {
+    throw new TypeError('Application job executors are required.');
+  }
+  return job?.taskType === 'voiceover_translate_video'
+    ? executeVoiceover()
+    : executeDefault();
+};
+
+export const buildVoiceoverHealthSnapshot = (env = {}, readiness = {}) => {
+  const publicConfig = getVoiceoverPublicConfig(env, readiness);
+  const kieReady = Boolean(String(env.KIE_API_KEY || env.MEIAO_KIE_API_KEY || '').trim());
+  return Object.freeze({
+    enabled: publicConfig.enabled,
+    ready: publicConfig.ready && kieReady,
+    pythonReady: publicConfig.readiness.pythonReady,
+    modelReady: publicConfig.readiness.modelReady,
+    ffmpegReady: publicConfig.readiness.ffmpegReady,
+    separationConcurrency: publicConfig.readiness.separationConcurrency,
+  });
+};
 
 const AGENT_MODEL_CATALOG = {
   chat: [
@@ -624,6 +651,12 @@ export const buildJobRuntimeLogMeta = ({
 
 export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) => {
   const subtitleRemovalConfig = getSubtitleRemovalConfig(env);
+  const voiceoverPublicConfig = getVoiceoverPublicConfig(env, overrides?.voiceoverReadiness || {});
+  const voiceoverTranslationConfig = Object.freeze({
+    ...voiceoverPublicConfig,
+    ready: voiceoverPublicConfig.ready
+      && Boolean(String(env.KIE_API_KEY || env.MEIAO_KIE_API_KEY || '').trim()),
+  });
   const allowedOrigins = normalizeAllowedOrigins(env.MEIAO_ALLOWED_ORIGINS);
   const publicBaseUrl = normalizeBaseUrl(overrides?.publicBaseUrl || env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || '');
   const chatCatalog = applyRuntimeMediaCapabilities(AGENT_MODEL_CATALOG.chat, env, overrides);
@@ -725,6 +758,7 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       batchPrepConcurrency: subtitleRemovalConfig.batchPrepConcurrency,
       batchSubmitConcurrency: subtitleRemovalConfig.batchSubmitConcurrency,
     },
+    voiceoverTranslation: voiceoverTranslationConfig,
     systemSettings: {
       analysisModel: validConfiguredAnalysisModel,
       userAnalysisModel: validConfiguredUserAnalysisModel,

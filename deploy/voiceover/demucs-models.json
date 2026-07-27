@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "model": "mdx",
+  "files": [
+    {
+      "name": "0d19c1c6-0f06f20e.th",
+      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/0d19c1c6-0f06f20e.th",
+      "size": 178048329,
+      "sha256": "0f06f20ed6ddc8058fa72ccc4845f3a88916eff7d007b623924193de217bbcf4"
+    },
+    {
+      "name": "7ecf8ec1-70f50cc9.th",
+      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/7ecf8ec1-70f50cc9.th",
+      "size": 178048329,
+      "sha256": "70f50cc947d08f32e6dd8e2b687d398fa5ef9e51d1bd7600e32205d1f44be6b9"
+    },
+    {
+      "name": "c511e2ab-fe698775.th",
+      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/c511e2ab-fe698775.th",
+      "size": 167334095,
+      "sha256": "fe6987756a7087d339bf63b19bb481b12cea02d3bc0de7583df7597210209649"
+    },
+    {
+      "name": "7d865c68-3d5dd56b.th",
+      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/7d865c68-3d5dd56b.th",
+      "size": 167918783,
+      "sha256": "3d5dd56b5bc986f136dff98655ded22b2b033f465ccec7a28640a6b15fd71ed6"
+    }
+  ]
+}

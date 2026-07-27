@@ -118,7 +118,9 @@ test('subtitle retry cannot exceed the same active user ceiling as new submissio
 
 test('retry routes explicitly use retry policy so historical jobs do not need batch metadata', () => {
   const serverSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
-  const retryCalls = serverSource.match(/resolveAuthorizedJobSubmissionPolicy\(user, job, \{ submissionOperation: 'retry' \}\)/g) || [];
+  const retryCalls = serverSource.match(
+    /resolveAuthorizedJobSubmissionPolicy\(user, prepared\.body, \{\s*submissionOperation:\s*'retry'/g,
+  ) || [];
   assert.equal(retryCalls.length, 2);
 });
 

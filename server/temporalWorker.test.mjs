@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { createLocalJobRecord, getLocalJobById } from './localJobStore.mjs';
 import { createLocalTemporalActivities, createMysqlTemporalActivities } from './temporalWorker.mjs';
+import { shouldReleaseJobCreditReservation } from './accountCredits.mjs';
+
+const temporalWorkflowSource = readFileSync(new URL('./temporal/workflows.mjs', import.meta.url), 'utf8');
 
 const createStore = () => ({
   users: [{ id: 'user-1', username: 'user-1', displayName: 'User 1', role: 'admin' }],
@@ -228,8 +232,10 @@ const createMysqlHarness = (initialJob, options = {}) => {
       cancel_requested_at: initialJob.cancel_requested_at ?? null,
     },
     attempts: [],
+    attemptFinishes: 0,
     events: [],
     runningRows: options.runningRows || [],
+    driftBeforeTerminalUpdate: false,
   };
   const toCamel = (column) => ({
     user_id: 'userId',
@@ -261,6 +267,9 @@ const createMysqlHarness = (initialJob, options = {}) => {
       if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1/.test(sql)) {
         return [[state.job]];
       }
+      if (/SELECT \* FROM internal_jobs[\s\S]+WHERE id = \? AND user_id = \?[\s\S]+FOR UPDATE/.test(sql)) {
+        return [[state.job]];
+      }
       if (/SELECT \*\s+FROM internal_jobs\s+WHERE status = 'running' AND user_id = \? AND id <> \?/.test(sql)) {
         return [state.runningRows];
       }
@@ -275,6 +284,11 @@ const createMysqlHarness = (initialJob, options = {}) => {
         setColumn('error_message', null);
         return [{ affectedRows: 1 }];
       }
+      if (/UPDATE internal_jobs[\s\S]+SET result_json = \?[\s\S]+status = 'running' AND started_at = \?/.test(sql)) {
+        setColumn('result_json', params[0]);
+        setColumn('updated_at', params[1]);
+        return [{ affectedRows: 1 }];
+      }
       if (/SELECT MAX\(attempt_no\) AS attempt_no/.test(sql)) {
         return [[{ attempt_no: state.attempts.length }]];
       }
@@ -287,19 +301,37 @@ const createMysqlHarness = (initialJob, options = {}) => {
         return [{ affectedRows: 1 }];
       }
       if (/UPDATE internal_job_attempts/.test(sql)) {
+        state.attemptFinishes += 1;
         return [{ affectedRows: 1 }];
       }
       if (/UPDATE internal_jobs SET /.test(sql)) {
         const assignments = sql.match(/UPDATE internal_jobs SET ([\s\S]+) WHERE id = \?/)?.[1]
           .split(',')
           .map((item) => item.trim().replace(/\s*= \?$/, '')) || [];
+        if (assignments.includes('status') && state.driftBeforeTerminalUpdate) {
+          state.driftBeforeTerminalUpdate = false;
+          setColumn('status', 'running');
+          setColumn('started_at', Number(state.job.started_at) + 1);
+          setColumn('result_json', JSON.stringify({ newerClaim: true }));
+          setColumn('error_code', null);
+          setColumn('error_message', null);
+          if (/user_id = \? AND status = 'running' AND started_at = \?/.test(sql)) {
+            return [{ affectedRows: 0 }];
+          }
+        }
         assignments.forEach((column, index) => setColumn(column, params[index]));
         return [{ affectedRows: 1 }];
       }
       throw new Error(`Unhandled SQL in test harness: ${sql}`);
     },
   };
-  return { state, pool };
+  return {
+    state,
+    pool,
+    driftBeforeTerminalUpdate() {
+      state.driftBeforeTerminalUpdate = true;
+    },
+  };
 };
 
 test('mysql temporal activity leaves queued work unclaimed while deployment drain is active', async () => {
@@ -709,4 +741,389 @@ test('mysql temporal provider checkpoint starts a fresh recovery retry budget', 
   assert.equal(result.providerTaskId, 'provider-task-new');
   assert.equal(result.retryCount, 1);
   assert.equal(state.job.retry_count, 1);
+});
+
+const voiceoverParentJob = (status = 'queued') => ({
+  id: 'voiceover-parent-temporal',
+  userId: 'user-1',
+  module: 'video',
+  taskType: 'voiceover_translate_video',
+  provider: 'internal',
+  status,
+  priority: 0,
+  payload: { taskPurpose: 'voiceover_translation', removeText: false },
+  providerTaskId: '',
+  result: {
+    audit: 'keep',
+    voiceoverCheckpoint: {
+      version: 1,
+      stage: 'input_prepared',
+      baseVideoAssetId: 'asset-base',
+      analysisAttempt: 0,
+    },
+  },
+  retryCount: 0,
+  maxRetries: 0,
+  createdAt: 1_000,
+  updatedAt: 1_000,
+  startedAt: status === 'running' ? 1_000 : null,
+  finishedAt: null,
+  cancelRequestedAt: null,
+});
+
+const parentOwnedTemporalChild = () => ({
+  id: 'voiceover-child-temporal',
+  userId: 'user-1',
+  module: 'video',
+  taskType: 'kie_tts',
+  provider: 'kie',
+  status: 'queued',
+  priority: 0,
+  payload: {
+    executionOwner: 'parent',
+    parentJobId: 'voiceover-parent-temporal',
+    childKey: 'tts:0:attempt:0',
+    clientSubmissionKey: 'voiceover-child:voiceover-parent-temporal:tts:0:attempt:0',
+  },
+  providerTaskId: '',
+  result: null,
+  retryCount: 0,
+  maxRetries: 0,
+  createdAt: 1_000,
+  updatedAt: 1_000,
+  startedAt: null,
+  finishedAt: null,
+  cancelRequestedAt: null,
+});
+
+test('local temporal activity awaits and preserves a parent result checkpoint before continuing', async () => {
+  const store = createStore();
+  store.jobs = [voiceoverParentJob()];
+  const sideEffects = [];
+  const activities = createLocalTemporalActivities({
+    readStore: () => store,
+    writeStore: () => {},
+    mutateStore: async (operation) => operation(store),
+    executeJob: async (_job, _signal, { onResultCheckpoint }) => {
+      await onResultCheckpoint({
+        voiceoverCheckpoint: {
+          stage: 'audio_extracted',
+          originalAudioAssetId: 'asset-audio',
+        },
+      });
+      assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
+      sideEffects.push('paid-call');
+      throw Object.assign(new Error('lost'), { code: 'provider_network_error' });
+    },
+    createLog: async () => {},
+    findUserById: () => store.users[0],
+  });
+
+  const result = await activities.executeLocalJobAttemptActivity({ jobId: 'voiceover-parent-temporal' });
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(sideEffects, ['paid-call']);
+  assert.equal(store.jobs[0].result.audit, 'keep');
+  assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
+});
+
+test('Temporal restart then cancel keeps a speech-analysis submission reservation pending', async () => {
+  const store = createStore();
+  const parent = voiceoverParentJob('retry_waiting');
+  parent.errorCode = 'service_restarted';
+  parent.cancelRequestedAt = 2_000;
+  parent.result.voiceoverCheckpoint = {
+    version: 1,
+    stage: 'speech_analysis_submitting',
+    baseVideoAssetId: 'asset-base',
+    originalAudioAssetId: 'asset-original',
+    vocalAssetId: 'asset-vocal',
+    backgroundAssetId: 'asset-background',
+    analysisAttempt: 0,
+  };
+  store.jobs = [parent];
+  let releaseDecision = null;
+  const activities = createLocalTemporalActivities({
+    readStore: () => store,
+    writeStore: () => {},
+    mutateStore: async (operation) => operation(store),
+    executeJob: async (_job, signal) => {
+      assert.equal(signal.aborted, true);
+      throw Object.assign(new Error('cancelled after restart'), {
+        code: 'request_cancelled',
+      });
+    },
+    createLog: async () => {},
+    findUserById: () => store.users[0],
+    releaseJobCredits: ({ job, error, retryWaiting }) => {
+      releaseDecision = shouldReleaseJobCreditReservation({
+        job,
+        error,
+        retryWaiting,
+      });
+    },
+  });
+
+  const result = await activities.executeLocalJobAttemptActivity({
+    jobId: parent.id,
+    workflowId: 'voiceover-analysis-restarted-workflow',
+    runId: 'run-1',
+  });
+
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.errorCode, 'request_cancelled');
+  assert.equal(releaseDecision, false);
+});
+
+test('local temporal activity cannot complete or fail a newer running claim', async () => {
+  for (const outcome of ['complete', 'fail']) {
+    const store = createStore();
+    store.jobs = [voiceoverParentJob()];
+    const creditFinalizations = [];
+    const activities = createLocalTemporalActivities({
+      readStore: () => store,
+      writeStore: () => {},
+      mutateStore: async (operation) => operation(store),
+      executeJob: async (claimedJob) => {
+        const current = store.jobs.find((job) => job.id === claimedJob.id);
+        Object.assign(current, {
+          status: 'running',
+          startedAt: Number(claimedJob.startedAt) + 1,
+          result: { newerClaim: outcome },
+          errorCode: '',
+          errorMessage: '',
+        });
+        if (outcome === 'fail') {
+          throw Object.assign(new Error('stale executor failed'), { code: 'provider_network_error' });
+        }
+        return { result: { staleExecutor: true } };
+      },
+      createLog: async () => {},
+      findUserById: () => store.users[0],
+      settleJobCredits: () => creditFinalizations.push('settle'),
+      releaseJobCredits: () => creditFinalizations.push('release'),
+    });
+
+    const result = await activities.executeLocalJobAttemptActivity({
+      jobId: 'voiceover-parent-temporal',
+    });
+    assert.equal(result.status, 'running', outcome);
+    assert.equal(store.jobs[0].status, 'running', outcome);
+    assert.equal(store.jobs[0].result.newerClaim, outcome);
+    assert.equal(store.jobs[0].result.staleExecutor, undefined);
+    assert.equal(store.jobs[0].errorCode, '', outcome);
+    assert.deepEqual(creditFinalizations, [], outcome);
+  }
+});
+
+test('local temporal activity treats deletion during execution as a stale claim', async () => {
+  for (const outcome of ['complete', 'fail']) {
+    const store = createStore();
+    store.jobs = [voiceoverParentJob()];
+    const creditFinalizations = [];
+    const activities = createLocalTemporalActivities({
+      readStore: () => store,
+      writeStore: () => {},
+      mutateStore: async (operation) => operation(store),
+      executeJob: async () => {
+        store.jobs = [];
+        if (outcome === 'fail') {
+          throw Object.assign(new Error('deleted executor failed'), {
+            code: 'provider_network_error',
+          });
+        }
+        return { result: { deletedExecutor: true } };
+      },
+      createLog: (entry) => store.logs.push(entry),
+      findUserById: () => store.users[0],
+      settleJobCredits: () => creditFinalizations.push('settle'),
+      releaseJobCredits: () => creditFinalizations.push('release'),
+    });
+
+    const result = await activities.executeLocalJobAttemptActivity({
+      jobId: 'voiceover-parent-temporal',
+    });
+
+    assert.equal(result.jobId, 'voiceover-parent-temporal', outcome);
+    assert.equal(result.status, 'running', outcome);
+    assert.deepEqual(store.jobs, [], outcome);
+    assert.deepEqual(creditFinalizations, [], outcome);
+    assert.deepEqual(store.logs, [], outcome);
+  }
+});
+
+test('local temporal activity refuses to claim a parent-owned child', async () => {
+  const store = createStore();
+  store.jobs = [parentOwnedTemporalChild()];
+  let executeCalls = 0;
+  const activities = createLocalTemporalActivities({
+    readStore: () => store,
+    writeStore: () => {},
+    mutateStore: async (operation) => operation(store),
+    executeJob: async () => { executeCalls += 1; },
+    createLog: async () => {},
+    findUserById: () => store.users[0],
+  });
+
+  const result = await activities.executeLocalJobAttemptActivity({ jobId: 'voiceover-child-temporal' });
+  assert.equal(result.status, 'queued');
+  assert.equal(store.jobs[0].status, 'queued');
+  assert.equal(executeCalls, 0);
+});
+
+test('mysql temporal abort finalization receives the latest submitted child checkpoint', async () => {
+  const parent = voiceoverParentJob();
+  parent.payload.removeText = true;
+  const { state, pool } = createMysqlHarness({
+    id: parent.id,
+    user_id: parent.userId,
+    module: parent.module,
+    task_type: parent.taskType,
+    provider: parent.provider,
+    status: 'queued',
+    priority: 0,
+    payload_json: JSON.stringify(parent.payload),
+    result_json: JSON.stringify(parent.result),
+    retry_count: 0,
+    max_retries: 0,
+    created_at: 1_000,
+    updated_at: 1_000,
+    cancel_requested_at: 900,
+  });
+  const sideEffects = [];
+  const creditJobs = [];
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async (_job, _signal, { onResultCheckpoint }) => {
+      await onResultCheckpoint({
+        voiceoverCheckpoint: {
+          stage: 'subtitle_removal',
+          subtitleRemoval: {
+            childJobId: 'golden-child-0',
+            providerTaskId: 'golden-provider-0',
+            attempt: 0,
+            status: 'submitted',
+          },
+        },
+      });
+      assert.equal(JSON.parse(state.job.result_json).voiceoverCheckpoint.stage, 'subtitle_removal');
+      sideEffects.push('paid-call');
+      return { result: { ignoredOnCancel: true } };
+    },
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+    settleJobCredits: ({ job: creditJob }) => creditJobs.push(creditJob),
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: parent.id,
+    workflowId: 'workflow-parent',
+    runId: 'run-parent',
+  });
+  assert.equal(result.status, 'cancelled');
+  assert.deepEqual(sideEffects, ['paid-call']);
+  assert.equal(JSON.parse(state.job.result_json).audit, 'keep');
+  assert.equal(JSON.parse(state.job.result_json).voiceoverCheckpoint.stage, 'subtitle_removal');
+  assert.equal(
+    creditJobs[0]?.result?.voiceoverCheckpoint?.subtitleRemoval?.providerTaskId,
+    'golden-provider-0',
+  );
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: creditJobs[0],
+    error: { code: 'request_cancelled' },
+    aborted: true,
+  }), false);
+});
+
+test('mysql temporal activity cannot complete or fail after its terminal claim guard loses a race', async () => {
+  for (const outcome of ['complete', 'fail']) {
+    const parent = voiceoverParentJob();
+    const harness = createMysqlHarness({
+      id: parent.id,
+      user_id: parent.userId,
+      module: parent.module,
+      task_type: parent.taskType,
+      provider: parent.provider,
+      status: 'queued',
+      priority: 0,
+      payload_json: JSON.stringify(parent.payload),
+      result_json: JSON.stringify(parent.result),
+      retry_count: 0,
+      max_retries: 0,
+      created_at: 1_000,
+      updated_at: 1_000,
+    });
+    const creditFinalizations = [];
+    const activities = createMysqlTemporalActivities({
+      getPool: async () => harness.pool,
+      executeJob: async () => {
+        harness.driftBeforeTerminalUpdate();
+        if (outcome === 'fail') {
+          throw Object.assign(new Error('stale executor failed'), { code: 'provider_network_error' });
+        }
+        return { result: { staleExecutor: true } };
+      },
+      createLog: async () => {},
+      findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+      settleJobCredits: () => creditFinalizations.push('settle'),
+      releaseJobCredits: () => creditFinalizations.push('release'),
+    });
+
+    const result = await activities.executeMysqlJobAttemptActivity({
+      jobId: parent.id,
+      workflowId: `workflow-stale-${outcome}`,
+      runId: `run-stale-${outcome}`,
+    });
+    assert.equal(result.status, 'running', outcome);
+    assert.equal(harness.state.job.status, 'running', outcome);
+    assert.deepEqual(JSON.parse(harness.state.job.result_json), { newerClaim: true }, outcome);
+    assert.equal(harness.state.job.error_code, null, outcome);
+    assert.deepEqual(creditFinalizations, [], outcome);
+    assert.equal(harness.state.attemptFinishes, 0, outcome);
+    assert.equal(
+      harness.state.events.some((params) => ['job_completed', 'job_failed'].includes(params[5])),
+      false,
+      outcome,
+    );
+  }
+});
+
+test('mysql temporal activity refuses to claim a parent-owned child', async () => {
+  const child = parentOwnedTemporalChild();
+  const { state, pool } = createMysqlHarness({
+    id: child.id,
+    user_id: child.userId,
+    module: child.module,
+    task_type: child.taskType,
+    provider: child.provider,
+    status: child.status,
+    priority: 0,
+    payload_json: JSON.stringify(child.payload),
+    retry_count: 0,
+    max_retries: 0,
+    created_at: 1_000,
+    updated_at: 1_000,
+  });
+  let executeCalls = 0;
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async () => { executeCalls += 1; },
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: child.id,
+    workflowId: 'workflow-child',
+    runId: 'run-child',
+  });
+  assert.equal(result.status, 'queued');
+  assert.equal(state.job.status, 'queued');
+  assert.equal(executeCalls, 0);
+});
+
+test('voiceover parent always selects Temporal maximumAttempts one independently of provider', () => {
+  assert.match(
+    temporalWorkflowSource,
+    /SINGLE_ATTEMPT_TASK_TYPES[\s\S]*voiceover_translate_video[\s\S]*input\?\.taskType[\s\S]*singleAttemptActivities/,
+  );
 });

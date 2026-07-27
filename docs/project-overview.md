@@ -21,7 +21,7 @@
 - 出海翻译：主图翻译、详情翻译、去文字。
 - 买家秀：策划生成、图片生成、历史素材恢复。
 - 图片升级：原图精修、白底精修，以及分析优先的产品还原；支持生成、恢复、重试和中断。
-- 短视频生成：长视频、Veo、分镜、视频诊断。
+- 短视频生成：长视频、Veo、分镜、视频诊断、去字幕和口播翻译。
 - 小红书封面：18 种风格封面生成。
 - 系统设置：系统状态、队列和配置可见性。
 - 账号管理：内部账号、运行日志、统计和日志导出。
@@ -35,6 +35,13 @@
 - 生命周期为“先分析、后逐张生成”：先从全部目标图和参考图提取一份共享产品身份，再为每张待还原图独立生成。参考图和分析步骤不增加前端展示的出图张数。
 - 重点还原可多选六项，默认选择“形态与结构、材质与纹理”；分辨率默认 2K，只有模型声明支持时才显示 4K，不提供 1K 或比例控制。
 - 新建任务由 `MEIAO_PRODUCT_RESTORE_ROLLOUT=off|admin|all` 控制，缺失或非法值按 `off` 处理；开关只控制新建，历史项目仍可查看。
+
+### 短视频 / 口播翻译（仅本地、未发布）
+
+- 输入必须是当前登录账号拥有的梅奥托管视频。流程为本地 FFmpeg 提取音轨、本地非量化 Demucs `mdx` 分离人声/背景、Gemini 单次分析与翻译、KIE Gemini 3.1 Flash TTS 分组合成、本地对齐/ducking/混音，再把 H.264/AAC MP4 作为托管结果写回原任务卡。
+- “同时去文案”是可选 Golden 阶段，默认区域为底部 30%。它会增加一次 Golden 计费边界；关闭该选项不会调用 Golden。
+- 当前只完成本地实现和非付费验证，没有推送、部署或真实 provider canary。腾讯云开通、CPU/内存/磁盘/并发 sizing 和任何真实计费任务都需要用户另行明确确认。
+- 回滚只把 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=0` 并正常 reload，停止新提交；历史任务、原视频和已经托管的翻译结果继续可查看和下载。
 
 ## 3. 本地运行
 
@@ -212,6 +219,54 @@ npm run dev
 - `MEIAO_SPIDER_API_KEY` 或 `SPIDER_API_KEY`
 
 环境模板维护在 `.env.server.example`，腾讯云部署说明维护在 `docs/tencent-cloud-deploy.md`。
+
+### 5.1 口播翻译环境合同
+
+所有数值越界或非法值都回落到保守默认值；路径和密钥只存在服务端，不进入公开配置、health 或探针输出。
+
+| 变量 | 默认值 | 合法范围 / 合同 |
+|---|---:|---|
+| `MEIAO_VOICEOVER_TRANSLATION_ENABLED` | `0` | `1/true/on/yes` 才开启新提交 |
+| `MEIAO_VOICEOVER_SEPARATION_PYTHON` | 空 | 运维提供的 venv Python 绝对路径 |
+| `MEIAO_VOICEOVER_DEMUCS_MODEL` | `mdx` | 仅 `mdx` |
+| `MEIAO_VOICEOVER_DEMUCS_MODEL_DIR` | 空 | Git 和 release 目录外的模型绝对路径 |
+| `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY` | `1` | 整数 `1-2`；生产首发保持 `1` |
+| `MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS` | `3600000` | 整数 `300000-7200000` |
+| `MEIAO_VOICEOVER_MIN_ATEMPO` | `0.75` | `0.5-1` |
+| `MEIAO_VOICEOVER_MAX_ATEMPO` | `1.35` | `1-2` |
+| `MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS` | `8192` | 整数 `1-8192`，不得超过语音模型上限 |
+| `MEIAO_VOICEOVER_GROUP_GAP_MS` | `800` | 整数 `0-3000` |
+| `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS` | `150` | 整数 `0-1000` |
+| `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND` | `96` | 整数 `16-512` |
+| `MEIAO_VOICEOVER_DUCKING_DB` | `4` | `0-12` |
+| `MEIAO_VOICEOVER_FADE_MS` | `40` | 整数 `0-200` |
+| `MEIAO_VOICEOVER_DURATION_TOLERANCE_MS` | `100` | 整数 `20-500` |
+| `MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS` | `259200000` | 整数 `3600000-2592000000` |
+| `MEIAO_KIE_TTS_BASE_URL` | `https://api.kie.ai` | 服务端 HTTP(S) 根地址 |
+| `MEIAO_KIE_TTS_MODEL` | `google/gemini-3-1-flash-tts` | 固定模型名 |
+| `MEIAO_KIE_TTS_REQUEST_TIMEOUT_MS` | `60000` | 整数 `5000-300000` |
+| `MEIAO_KIE_TTS_POLL_INTERVAL_MS` | `4000` | 整数 `500-30000` |
+| `MEIAO_KIE_TTS_POLL_MAX_ATTEMPTS` | `180` | 整数 `1-720` |
+| `MEIAO_KIE_TTS_NOT_FOUND_GRACE_MS` | `45000` | 整数 `0-300000` |
+
+本地只读 readiness：
+
+```bash
+npm run probe:voiceover-translation -- --readiness
+```
+
+`ready:false` 是合法结果，只说明显式 venv/模型安装或服务端开关/凭证尚未齐备；探针不会安装包、下载模型或创建 provider 任务。只有用户明确提供绝对路径时才运行本地 fixture：
+
+```bash
+test -n "$MEIAO_VOICEOVER_FIXTURE_PATH"
+npm run probe:voiceover-translation -- --fixture-path "$MEIAO_VOICEOVER_FIXTURE_PATH"
+```
+
+fixture 只运行本机 FFmpeg/Demucs，验证 H.264/AAC 输入、人声/背景输出、人声分析媒体、对齐、ducking、H.264/AAC 最终视频、时长容差、`ftyp` 和本地字节区间读取；不会调用 Gemini、KIE 或 Golden。`--resume-parent-job-id` / `--resume-child-task-id` 只查询已有任务。只有 `--live --source-asset-id <明确托管ID> --target-language <code>` 可以创建任务，且还必须配置受认证 base URL、会话和一次性 `MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1`；`--remove-text` 会先提示额外 Golden 费用。
+
+远程探针使用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 作为梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 只能在当前 shell/命令临时注入并在执行后清除，不能写入任何 env 文件；`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 也只接受探针启动前的单次命令环境，持久化在 `.env.server` / `.env.local` 中会被忽略。live 和失败证据会输出安全的内部 `parentJobId` / `childJobId`；`--resume-child-task-id` 只接受该内部 `childJobId` 并直查 `/api/jobs/:id`，不会按 `providerTaskId` 搜索或扫描父任务列表。
+
+计费边界：本机 Demucs 只消耗腾讯云计算资源，没有第三方按次费用；Gemini 分析/翻译、KIE TTS，以及可选 Golden 都可能计费。技术验收（任务/检查点/托管素材、H.264/AAC、Range、重启恢复）与感知验收（原口播不可辨、背景保留、目标语言和节奏正确、画面不变）必须分别记录，自动化通过不能代替真人试听/观看。
 
 ## 6. 验证入口
 

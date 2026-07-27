@@ -43,6 +43,22 @@ export function createMediaTranscodeSessionStore({
   const resolvedRoot = resolve(rootDir);
   const effectiveTtlMs = positiveInteger(ttlMs, 30 * 60 * 1000);
   const effectiveMaxSessions = positiveInteger(maxSessions, 20);
+  const sessionLocks = new Map();
+  const activeLeases = new Set();
+
+  const withSessionLock = async (sessionId, operation) => {
+    const previous = sessionLocks.get(sessionId) || Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    sessionLocks.set(sessionId, current);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (sessionLocks.get(sessionId) === current) sessionLocks.delete(sessionId);
+    }
+  };
 
   const sessionDirectory = (sessionId) => {
     assertSessionId(sessionId);
@@ -81,14 +97,21 @@ export function createMediaTranscodeSessionStore({
   const remove = async (sessionId) => {
     const directory = sessionDirectory(sessionId);
     try {
-      await stat(directory);
-    } catch (error) {
-      if (error?.code === 'ENOENT') return false;
-      throw error;
+      try {
+        await stat(directory);
+      } catch (error) {
+        if (error?.code === 'ENOENT') return false;
+        throw error;
+      }
+      await rm(directory, { recursive: true, force: true });
+      return true;
+    } finally {
+      activeLeases.delete(sessionId);
     }
-    await rm(directory, { recursive: true, force: true });
-    return true;
   };
+
+  const isExpired = (sessionId, record) => !activeLeases.has(sessionId)
+    && Number(record.updatedAt || record.createdAt || 0) + effectiveTtlMs <= clock.now();
 
   const cleanupExpired = async () => {
     await mkdir(resolvedRoot, { recursive: true, mode: 0o700 });
@@ -96,14 +119,16 @@ export function createMediaTranscodeSessionStore({
     let removed = 0;
     await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
       if (!UUID_PATTERN.test(entry.name)) return;
-      try {
-        const record = await readSidecar(entry.name);
-        if (Number(record.updatedAt || record.createdAt || 0) + effectiveTtlMs <= clock.now()) {
-          if (await remove(entry.name)) removed += 1;
+      await withSessionLock(entry.name, async () => {
+        try {
+          const record = await readSidecar(entry.name);
+          if (isExpired(entry.name, record) && await remove(entry.name)) {
+            removed += 1;
+          }
+        } catch (error) {
+          if (error?.code === 'media_session_not_found' && await remove(entry.name)) removed += 1;
         }
-      } catch (error) {
-        if (error?.code === 'media_session_not_found' && await remove(entry.name)) removed += 1;
-      }
+      });
     }));
     return { removed };
   };
@@ -119,20 +144,35 @@ export function createMediaTranscodeSessionStore({
     if (record.userId !== userId) {
       throw createMediaTranscodeError('media_session_forbidden', '无权访问这个媒体处理会话');
     }
-    if (Number(record.updatedAt || record.createdAt || 0) + effectiveTtlMs <= clock.now()) {
+    if (isExpired(sessionId, record)) {
       await remove(sessionId);
       throw createMediaTranscodeError('media_session_expired', '媒体处理会话已过期，请重新上传');
     }
     return hydrate(record);
   };
 
-  const updateOwned = async (sessionId, userId, changes) => {
+  const updateOwned = async (sessionId, userId, changes) => withSessionLock(sessionId, async () => {
     const current = await getOwned(sessionId, userId);
     const { sourcePath: _sourcePath, ...record } = current;
     const next = { ...record, ...changes, updatedAt: clock.now() };
     await writeSidecar(next);
     return hydrate(next);
-  };
+  });
+
+  const transitionOwned = async (sessionId, userId, fromStates, nextState, { acquireLease = false } = {}) => withSessionLock(sessionId, async () => {
+    const current = await getOwned(sessionId, userId);
+    if (!fromStates.includes(current.state)) {
+      if (current.state === 'cancelled') {
+        throw createMediaTranscodeError('media_transcode_cancelled', '媒体转码已取消');
+      }
+      throw createMediaTranscodeError('media_session_busy', '媒体处理会话正在执行其他操作');
+    }
+    const { sourcePath: _sourcePath, ...record } = current;
+    const next = { ...record, state: nextState, updatedAt: clock.now() };
+    await writeSidecar(next);
+    if (acquireLease) activeLeases.add(sessionId);
+    return hydrate(next);
+  });
 
   return {
     async create({ userId, kind, profile = 'seedance_reference', fileName, fileBuffer, probe = null }) {
@@ -143,6 +183,9 @@ export function createMediaTranscodeSessionStore({
       const normalizedProfile = normalizeMediaTranscodeProfile(profile);
       if (normalizedProfile === 'subtitle_removal' && kind !== 'video') {
         throw createMediaTranscodeError('media_kind_unsupported', '去字幕功能仅支持视频');
+      }
+      if (normalizedProfile === 'voiceover_translation' && kind !== 'video') {
+        throw createMediaTranscodeError('media_kind_unsupported', '口播翻译功能仅支持视频');
       }
       if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) {
         throw createMediaTranscodeError('media_source_empty', '上传的媒体文件为空');
@@ -184,7 +227,35 @@ export function createMediaTranscodeSessionStore({
     },
 
     markConverting(sessionId, userId) {
-      return updateOwned(sessionId, userId, { state: 'converting' });
+      return transitionOwned(sessionId, userId, ['ready'], 'converting', { acquireLease: true });
+    },
+
+    claimConversion(sessionId, userId) {
+      return transitionOwned(sessionId, userId, ['ready'], 'converting', { acquireLease: true });
+    },
+
+    beginPersisting(sessionId, userId) {
+      return transitionOwned(sessionId, userId, ['converting'], 'persisting');
+    },
+
+    requestCancel(sessionId, userId) {
+      return withSessionLock(sessionId, async () => {
+        const current = await getOwned(sessionId, userId);
+        if (current.state === 'persisting') {
+          return { cancelled: false, remove: false, session: current };
+        }
+        if (current.state === 'cancelled') {
+          return { cancelled: true, remove: false, session: current };
+        }
+        const { sourcePath: _sourcePath, ...record } = current;
+        const next = { ...record, state: 'cancelled', updatedAt: clock.now() };
+        await writeSidecar(next);
+        return {
+          cancelled: true,
+          remove: current.state === 'ready' || current.state === 'probing',
+          session: hydrate(next),
+        };
+      });
     },
 
     remove,
@@ -192,7 +263,11 @@ export function createMediaTranscodeSessionStore({
     count,
 
     async destroy() {
-      await rm(resolvedRoot, { recursive: true, force: true });
+      try {
+        await rm(resolvedRoot, { recursive: true, force: true });
+      } finally {
+        activeLeases.clear();
+      }
     },
   };
 }

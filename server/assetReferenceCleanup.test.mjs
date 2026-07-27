@@ -126,7 +126,14 @@ test('provider execution boundary also scrubs stale managed assets', () => {
   assert.match(source, /taskType === 'upload_asset'/);
   assert.match(source, /shouldUseMysql\s+\? await scrubDbJobPayloadBeforeSubmission\(job\?\.payload, job\?\.userId\)/);
   assert.match(source, /: await scrubLocalJobPayloadBeforeSubmission\(job\?\.payload, job\?\.userId\)/);
-  assert.match(source, /executeJob: async \(job, signal, options\) => \{\s*const output = await executeProviderJobWithManagedAssetScrub/);
+  assert.match(
+    source,
+    /executeDefault:\s*\(\) => executeProviderJobWithManagedAssetScrub\(job, env, signal, options\)/,
+  );
+  assert.equal(
+    (source.match(/const output = await executeApplicationJob\(job, process\.env, signal, options\);/g) || []).length,
+    4,
+  );
 });
 
 test('managed asset availability accepts active COS objects and checks every historical local path', () => {

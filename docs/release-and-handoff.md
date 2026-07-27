@@ -95,6 +95,16 @@
 - 发布时必须显式决定 `MEIAO_PRODUCT_RESTORE_ROLLOUT=off|admin|all`：`off` 禁止新建，`admin` 仅管理员，`all` 允许所有已登录用户；缺失或非法值按 `off`。门禁只影响新建，不能隐藏或破坏历史项目。
 - 未经单独发布确认，不得运行部署脚本，也不得把本节的“本地完成”改写为“云上可用”。
 
+### 9.2 口播翻译发布边界
+
+- 截至 2026-07-27，本地分支已具备“短视频 → 口播翻译”的输入、翻译/TTS、本地分离混音、耐久任务和结果回放代码；尚未 push、deploy 或调用任何真实 Gemini、KIE、Golden，腾讯云仍未开放该功能。
+- 发布采用 disabled-first：先把 venv 和非量化 `mdx` 权重装在 release 目录外，保持 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=0` 跑只读 readiness；只有 Python/model/FFmpeg、KIE 凭证和资源 sizing 全部通过且用户再次批准，才在候选环境改为 `1`。
+- `npm run probe:voiceover-translation -- --readiness`、`--fixture-path` 和两个 `--resume-*` 模式均不得创建 provider 任务。live 只接受用户明确确认的 managed asset ID，并要求一次性 `MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1`；`--remove-text` 需第二次确认额外 Golden 成本。
+- 远程探针的非敏感 `MEIAO_VOICEOVER_PROBE_BASE_URL` 可按候选环境配置；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。敏感 `MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 只允许当前 shell 临时输入，单次 `MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 只允许命令前缀；二者不得持久化，env 文件中的确认会被忽略。
+- live 证据只公开内部 `parentJobId` / `childJobId` 和有界检查点摘要。`--resume-child-task-id` 必须使用该内部 `childJobId` 直接只读查询，不能用 `providerTaskId`，也不能扫描父任务列表或重新 create。
+- 发布验收拆分：自动化/技术证据不能替代真人试听和浏览器验收。技术栏记录检查点、托管素材、编码、Range、刷新/服务重启恢复；感知栏记录原口播抑制、背景保留、语言、节奏与画面一致性。
+- 回滚只禁用新提交，历史卡片和结果继续可读。生产 CPU、内存、磁盘、分离并发、模型目录、部署和真实付费 canary 均属于新的授权边界。
+
 ## 10. 维护要求
 - 只记录长期有效的项目事实。
 - 如果发布流程、GitHub 仓库、服务器地址、PM2 名称有变化，要直接更新本文件。

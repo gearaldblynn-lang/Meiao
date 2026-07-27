@@ -63,11 +63,79 @@ export enum VideoSubMode {
   LONG_VIDEO = 'long_video',
   VEO = 'veo',
   STORYBOARD = 'storyboard',
-  DIAGNOSIS = 'diagnosis'
+  DIAGNOSIS = 'diagnosis',
+  VOICEOVER_TRANSLATION = 'voiceover_translation'
 }
 
 export type VideoDiagnosisPlatform = 'tiktok' | 'douyin' | 'xhs';
 export type VideoDiagnosisAccessMode = 'spider_api' | 'web_session';
+
+export interface VoiceoverVoiceProfile {
+  pitch: 'low' | 'medium' | 'high';
+  brightness: 'dark' | 'balanced' | 'bright';
+  energy: 'calm' | 'balanced' | 'energetic';
+  pace: 'slow' | 'natural' | 'fast';
+  accentDescription: string;
+}
+
+export interface VoiceoverTranscriptSegment {
+  id: string;
+  startMs: number;
+  endMs: number;
+  sourceText: string;
+  targetText: string;
+}
+
+export type VoiceoverTranslationSegment = VoiceoverTranscriptSegment;
+
+export interface VoiceoverTranslationPayload {
+  taskType: 'voiceover_translate_video';
+  taskPurpose: 'voiceover_translation';
+  userId: string;
+  sourceAssetId?: string;
+  sourceUrl?: string;
+  sourceProjectId?: string;
+  sourceResultId?: string;
+  shellProjectId: string;
+  shellProjectName: string;
+  shellResultId: string;
+  clientSubmissionKey: string;
+  targetLanguage: string;
+  translationMode: 'natural' | 'literal';
+  voiceMode: 'auto' | 'preset';
+  voiceName?: string;
+  removeText: boolean;
+  subtitleRegionNormalized?: { x: number; y: number; width: number; height: number };
+}
+
+export interface VoiceoverCheckpointV1 {
+  version: 1;
+  stage: 'input_prepared' | 'subtitle_removal' | 'audio_extracted' | 'voice_separated' | 'speech_analysis_submitting' | 'speech_analyzed' | 'translated' | 'tts_generating' | 'audio_aligned' | 'result_persisted';
+  baseVideoAssetId: string;
+  originalAudioAssetId?: string;
+  vocalAssetId?: string;
+  backgroundAssetId?: string;
+  subtitleRemoval?: { childJobId: string; providerTaskId?: string; resultAssetId?: string; attempt: number; status: 'queued' | 'submitted' | 'succeeded' | 'failed' };
+  analysisAttempt: number;
+  analysis?: { sourceLanguage: string; speakerCount: number; voiceProfile: VoiceoverVoiceProfile; segments: VoiceoverTranscriptSegment[] };
+  translation?: { targetLanguage: string; mode: 'natural' | 'literal'; segments: VoiceoverTranslationSegment[]; selectedVoiceName: string };
+  ttsGroups?: Array<{ index: number; attempt: number; childJobId: string; providerTaskId?: string; assetId?: string; status: 'queued' | 'submitted' | 'succeeded' | 'failed'; startMs: number; endMs: number; actualDurationMs?: number; atempo?: number }>;
+  alignedAudioAssetId?: string;
+  finalAssetId?: string;
+}
+
+export interface VoiceoverTranslationResult {
+  videoUrl: string;
+  sourceUrl: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  translationMode: 'natural' | 'literal';
+  voiceName: string;
+  sourceTranscript: string;
+  translatedTranscript: string;
+  voiceoverStage: VoiceoverCheckpointV1['stage'];
+  finalAssetId: string;
+}
 export type VideoDiagnosisAnalysisItem =
   | 'video_basic'
   | 'video_metrics'
@@ -409,6 +477,15 @@ export interface SystemPublicConfig {
     batchMaxItems: number;
     batchPrepConcurrency: number;
     batchSubmitConcurrency: number;
+  };
+  voiceoverTranslation?: {
+    enabled: boolean;
+    ready: boolean;
+    model: { id: string; inputLimit: number };
+    languages: Array<{ code: string; englishName: string; chineseName: string; common: boolean }>;
+    voices: Array<{ name: string; trait: string; tags: readonly number[] }>;
+    limits: { ttsInputLimit: number; groupGapMs: number; minAtempo: number; maxAtempo: number; overlapToleranceMs: number; durationToleranceMs: number };
+    readiness: { pythonReady: boolean; modelReady: boolean; ffmpegReady: boolean; separationConcurrency: number };
   };
   systemSettings: {
     analysisModel: string;

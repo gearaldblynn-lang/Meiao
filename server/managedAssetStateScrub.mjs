@@ -1,6 +1,4 @@
-const isExplicitManagedAssetIdKey = (key) => (
-  key === 'assetId' || (key.endsWith('AssetId') && key !== 'localAssetId')
-);
+import { isExplicitManagedAssetIdKey } from './assetStore.mjs';
 
 export const scrubUnavailableExplicitManagedAssetIds = (value, validAssetReferences) => {
   const validReferences = validAssetReferences instanceof Set

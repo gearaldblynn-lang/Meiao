@@ -20,16 +20,19 @@ const PRODUCT_RESTORE_TASK_PURPOSES = new Set([
 export const VIDEO_JOB_TASK_TYPES = new Set([
   'dreamina_video',
   'kie_seedance_video',
+  'kie_tts',
   'kie_veo',
   'kie_video',
   'maxforai_video',
   'subtitle_remove_video',
+  'voiceover_translate_video',
 ]);
 
 export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
   'dreamina_video',
   'kie_image',
   'kie_seedance_video',
+  'kie_tts',
   'kie_veo',
   'kie_video',
   'maxforai_video',
@@ -37,7 +40,9 @@ export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
 ]);
 
 export const KIE_RECOVERY_SOURCE_TASK_TYPES = new Set(
-  Array.from(RECOVERABLE_PROVIDER_TASK_TYPES).filter((taskType) => taskType.startsWith('kie_')),
+  Array.from(RECOVERABLE_PROVIDER_TASK_TYPES).filter(
+    (taskType) => taskType.startsWith('kie_') && taskType !== 'kie_tts',
+  ),
 );
 
 export const canRecoverProviderTaskById = ({
@@ -79,6 +84,7 @@ const TASK_PROVIDER_POLICIES = new Map([
   ['dreamina_video', new Set(['dreamina'])],
   ['maxforai_video', new Set(['maxforai'])],
   ['subtitle_remove_video', new Set(['golden_subtitle'])],
+  ['voiceover_translate_video', new Set(['internal'])],
   ['openai_responses', new Set(['openai_compatible'])],
   ['openai_tool_calling', new Set(['openai_compatible'])],
   ['upload_asset', new Set(['kie'])],
@@ -133,6 +139,11 @@ export const resolveJobSubmissionPolicy = ({
   subtitleRemovalEnabled = false,
   subtitleRemovalConfigured = false,
   subtitleRemovalBatchMaxItems = 10,
+  trustedParentExecution = false,
+  voiceoverEnabled = false,
+  voiceoverKieConfigured = false,
+  voiceoverReadiness = {},
+  voiceoverSourceProbe = {},
 } = {}) => {
   const normalizedModule = normalizePolicyMarker(module);
   const normalizedTaskType = String(taskType || '').trim();
@@ -173,6 +184,91 @@ export const resolveJobSubmissionPolicy = ({
       `未知任务类型 ${normalizedTaskType || 'empty'} 只允许使用 internal provider。`,
       400
     );
+  }
+
+  if (normalizedTaskType === 'kie_tts') {
+    if (!trustedParentExecution) {
+      throw createPolicyError(
+        'parent_owned_job_forbidden',
+        'KIE TTS 子任务只能由口播翻译父任务创建或恢复。',
+        403,
+      );
+    }
+    const parentJobId = String(payload?.parentJobId || '').trim();
+    const childKey = String(payload?.childKey || '').trim();
+    const childMatch = childKey.match(/^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d*)$/u);
+    if (
+      payload?.executionOwner !== 'parent'
+      || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/u.test(parentJobId)
+      || !childMatch
+      || !Number.isSafeInteger(Number(childMatch?.[2]))
+    ) {
+      throw createPolicyError(
+        'parent_owned_job_invalid',
+        'KIE TTS 父子任务身份无效。',
+        400,
+      );
+    }
+  }
+
+  if (normalizedTaskType === 'voiceover_translate_video') {
+    if (
+      normalizedModule !== 'video'
+      || normalizedSubFeature !== 'voiceover_translation'
+      || payload?.taskPurpose !== 'voiceover_translation'
+      || payload?.subFeature !== 'voiceover_translation'
+    ) {
+      throw createPolicyError(
+        'voiceover_job_invalid',
+        '口播翻译父任务用途无效。',
+        400,
+      );
+    }
+    if (
+      !voiceoverEnabled
+      || !voiceoverKieConfigured
+      || voiceoverReadiness?.pythonReady !== true
+      || voiceoverReadiness?.modelReady !== true
+      || voiceoverReadiness?.ffmpegReady !== true
+    ) {
+      throw createPolicyError(
+        'voiceover_unavailable',
+        '口播翻译运行环境尚未就绪。',
+        503,
+      );
+    }
+    const durationMs = Number(voiceoverSourceProbe?.durationMs);
+    if (voiceoverSourceProbe?.hasAudio !== true) {
+      throw createPolicyError(
+        'voiceover_source_has_no_audio',
+        '源视频没有可用音轨。',
+        400,
+      );
+    }
+    if (!Number.isFinite(durationMs) || durationMs <= 0) {
+      throw createPolicyError(
+        'voiceover_source_probe_invalid',
+        '源视频媒体探测结果无效。',
+        400,
+      );
+    }
+    if (
+      payload?.removeText === true
+      && (!subtitleRemovalEnabled || !subtitleRemovalConfigured)
+    ) {
+      throw createPolicyError(
+        'subtitle_removal_unavailable',
+        '去字幕功能暂未开放，请联系管理员。',
+        503,
+      );
+    }
+    if (payload?.removeText === true && durationMs > 600_000) {
+      throw createPolicyError(
+        'voiceover_source_too_long',
+        '开启去文案时视频不能超过 600 秒。',
+        400,
+      );
+    }
   }
 
   if (

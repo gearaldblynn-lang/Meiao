@@ -209,7 +209,7 @@ test('all MySQL asset persistence paths hold the owner lock and recheck the acco
 
 test('remote video job results are persisted before every worker records completion', () => {
   const jobOutput = source.match(/const persistJobOutputAssetsIfEnabled = async[\s\S]*?const persistRuntimeRemoteAssetIfEnabled/)?.[0] || '';
-  assert.match(jobOutput, /persistRemoteField\('videoUrl', 'video', `\$\{job\.taskType \|\| 'result'\}\.mp4`\)/);
+  assert.match(jobOutput, /persistManagedRemoteJobOutput\(\{/);
 
   const workerPersistenceCalls = source.match(/return persistJobOutputAssetsIfEnabled\(job, output\)/g) || [];
   assert.ok(workerPersistenceCalls.length >= 4, 'all MySQL and local Temporal/classic workers persist video outputs');

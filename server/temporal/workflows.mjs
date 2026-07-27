@@ -18,6 +18,7 @@ const singleAttemptActivities = proxyActivities({
   },
 });
 const SINGLE_ATTEMPT_PROVIDERS = new Set(['maxforai', 'golden_subtitle']);
+const SINGLE_ATTEMPT_TASK_TYPES = new Set(['voiceover_translate_video']);
 
 export async function meiaoTaskWorkflow(input) {
   if (input?.executionMode !== 'execute') {
@@ -34,7 +35,10 @@ export async function meiaoTaskWorkflow(input) {
     workflowId: info.workflowId,
     runId: info.runId,
   };
-  const activities = SINGLE_ATTEMPT_PROVIDERS.has(String(input?.provider || ''))
+  const activities = (
+    SINGLE_ATTEMPT_PROVIDERS.has(String(input?.provider || ''))
+    || SINGLE_ATTEMPT_TASK_TYPES.has(String(input?.taskType || ''))
+  )
     ? singleAttemptActivities
     : defaultActivities;
   const executeJobAttempt = input?.ledger === 'mysql'

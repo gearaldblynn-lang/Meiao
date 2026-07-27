@@ -11,6 +11,7 @@ test('media transcode client uses authenticated temporary session routes', () =>
   assert.match(source, /FormData/);
   assert.match(source, /formData\.append\('file'/);
   assert.match(source, /formData\.append\('kind'/);
+  assert.match(source, /'voiceover_translation'/);
   assert.match(source, /compatibleSource:\s*boolean/);
 });
 

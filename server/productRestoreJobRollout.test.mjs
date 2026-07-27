@@ -295,19 +295,19 @@ test('MySQL and local POST authorities enforce rollout before dedupe, reservatio
     'reserveDbJobCreditsForSubmission',
     'createDbJobRecordWithReservation',
   ]) {
-    assertBefore(mysqlPost, 'resolveAuthorizedJobSubmissionPolicy(user, body)', later, `mysql:${later}`);
+    assertBefore(mysqlPost, 'resolveAuthorizedJobSubmissionPolicy(user, body, {', later, `mysql:${later}`);
   }
   for (const later of [
     'findReusableLocalJobRecord',
     'reserveLocalJobCredits',
     'createLocalJobRecord',
   ]) {
-    assertBefore(localPost, 'resolveAuthorizedJobSubmissionPolicy(user, body)', later, `local:${later}`);
+    assertBefore(localPost, 'resolveAuthorizedJobSubmissionPolicy(user, body, {', later, `local:${later}`);
   }
 
   assert.match(source, /userRole:\s*user\?\.role/);
   assert.match(source, /productRestoreRollout:\s*process\.env\.MEIAO_PRODUCT_RESTORE_ROLLOUT/);
-  assert.match(source, /resolveAuthorizedJobSubmissionPolicy = \(user, body, \{ submissionOperation = 'create' \} = \{\}\)/);
+  assert.match(source, /resolveAuthorizedJobSubmissionPolicy = \([\s\S]{0,180}submissionOperation = 'create'/);
   assert.match(source, /submissionOperation,/);
   assert.match(source, /subtitleRemovalEnabled:\s*subtitleRemovalConfig\.enabled/);
   assert.match(source, /subtitleRemovalConfigured:\s*subtitleRemovalConfig\.configured/);
@@ -348,7 +348,10 @@ test('job retry uses its own policy operation and cannot inherit provider recove
     const recoverStart = handler.indexOf("if (url.pathname === '/api/jobs/recover'", retryStart);
     assert.ok(retryStart >= 0 && recoverStart > retryStart);
     const retryRoute = handler.slice(retryStart, recoverStart);
-    assert.match(retryRoute, /resolveAuthorizedJobSubmissionPolicy\(user, job, \{ submissionOperation: 'retry' \}\)/);
+    assert.match(
+      retryRoute,
+      /prepareVoiceoverSubmission\(\{[\s\S]*?resolveAuthorizedJobSubmissionPolicy\(user, prepared\.body, \{[\s\S]*?submissionOperation:\s*'retry'/,
+    );
     assert.doesNotMatch(retryRoute, /submissionOperation:\s*'recover'/);
   }
 });

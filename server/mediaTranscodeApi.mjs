@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import {
   createMediaTranscodeError,
   isMediaCompatibleForProfile,
+  validateMediaTranscodeSource,
   validateTranscodedOutput,
   validateTrimRange,
 } from './mediaTranscodeContract.mjs';
@@ -70,6 +71,12 @@ export function createMediaTranscodeApi({
         if (kind === 'audio' && !probe.audioCodec) {
           throw createMediaTranscodeError('media_probe_missing_audio', '文件中没有可用的音频轨道');
         }
+        validateMediaTranscodeSource({
+          profile: created.profile,
+          kind,
+          hasVideo: Boolean(probe.videoCodec),
+          hasAudio: Boolean(probe.hasAudio),
+        });
         const ready = await store.updateProbe(created.id, userId, probe);
         await safeLog(log, {
           action: 'media_transcode_session_created',
@@ -94,14 +101,14 @@ export function createMediaTranscodeApi({
     },
 
     async convertSession({ userId, sessionId, startSeconds, endSeconds, module = 'video' }) {
-      const session = await store.getOwned(sessionId, userId);
+      const inspectedSession = await store.getOwned(sessionId, userId);
       const trim = validateTrimRange({
-        profile: session.profile,
-        durationSeconds: session.probe?.durationSeconds,
+        profile: inspectedSession.profile,
+        durationSeconds: inspectedSession.probe?.durationSeconds,
         startSeconds,
         endSeconds,
       });
-      await store.markConverting(sessionId, userId);
+      const session = await store.claimConversion(sessionId, userId);
       const outputPath = join(dirname(session.sourcePath), session.kind === 'video' ? 'converted.mp4' : 'converted.mp3');
       try {
         const sourceDuration = Number(session.probe?.durationSeconds || 0);
@@ -127,6 +134,7 @@ export function createMediaTranscodeApi({
             hasAudio: session.probe?.hasAudio,
           });
         validateTranscodedOutput(session.kind, output.metadata, session.profile);
+        await store.beginPersisting(sessionId, userId);
         const sourceBaseName = basename(session.fileName, extname(session.fileName)).trim() || 'converted';
         const canonicalFileName = `${sourceBaseName}.${session.kind === 'video' ? 'mp4' : 'mp3'}`;
         const persisted = await persistAsset({
@@ -171,16 +179,16 @@ export function createMediaTranscodeApi({
     },
 
     async cancelSession({ userId, sessionId }) {
-      const session = await store.getOwned(sessionId, userId);
-      const cancelled = await service.cancel(sessionId);
-      await store.remove(sessionId);
+      const cancellation = await store.requestCancel(sessionId, userId);
+      if (cancellation.cancelled) await service.cancel(sessionId);
+      if (cancellation.remove) await store.remove(sessionId);
       await safeLog(log, {
         action: 'media_transcode_cancelled',
         sessionId,
         userId,
-        kind: session.kind,
+        kind: cancellation.session.kind,
       });
-      return { cancelled: Boolean(cancelled) };
+      return { cancelled: Boolean(cancellation.cancelled) };
     },
 
     async status() {
