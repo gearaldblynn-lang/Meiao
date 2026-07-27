@@ -82,6 +82,25 @@ test('voiceover retry confirmation derives paid checkpoint attempts and catches 
   };
   assert.equal(experience.requiresVoiceoverRetryConfirmation(goldenFailure), true);
   assert.equal(experience.requiresVoiceoverRetryConfirmation(ttsFailure), true);
+  assert.equal(experience.requiresVoiceoverRetryConfirmation({
+    errorCode: 'provider_bad_response',
+    voiceoverCheckpoint: {
+      stage: 'speech_analysis_submitting',
+      ttsGroups: [],
+    },
+  }), true);
+  assert.equal(experience.requiresVoiceoverRetryConfirmation({
+    errorCode: 'provider_bad_response',
+    voiceoverCheckpoint: {
+      stage: 'tts_generating',
+      ttsGroups: [{
+        index: 0,
+        attempt: 0,
+        status: 'submitted',
+        providerTaskId: 'tts-provider-0',
+      }],
+    },
+  }), false);
 
   let submitCalls = 0;
   let confirmationCalls = 0;
@@ -119,6 +138,15 @@ test('voiceover player canonicalizes both media urls and never downloads a raw p
   });
   assert.equal(safe.originalUrl, '/api/assets/file/asset-source-safe');
   assert.equal(safe.finalUrl, '/api/assets/file/asset-final-safe');
+
+  const localBackendAbsolute = experience.resolveSafeVoiceoverResultMedia({
+    sourceAssetId: 'asset-source-safe',
+    sourceUrl: 'http://127.0.0.1:3100/api/assets/file/asset-source-safe/source.mp4',
+    finalAssetId: 'asset-final-safe',
+    videoUrl: 'http://127.0.0.1:3100/api/assets/file/asset-final-safe/result.mp4',
+  });
+  assert.equal(localBackendAbsolute.originalUrl, '/api/assets/file/asset-source-safe');
+  assert.equal(localBackendAbsolute.finalUrl, '/api/assets/file/asset-final-safe');
 
   for (const value of [
     'https://evil.example/video.mp4',

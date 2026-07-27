@@ -478,14 +478,18 @@ export function calculateAtempo({
     throw timingFailure('口播时长适配参数无效');
   }
   const ratio = actual / target;
-  if (!Number.isFinite(ratio) || ratio < minimum || ratio > maximum) {
+  if (!Number.isFinite(ratio) || ratio > maximum) {
     throw timingFailure('口播时长无法安全适配', {
       actualDurationMs: actual,
       targetDurationMs: target,
       atempo: ratio,
     });
   }
-  return Number(ratio.toFixed(9));
+  // A shorter TTS clip can be slowed only to the configured intelligibility
+  // floor, then the remaining target window is filled by the silent bed.
+  // A longer clip cannot be truncated without losing speech, so it still
+  // fails when the required speed-up exceeds the configured ceiling.
+  return Number(Math.max(ratio, minimum).toFixed(9));
 }
 
 function validateGroupWindows(groups, totalDurationMs, overlapToleranceMs) {
@@ -544,8 +548,12 @@ export function buildAlignmentArgs({
       minAtempo: config.minAtempo,
       maxAtempo: config.maxAtempo,
     });
-    const fadeSeconds = Math.min(fadeMs / 1000, durationSeconds / 2);
-    const fadeOutStart = Math.max(0, durationSeconds - fadeSeconds);
+    const alignedVoiceSeconds = Math.min(
+      durationSeconds,
+      Number(group.actualDurationMs) / 1000 / ratio,
+    );
+    const fadeSeconds = Math.min(fadeMs / 1000, alignedVoiceSeconds / 2);
+    const fadeOutStart = Math.max(0, alignedVoiceSeconds - fadeSeconds);
     return [
       `[${inputIndex}:a]aresample=48000`,
       'pan=mono|c0=c0',

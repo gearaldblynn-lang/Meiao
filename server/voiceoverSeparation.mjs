@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { buildVoiceoverError, getVoiceoverConfig } from './voiceoverContract.mjs';
 import { resolvePackagedFfmpegPath, resolvePackagedFfprobePath } from './mediaTranscodeService.mjs';
+import { runVoiceoverProcess } from './voiceoverAudio.mjs';
 import { EXPECTED_MDX_YAML, loadDemucsManifest, verifyDemucsModelFiles } from '../scripts/install-voiceover-demucs.mjs';
 
 const REQUIRED_FILTERS = Object.freeze(['sidechaincompress', 'amix', 'adelay', 'afade', 'atempo', 'alimiter']);
@@ -25,13 +26,23 @@ const DEMUCS_ENV_ALLOWLIST = Object.freeze([
   'OPENBLAS_NUM_THREADS',
   'NUMEXPR_NUM_THREADS',
 ]);
+const PINNED_PYTHON_RUNTIMES = Object.freeze({
+  'linux|x86_64': Object.freeze(['4.0.1', '2.7.1+cpu', '2.7.1+cpu', 'missing']),
+  'darwin|arm64': Object.freeze(['4.0.1', '2.7.1', '2.7.1', '0.13.1']),
+});
 
 let activeSeparations = 0;
 const separationQueue = [];
 
-function buildDemucsProcessEnv(env, pythonPath) {
+function buildDemucsProcessEnv(env, pythonPath, mediaExecutablePaths = []) {
+  const executableDirs = [path.dirname(pythonPath)];
+  for (const executablePath of mediaExecutablePaths) {
+    if (!path.isAbsolute(executablePath)) continue;
+    const executableDir = path.dirname(executablePath);
+    if (!executableDirs.includes(executableDir)) executableDirs.push(executableDir);
+  }
   const childEnv = {
-    PATH: `${path.dirname(pythonPath)}:/usr/bin:/bin`,
+    PATH: [...executableDirs, '/usr/bin', '/bin'].join(':'),
     PYTHONDONTWRITEBYTECODE: '1',
     PYTHONNOUSERSITE: '1',
     TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD: '1',
@@ -45,6 +56,14 @@ function buildDemucsProcessEnv(env, pythonPath) {
 
 function abortError() {
   return Object.assign(new Error('voiceover separation cancelled'), { name: 'AbortError', code: 'voiceover_separation_cancelled' });
+}
+
+function isPinnedPythonRuntime(raw) {
+  const [platform, arch, ...versions] = String(raw || '').trim().split('|');
+  const expected = PINNED_PYTHON_RUNTIMES[`${platform}|${arch}`];
+  return Boolean(expected)
+    && versions.length === expected.length
+    && versions.every((version, index) => version === expected[index]);
 }
 
 function acquireSeparationPermit(signal, limit) {
@@ -132,8 +151,8 @@ export async function checkVoiceoverSeparationReadiness({
   let ffmpegReady = false;
   try {
     if (config.separationPython) {
-      const result = await runProcess(config.separationPython, ['-c', 'import importlib.metadata as m, torch, torchaudio; print("|".join((m.version("demucs"), m.version("torch"), m.version("torchaudio"))))']);
-      pythonReady = (result?.exitCode ?? 1) === 0 && String(result?.stdout || '').trim() === '4.0.1|2.7.1+cpu|2.7.1+cpu';
+      const result = await runProcess(config.separationPython, ['-c', 'import importlib.metadata as m, platform, sys, torch, torchaudio; print("|".join((sys.platform, platform.machine().lower(), m.version("demucs"), m.version("torch"), m.version("torchaudio"), m.version("soundfile") if sys.platform == "darwin" else "missing")))']);
+      pythonReady = (result?.exitCode ?? 1) === 0 && isPinnedPythonRuntime(result?.stdout);
     }
   } catch {}
   try {
@@ -175,6 +194,69 @@ async function defaultProbeDurationMs(filePath, env, deps) {
   return Math.round(seconds * 1000);
 }
 
+export function buildNormalizeDemucsStemArgs(inputPath, outputPath) {
+  if (
+    typeof inputPath !== 'string'
+    || typeof outputPath !== 'string'
+    || !path.isAbsolute(inputPath)
+    || !path.isAbsolute(outputPath)
+    || inputPath === outputPath
+  ) {
+    throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离输出路径无效');
+  }
+  return [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-i', inputPath,
+    '-map', '0:a:0',
+    '-vn',
+    '-ac', '2',
+    '-ar', '48000',
+    '-c:a', 'pcm_s16le',
+    outputPath,
+  ];
+}
+
+async function normalizeDemucsStem({
+  inputPath,
+  outputPath,
+  signal,
+  timeoutMs,
+  env,
+  deps,
+}) {
+  const ffmpegPath = String(env.MEIAO_FFMPEG_PATH || '').trim()
+    || (deps.resolveFfmpegPath || resolvePackagedFfmpegPath)();
+  if (!ffmpegPath || !path.isAbsolute(ffmpegPath)) {
+    throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离输出标准化不可用');
+  }
+  const runMediaProcess = deps.runMediaProcess || runVoiceoverProcess;
+  try {
+    await runMediaProcess(
+      ffmpegPath,
+      buildNormalizeDemucsStemArgs(inputPath, outputPath),
+      {
+        signal,
+        timeoutMs,
+        ...(deps.spawnMedia ? { spawnImpl: deps.spawnMedia } : {}),
+      },
+    );
+  } catch (error) {
+    if (error?.releasePermitWhenClosed) {
+      const wrapped = buildVoiceoverError(
+        'voiceover_separation_unavailable',
+        '本地人声分离输出标准化失败',
+      );
+      Object.defineProperty(wrapped, 'releasePermitWhenClosed', {
+        value: error.releasePermitWhenClosed,
+        enumerable: false,
+      });
+      throw wrapped;
+    }
+    throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离输出标准化失败');
+  }
+  return outputPath;
+}
+
 function waitForSeparationProcess({
   pythonPath,
   args,
@@ -184,6 +266,10 @@ function waitForSeparationProcess({
   env,
 }) {
   const spawnProcess = deps.spawn || spawn;
+  const ffmpegPath = String(env.MEIAO_FFMPEG_PATH || '').trim()
+    || (deps.resolveFfmpegPath || resolvePackagedFfmpegPath)();
+  const ffprobePath = String(env.MEIAO_FFPROBE_PATH || '').trim()
+    || (deps.resolveFfprobePath || resolvePackagedFfprobePath)();
   const setTimer = deps.setTimeout || setTimeout;
   const clearTimer = deps.clearTimeout || clearTimeout;
   const killProcessGroup = deps.killProcessGroup || defaultKillProcessGroup;
@@ -195,7 +281,7 @@ function waitForSeparationProcess({
         shell: false,
         detached: true,
         stdio: 'ignore',
-        env: buildDemucsProcessEnv(env, pythonPath),
+        env: buildDemucsProcessEnv(env, pythonPath, [ffmpegPath, ffprobePath]),
       });
     } catch {
       return reject(buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离不可用'));
@@ -297,13 +383,32 @@ export async function separateVoiceover({
     const outputDir = path.join(effectiveWorkDir, 'separated');
     const trackName = path.parse(inputWavPath).name;
     const stemDir = path.join(outputDir, 'mdx', trackName);
-    const vocalsPath = path.join(stemDir, 'vocals.wav');
-    const backgroundPath = path.join(stemDir, 'no_vocals.wav');
+    const rawVocalsPath = path.join(stemDir, 'vocals.wav');
+    const rawBackgroundPath = path.join(stemDir, 'no_vocals.wav');
+    const vocalsPath = path.join(stemDir, 'vocals.pcm.wav');
+    const backgroundPath = path.join(stemDir, 'no_vocals.pcm.wav');
     await waitForSeparationProcess({
       pythonPath: config.separationPython,
       args: ['-m', 'demucs.separate', '-n', 'mdx', '-d', 'cpu', '-j', '1', '--two-stems=vocals', '--repo', config.demucsModelDir, '--out', outputDir, inputWavPath],
       signal, timeoutMs: config.separationTimeoutMs, deps,
       env,
+    });
+    const normalizeStem = deps.normalizeStem || normalizeDemucsStem;
+    await normalizeStem({
+      inputPath: rawVocalsPath,
+      outputPath: vocalsPath,
+      signal,
+      timeoutMs: config.separationTimeoutMs,
+      env,
+      deps,
+    });
+    await normalizeStem({
+      inputPath: rawBackgroundPath,
+      outputPath: backgroundPath,
+      signal,
+      timeoutMs: config.separationTimeoutMs,
+      env,
+      deps,
     });
     const durationMs = await validateOutput({ inputWavPath, vocalsPath, backgroundPath, durationToleranceMs: config.durationToleranceMs, env, deps });
     return Object.freeze({ vocalsPath, backgroundPath, model: 'mdx', durationMs,

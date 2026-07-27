@@ -49,6 +49,8 @@ MEIAO_COS_SECRET_KEY=请替换成仅限目标桶的 CAM 子用户 SecretKey
 MEIAO_COS_BUCKET=meiao-gemini-video-test-20260714-1406860462
 MEIAO_COS_REGION=ap-guangzhou
 MEIAO_COS_SIGNED_URL_TTL_SECONDS=10800
+# KIE Gemini 网关需要同时读取 HEAD/GET 时使用 kie-stage；其他上游保留 cos-direct。
+MEIAO_GEMINI_VIDEO_MEDIA_MODE=kie-stage
 MEIAO_MANAGED_IMAGE_UPLOAD_MODE=disabled
 MEIAO_MANAGED_IMAGE_MAX_BYTES=20971520
 MEIAO_MANAGED_ASSET_ACCESS_SECRET=请生成并妥善保存至少 32 字节的随机值
@@ -207,7 +209,9 @@ EOF
 
 `MEIAO_NETWORK_FAMILY_ATTEMPT_TIMEOUT_MS` 控制 Node 在 IPv4/IPv6 候选地址之间切换时，单个地址的 TCP 建连尝试窗口，默认 `1000`，限制 `250-5000` 毫秒。腾讯云到 Cloudflare/KIE 的首次 IPv4 建连可能超过 Node 20 默认的 250ms；该值只修复底层地址族建连误超时，不放宽 provider 总请求时限，也不增加付费 POST 的重提次数。
 
-Gemini 视频读取是独立的强约束链路：我方 `/api/assets/file/` 视频先由服务端完整读取，再写入私有腾讯 COS，最后只把短期签名 GET URL 交给 Gemini。`MEIAO_COS_SECRET_ID` / `MEIAO_COS_SECRET_KEY` 必须来自只允许目标桶 `gemini-video/*` 执行 `PutObject`、`GetObject` 的 CAM 子用户；不得使用主账号密钥。`MEIAO_COS_BUCKET` 必须包含 APPID 后缀，`MEIAO_COS_REGION` 与桶地域一致。`MEIAO_COS_SIGNED_URL_TTL_SECONDS` 默认 `10800`（3 小时），只影响 Gemini 的读取窗口。桶保持私有读写，无需 CDN；建议给 `gemini-video/` 配置 3 天生命周期自动删除。
+Gemini 视频读取是独立的强约束链路。`MEIAO_GEMINI_VIDEO_MEDIA_MODE=cos-direct` 时，我方 `/api/assets/file/` 视频先由服务端完整读取，再写入私有腾讯 COS，最后只把短期签名 GET URL 交给 Gemini。`MEIAO_COS_SECRET_ID` / `MEIAO_COS_SECRET_KEY` 必须来自只允许目标桶 `gemini-video/*` 执行 `PutObject`、`GetObject` 的 CAM 子用户；不得使用主账号密钥。`MEIAO_COS_BUCKET` 必须包含 APPID 后缀，`MEIAO_COS_REGION` 与桶地域一致。`MEIAO_COS_SIGNED_URL_TTL_SECONDS` 默认 `10800`（3 小时），只影响 Gemini 的读取窗口。桶保持私有读写，无需 CDN；建议给 `gemini-video/` 配置 3 天生命周期自动删除。
+
+KIE Gemini 当前会在完整读取前探测视频元数据；腾讯 COS 的 V5 签名按 HTTP 方法绑定，签名 GET 可下载但 HEAD 会返回 403。使用该网关时应设 `MEIAO_GEMINI_VIDEO_MEDIA_MODE=kie-stage`：服务端仍先完整读取站内素材，但在任何付费 Gemini POST 之前调用现有 KIE file-stream-upload，拿到支持 HEAD/GET 的临时 URL 后才提交推理。上传失败只终止素材准备，不创建付费模型任务；付费提交后仍禁止自动改走 COS、再次上传、重提请求或切换模型。`kie-stage` 复用已有 `KIE_API_KEY`，不引入新的 provider 账号。
 
 ### 用户上传图片专用 COS
 
@@ -223,7 +227,9 @@ Gemini 视频读取是独立的强约束链路：我方 `/api/assets/file/` 视�
 
 `MEIAO_IMAGE_COS_BROWSER_URL_TTL_SECONDS` / `MEIAO_IMAGE_COS_PROVIDER_URL_TTL_SECONDS` 默认为 `300` / `10800`。上传默认 3 次、单次 30 秒、退避基数 500ms；超时或请求取消会先取消 SDK 底层上传任务，签名、HEAD 和删除请求默认 15 秒超时。同一次重试始终复用同一对象键，失败时不回退到本地磁盘或 KIE 图床。素材删除默认先等待 2 分钟，worker 每条删除前重新核对持久引用；同账号 COS 上传和账号删除用最长 30 秒的 MySQL advisory lock 互斥。清理默认每 30 分钟、每批 20 条，重试基数 60 秒，8 次后进入 manual review 并每 24 小时再试，in-progress lease 10 分钟，上传卡住 15 分钟视为失败并对账。默认 backlog 达 100 条或最老等待达 24 小时告警；已完成/受保护的审计任务保留 30 天后裁剪，health 只读聚合计数。
 
-Gemini 视频不受 `MEIAO_KIE_MANAGED_ASSET_MODE` 回滚开关影响：无论 `auto`、`direct-first` 还是 `kie-only`，都禁止把视频转存到 KIE `openrouter-chat`，也禁止 Gemini 明确读文件失败后再走 KIE/换模型兜底。图片、PDF 等非视频托管素材仍按 `MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址；只有上游明确返回文件读取/下载/MIME 不可用错误且没有 `providerTaskId` 时，才允许转存 KIE 并重试同一模型。普通 HTTP 500/502、网络中断、鉴权、余额、限额和已有 task id 都不触发回退。
+Gemini 视频不受 `MEIAO_KIE_MANAGED_ASSET_MODE` 回滚开关影响；提交前使用 `MEIAO_GEMINI_VIDEO_MEDIA_MODE=cos-direct|kie-stage` 明确选择单一路由。无论选择哪一路，都禁止 Gemini 明确读文件失败后再换素材路由或换模型兜底。图片、PDF 等非视频托管素材仍按 `MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址；只有上游明确返回文件读取/下载/MIME 不可用错误且没有 `providerTaskId` 时，才允许转存 KIE 并重试同一模型。普通 HTTP 500/502、网络中断、鉴权、余额、限额和已有 task id 都不触发回退。
+
+非视频托管素材需要紧急回滚时仍可显式设置 `MEIAO_KIE_MANAGED_ASSET_MODE=kie-only`；该开关不会覆盖上面的 Gemini 视频单一路由与付费后不重提规则。
 
 `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY` 是所有任务共享的 file-stream-upload 总并发，默认 `3`。`MEIAO_KIE_ASSET_UPLOAD_RETRIES` / `MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS` 默认 `2` / `1000`，只重试文件上传的连接错误与 `429/500/502/503/504`。`MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS` / `MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES` 默认 `1800000` / `2000`，复用成功转存 URL；失败不缓存，PM2 重启后缓存自然清空。
 

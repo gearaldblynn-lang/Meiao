@@ -147,8 +147,8 @@ test('completed MySQL-style aliases hydrate the final and original managed video
     result: undefined,
     result_json: JSON.stringify({
       voiceover_checkpoint: completedCheckpoint,
-      video_url: '/api/assets/file/asset-final/result.mp4',
-      source_url: '/api/assets/file/asset-source/source.mp4',
+      video_url: 'http://127.0.0.1:3100/api/assets/file/asset-final/result.mp4',
+      source_url: 'http://127.0.0.1:3100/api/assets/file/asset-source/source.mp4',
       source_language: 'zh-CN',
       target_language: 'en-US',
       translation_mode: 'literal',

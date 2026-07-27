@@ -15,6 +15,16 @@ import {
 
 const mdxYaml = `models: ['0d19c1c6', '7ecf8ec1', 'c511e2ab', '7d865c68']\nweights: [\n  [1., 1., 0., 0.],\n  [0., 1., 0., 0.],\n  [1., 0., 1., 1.],\n  [1., 0., 1., 1.],\n]\nsegment: 44\n`;
 
+const assertEveryPinHasHashes = (lockedText, minimumPins) => {
+  const blocks = lockedText.split(/\n(?=[a-z0-9][a-z0-9._-]*==)/i).filter((block) => /^[a-z0-9][a-z0-9._-]*==/i.test(block));
+  assert.ok(blocks.length >= minimumPins);
+  for (const block of blocks) {
+    const pin = block.match(/^([a-z0-9][a-z0-9._-]*==[^\s]+)/i)?.[1];
+    assert.ok(pin, 'missing pinned package header');
+    assert.match(block, /^\s*--hash=sha256:[a-f0-9]{64}/im, `missing hash for ${pin}`);
+  }
+};
+
 async function withTempRoot(t) {
   const root = await mkdtemp(join(tmpdir(), 'meiao-voiceover-installer-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -49,21 +59,28 @@ test('Linux CPU lock controls only PyPI and official PyTorch CPU sources and has
   assert.match(lock, /^--extra-index-url https:\/\/download\.pytorch\.org\/whl\/cpu$/m);
   assert.match(lock, /^torch==2\.7\.1\+cpu \\/m);
   assert.match(lock, /^torchaudio==2\.7\.1\+cpu \\/m);
-  const assertEveryPinHasHashes = (lockedText, minimumPins) => {
-    const blocks = lockedText.split(/\n(?=[a-z0-9][a-z0-9._-]*==)/i).filter((block) => /^[a-z0-9][a-z0-9._-]*==/i.test(block));
-    assert.ok(blocks.length >= minimumPins);
-    for (const block of blocks) {
-      const pin = block.match(/^([a-z0-9][a-z0-9._-]*==[^\s]+)/i)?.[1];
-      assert.ok(pin, 'missing pinned package header');
-      assert.match(block, /^\s*--hash=sha256:[a-f0-9]{64}/im, `missing hash for ${pin}`);
-    }
-  };
   assertEveryPinHasHashes(lock, 20);
   const buildLock = await readFile(new URL('../deploy/voiceover/build-requirements.lock', import.meta.url), 'utf8');
   assert.match(buildLock, /^setuptools==80\.9\.0 \\/m);
   assert.match(buildLock, /^wheel==0\.45\.1 \\/m);
   assertEveryPinHasHashes(buildLock, 2);
   assert.equal(/diffq/i.test(`${source}\n${lock}\n${buildLock}`), false);
+});
+
+test('macOS arm64 lock uses official PyPI torch packages and hashes every pin', async () => {
+  const source = await readFile(new URL('../deploy/voiceover/requirements-darwin-arm64.in', import.meta.url), 'utf8');
+  const lock = await readFile(new URL('../deploy/voiceover/requirements-darwin-arm64.lock', import.meta.url), 'utf8');
+  assert.match(source, /^--index-url https:\/\/pypi\.org\/simple$/m);
+  assert.doesNotMatch(source, /download\.pytorch\.org/);
+  assert.match(source, /^torch==2\.7\.1$/m);
+  assert.match(source, /^torchaudio==2\.7\.1$/m);
+  assert.match(source, /^soundfile==0\.13\.1$/m);
+  assert.match(lock, /^--index-url https:\/\/pypi\.org\/simple$/m);
+  assert.doesNotMatch(lock, /download\.pytorch\.org/);
+  assert.match(lock, /^torch==2\.7\.1 \\/m);
+  assert.match(lock, /^torchaudio==2\.7\.1 \\/m);
+  assert.match(lock, /^soundfile==0\.13\.1 \\/m);
+  assertEveryPinHasHashes(lock, 20);
 });
 
 test('model verification requires exact byte size and sha256', async (t) => {
@@ -124,7 +141,13 @@ test('installer check uses modelDir/mdx.yaml rather than the source YAML as runt
 
 test('CLI check reports a non-ready runtime with a nonzero status and no path disclosure', () => {
   const scriptPath = fileURLToPath(new URL('./install-voiceover-demucs.mjs', import.meta.url));
-  const result = spawnSync(process.execPath, [scriptPath, '--check'], { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, [scriptPath, '--check'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      MEIAO_VOICEOVER_DEMUCS_MODEL_DIR: '/tmp/meiao-voiceover-missing-runtime-for-cli-test',
+    },
+  });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /"mode":"check"/);
   assert.doesNotMatch(`${result.stdout}${result.stderr}`, /\/Users\/|\.runtime|https?:\/\//i);
@@ -227,6 +250,11 @@ test('installer installs the pinned build toolchain before the no-isolation runt
   assert.equal(result.modelReady, false);
   assert.deepEqual(calls, [
     {
+      command: 'python3',
+      args: ['-c', 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 64)'],
+      options: { shell: false, stdio: ['ignore', 'inherit', 'inherit'] },
+    },
+    {
       command: 'python3', args: ['-m', 'venv', venvDir],
       options: { shell: false, stdio: ['ignore', 'inherit', 'inherit'] },
     },
@@ -241,6 +269,65 @@ test('installer installs the pinned build toolchain before the no-isolation runt
       options: { shell: false, stdio: ['ignore', 'inherit', 'inherit'] },
     },
   ]);
+});
+
+test('installer selects the macOS arm64 lock and checks CPython 3.11 before creating the venv', async (t) => {
+  const root = await withTempRoot(t);
+  const manifestPath = join(root, 'manifest.json');
+  const yamlPath = join(root, 'mdx.yaml');
+  const buildRequirementsLock = join(root, 'build-requirements.lock');
+  const venvDir = join(root, 'venv');
+  await writeFile(manifestPath, JSON.stringify({ schemaVersion: 1, model: 'mdx', files: [{
+    name: 'model.th', url: 'https://example.invalid/model.th', size: 1, sha256: '0'.repeat(64),
+  }] }));
+  await writeFile(yamlPath, mdxYaml);
+  const calls = [];
+  await runInstaller(['--install'], {
+    runtime: { platform: 'darwin', arch: 'arm64' },
+    paths: {
+      manifestPath, yamlPath, buildRequirementsLock, venvDir,
+      modelDir: join(root, 'models'), installPython: 'python3.11',
+    },
+    spawnProcess: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return { exitCode: 0 };
+    },
+  });
+  assert.deepEqual(calls[0], {
+    command: 'python3.11',
+    args: ['-c', 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 64)'],
+    options: { shell: false, stdio: ['ignore', 'inherit', 'inherit'] },
+  });
+  assert.deepEqual(calls[1], {
+    command: 'python3.11',
+    args: ['-m', 'venv', venvDir],
+    options: { shell: false, stdio: ['ignore', 'inherit', 'inherit'] },
+  });
+  assert.match(calls[3].args.at(-1), /requirements-darwin-arm64\.lock$/);
+});
+
+test('installer rejects a non-3.11 Python before creating the venv', async (t) => {
+  const root = await withTempRoot(t);
+  const manifestPath = join(root, 'manifest.json');
+  const yamlPath = join(root, 'mdx.yaml');
+  await writeFile(manifestPath, JSON.stringify({ schemaVersion: 1, model: 'mdx', files: [{
+    name: 'model.th', url: 'https://example.invalid/model.th', size: 1, sha256: '0'.repeat(64),
+  }] }));
+  await writeFile(yamlPath, mdxYaml);
+  const calls = [];
+  await assert.rejects(runInstaller(['--install'], {
+    runtime: { platform: 'darwin', arch: 'arm64' },
+    paths: {
+      manifestPath, yamlPath, buildRequirementsLock: join(root, 'build.lock'),
+      venvDir: join(root, 'venv'), modelDir: join(root, 'models'), installPython: 'python3',
+    },
+    spawnProcess: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return { exitCode: 64 };
+    },
+  }), /CPython 3\.11/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args[0], '-c');
 });
 
 test('installer rejects invalid pip network controls before creating a venv', async (t) => {
@@ -282,10 +369,10 @@ test('installer stops after a failed pip subprocess and does not publish runtime
     },
     spawnProcess: async (command, args, options) => {
       calls.push({ command, args, options });
-      return { exitCode: calls.length === 2 ? 17 : 0 };
+      return { exitCode: calls.length === 3 ? 17 : 0 };
     },
   }), /installer process failed/i);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   await assert.rejects(readFile(join(modelDir, 'mdx.yaml')), { code: 'ENOENT' });
 });
 

@@ -1351,3 +1351,38 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 可编辑同文映射首次出现时，用现有第二次调用额度复审一次，并携带首轮完整映射与当地电商直接发布标准；第二次合法结果即使仍相同也继续生成。保护项不触发复审，同文映射不登记为首个批次标准，后续首个非同文目标才能成为一致性基准。
 - Regression check: `node --test src/modules/Translation/translationPlanningLanguage.test.mjs src/modules/Translation/translationRetryUtils.test.mjs src/services/arkService.test.mjs`；`npm run build`。
 - Avoid next time: 同语种不等于无需本地化质量判断，但质量判断也不等于必须改写；复审必须有界，批次标准只能由真正的非同文目标建立。
+## 2026-07-27 - 独立视频子功能不得另造一套创建页和 Composer 样式
+
+- Symptom: 「口播翻译」虽已接通媒体准备和任务提交，但页面主体堆叠目标语言、翻译方式、音色和去文案大卡片，底部只剩简化上传条；与短视频生成既有的大输入区、底部胶囊参数栏和右侧提交按钮视觉结构明显不一致。
+- Environment: local development / video `voiceover_translation` subfeature / dedicated composer slot.
+- Root cause: 独立工作区绕过 `BottomInputBar` 的 Composer 视觉合同，在 `VoiceoverTranslationWorkspace` 内复制页面容器、配置卡和简化底栏。原回归只锁定 portal slot、媒体 profile、草稿和提交合同，没有锁“页面主体不得出现配置卡”以及共享 Composer 原语的真实复用。
+- Fix: 从 `BottomInputBar` 提取无业务状态的 `ComposerSurface`、`ComposerToolbar`、`ComposerCapsuleButton`、`ComposerSelect` 和 `ComposerSubmitButton`；标准生成和口播翻译共同消费。口播翻译页面主体只保留项目列表，创建入口在 896px 底部 Composer 内完成单视频点击/拖拽上传、进度、预览、四个有序胶囊和提交；去文案编辑器从同一胶囊浮层打开。
+- Regression check: `node --test src/shell/components/VoiceoverTranslationWorkspace.test.mjs src/shell/components/layout/BottomInputBar.test.mjs src/components/uiArchitecture.test.mjs`；`npm run lint`；`npm run build`；浏览器默认视口确认 Composer 宽 896px、无 textarea/横向溢出，820px 视口确认胶囊自然换行、页面 `scrollWidth === clientWidth`。
+- Avoid next time: 新增独立子功能可以拥有业务状态和专用 slot，但不能因此重新发明创建入口。设计评审与回归必须同时证明共享视觉原语被两端引用、页面级配置卡不存在、关键控件顺序正确，并把默认与窄视口浏览器观察和技术测试分开记录。
+
+## 2026-07-28 - COS 签名 GET 可下载不等于 KIE Gemini 能读取视频元数据
+
+- Symptom: 口播翻译已完成视频规范化、Demucs 分离和分析素材持久化，Gemini 却在约 0.5 秒内返回 `Failed to get the file information`；素材没有 provider task id，后续 TTS 和混音均未启动。
+- Evidence: 同一 H.264/AAC MP4 为 15.042 秒、6,877,005 字节；私有 COS 签名 URL 的分段 GET 返回 206、`video/mp4` 且包含 `ftyp`，HEAD 却返回 403。把同一文件只上传到 KIE file-stream-upload 后，临时地址 HEAD 200、GET 200、`video/mp4` 且完整字节一致；该探针没有创建 Gemini 推理任务。
+- Root cause: COS V5 签名绑定生成时指定的 HTTP 方法，当前只签 GET；KIE Gemini 网关会在读取前先用 HEAD 获取文件信息，因此“公网 GET 成功”仍无法满足上游媒体读取合同。旧验收只验证了 GET，没有覆盖真实上游的元数据探测方法。
+- Fix: 新增 `MEIAO_GEMINI_VIDEO_MEDIA_MODE=cos-direct|kie-stage`，默认保留 `cos-direct`。KIE Gemini 环境显式使用 `kie-stage`，在任何付费模型 POST 前通过现有 file-stream-upload 取得支持 HEAD/GET 的 URL；上传失败即停在素材准备阶段。模型请求一旦提交，仍禁止自动更换素材路由、重复提交或切换模型。分析阶段的 `provider_config_error` / `provider_bad_response` 只有用户确认可能新增费用后才能递增 attempt 并重试。
+- Regression check: `node --test server/providerAssetTransfer.test.mjs server/providerGateway.test.mjs server/voiceoverChildJobStore.test.mjs server/envDocumentationSource.test.mjs`；真实验收分别核对上传 URL 的 HEAD/GET、Gemini 仅一次 POST、分析结果、TTS 子任务和最终托管视频，禁止用“上传成功”替代模型读取成功。
+- Avoid next time: 外部模型读取 URL 的验收必须覆盖其实际方法组合（至少 HEAD、Range GET、Content-Type、Content-Length/完整字节），不能只用浏览器 GET 或 curl 下载成功下结论。兼容转存必须发生在付费提交之前，并保持失败后不重提的计费安全边界。
+
+## 2026-07-28 - KIE TTS 文档把数组标成 JSON 字符串，任务可创建但必然在下游解析失败
+
+- Symptom: 口播翻译完成 Gemini 分析和翻译后，首个 `kie_tts` 子任务拿到真实 task id，却终止为 `syntax error, expect {, actual string ... fastjson-version 1.2.56`。
+- Evidence: 失败任务的 recordInfo `param.input` 显示 `speakers` 与 `dialogue_turns` 都被二次序列化为字符串。按用户提供文档的完整 speaker 字段提交最小句子仍复现相同 Fastjson 失败；保持其余字段不变，只把两项改为结构化 JSON 数组后，同一 KIE createTask/recordInfo 链路成功并返回一个 HTTPS 音频结果。
+- Root cause: 文档参数表和示例要求字符串，但当前 KIE 下游实际按对象数组反序列化；createTask 入口没有拒绝错误类型，而是在异步任务中失败，导致“拿到 task id”被误当作请求合同正确。
+- Fix: provider body 改为结构化 `speakers` / `dialogue_turns` 数组；speaker 补齐 `audio_profile`、`style=Deadpan`、`pace=Natural`、`accent=Neutral`。输入预算按最终真实 JSON body 的 UTF-8 字节重新计算。已失败且有 task id 的子任务保留审计记录，只能由用户确认后创建递增 attempt，不能覆写旧 ID。
+- Regression check: `node --test server/providerKieTts.test.mjs server/voiceoverAnalysis.test.mjs server/providerGateway.test.mjs server/voiceoverTranslationRunner.test.mjs`；真实 canary 必须分别记录字符串形态的确定失败和数组形态的成功 task id，正式父任务还需验证远程音频转站内托管、时长对齐、混音和最终 MP4。
+- Avoid next time: 异步 provider 的 create 200/task id 只证明入口接单，不证明 payload 通过真实模型合同。首次接入必须用最小 live canary 跑到终态；若文档与可复现行为冲突，保留证据、锁定终态成功形态，并把旧 task id 当作不可变审计记录。
+
+## 2026-07-28 - 口播 TTS 成功后必须复用任务、容忍瞬时空状态并以资产 ID 水合播放器
+
+- Symptom: 结构化数组修复后，KIE TTS 已成功生成音频，但父任务先被首轮空 `state` 判为 `provider_bad_response`；恢复后 8.92 秒英语音频又因目标窗为 15.07 秒、所需 `atempo=0.592` 低于 0.75 而失败。最终 MP4 已落库时，本地 3000 页面仍把后端返回的绝对 3100 素材 URL 判为不安全并显示“完成但未返回结果视频”。
+- Environment: local development / KIE Gemini 3.1 Flash TTS / checkpoint retry / FFmpeg alignment / shell job hydration.
+- Root cause: 轮询器把任务创建后的瞬时空状态当终态协议错误；时间适配把“短音频可以安全补静音”和“长音频会被裁词”混为同一越界；Shell 同时校验服务端权威 `finalAssetId` 与开发端口绝对 URL，错误要求 API 端口和页面端口同源。
+- Fix: 空 `state` 只在同一 task ID 的有界轮询内按 waiting 处理，未知非空状态继续拒绝；TTS 查询失败且 checkpoint 已有 task ID 时按 stage 复用，不能误路由到新的分析/语音提交；短音频把速度钳制到配置的可理解下限后补静音，长音频超过最大加速仍失败；Shell 有服务端资产 ID 时忽略持久化绝对 URL并重建同源 `/api/assets/file/:id`，只有缺少资产 ID 时才校验 URL。
+- Regression check: `node --test server/providerKieTts.test.mjs server/voiceoverChildJobStore.test.mjs server/voiceoverAudio.test.mjs src/adapters/voiceoverTranslationHydration.test.mjs src/shell/components/VoiceoverResultPlayer.test.mjs`；真实父任务必须保持原 TTS task ID、落库 `actualDurationMs/atempo`、输出 H.264/AAC MP4，并在刷新后显示“已完成”、可切换“翻译结果”和下载。
+- Avoid next time: 付费异步任务的短暂查询空窗不能制造新 attempt；音频过短和过长的安全语义不同，前者可补静音、后者不能裁词；浏览器播放必须以受账号鉴权的托管资产 ID 重建 URL，不能把开发/反代 origin 差异当成资源不可信。

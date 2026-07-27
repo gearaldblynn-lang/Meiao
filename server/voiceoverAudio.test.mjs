@@ -230,11 +230,13 @@ test('calculateAtempo uses actual duration divided by target duration with inclu
   assert.equal(calculateAtempo({
     actualDurationMs: 1350, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35,
   }), 1.35);
+  assert.equal(calculateAtempo({
+    actualDurationMs: 500, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35,
+  }), 0.75);
 });
 
 test('calculateAtempo rejects out-of-range and invalid numeric inputs', () => {
   for (const input of [
-    { actualDurationMs: 749, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35 },
     { actualDurationMs: 1351, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35 },
     { actualDurationMs: NaN, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35 },
     { actualDurationMs: 1000, targetDurationMs: 0, minAtempo: 0.75, maxAtempo: 1.35 },

@@ -7,15 +7,6 @@ import React, {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
-import {
-  Check,
-  Languages,
-  Loader2,
-  Mic2,
-  Replace,
-  Upload,
-  X,
-} from 'lucide-react';
 
 import type {
   SubtitleRemovalRegion,
@@ -38,7 +29,9 @@ import {
   subtitleRegionToPixels,
 } from '../../utils/subtitleRemovalRegion.mjs';
 import ConfirmDialog from './ConfirmDialog';
-import SubtitleRegionEditor from './SubtitleRegionEditor';
+import VoiceoverTranslationComposer, {
+  type PreparedVoiceoverSource,
+} from './VoiceoverTranslationComposer';
 
 export type VoiceoverTranslationWorkspaceProps = {
   active: boolean;
@@ -48,18 +41,6 @@ export type VoiceoverTranslationWorkspaceProps = {
   creationDisabledReason?: string;
   onSubmit: (draft: VoiceoverTranslationDraft) => Promise<void>;
   onClearInitialSource: () => void;
-};
-
-type PreparedSource = VoiceoverTranslationSource & {
-  fileName: string;
-  mimeType: string;
-  durationSeconds: number;
-  sizeBytes: number;
-  width: number;
-  height: number;
-  videoCodec?: string | null;
-  transcoded?: boolean;
-  draftNonce: string;
 };
 
 const EMPTY_VOICEOVER_LANGUAGES: NonNullable<
@@ -121,12 +102,11 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
   const mountedRef = useRef(true);
 
   const [composerTarget, setComposerTarget] = useState<HTMLElement | null>(null);
-  const [source, setSource] = useState<PreparedSource | null>(null);
+  const [source, setSource] = useState<PreparedVoiceoverSource | null>(null);
   const [pendingReplacementFile, setPendingReplacementFile] = useState<File | null>(null);
   const [preparing, setPreparing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
-  const [showMoreLanguages, setShowMoreLanguages] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState('');
   const [translationMode, setTranslationMode] = useState<VoiceoverTranslationMode>('natural');
   const [voiceMode, setVoiceMode] = useState<VoiceoverVoiceMode>('auto');
@@ -148,6 +128,29 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     [languages],
   );
   const voices = publicConfig ? publicConfig.voices : EMPTY_VOICEOVER_VOICES;
+  const languageOptions = useMemo(
+    () => [
+      ...commonLanguages.map((language) => ({
+        value: language.code,
+        label: language.chineseName,
+      })),
+      ...moreLanguages.map((language) => ({
+        value: language.code,
+        label: language.chineseName,
+      })),
+    ],
+    [commonLanguages, moreLanguages],
+  );
+  const voiceOptions = useMemo(
+    () => [
+      { value: '__auto__', label: '自动匹配' },
+      ...voices.map((voice) => ({
+        value: voice.name,
+        label: `${voice.name} · ${voice.trait}`,
+      })),
+    ],
+    [voices],
+  );
   const featureAvailable = Boolean(publicConfig?.enabled && publicConfig?.ready);
   const canCreate = featureAvailable && !creationDisabledReason;
   const creationBlockMessage = creationDisabledReason || (
@@ -252,7 +255,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       if (!result.fileUrl || !result.assetId) {
         throw new Error('视频已处理，但未返回可用的托管素材身份');
       }
-      const prepared: PreparedSource = {
+      const prepared: PreparedVoiceoverSource = {
         sourceAssetId: result.assetId,
         sourceUrl: result.fileUrl,
         sourceProjectId: origin?.sourceProjectId,
@@ -352,6 +355,21 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     onClearInitialSource();
   }, [cancelMediaSessionOnce, onClearInitialSource]);
 
+  const handleVoiceSelectionChange = useCallback((value: string) => {
+    if (value === '__auto__') {
+      setVoiceMode('auto');
+      return;
+    }
+    if (!voices.some((voice) => voice.name === value)) return;
+    setVoiceMode('preset');
+    setVoiceName(value);
+  }, [voices]);
+
+  const handleRemoveTextChange = useCallback((enabled: boolean) => {
+    setRemoveText(enabled);
+    if (enabled) setSubtitleRegion({ ...DEFAULT_SUBTITLE_REGION });
+  }, []);
+
   const selectedLanguage = languages.find((language) => language.code === targetLanguage);
   const selectedVoice = voices.find((voice) => voice.name === voiceName);
   const editorSource: SubtitleRemovalSourceDraft | null = source ? {
@@ -440,276 +458,36 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     : '';
 
   return (
-    <section
-      aria-label="口播翻译工作区"
-      className="mx-auto w-full max-w-[1180px] px-5 py-6 sm:px-8 sm:py-8"
-    >
-      {creationBlockMessage ? (
-        <div
-          className="mb-5 rounded-3xl border px-5 py-4 text-[13px] leading-6"
-          style={{
-            background: 'var(--bg-surface)',
-            borderColor: 'var(--border-subtle)',
-            color: 'var(--text-secondary)',
-          }}
-        >
-          {creationBlockMessage}
-          {creationDisabledReason ? '；历史项目仍可查看和下载。' : ''}
-        </div>
-      ) : null}
-
-      {source ? (
-        <div
-          className="rounded-[28px] border p-4 sm:p-5"
-          style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-        >
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-            <video
-              src={source.sourceUrl}
-              controls
-              preload="metadata"
-              className="aspect-video w-full rounded-2xl bg-black object-contain sm:w-[320px]"
-            />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <Check size={16} style={{ color: 'var(--success)' }} />
-                <h3 className="truncate text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                  {source.fileName}
-                </h3>
-              </div>
-              <p className="mt-2 text-[12px] leading-6" style={{ color: 'var(--text-secondary)' }}>
-                权威时长 {formatDuration(source.durationSeconds)} · {source.width}×{source.height}
-                {source.transcoded ? ' · 已转换为兼容的 H.264 MP4' : ' · 原视频格式已兼容'}
-              </p>
-              <button
-                type="button"
-                onClick={clearSource}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-2xl px-3 py-2 text-[12px]"
-                style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
-              >
-                <X size={13} />
-                清除视频
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div
-          className="rounded-[28px] border px-5 py-10 text-center"
-          style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-        >
-          <Languages className="mx-auto" size={28} style={{ color: 'var(--accent)' }} />
-          <h3 className="mt-3 text-[16px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-            把原视频口播转换为另一种语言
-          </h3>
-          <p className="mx-auto mt-2 max-w-[52ch] text-[13px] leading-6" style={{ color: 'var(--text-secondary)' }}>
-            保留原画面、背景音乐、环境音和音效，不做嘴型重生成。
-          </p>
-        </div>
-      )}
-
-      <div className="mt-5 grid gap-5 lg:grid-cols-2">
-        <div
-          className="rounded-[28px] border p-5"
-          style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-        >
-          <h3 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>目标语言</h3>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {commonLanguages.map((language) => (
-              <button
-                type="button"
-                key={language.code}
-                onClick={() => setTargetLanguage(language.code)}
-                className="rounded-2xl px-3 py-2 text-[12px] transition-colors"
-                style={{
-                  background: targetLanguage === language.code ? 'var(--accent)' : 'var(--bg-elevated)',
-                  color: targetLanguage === language.code ? 'white' : 'var(--text-secondary)',
-                }}
-              >
-                {language.chineseName}
-              </button>
-            ))}
-          </div>
-          {moreLanguages.length > 0 ? (
-            <>
-              <button
-                type="button"
-                onClick={() => setShowMoreLanguages((current) => !current)}
-                className="mt-3 text-[12px] font-medium"
-                style={{ color: 'var(--accent)' }}
-              >
-                {showMoreLanguages ? '收起更多语言' : '更多语言'}
-              </button>
-              {showMoreLanguages ? (
-                <select
-                  value={moreLanguages.some((language) => language.code === targetLanguage) ? targetLanguage : ''}
-                  onChange={(event) => setTargetLanguage(event.target.value)}
-                  className="mt-3 min-h-11 w-full rounded-2xl border px-3 text-[13px]"
-                  style={{
-                    background: 'var(--bg-elevated)',
-                    borderColor: 'var(--border-subtle)',
-                    color: 'var(--text-primary)',
-                  }}
-                >
-                  <option value="">选择更多语言</option>
-                  {moreLanguages.map((language) => (
-                    <option key={language.code} value={language.code}>
-                      {language.chineseName} · {language.englishName}
-                    </option>
-                  ))}
-                </select>
-              ) : null}
-            </>
-          ) : null}
-
-          <h3 className="mt-6 text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>翻译方式</h3>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <label className="rounded-2xl border p-3" style={{ borderColor: translationMode === 'natural' ? 'var(--accent)' : 'var(--border-subtle)' }}>
-              <input
-                type="radio"
-                name="voiceover-translation-mode"
-                value="natural"
-                checked={translationMode === 'natural'}
-                onChange={() => setTranslationMode('natural')}
-              />
-              <span className="ml-2 text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>自然口播</span>
-              <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>适配原时间和营销语气</p>
-            </label>
-            <label className="rounded-2xl border p-3" style={{ borderColor: translationMode === 'literal' ? 'var(--accent)' : 'var(--border-subtle)' }}>
-              <input
-                type="radio"
-                name="voiceover-translation-mode"
-                value="literal"
-                checked={translationMode === 'literal'}
-                onChange={() => setTranslationMode('literal')}
-              />
-              <span className="ml-2 text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>忠实直译</span>
-              <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>优先保留原意和句式</p>
-            </label>
-          </div>
-        </div>
-
-        <div
-          className="rounded-[28px] border p-5"
-          style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-        >
-          <h3 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>口播音色</h3>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <label className="rounded-2xl border p-3" style={{ borderColor: voiceMode === 'auto' ? 'var(--accent)' : 'var(--border-subtle)' }}>
-              <input type="radio" name="voiceover-voice-mode" value="auto" checked={voiceMode === 'auto'} onChange={() => setVoiceMode('auto')} />
-              <span className="ml-2 text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>自动匹配</span>
-              <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>按原口播特征匹配预设音色</p>
-            </label>
-            <label className="rounded-2xl border p-3" style={{ borderColor: voiceMode === 'preset' ? 'var(--accent)' : 'var(--border-subtle)' }}>
-              <input type="radio" name="voiceover-voice-mode" value="preset" checked={voiceMode === 'preset'} onChange={() => setVoiceMode('preset')} />
-              <span className="ml-2 text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>选择预设</span>
-              <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>使用 Gemini 官方预设音色</p>
-            </label>
-          </div>
-          {voiceMode === 'preset' ? (
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {publicConfig?.voices.map((voice) => (
-                <button
-                  type="button"
-                  key={voice.name}
-                  onClick={() => setVoiceName(voice.name)}
-                  className="rounded-2xl border px-3 py-2 text-left"
-                  style={{
-                    borderColor: voiceName === voice.name ? 'var(--accent)' : 'var(--border-subtle)',
-                    background: voiceName === voice.name ? 'var(--accent-soft)' : 'var(--bg-elevated)',
-                  }}
-                >
-                  <span className="block text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{voice.name}</span>
-                  <span className="mt-0.5 block text-[10px] leading-5" style={{ color: 'var(--text-tertiary)' }}>{voice.trait}</span>
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <div
-        className="mt-5 rounded-[28px] border p-5"
-        style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-      >
-        <label className="flex items-start gap-3">
-          <input
-            type="checkbox"
-            checked={removeText}
-            onChange={(event) => {
-              const checked = event.target.checked;
-              setRemoveText(checked);
-              if (checked) setSubtitleRegion({ ...DEFAULT_SUBTITLE_REGION });
-            }}
-          />
-          <span>
-            <span className="block text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>同时去文案</span>
-            <span className="mt-1 block text-[12px] leading-5" style={{ color: 'var(--text-secondary)' }}>
-              默认处理画面底部 30%，可拖动或缩放区域；启用后会调用 Golden。
-            </span>
-          </span>
-        </label>
-        {removeText && editorSource ? (
-          <div className="mt-4">
-            <SubtitleRegionEditor
-              source={editorSource}
-              region={subtitleRegion}
-              onRegionChange={setSubtitleRegion}
-              disabled={submitting}
-            />
-          </div>
-        ) : null}
-      </div>
-
-      {errorMessage ? (
-        <p className="mt-4 rounded-2xl px-4 py-3 text-[12px]" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}>
-          {errorMessage}
-        </p>
-      ) : null}
-
+    <>
       {composerTarget
         ? createPortal(
-            <div className="px-6 pb-5 pt-4">
-              <div
-                aria-label="口播翻译任务输入区"
-                className="mx-auto w-full max-w-[896px] rounded-3xl border transition-all"
-                style={{ background: 'var(--bg-surface)', borderColor: errorMessage ? 'var(--danger)' : 'var(--border-subtle)' }}
-              >
-                <button
-                  type="button"
-                  disabled={!canCreate || preparing || submitting}
-                  onClick={() => inputRef.current?.click()}
-                  className="flex min-h-[78px] w-full items-center gap-3 px-5 text-left disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-                    {preparing ? <Loader2 size={18} className="animate-spin" /> : source ? <Replace size={18} /> : <Upload size={18} />}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                      {preparing ? `正在准备视频 ${uploadProgress}%` : source ? '替换当前视频' : '上传一个 MP4 或 MOV 视频'}
-                    </span>
-                    <span className="mt-1 block text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                      一次只处理一个单人口播视频；需要时自动转换为 H.264/AAC MP4。
-                    </span>
-                  </span>
-                </button>
-                <div className="flex items-center justify-between gap-3 border-t px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-                  <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
-                    {source ? `${formatDuration(source.durationSeconds)} · ${selectedLanguage?.chineseName || '请选择语言'}` : '等待视频'}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={!canOpenConfirmation}
-                    onClick={() => setConfirmOpen(true)}
-                    className="inline-flex items-center gap-2 rounded-3xl px-5 py-2.5 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-30"
-                    style={{ background: 'var(--accent)' }}
-                  >
-                    {submitting ? <Loader2 size={14} className="animate-spin" /> : <Mic2 size={14} />}
-                    开始口播翻译
-                  </button>
-                </div>
-              </div>
-            </div>,
+            <VoiceoverTranslationComposer
+              inputRef={inputRef}
+              source={source}
+              editorSource={editorSource}
+              canCreate={canCreate}
+              preparing={preparing}
+              submitting={submitting}
+              uploadProgress={uploadProgress}
+              errorMessage={errorMessage}
+              creationBlockMessage={creationBlockMessage}
+              canOpenConfirmation={canOpenConfirmation}
+              targetLanguage={targetLanguage}
+              languageOptions={languageOptions}
+              translationMode={translationMode}
+              voiceSelection={voiceMode === 'auto' ? '__auto__' : voiceName}
+              voiceOptions={voiceOptions}
+              removeText={removeText}
+              subtitleRegion={subtitleRegion}
+              onChooseFile={chooseFile}
+              onClearSource={clearSource}
+              onTargetLanguageChange={setTargetLanguage}
+              onTranslationModeChange={setTranslationMode}
+              onVoiceSelectionChange={handleVoiceSelectionChange}
+              onRemoveTextChange={handleRemoveTextChange}
+              onSubtitleRegionChange={setSubtitleRegion}
+              onOpenConfirmation={() => setConfirmOpen(true)}
+            />,
             composerTarget,
           )
         : null}
@@ -746,7 +524,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
         onConfirm={() => void handleSubmit()}
         onCancel={() => setConfirmOpen(false)}
       />
-    </section>
+    </>
   );
 };
 

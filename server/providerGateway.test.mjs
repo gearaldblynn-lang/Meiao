@@ -4615,6 +4615,72 @@ test('executeProviderJob sends managed storyboard video through COS directly to 
   }
 });
 
+test('executeProviderJob stages managed Gemini video through KIE before one paid model request when configured', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = global.fetch;
+  const requests = [];
+  const sourceVideoUrl = '/api/assets/file/voiceover/speech-analysis.mp4';
+  const stagedVideoUrl = 'https://tempfile.redpandaai.co/kieai/mayo-storage/gemini-video/speech-analysis.mp4';
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from('managed-video-bytes'), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4', 'content-length': '19' },
+      });
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: stagedVideoUrl },
+      });
+    }
+    if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
+      return createJsonResponse({
+        choices: [{ message: { content: 'voiceover analysis ok' } }],
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        module: 'video',
+        subFeature: 'voiceover_translation',
+        taskType: 'kie_chat',
+        provider: 'kie',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: '分析视频口播。' },
+              { type: 'input_file', file_url: sourceVideoUrl, filename: 'speech-analysis.mp4' },
+            ],
+          }],
+        },
+      },
+      {
+        KIE_API_KEY: 'test-key',
+        MEIAO_GEMINI_VIDEO_MEDIA_MODE: 'kie-stage',
+      },
+      new AbortController().signal,
+    );
+
+    assert.equal(result.result.content, 'voiceover analysis ok');
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/gemini-3-flash/v1/chat/completions')).length, 1);
+    const chatRequest = requests.find((item) => item.url.includes('/gemini-3-flash/v1/chat/completions'));
+    assert.match(String(chatRequest.init.body), new RegExp(stagedVideoUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(String(chatRequest.init.body), /\/api\/assets\/file\//);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob never retries or KIE-stages managed storyboard video after explicit Gemini media read failure', async () => {
   __testOnly_clearManagedAssetUploadCache();
   const originalFetch = global.fetch;
@@ -6594,8 +6660,18 @@ test('executeProviderJob dispatches parent-owned KIE TTS through the dedicated a
       events.push('create');
       const body = JSON.parse(String(init.body || '{}'));
       assert.equal(body.model, 'google/gemini-3-1-flash-tts');
-      assert.deepEqual(JSON.parse(body.input.speakers), [
-        { speaker_id: 'Speaker 1', voice_name: 'Kore' },
+      assert.deepEqual(body.input.speakers, [
+        {
+          speaker_id: 'Speaker 1',
+          voice_name: 'Kore',
+          audio_profile: '',
+          style: 'Deadpan',
+          pace: 'Natural',
+          accent: 'Neutral',
+        },
+      ]);
+      assert.deepEqual(body.input.dialogue_turns, [
+        { speaker_id: 'Speaker 1', text: 'Hello world.' },
       ]);
       return createJsonResponse({ code: 200, msg: 'success', data: { taskId: 'tts-gateway-1' } });
     }

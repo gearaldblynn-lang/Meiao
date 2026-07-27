@@ -28,6 +28,7 @@ test('kie tts audio persistence retries the same provider URL and returns only a
   assert.deepEqual(calls.map((item) => item.remoteUrl), [remoteUrl, remoteUrl]);
   assert.equal(calls[1].jobId, 'voiceover-parent-1');
   assert.equal(calls[1].assetType, 'intermediate');
+  assert.equal(calls[1].originalName, 'kie_tts.wav');
   assert.equal(calls[1].expiresAt, 1_700_259_200_000);
   assert.equal(persisted.audioUrl, '/api/assets/file/managed-audio-1/group-0.wav');
   assert.equal(persisted.audioUrlAssetId, 'managed-audio-1');

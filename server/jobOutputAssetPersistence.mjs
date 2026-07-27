@@ -67,7 +67,12 @@ export const persistManagedRemoteJobOutput = async ({
   const nextResult = prepareKieTtsOutputForPersistence({ job, result, publicBaseUrl, isManagedAssetUrl });
   const fields = [
     ['videoUrl', 'video', `${job?.taskType || 'result'}.mp4`, true],
-    ['audioUrl', 'intermediate', `${job?.taskType || 'result'}.mp3`, false],
+    [
+      'audioUrl',
+      'intermediate',
+      `${job?.taskType || 'result'}.${isVoiceoverTts ? 'wav' : 'mp3'}`,
+      false,
+    ],
     ['fileUrl', 'result', `${job?.taskType || 'result'}.bin`, true],
   ];
 

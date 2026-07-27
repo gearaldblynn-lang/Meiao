@@ -6,6 +6,7 @@ import {
   convertInlineDataUrlToKieFileUrl,
   convertManagedAssetUrlToKieFileUrl,
   readRemoteMediaBufferWithLimit,
+  resolveGeminiVideoMediaMode,
   resolveProviderChatMediaUrl,
   resolveProviderGeminiChatMediaUrl,
   resolveProviderGenerationMediaUrl,
@@ -163,6 +164,40 @@ test('managed Gemini video is copied to private COS and resolved as a signed URL
   assert.equal(uploads.length, 1);
   assert.equal(uploads[0].fileName, 'source.mp4');
   assert.equal(uploads[0].mimeType, 'video/mp4');
+  assert.deepEqual(uploads[0].fileBuffer, Buffer.from('complete-video'));
+});
+
+test('Gemini managed video can be staged through KIE before the paid model request', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const uploads = [];
+  const stagedUrl = 'https://tempfile.redpandaai.co/kieai/mayo-storage/gemini-video/source.mp4';
+  const resolved = await resolveProviderGeminiChatMediaUrl('/api/assets/file/video/source.mp4', {
+    env: {
+      MEIAO_GEMINI_VIDEO_MEDIA_MODE: 'kie-stage',
+    },
+    deps: {
+      fetchWithTimeout: async () => createResponse('complete-video', {
+        'content-type': 'video/mp4',
+        'content-length': '14',
+      }),
+      uploadGeminiVideoToCos: async () => {
+        throw new Error('KIE staging mode must not upload Gemini video to COS');
+      },
+      uploadAssetViaKieWithFallback: async (payload) => {
+        uploads.push(payload);
+        return { result: { fileUrl: stagedUrl } };
+      },
+    },
+  });
+
+  assert.equal(resolveGeminiVideoMediaMode({}), 'cos-direct');
+  assert.equal(resolveGeminiVideoMediaMode({
+    MEIAO_GEMINI_VIDEO_MEDIA_MODE: 'kie-stage',
+  }), 'kie-stage');
+  assert.equal(resolved, stagedUrl);
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].mimeType, 'video/mp4');
+  assert.equal(uploads[0].uploadPath, 'mayo-storage/gemini-video');
   assert.deepEqual(uploads[0].fileBuffer, Buffer.from('complete-video'));
 });
 

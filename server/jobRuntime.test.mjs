@@ -155,6 +155,7 @@ test('voiceover TTS audio output persistence hands off only managed audio after 
   assert.equal(calls[0].remoteUrl, providerUrl);
   assert.equal(calls[0].jobId, 'voiceover-parent-1');
   assert.equal(calls[0].assetType, 'intermediate');
+  assert.equal(calls[0].originalName, 'kie_tts.wav');
   assert.equal(calls[0].expiresAt, 1_700_259_200_000);
   assert.equal(result.audioUrl, '/api/assets/file/managed-audio-1/tts.wav');
   assert.equal(result.audioUrlAssetId, 'managed-audio-1');

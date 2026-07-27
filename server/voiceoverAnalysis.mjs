@@ -401,14 +401,18 @@ const validateEstimatorInput = (input) => {
 export function buildVoiceoverTtsProviderInput(input) {
   const normalized = validateEstimatorInput(input);
   return {
-    speakers: JSON.stringify([{
+    speakers: [{
       speaker_id: SPEAKER,
       voice_name: normalized.voiceName,
-    }]),
-    dialogue_turns: JSON.stringify(normalized.dialogueTurns.map((turn) => ({
+      audio_profile: '',
+      style: 'Deadpan',
+      pace: 'Natural',
+      accent: 'Neutral',
+    }],
+    dialogue_turns: normalized.dialogueTurns.map((turn) => ({
       speaker_id: SPEAKER,
       text: turn.text,
-    }))),
+    })),
     temperature: normalized.temperature,
     scene: normalized.scene,
     sample_context: normalized.sampleContext,

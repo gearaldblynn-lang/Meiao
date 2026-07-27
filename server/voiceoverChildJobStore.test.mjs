@@ -794,6 +794,108 @@ test('server derives analysis and query-only retry plans without trusting parent
     kind: 'analysis',
     userConfirmed: true,
   });
+  const configFailedParent = {
+    ...analysisParent,
+    errorCode: 'provider_config_error',
+  };
+  const unconfirmedConfigRetry = deriveVoiceoverRetryPlan(configFailedParent, {
+    confirmNewProviderAttempt: false,
+  });
+  assert.deepEqual(unconfirmedConfigRetry, {
+    kind: 'analysis',
+    userConfirmed: false,
+  });
+  assert.throws(
+    () => prepareVoiceoverJobRetryResult(configFailedParent, unconfirmedConfigRetry),
+    (error) => error?.code === 'voiceover_analysis_submission_unknown',
+  );
+  const confirmedConfigRetry = deriveVoiceoverRetryPlan(configFailedParent, {
+    confirmNewProviderAttempt: true,
+  });
+  const configRetryResult = prepareVoiceoverJobRetryResult(
+    configFailedParent,
+    confirmedConfigRetry,
+  );
+  assert.equal(configRetryResult.voiceoverCheckpoint.stage, 'voice_separated');
+  assert.equal(configRetryResult.voiceoverCheckpoint.analysisAttempt, 1);
+  const mediaReadFailedParent = {
+    ...analysisParent,
+    errorCode: 'provider_bad_response',
+  };
+  const confirmedMediaReadRetry = deriveVoiceoverRetryPlan(mediaReadFailedParent, {
+    confirmNewProviderAttempt: true,
+  });
+  const mediaReadRetryResult = prepareVoiceoverJobRetryResult(
+    mediaReadFailedParent,
+    confirmedMediaReadRetry,
+  );
+  assert.deepEqual(confirmedMediaReadRetry, {
+    kind: 'analysis',
+    userConfirmed: true,
+  });
+  assert.equal(mediaReadRetryResult.voiceoverCheckpoint.stage, 'voice_separated');
+  assert.equal(mediaReadRetryResult.voiceoverCheckpoint.analysisAttempt, 1);
+
+  const ttsQueryFailedParent = validParent({
+    status: 'failed',
+    errorCode: 'provider_bad_response',
+    providerTaskId: 'tts-provider-0',
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'tts_generating',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-audio',
+        vocalAssetId: 'asset-vocal',
+        backgroundAssetId: 'asset-background',
+        analysisAttempt: 1,
+        analysis: {
+          sourceLanguage: 'en',
+          speakerCount: 1,
+          voiceProfile: {
+            pitch: 'medium',
+            brightness: 'balanced',
+            energy: 'balanced',
+            pace: 'natural',
+            accentDescription: 'Neutral',
+          },
+          segments: [{
+            id: 'seg-1',
+            startMs: 0,
+            endMs: 1_000,
+            sourceText: 'Hello',
+            targetText: '你好',
+          }],
+        },
+        translation: {
+          targetLanguage: 'en',
+          mode: 'natural',
+          selectedVoiceName: 'Kore',
+          segments: [{
+            id: 'seg-1',
+            startMs: 0,
+            endMs: 1_000,
+            sourceText: 'Hello',
+            targetText: '你好',
+          }],
+        },
+        ttsGroups: [{
+          index: 0,
+          attempt: 0,
+          childJobId: 'tts-child-0',
+          providerTaskId: 'tts-provider-0',
+          status: 'submitted',
+          startMs: 0,
+          endMs: 1_000,
+        }],
+      },
+    },
+  });
+  assert.deepEqual(deriveVoiceoverRetryPlan(ttsQueryFailedParent, {
+    confirmNewProviderAttempt: false,
+  }), {
+    kind: 'reuse',
+  });
 
   const queryOnlyParent = validParent({
     status: 'cancelled',

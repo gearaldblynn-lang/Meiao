@@ -158,14 +158,21 @@ test('KIE TTS validation honors the parent normalized config snapshot', async ()
   assert.equal(fetchCalls, 0);
 });
 
-test('create body matches the documented snake_case KIE wrapper contract', () => {
+test('create body sends structured speaker and dialogue arrays to the live KIE wrapper', () => {
   const body = buildKieTtsCreateBody(newTtsJob().payload);
 
   assert.deepEqual(body, {
     model: 'google/gemini-3-1-flash-tts',
     input: {
-      speakers: JSON.stringify([{ speaker_id: 'Speaker 1', voice_name: 'Kore' }]),
-      dialogue_turns: JSON.stringify([{ speaker_id: 'Speaker 1', text: 'Hello world.' }]),
+      speakers: [{
+        speaker_id: 'Speaker 1',
+        voice_name: 'Kore',
+        audio_profile: '',
+        style: 'Deadpan',
+        pace: 'Natural',
+        accent: 'Neutral',
+      }],
+      dialogue_turns: [{ speaker_id: 'Speaker 1', text: 'Hello world.' }],
       temperature: 1,
       scene: 'Warm product presentation with controlled pacing.',
       sample_context: 'One consistent narrator. Preserve pauses between claims.',
@@ -611,6 +618,35 @@ test('recordInfo body code 404 uses only a positive configured warm-up window', 
   );
   assert.equal(zeroGraceDeps.calls.query, 1);
   assert.equal(zeroGraceDeps.calls.sleep, 0);
+});
+
+test('recordInfo tolerates an empty eventual-consistency state and keeps polling the same task', async () => {
+  const deps = fakeKieTts({
+    states: [{
+      status: 200,
+      body: {
+        code: 200,
+        msg: 'success',
+        data: {
+          taskId: 'tts-existing',
+          state: '',
+          resultJson: '',
+          failCode: null,
+          failMsg: null,
+        },
+      },
+    }, 'success'],
+  });
+
+  const result = await runKieTtsJob({
+    job: newTtsJob({ providerTaskId: 'tts-existing' }),
+    env: enabledEnv(),
+    deps,
+  });
+
+  assert.equal(result.providerTaskId, 'tts-existing');
+  assert.equal(deps.calls.query, 2);
+  assert.equal(deps.calls.sleep, 1);
 });
 
 test('operational TTS bounds use conservative defaults for invalid env values', async () => {
