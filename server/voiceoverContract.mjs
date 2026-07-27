@@ -70,6 +70,7 @@ const ERROR_CODES = new Set([
   'voiceover_language_unsupported', 'voiceover_analysis_invalid', 'voiceover_analysis_submission_unknown', 'voiceover_separation_unavailable',
   'voiceover_separation_timeout', 'voiceover_tts_input_too_large', 'voiceover_timing_out_of_range', 'provider_submission_unknown',
   'provider_balance_insufficient', 'provider_rate_limited', 'provider_timeout', 'voiceover_mix_failed', 'voiceover_result_persist_failed',
+  'voiceover_checkpoint_asset_invalid',
 ]);
 
 export function buildVoiceoverError(code, message, details = {}) {
@@ -505,7 +506,11 @@ export function prepareVoiceoverRetryCheckpoint(checkpoint, retryPlan = {}, opti
     throw buildVoiceoverError('voiceover_analysis_invalid', '当前阶段不能重新提交语音分析');
   }
   if (retryPlan.userConfirmed !== true) {
-    throw buildVoiceoverError('voiceover_analysis_submission_unknown', '请先确认可能产生新的分析费用');
+    throw buildVoiceoverError(
+      'voiceover_analysis_submission_unknown',
+      '请先确认可能产生新的分析费用',
+      { statusCode: 409 },
+    );
   }
   return normalizeVoiceoverCheckpoint({
     version: VOICEOVER_CHECKPOINT_VERSION,

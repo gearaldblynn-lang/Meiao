@@ -368,6 +368,81 @@ test('recoverable submitted failures and ambiguous submissions keep their reserv
   }), true);
 });
 
+test('voiceover credit release follows the durable current child attempt instead of the parent provider id', () => {
+  const voiceoverJob = (overrides = {}) => ({
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    providerTaskId: '',
+    result: {
+      voiceoverCheckpoint: {
+        subtitleRemoval: {
+          childJobId: 'golden-child-0',
+          attempt: 0,
+          status: 'submitted',
+        },
+      },
+    },
+    ...overrides,
+  });
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: voiceoverJob(),
+    error: { code: 'provider_submission_unknown' },
+  }), false);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: voiceoverJob({
+      status: 'cancelled',
+      result: {
+        voiceoverCheckpoint: {
+          subtitleRemoval: {
+            childJobId: 'golden-child-0',
+            providerTaskId: 'golden-provider-0',
+            attempt: 0,
+            status: 'submitted',
+          },
+        },
+      },
+    }),
+    error: { code: 'request_cancelled' },
+    aborted: true,
+  }), false);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: voiceoverJob({
+      errorCode: 'voiceover_analysis_submission_unknown',
+      result: {
+        voiceoverCheckpoint: {
+          stage: 'speech_analysis_submitting',
+        },
+      },
+    }),
+    error: { code: 'voiceover_analysis_submission_unknown' },
+  }), false);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: voiceoverJob({
+      result: {
+        voiceoverCheckpoint: {
+          ttsGroups: [{
+            index: 0,
+            childJobId: 'tts-child-0',
+            attempt: 0,
+            status: 'failed',
+          }],
+        },
+      },
+    }),
+    error: { code: 'provider_job_failed' },
+  }), true);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: voiceoverJob({
+      result: {
+        voiceoverCheckpoint: {
+          stage: 'audio_aligned',
+        },
+      },
+    }),
+    error: { code: 'voiceover_mix_failed' },
+  }), true);
+});
+
 test('retry reuses a pending reservation only when polling an existing provider task', () => {
   const pendingReservation = { id: 'reservation-1', userId: 'user-1', amount: 5 };
   assert.equal(getJobCreditRetryReservationAction({
@@ -401,6 +476,38 @@ test('retry reuses a pending reservation only when polling an existing provider 
     },
     reservationProcessed: false,
   }), 'block');
+});
+
+test('voiceover retry reuses one pending parent reservation for confirmed new provider attempts', () => {
+  const pendingReservation = { id: 'voiceover-reservation-1', userId: 'user-1', amount: 5 };
+  const job = {
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    providerTaskId: '',
+    payload: { __creditReservation: pendingReservation },
+  };
+  assert.equal(getJobCreditRetryReservationAction({
+    job,
+    reservationProcessed: false,
+    providerTaskRecoverable: false,
+    voiceoverRetryPlan: {
+      kind: 'provider',
+      target: 'tts',
+      groupIndex: 0,
+      userConfirmed: true,
+      nextChildJobId: 'server-child-1',
+    },
+  }), 'reuse');
+  assert.equal(getJobCreditRetryReservationAction({
+    job,
+    reservationProcessed: false,
+    voiceoverRetryPlan: { kind: 'reuse' },
+  }), 'reuse');
+  assert.equal(getJobCreditRetryReservationAction({
+    job,
+    reservationProcessed: true,
+    voiceoverRetryPlan: { kind: 'provider', userConfirmed: true },
+  }), 'reserve');
 });
 
 test('retry after a released reservation requires a new reservation before submit', () => {
@@ -463,6 +570,29 @@ test('cancel and retry routes enforce reservation lifecycle before queueing work
   assert.match(serverSource, /payload_json:\s*JSON\.stringify\(retryPayload\)[\s\S]*requestRetryJob/);
   assert.match(serverSource, /requestLocalRetryJob\(store, jobId, \{[\s\S]*payload: retryPayload/);
   assert.equal((serverSource.match(/resetProviderTaskId:\s*reservationAction === 'reserve'/g) || []).length, 2);
+});
+
+test('voiceover retry routes accept only the bounded confirmation body and derive plans under storage locks', () => {
+  assert.match(
+    serverSource,
+    /const readJobRetryRequest = async[\s\S]*if \(!voiceoverParent\)[\s\S]*readBody\(req, \{ maxBytes: 1024 \}\)[\s\S]*job_retry_request_too_large[\s\S]*statusCode: 413/,
+  );
+  assert.equal(
+    (serverSource.match(/retryRequest = await readJobRetryRequest\(req, \{/g) || []).length,
+    2,
+  );
+  assert.match(
+    serverSource,
+    /withMysqlTransaction\(connection,[\s\S]*getJobByIdForUpdate[\s\S]*deriveVoiceoverRetryPlan\(currentJob, retryRequest\)[\s\S]*getJobCreditRetryReservationAction/,
+  );
+  assert.match(
+    serverSource,
+    /if \(!isVoiceoverParent\) \{\s*assertSubmissionKnownBeforeRetry\(currentJob\)/,
+  );
+  assert.match(
+    serverSource,
+    /if \(!isVoiceoverRetryRequest\) \{\s*assertSubmissionKnownBeforeRetry\(job\)/,
+  );
 });
 
 test('job deletion checks pending reservations in mysql and local modes before removing records', () => {

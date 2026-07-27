@@ -501,6 +501,7 @@ export async function runVoiceoverTranslationJob({
     managedUrl = '',
     fileName,
     kind,
+    expectedDurationMs,
   }) => {
     const destinationPath = await prepareOutputPath('inputs', fileName);
     const resolved = normalizeOwnedAsset(await resolveOwnedAsset({
@@ -508,6 +509,12 @@ export async function runVoiceoverTranslationJob({
       ...(assetId ? { assetId } : { sourceUrl: managedUrl }),
       destinationPath,
       expectedKind: kind,
+      ...(Number.isFinite(Number(expectedDurationMs)) && Number(expectedDurationMs) > 0
+        ? {
+            expectedDurationMs: Number(expectedDurationMs),
+            durationToleranceMs: config.durationToleranceMs,
+          }
+        : {}),
       signal,
     }), {
       expectedAssetId: assetId,
@@ -629,6 +636,7 @@ export async function runVoiceoverTranslationJob({
         assetId: checkpoint.finalAssetId,
         fileName: 'final-resume.mp4',
         kind: 'final_video',
+        expectedDurationMs: durationMs,
       });
       return {
         result: {
@@ -653,6 +661,7 @@ export async function runVoiceoverTranslationJob({
           assetId: checkpoint.subtitleRemoval.resultAssetId,
           fileName: 'base-golden.mp4',
           kind: 'golden_video',
+          expectedDurationMs: durationMs,
         });
       } else {
         throwIfAborted(signal);
@@ -712,6 +721,7 @@ export async function runVoiceoverTranslationJob({
             assetId: persisted.assetId,
             fileName: 'base-golden.mp4',
             kind: 'golden_video',
+            expectedDurationMs: durationMs,
           });
         } else {
           const runGolden = requireDependency(deps, 'runGolden');
@@ -753,6 +763,7 @@ export async function runVoiceoverTranslationJob({
               assetId: persisted.assetId,
               fileName: 'base-golden.mp4',
               kind: 'golden_video',
+              expectedDurationMs: durationMs,
             });
           } catch (error) {
             if (CHILD_DEFINITIVE_FAILURE_CODES.has(error?.code)) {
@@ -796,6 +807,7 @@ export async function runVoiceoverTranslationJob({
         assetId: checkpoint.originalAudioAssetId,
         fileName: 'original.wav',
         kind: 'original_audio',
+        expectedDurationMs: durationMs,
       });
     }
 
@@ -826,11 +838,13 @@ export async function runVoiceoverTranslationJob({
         assetId: checkpoint.vocalAssetId,
         fileName: 'vocals.wav',
         kind: 'vocal_audio',
+        expectedDurationMs: durationMs,
       });
       background = await resolveIntoWorkRoot({
         assetId: checkpoint.backgroundAssetId,
         fileName: 'background.wav',
         kind: 'background_audio',
+        expectedDurationMs: durationMs,
       });
     }
 
@@ -1039,10 +1053,17 @@ export async function runVoiceoverTranslationJob({
         assetId,
         ...(Number.isInteger(actualDurationMs) && actualDurationMs > 0 ? { actualDurationMs } : {}),
       });
+      const resolvedTtsAudio = await resolveIntoWorkRoot({
+        assetId,
+        fileName: `tts-${index}.wav`,
+        kind: 'tts_audio',
+        expectedDurationMs: actualDurationMs,
+      });
       durableGroups.push(groupCheckpoint);
       completedGroups.push({
         index,
         assetId,
+        audioPath: resolvedTtsAudio.path,
         startMs: planned.startMs,
         endMs: planned.endMs,
         actualDurationMs,
@@ -1057,20 +1078,11 @@ export async function runVoiceoverTranslationJob({
 
     let alignedAudio;
     if (checkpoint.stage === 'tts_generating') {
-      const localGroups = [];
-      for (const group of completedGroups) {
-        const asset = await resolveIntoWorkRoot({
-          assetId: group.assetId,
-          fileName: `tts-${group.index}.wav`,
-          kind: 'tts_audio',
-        });
-        localGroups.push({ ...group, audioPath: asset.path });
-      }
       throwIfAborted(signal);
       const alignAudio = requireDependency(deps, 'alignAudio');
       const alignedPath = await prepareOutputPath('audio', 'aligned.wav');
       const aligned = await alignAudio({
-        groups: localGroups,
+        groups: completedGroups,
         outputPath: alignedPath,
         totalDurationMs: durationMs,
         config,
@@ -1096,6 +1108,7 @@ export async function runVoiceoverTranslationJob({
         assetId: checkpoint.alignedAudioAssetId,
         fileName: 'aligned.wav',
         kind: 'aligned_audio',
+        expectedDurationMs: durationMs,
       });
     }
 

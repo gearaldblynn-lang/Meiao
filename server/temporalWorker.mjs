@@ -581,7 +581,12 @@ export const createMysqlTemporalActivities = ({
         updated_at: finishedAt,
       });
       try {
-        await settleJobCredits?.({ job: refreshedJob, output, finishedAt, aborted: controller.signal.aborted });
+        await settleJobCredits?.({
+          job: latestBeforeComplete,
+          output,
+          finishedAt,
+          aborted: controller.signal.aborted,
+        });
       } catch (creditError) {
         console.error('Account credit settlement failed after MySQL Temporal job completion.', creditError);
       }

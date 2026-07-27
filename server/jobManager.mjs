@@ -1478,6 +1478,12 @@ export const requestRetryJob = async (pool, job, actor) => {
   const resetProviderTaskId = Boolean(actor?.resetProviderTaskId);
   const isVoiceoverParent = String(job?.taskType || '') === 'voiceover_translate_video'
     && String(job?.provider || '') === 'internal';
+  if (isVoiceoverParent && !['failed', 'cancelled'].includes(String(job?.status || ''))) {
+    throw Object.assign(new Error('只有失败或已取消的口播翻译父任务可以重试。'), {
+      code: 'job_state_changed',
+      statusCode: 409,
+    });
+  }
   const retryResult = isVoiceoverParent
     ? prepareVoiceoverJobRetryResult(job, actor?.voiceoverRetryPlan, {
       env: actor?.env,
@@ -1504,11 +1510,11 @@ export const requestRetryJob = async (pool, job, actor) => {
       assignments.push(`${key} = ?`);
       values.push(value);
     }
-    values.push(job.id);
+    values.push(job.id, job.status);
     const [updateResult] = await pool.query(
       `UPDATE internal_jobs
        SET ${assignments.join(', ')}
-       WHERE id = ? AND status = 'failed'`,
+       WHERE id = ? AND status = ?`,
       values,
     );
     if (Number(updateResult?.affectedRows || 0) !== 1) {
@@ -1749,7 +1755,12 @@ export const createJobWorker = ({
               updated_at: finishedAt,
             });
             try {
-              await settleJobCredits?.({ job: refreshedJob, output, finishedAt, aborted: controller.signal.aborted });
+              await settleJobCredits?.({
+                job: latestBeforeComplete,
+                output,
+                finishedAt,
+                aborted: controller.signal.aborted,
+              });
             } catch (creditError) {
               console.error('Account credit settlement failed after job completion.', creditError);
             }

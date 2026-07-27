@@ -107,6 +107,7 @@ import {
   requestLocalCancelJob,
   requestLocalRetryJob,
   resolveLocalSubmissionUnknownJob,
+  withLocalJobRetryRollback,
 } from './localJobStore.mjs';
 import {
   assertDeployRequestAllowed,
@@ -166,10 +167,14 @@ import {
 } from './assetStore.mjs';
 import {
   createVoiceoverChildJobLedger,
+  deriveVoiceoverRetryPlan,
+  normalizeVoiceoverRetryRequestBody,
+  prepareVoiceoverJobRetryResult,
 } from './voiceoverChildJobStore.mjs';
 import {
   getVoiceoverConfig,
 } from './voiceoverContract.mjs';
+import { probeVoiceoverManagedMedia } from './voiceoverMediaProbe.mjs';
 import {
   checkVoiceoverSeparationReadiness,
   separateVoiceover,
@@ -2576,6 +2581,27 @@ const readBody = async (req, options = {}) => {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 };
 
+const readJobRetryRequest = async (req, { voiceoverParent = false } = {}) => {
+  if (!voiceoverParent) {
+    return { confirmNewProviderAttempt: false };
+  }
+  try {
+    return normalizeVoiceoverRetryRequestBody(await readBody(req, { maxBytes: 1024 }));
+  } catch (error) {
+    if (error?.message === 'REQUEST_BODY_TOO_LARGE') {
+      throw Object.assign(new Error('重试请求内容过大。'), {
+        code: 'job_retry_request_too_large',
+        statusCode: 413,
+      });
+    }
+    if (error?.statusCode) throw error;
+    throw Object.assign(new Error('重试请求参数无效。'), {
+      code: 'voiceover_retry_invalid',
+      statusCode: 400,
+    });
+  }
+};
+
 const MULTIPART_FILE_PREFIX_MAX_BYTES = 1024 * 1024;
 
 const readMultipartFormData = async (req, options = {}) => {
@@ -4699,6 +4725,9 @@ const createVoiceoverRunnerDependencies = async (job, env) => {
       assetId,
       sourceUrl,
       destinationPath,
+      expectedKind,
+      expectedDurationMs,
+      durationToleranceMs,
       signal,
     }) => {
       const owned = await resolveOwnedVoiceoverAsset({
@@ -4707,7 +4736,7 @@ const createVoiceoverRunnerDependencies = async (job, env) => {
         sourceUrl,
         pool,
       });
-      return materializeOwnedVoiceoverAsset({
+      const materialized = await materializeOwnedVoiceoverAsset({
         asset: owned,
         userId,
         destinationPath,
@@ -4715,14 +4744,30 @@ const createVoiceoverRunnerDependencies = async (job, env) => {
         env,
         signal,
       });
+      const metadata = await probeVoiceoverManagedMedia({
+        filePath: materialized.path,
+        expectedKind,
+        expectedDurationMs,
+        durationToleranceMs,
+        signal,
+        probe: (filePath, mediaKind, probeSignal) => (
+          mediaTranscodeService.probe(filePath, mediaKind, probeSignal)
+        ),
+      });
+      return {
+        ...materialized,
+        ...metadata,
+      };
     },
     probeMedia: async ({ filePath, signal }) => {
-      const probed = await mediaTranscodeService.probe(filePath, 'video', signal);
-      return {
-        ...probed,
-        durationMs: Number(probed?.durationSeconds) * 1000,
-        hasAudio: probed?.hasAudio === true,
-      };
+      return probeVoiceoverManagedMedia({
+        filePath,
+        expectedKind: 'source_video',
+        signal,
+        probe: (probePath, mediaKind, probeSignal) => (
+          mediaTranscodeService.probe(probePath, mediaKind, probeSignal)
+        ),
+      });
     },
     persistManagedFile,
     childJobs,
@@ -14513,6 +14558,17 @@ const handleMysqlRequest = async (req, res, url) => {
       json(res, 404, { message: '任务不存在。' });
       return;
     }
+    const isVoiceoverRetryRequest = job.taskType === 'voiceover_translate_video'
+      && job.provider === 'internal';
+    let retryRequest;
+    try {
+      retryRequest = await readJobRetryRequest(req, {
+        voiceoverParent: isVoiceoverRetryRequest,
+      });
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
     let submissionPolicy;
     try {
       const prepared = await prepareVoiceoverSubmission({
@@ -14545,7 +14601,11 @@ const handleMysqlRequest = async (req, res, url) => {
           error.statusCode = 409;
           throw error;
         }
-        assertSubmissionKnownBeforeRetry(currentJob);
+        const isVoiceoverParent = currentJob.taskType === 'voiceover_translate_video'
+          && currentJob.provider === 'internal';
+        if (!isVoiceoverParent) {
+          assertSubmissionKnownBeforeRetry(currentJob);
+        }
         if (currentJob.taskType === 'subtitle_remove_video') {
           const guardState = await getSubtitleRemovalSubmissionGuardState(connection, user.id, currentJob.payload);
           assertSubtitleRemovalRetryAllowed({
@@ -14554,6 +14614,12 @@ const handleMysqlRequest = async (req, res, url) => {
           });
         }
 
+        const voiceoverRetryPlan = isVoiceoverParent
+          ? deriveVoiceoverRetryPlan(currentJob, retryRequest)
+          : null;
+        if (isVoiceoverParent) {
+          prepareVoiceoverJobRetryResult(currentJob, voiceoverRetryPlan);
+        }
         const currentReservation = getCreditReservationFromJob(currentJob);
         const reservationProcessed = currentReservation
           ? await hasDbProcessedCreditReservation(connection, currentReservation)
@@ -14562,6 +14628,7 @@ const handleMysqlRequest = async (req, res, url) => {
           job: currentJob,
           reservationProcessed,
           providerTaskRecoverable: canRecoverProviderTaskById(currentJob),
+          voiceoverRetryPlan,
         });
         if (reservationAction === 'block') {
           const error = new Error('任务的原积分预留仍在处理中，为防止重复扣费已停止重新提交。');
@@ -14590,6 +14657,7 @@ const handleMysqlRequest = async (req, res, url) => {
         });
         await requestRetryJob(connection, { ...currentJob, payload: retryPayload }, {
           resetProviderTaskId: reservationAction === 'reserve',
+          ...(isVoiceoverParent ? { voiceoverRetryPlan } : {}),
         });
       }), { timeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env) });
     } catch (error) {
@@ -18167,8 +18235,21 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       json(res, 409, { message: '只有已失败或已取消的任务可以重试。', code: 'job_retry_not_allowed' });
       return;
     }
+    const isVoiceoverRetryRequest = job.taskType === 'voiceover_translate_video'
+      && job.provider === 'internal';
+    let retryRequest;
     try {
-      assertSubmissionKnownBeforeRetry(job);
+      retryRequest = await readJobRetryRequest(req, {
+        voiceoverParent: isVoiceoverRetryRequest,
+      });
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
+    try {
+      if (!isVoiceoverRetryRequest) {
+        assertSubmissionKnownBeforeRetry(job);
+      }
       if (job.taskType === 'subtitle_remove_video') {
         assertSubtitleRemovalRetryAllowed({
           jobs: store.jobs,
@@ -18198,11 +18279,25 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       respondJobSubmissionPolicyError(res, error);
       return;
     }
+    const isVoiceoverParent = job.taskType === 'voiceover_translate_video'
+      && job.provider === 'internal';
+    let voiceoverRetryPlan = null;
+    try {
+      if (isVoiceoverParent) {
+        voiceoverRetryPlan = deriveVoiceoverRetryPlan(job, retryRequest);
+        prepareVoiceoverJobRetryResult(job, voiceoverRetryPlan);
+      }
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
+
     const currentReservation = getCreditReservationFromJob(job);
     const reservationAction = getJobCreditRetryReservationAction({
       job,
       reservationProcessed: getLocalCreditReservationState(store, currentReservation) === 'processed',
       providerTaskRecoverable: canRecoverProviderTaskById(job),
+      voiceoverRetryPlan,
     });
     if (reservationAction === 'block') {
       json(res, 409, {
@@ -18212,53 +18307,46 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       return;
     }
 
-    let replacementReservation = null;
-    let retryPayload = job.payload;
-    if (reservationAction === 'reserve') {
-      const retryJobPayload = {
-        module: job.module,
-        taskType: submissionPolicy.taskType,
-        provider: submissionPolicy.provider,
-        payload: stripCreditReservationFromPayload(job.payload),
-        maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
-      };
-      replacementReservation = reserveLocalJobCredits(store, user, retryJobPayload);
-      retryPayload = attachCreditReservationToJobPayload(retryJobPayload, replacementReservation).payload;
-    }
-    const retriedJob = requestLocalRetryJob(store, jobId, {
-      payload: retryPayload,
-      maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
-      resetProviderTaskId: reservationAction === 'reserve',
-    });
-    appendLocalLog(store, {
-      user,
-      level: 'info',
-      module: job.module,
-      action: 'job_retried',
-      message: `重新排队任务：${job.id}`,
-      status: 'started',
-      meta: {
-        jobId: job.id,
-        providerTaskId: job.providerTaskId || '',
-        provider: job.provider,
-        taskType: job.taskType,
-        jobCreatedAt: job.createdAt,
-      },
-    });
-    if (retriedJob) {
-      try {
-        await startLocalJobWorkflowIfEnabled(store, retriedJob);
-      } catch (error) {
-        if (replacementReservation) {
-          releaseLocalAccountCredits(store, replacementReservation, {
-            reason: 'job_retry_prepare_failed',
-            errorCode: error?.code || '',
-          });
-        }
-        throw error;
+    let retriedJob;
+    await withLocalJobRetryRollback(store, async () => {
+      let retryPayload = job.payload;
+      if (reservationAction === 'reserve') {
+        const retryJobPayload = {
+          module: job.module,
+          taskType: submissionPolicy.taskType,
+          provider: submissionPolicy.provider,
+          payload: stripCreditReservationFromPayload(job.payload),
+          maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
+        };
+        const replacementReservation = reserveLocalJobCredits(store, user, retryJobPayload);
+        retryPayload = attachCreditReservationToJobPayload(retryJobPayload, replacementReservation).payload;
       }
-    }
-    writeLocalStore(store);
+      retriedJob = requestLocalRetryJob(store, jobId, {
+        payload: retryPayload,
+        maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
+        resetProviderTaskId: reservationAction === 'reserve',
+        ...(isVoiceoverParent ? { voiceoverRetryPlan } : {}),
+      });
+      appendLocalLog(store, {
+        user,
+        level: 'info',
+        module: job.module,
+        action: 'job_retried',
+        message: `重新排队任务：${job.id}`,
+        status: 'started',
+        meta: {
+          jobId: job.id,
+          providerTaskId: job.providerTaskId || '',
+          provider: job.provider,
+          taskType: job.taskType,
+          jobCreatedAt: job.createdAt,
+        },
+      });
+      if (retriedJob) {
+        await startLocalJobWorkflowIfEnabled(store, retriedJob);
+      }
+      writeLocalStore(store);
+    }, { persist: writeLocalStore });
     if (!shouldUseTemporalForLocalExecution()) {
       localJobWorker?.trigger?.();
     }

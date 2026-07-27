@@ -2,10 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildVoiceoverChildJobId,
   createVoiceoverChildJobLedger,
+  deriveVoiceoverRetryPlan,
   isParentOwnedChildJob,
+  normalizeVoiceoverRetryRequestBody,
   persistLocalVoiceoverParentCheckpoint,
   persistMysqlVoiceoverParentCheckpoint,
+  prepareVoiceoverJobRetryResult,
 } from './voiceoverChildJobStore.mjs';
 
 const validParentPayload = (overrides = {}) => ({
@@ -647,6 +651,175 @@ test('managed identity validation rejects external, credentialed, signed, fragme
       sourceUrl,
     );
   }
+});
+
+test('retry request accepts only the server-owned confirmation bit', () => {
+  assert.deepEqual(normalizeVoiceoverRetryRequestBody({}), {
+    confirmNewProviderAttempt: false,
+  });
+  assert.deepEqual(normalizeVoiceoverRetryRequestBody({
+    confirmNewProviderAttempt: true,
+  }), {
+    confirmNewProviderAttempt: true,
+  });
+  assert.throws(
+    () => normalizeVoiceoverRetryRequestBody({
+      confirmNewProviderAttempt: true,
+      kind: 'reuse',
+    }),
+    (error) => error?.code === 'voiceover_retry_invalid',
+  );
+  assert.throws(
+    () => normalizeVoiceoverRetryRequestBody({
+      confirmNewProviderAttempt: 'true',
+    }),
+    (error) => error?.code === 'voiceover_retry_invalid',
+  );
+});
+
+test('server derives Golden retry target and deterministic next child identity from the checkpoint', async () => {
+  const failedParent = validParent({
+    status: 'failed',
+    errorCode: 'provider_job_failed',
+    payload: validParentPayload({ removeText: true }),
+    result: {
+      auditMarker: 'preserve-me',
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'subtitle_removal',
+        baseVideoAssetId: 'asset-base',
+        subtitleRemoval: {
+          childJobId: 'golden-child-0',
+          attempt: 0,
+          status: 'failed',
+        },
+        analysisAttempt: 0,
+      },
+    },
+  });
+  const unconfirmed = deriveVoiceoverRetryPlan(failedParent, {
+    confirmNewProviderAttempt: false,
+  });
+  assert.deepEqual(unconfirmed, {
+    kind: 'provider',
+    target: 'golden',
+    userConfirmed: false,
+    nextChildJobId: buildVoiceoverChildJobId(failedParent.id, 'golden:attempt:1'),
+  });
+  assert.throws(
+    () => prepareVoiceoverJobRetryResult(failedParent, unconfirmed),
+    (error) => error?.code === 'voiceover_retry_confirmation_required',
+  );
+
+  const confirmed = deriveVoiceoverRetryPlan(failedParent, {
+    confirmNewProviderAttempt: true,
+  });
+  const retryResult = prepareVoiceoverJobRetryResult(failedParent, confirmed);
+  assert.equal(
+    retryResult.voiceoverCheckpoint.subtitleRemoval.childJobId,
+    confirmed.nextChildJobId,
+  );
+
+  const runningParent = {
+    ...failedParent,
+    status: 'running',
+    errorCode: '',
+    result: retryResult,
+  };
+  const harness = createLocalHarness([runningParent]);
+  const ledger = createVoiceoverChildJobLedger({
+    mode: 'local',
+    readLocalStore: harness.readLocalStore,
+    mutateLocalStore: harness.mutateLocalStore,
+    now: () => 4_000,
+  });
+  const child = await ledger.getOrCreate({
+    parentJob: runningParent,
+    childKey: 'golden:attempt:1',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: validGoldenPayload({
+      batchId: runningParent.id,
+    }),
+  });
+  assert.equal(child.id, confirmed.nextChildJobId);
+
+  const submissionUnknownParent = {
+    ...failedParent,
+    errorCode: 'provider_submission_unknown',
+  };
+  const submissionUnknownUnconfirmed = deriveVoiceoverRetryPlan(
+    submissionUnknownParent,
+    { confirmNewProviderAttempt: false },
+  );
+  assert.throws(
+    () => prepareVoiceoverJobRetryResult(
+      submissionUnknownParent,
+      submissionUnknownUnconfirmed,
+    ),
+    (error) => error?.code === 'voiceover_retry_confirmation_required',
+  );
+  const submissionUnknownConfirmed = deriveVoiceoverRetryPlan(
+    submissionUnknownParent,
+    { confirmNewProviderAttempt: true },
+  );
+  assert.equal(
+    prepareVoiceoverJobRetryResult(
+      submissionUnknownParent,
+      submissionUnknownConfirmed,
+    ).voiceoverCheckpoint.subtitleRemoval.attempt,
+    1,
+  );
+});
+
+test('server derives analysis and query-only retry plans without trusting parent provider state', () => {
+  const analysisParent = validParent({
+    status: 'failed',
+    errorCode: 'voiceover_analysis_submission_unknown',
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'speech_analysis_submitting',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-audio',
+        vocalAssetId: 'asset-vocal',
+        backgroundAssetId: 'asset-background',
+        analysisAttempt: 0,
+      },
+    },
+  });
+  assert.deepEqual(deriveVoiceoverRetryPlan(analysisParent, {
+    confirmNewProviderAttempt: true,
+  }), {
+    kind: 'analysis',
+    userConfirmed: true,
+  });
+
+  const queryOnlyParent = validParent({
+    status: 'cancelled',
+    errorCode: 'request_cancelled',
+    providerTaskId: '',
+    payload: validParentPayload({ removeText: true }),
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'subtitle_removal',
+        baseVideoAssetId: 'asset-base',
+        subtitleRemoval: {
+          childJobId: 'golden-child-0',
+          providerTaskId: 'golden-provider-0',
+          attempt: 0,
+          status: 'submitted',
+        },
+        analysisAttempt: 0,
+      },
+    },
+  });
+  assert.deepEqual(deriveVoiceoverRetryPlan(queryOnlyParent, {
+    confirmNewProviderAttempt: false,
+  }), {
+    kind: 'reuse',
+  });
 });
 
 const createMysqlLedgerHarness = ({ failInsert = false } = {}) => {

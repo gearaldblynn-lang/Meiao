@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 import { createLocalJobRecord, getLocalJobById } from './localJobStore.mjs';
 import { createLocalTemporalActivities, createMysqlTemporalActivities } from './temporalWorker.mjs';
+import { shouldReleaseJobCreditReservation } from './accountCredits.mjs';
 
 const temporalWorkflowSource = readFileSync(new URL('./temporal/workflows.mjs', import.meta.url), 'utf8');
 
@@ -921,8 +922,9 @@ test('local temporal activity refuses to claim a parent-owned child', async () =
   assert.equal(executeCalls, 0);
 });
 
-test('mysql temporal activity awaits a guarded parent result checkpoint before continuing', async () => {
+test('mysql temporal abort finalization receives the latest submitted child checkpoint', async () => {
   const parent = voiceoverParentJob();
+  parent.payload.removeText = true;
   const { state, pool } = createMysqlHarness({
     id: parent.id,
     user_id: parent.userId,
@@ -937,23 +939,31 @@ test('mysql temporal activity awaits a guarded parent result checkpoint before c
     max_retries: 0,
     created_at: 1_000,
     updated_at: 1_000,
+    cancel_requested_at: 900,
   });
   const sideEffects = [];
+  const creditJobs = [];
   const activities = createMysqlTemporalActivities({
     getPool: async () => pool,
     executeJob: async (_job, _signal, { onResultCheckpoint }) => {
       await onResultCheckpoint({
         voiceoverCheckpoint: {
-          stage: 'audio_extracted',
-          originalAudioAssetId: 'asset-audio',
+          stage: 'subtitle_removal',
+          subtitleRemoval: {
+            childJobId: 'golden-child-0',
+            providerTaskId: 'golden-provider-0',
+            attempt: 0,
+            status: 'submitted',
+          },
         },
       });
-      assert.equal(JSON.parse(state.job.result_json).voiceoverCheckpoint.stage, 'audio_extracted');
+      assert.equal(JSON.parse(state.job.result_json).voiceoverCheckpoint.stage, 'subtitle_removal');
       sideEffects.push('paid-call');
-      throw Object.assign(new Error('lost'), { code: 'provider_network_error' });
+      return { result: { ignoredOnCancel: true } };
     },
     createLog: async () => {},
     findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+    settleJobCredits: ({ job: creditJob }) => creditJobs.push(creditJob),
   });
 
   const result = await activities.executeMysqlJobAttemptActivity({
@@ -961,10 +971,19 @@ test('mysql temporal activity awaits a guarded parent result checkpoint before c
     workflowId: 'workflow-parent',
     runId: 'run-parent',
   });
-  assert.equal(result.status, 'failed');
+  assert.equal(result.status, 'cancelled');
   assert.deepEqual(sideEffects, ['paid-call']);
   assert.equal(JSON.parse(state.job.result_json).audit, 'keep');
-  assert.equal(JSON.parse(state.job.result_json).voiceoverCheckpoint.stage, 'audio_extracted');
+  assert.equal(JSON.parse(state.job.result_json).voiceoverCheckpoint.stage, 'subtitle_removal');
+  assert.equal(
+    creditJobs[0]?.result?.voiceoverCheckpoint?.subtitleRemoval?.providerTaskId,
+    'golden-provider-0',
+  );
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: creditJobs[0],
+    error: { code: 'request_cancelled' },
+    aborted: true,
+  }), false);
 });
 
 test('mysql temporal activity cannot complete or fail after its terminal claim guard loses a race', async () => {

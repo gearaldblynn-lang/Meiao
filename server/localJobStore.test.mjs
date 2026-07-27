@@ -21,8 +21,12 @@ import {
   resolveLocalSubmissionUnknownJob,
   takeNextLocalExecutableJobs,
   updateLocalJobProviderTaskId,
+  withLocalJobRetryRollback,
 } from './localJobStore.mjs';
-import { isParentOwnedChildJob } from './voiceoverChildJobStore.mjs';
+import {
+  deriveVoiceoverRetryPlan,
+  isParentOwnedChildJob,
+} from './voiceoverChildJobStore.mjs';
 
 const createStore = () => ({
   users: [],
@@ -497,6 +501,69 @@ test('requestLocalRetryJob clears an old provider task id only for true resubmis
   assert.equal(resubmissionRetry.retryCount, 0);
 });
 
+test('local retry rollback restores job, account reservation, and ledger after workflow start failure', async () => {
+  const store = createStore();
+  store.users = [{
+    ...createUser(),
+    creditBalance: 10,
+    creditReserved: 0,
+  }];
+  store.jobs = [{
+    id: 'job-retry-rollback',
+    status: 'failed',
+    result: { voiceoverCheckpoint: { stage: 'input_prepared' } },
+  }];
+  store.accountCreditLedger = [];
+  const original = structuredClone(store);
+  let persistedSnapshot = null;
+
+  await assert.rejects(
+    withLocalJobRetryRollback(store, async () => {
+      store.jobs[0].status = 'queued';
+      store.users[0].creditReserved = 5;
+      store.accountCreditLedger.push({ action: 'reserve', amount: 5 });
+      throw Object.assign(new Error('workflow unavailable'), {
+        code: 'job_workflow_start_failed',
+      });
+    }, {
+      persist: (restoredStore) => {
+        persistedSnapshot = structuredClone(restoredStore);
+      },
+    }),
+    (error) => error?.code === 'job_workflow_start_failed',
+  );
+
+  assert.deepEqual(store, original);
+  assert.deepEqual(persistedSnapshot, original);
+
+  await assert.rejects(
+    withLocalJobRetryRollback(store, async () => {
+      store.jobs[0].status = 'queued';
+      throw Object.assign(new Error('primary workflow failure'), {
+        code: 'job_workflow_start_failed',
+      });
+    }, {
+      persist: () => {
+        throw new Error('rollback persistence failed');
+      },
+    }),
+    (error) => error?.code === 'job_workflow_start_failed',
+  );
+  assert.deepEqual(store, original);
+
+  await assert.rejects(
+    withLocalJobRetryRollback(store, async () => {
+      store.jobs[0].status = 'queued';
+      throw 'primitive failure';
+    }, {
+      persist: () => {
+        throw new Error('rollback persistence failed');
+      },
+    }),
+    (error) => error === 'primitive failure',
+  );
+});
+
 test('takeNextLocalExecutableJobs marks queued jobs as running in priority order', () => {
   const store = createStore();
   const user = createUser();
@@ -936,6 +1003,42 @@ test('local voiceover retry preserves checkpoint and only server-confirmed analy
   assert.equal(retried.result.voiceoverCheckpoint.analysisAttempt, 1);
 });
 
+test('local voiceover retry safely requeues a cancelled query-only child attempt', () => {
+  const store = createStore();
+  store.jobs = [createVoiceoverParent({
+    status: 'cancelled',
+    startedAt: null,
+    finishedAt: 3,
+    errorCode: 'request_cancelled',
+    payload: {
+      taskPurpose: 'voiceover_translation',
+      removeText: true,
+    },
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'subtitle_removal',
+        baseVideoAssetId: 'asset-base',
+        subtitleRemoval: {
+          childJobId: 'golden-child-0',
+          providerTaskId: 'golden-provider-0',
+          attempt: 0,
+          status: 'submitted',
+        },
+        analysisAttempt: 0,
+      },
+    },
+  })];
+  const retried = requestLocalRetryJob(store, 'voiceover-parent-1', {
+    voiceoverRetryPlan: { kind: 'reuse' },
+  });
+  assert.equal(retried.status, 'queued');
+  assert.equal(
+    retried.result.voiceoverCheckpoint.subtitleRemoval.providerTaskId,
+    'golden-provider-0',
+  );
+});
+
 test('local voiceover paid retry derives the next TTS attempt once from the durable checkpoint', () => {
   const segment = {
     id: 's1',
@@ -1014,14 +1117,11 @@ test('local voiceover paid retry derives the next TTS attempt once from the dura
     }),
     (error) => error.code === 'voiceover_retry_confirmation_required',
   );
+  const confirmedPlan = deriveVoiceoverRetryPlan(store.jobs[0], {
+    confirmNewProviderAttempt: true,
+  });
   const retried = requestLocalRetryJob(store, 'voiceover-parent-1', {
-    voiceoverRetryPlan: {
-      kind: 'provider',
-      target: 'tts',
-      groupIndex: 0,
-      userConfirmed: true,
-      nextChildJobId: 'child-attempt-1',
-    },
+    voiceoverRetryPlan: confirmedPlan,
   });
   assert.equal(retried.status, 'queued');
   assert.deepEqual(
@@ -1032,7 +1132,7 @@ test('local voiceover paid retry derives the next TTS attempt once from the dura
     })),
     [
       { attempt: 0, childJobId: 'child-attempt-0', status: 'failed' },
-      { attempt: 1, childJobId: 'child-attempt-1', status: 'queued' },
+      { attempt: 1, childJobId: confirmedPlan.nextChildJobId, status: 'queued' },
     ],
   );
   assert.throws(

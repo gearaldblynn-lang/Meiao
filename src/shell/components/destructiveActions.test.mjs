@@ -361,3 +361,13 @@ test('subtitle batch retry confirms every possibly-paid retry and blocks unknown
   assert.match(shellSource, /clientSubmissionKey: result\.clientSubmissionKey/);
   assert.match(shellSource, /status: 'generating'/);
 });
+
+test('voiceover retry only asks for confirmation when the server requires a new paid attempt', () => {
+  const shellSource = read('../../ShellMigratedApp.tsx');
+
+  assert.match(shellSource, /project\.subFeature === 'voiceover_translation'/);
+  assert.match(shellSource, /voiceover_retry_confirmation_required/);
+  assert.match(shellSource, /voiceover_analysis_submission_unknown/);
+  assert.match(shellSource, /confirmNewProviderAttempt:\s*true/);
+  assert.match(shellSource, /可能产生新的语音或分析费用/);
+});

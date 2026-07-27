@@ -10551,7 +10551,27 @@ const AppContent: React.FC<{
         }
       }
       if (project.sourceType === 'job') {
-        await retryInternalJob(resultId);
+        try {
+          await retryInternalJob(resultId);
+        } catch (error) {
+          const retryErrorCode = String((error as { code?: unknown })?.code || '');
+          const needsVoiceoverPaidConfirmation = project.subFeature === 'voiceover_translation'
+            && [
+              'voiceover_retry_confirmation_required',
+              'voiceover_analysis_submission_unknown',
+            ].includes(retryErrorCode);
+          if (!needsVoiceoverPaidConfirmation) throw error;
+          const confirmed = window.confirm(
+            '继续重试可能产生新的语音或分析费用，是否确认继续？',
+          );
+          if (!confirmed) {
+            addToast('已取消口播翻译重试', 'info');
+            return;
+          }
+          await retryInternalJob(resultId, {
+            confirmNewProviderAttempt: true,
+          });
+        }
         setProjects((prev) => prev.map((item) => item.id === projectId ? {
           ...item,
           status: 'generating',

@@ -391,8 +391,12 @@ export const requestLocalRetryJob = (store, jobId, options = {}) => {
 
   const current = normalizeJob(store.jobs[index]);
   assertGenericJobMutationAllowed(current);
-  if (current.taskType === 'voiceover_translate_video' && current.provider === 'internal' && current.status !== 'failed') {
-    throw Object.assign(new Error('只有失败的口播翻译父任务可以重试。'), {
+  if (
+    current.taskType === 'voiceover_translate_video'
+    && current.provider === 'internal'
+    && !['failed', 'cancelled'].includes(current.status)
+  ) {
+    throw Object.assign(new Error('只有失败或已取消的口播翻译父任务可以重试。'), {
       code: 'job_state_changed',
       statusCode: 409,
     });
@@ -426,6 +430,25 @@ export const requestLocalRetryJob = (store, jobId, options = {}) => {
 
   store.jobs[index] = next;
   return next;
+};
+
+export const withLocalJobRetryRollback = async (
+  store,
+  operation,
+  { persist = () => {} } = {},
+) => {
+  if (!store || typeof store !== 'object' || typeof operation !== 'function') {
+    throw new TypeError('Local retry rollback requires a store and operation.');
+  }
+  const snapshot = structuredClone(store);
+  try {
+    return await operation();
+  } catch (error) {
+    for (const key of Object.keys(store)) delete store[key];
+    Object.assign(store, snapshot);
+    await Promise.resolve().then(() => persist(store)).catch(() => {});
+    throw error;
+  }
 };
 
 export const takeNextLocalExecutableJobs = (store, availableSlots, options = {}) => {

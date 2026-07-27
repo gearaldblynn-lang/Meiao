@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 import {
   getVoiceoverConfig,
@@ -94,6 +94,19 @@ const mapJobRow = (row = {}) => ({
 });
 
 const childSubmissionKey = (parentJobId, childKey) => `voiceover-child:${parentJobId}:${childKey}`;
+
+export const buildVoiceoverChildJobId = (parentJobId, childKey) => {
+  const parentId = assertSafeId(parentJobId, 'parentJobId', 'voiceover_retry_invalid');
+  const normalizedChildKey = String(childKey || '').trim();
+  if (!CHILD_KEY_TTS.test(normalizedChildKey) && !CHILD_KEY_GOLDEN.test(normalizedChildKey)) {
+    throw createStoreError('voiceover_retry_invalid', '口播翻译子任务身份无效。', 400);
+  }
+  const digest = createHash('sha256')
+    .update(`${parentId}\0${normalizedChildKey}`)
+    .digest('hex')
+    .slice(0, 32);
+  return `voiceover-child-${digest}`;
+};
 
 export const isParentOwnedChildJob = (job) => {
   const payload = job?.payload && typeof job.payload === 'object'
@@ -513,8 +526,11 @@ const buildChildRecord = ({
   createJobId,
 }) => {
   const createdAt = Number(now());
+  const childJobId = typeof createJobId === 'function'
+    ? createJobId()
+    : buildVoiceoverChildJobId(parentJob.id, normalizedInput.childKey);
   return {
-    id: assertSafeId(createJobId(), 'childJobId'),
+    id: assertSafeId(childJobId, 'childJobId'),
     userId: parentJob.userId,
     module: 'video',
     taskType: normalizedInput.taskType,
@@ -640,7 +656,7 @@ export const createVoiceoverChildJobLedger = ({
   readLocalStore,
   mutateLocalStore,
   now = Date.now,
-  createJobId = () => randomBytes(12).toString('hex'),
+  createJobId,
   env = process.env,
 } = {}) => {
   const normalizedMode = String(mode || '').trim();
@@ -902,6 +918,91 @@ export const createVoiceoverChildJobLedger = ({
   });
 };
 
+export const normalizeVoiceoverRetryRequestBody = (body = {}) => {
+  assertKnownKeys(
+    body,
+    new Set(['confirmNewProviderAttempt']),
+    'voiceover_retry_invalid',
+  );
+  if (
+    Object.hasOwn(body, 'confirmNewProviderAttempt')
+    && typeof body.confirmNewProviderAttempt !== 'boolean'
+  ) {
+    throw createStoreError(
+      'voiceover_retry_invalid',
+      '口播翻译重试确认参数无效。',
+      400,
+    );
+  }
+  return {
+    confirmNewProviderAttempt: body.confirmNewProviderAttempt === true,
+  };
+};
+
+export const deriveVoiceoverRetryPlan = (job, retryRequest = {}, options = {}) => {
+  const normalized = mapJobRow(job);
+  if (
+    normalized.taskType !== 'voiceover_translate_video'
+    || normalized.provider !== 'internal'
+    || !normalized.result?.voiceoverCheckpoint
+  ) {
+    throw createStoreError('voiceover_retry_invalid', '口播翻译重试检查点缺失。', 409);
+  }
+  const request = normalizeVoiceoverRetryRequestBody(retryRequest);
+  const checkpointOptions = resolveCheckpointOptions(normalized, options);
+  const checkpoint = normalizeVoiceoverCheckpoint(
+    normalized.result.voiceoverCheckpoint,
+    checkpointOptions,
+  );
+  if (normalized.errorCode === 'voiceover_analysis_submission_unknown') {
+    return {
+      kind: 'analysis',
+      userConfirmed: request.confirmNewProviderAttempt,
+    };
+  }
+
+  const latestTtsAttemptByGroup = new Map();
+  for (const group of checkpoint.ttsGroups || []) {
+    const previous = latestTtsAttemptByGroup.get(group.index);
+    if (!previous || group.attempt > previous.attempt) {
+      latestTtsAttemptByGroup.set(group.index, group);
+    }
+  }
+  const needsNewProviderAttempt = (attempt) => (
+    attempt?.status === 'failed'
+    || (attempt?.status === 'submitted' && !attempt.providerTaskId)
+  );
+  if (needsNewProviderAttempt(checkpoint.subtitleRemoval)) {
+    const nextAttempt = checkpoint.subtitleRemoval.attempt + 1;
+    return {
+      kind: 'provider',
+      target: 'golden',
+      userConfirmed: request.confirmNewProviderAttempt,
+      nextChildJobId: buildVoiceoverChildJobId(
+        normalized.id,
+        `golden:attempt:${nextAttempt}`,
+      ),
+    };
+  }
+  const ttsAttempt = [...latestTtsAttemptByGroup.values()]
+    .sort((left, right) => left.index - right.index)
+    .find(needsNewProviderAttempt);
+  if (ttsAttempt) {
+    const nextAttempt = ttsAttempt.attempt + 1;
+    return {
+      kind: 'provider',
+      target: 'tts',
+      groupIndex: ttsAttempt.index,
+      userConfirmed: request.confirmNewProviderAttempt,
+      nextChildJobId: buildVoiceoverChildJobId(
+        normalized.id,
+        `tts:${ttsAttempt.index}:attempt:${nextAttempt}`,
+      ),
+    };
+  }
+  return { kind: 'reuse' };
+};
+
 export const prepareVoiceoverJobRetryResult = (job, voiceoverRetryPlan = {}, options = {}) => {
   const normalized = mapJobRow(job);
   if (
@@ -949,8 +1050,21 @@ export const prepareVoiceoverJobRetryResult = (job, voiceoverRetryPlan = {}, opt
       const groupIndex = Number(voiceoverRetryPlan.groupIndex);
       const attempts = (current.ttsGroups || []).filter((group) => group.index === groupIndex);
       const previous = attempts.sort((left, right) => right.attempt - left.attempt)[0];
-      if (!previous || previous.status !== 'failed') {
+      if (
+        !previous
+        || !(
+          previous.status === 'failed'
+          || (previous.status === 'submitted' && !previous.providerTaskId)
+        )
+      ) {
         throw createStoreError('voiceover_retry_invalid', 'TTS 分组不是明确失败状态。', 409);
+      }
+      const expectedChildJobId = buildVoiceoverChildJobId(
+        normalized.id,
+        `tts:${groupIndex}:attempt:${previous.attempt + 1}`,
+      );
+      if (nextChildJobId !== expectedChildJobId) {
+        throw createStoreError('voiceover_retry_invalid', 'TTS 子任务身份与检查点不一致。', 409);
       }
       const next = {
         index: previous.index,
@@ -967,8 +1081,21 @@ export const prepareVoiceoverJobRetryResult = (job, voiceoverRetryPlan = {}, opt
       );
     } else if (voiceoverRetryPlan.target === 'golden') {
       const previous = current.subtitleRemoval;
-      if (!previous || previous.status !== 'failed') {
+      if (
+        !previous
+        || !(
+          previous.status === 'failed'
+          || (previous.status === 'submitted' && !previous.providerTaskId)
+        )
+      ) {
         throw createStoreError('voiceover_retry_invalid', 'Golden 子任务不是明确失败状态。', 409);
+      }
+      const expectedChildJobId = buildVoiceoverChildJobId(
+        normalized.id,
+        `golden:attempt:${previous.attempt + 1}`,
+      );
+      if (nextChildJobId !== expectedChildJobId) {
+        throw createStoreError('voiceover_retry_invalid', 'Golden 子任务身份与检查点不一致。', 409);
       }
       voiceoverCheckpoint = normalizeVoiceoverCheckpoint({
         ...current,

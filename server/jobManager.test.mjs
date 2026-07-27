@@ -28,6 +28,7 @@ import {
   withMysqlSubmissionLock,
 } from './jobManager.mjs';
 import { isParentOwnedChildJob } from './voiceoverChildJobStore.mjs';
+import { shouldReleaseJobCreditReservation } from './accountCredits.mjs';
 
 const jobManagerSource = readFileSync(new URL('./jobManager.mjs', import.meta.url), 'utf8');
 const serverSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
@@ -2133,7 +2134,8 @@ test('mysql voiceover retry preserves checkpoint and guards the failed-to-queued
   });
 
   assert.equal(queries.length, 1);
-  assert.match(queries[0].sql, /WHERE id = \? AND status = 'failed'/);
+  assert.match(queries[0].sql, /WHERE id = \? AND status = \?/);
+  assert.equal(queries[0].values.at(-1), 'failed');
   const serializedResult = queries[0].values.find((value) => (
     typeof value === 'string' && value.includes('"voiceoverCheckpoint"')
   ));
@@ -2143,7 +2145,57 @@ test('mysql voiceover retry preserves checkpoint and guards the failed-to-queued
   assert.equal(nextResult.voiceoverCheckpoint.analysisAttempt, 1);
 });
 
-test('classic mysql worker awaits a guarded parent checkpoint before the next side effect', async () => {
+test('mysql voiceover retry rejects active parents and accepts cancelled query-only recovery with an exact CAS', async () => {
+  const checkpoint = {
+    version: 1,
+    stage: 'subtitle_removal',
+    baseVideoAssetId: 'asset-base',
+    subtitleRemoval: {
+      childJobId: 'golden-child-0',
+      providerTaskId: 'golden-provider-0',
+      attempt: 0,
+      status: 'submitted',
+    },
+    analysisAttempt: 0,
+  };
+  let mutations = 0;
+  const pool = {
+    async query(sql, values) {
+      mutations += 1;
+      assert.match(sql, /WHERE id = \? AND status = \?/);
+      assert.equal(values.at(-1), 'cancelled');
+      return [{ affectedRows: 1 }];
+    },
+  };
+  const parent = {
+    id: 'parent-mysql-cancelled',
+    userId: 'user-1',
+    module: 'video',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'running',
+    payload: { removeText: true },
+    result: { voiceoverCheckpoint: checkpoint },
+    errorCode: 'request_cancelled',
+  };
+  await assert.rejects(
+    requestRetryJob(pool, parent, {
+      voiceoverRetryPlan: { kind: 'reuse' },
+    }),
+    (error) => error?.code === 'job_state_changed',
+  );
+  assert.equal(mutations, 0);
+
+  await requestRetryJob(pool, {
+    ...parent,
+    status: 'cancelled',
+  }, {
+    voiceoverRetryPlan: { kind: 'reuse' },
+  });
+  assert.equal(mutations, 1);
+});
+
+test('classic mysql abort finalization receives the latest submitted child checkpoint', async () => {
   const row = {
     id: 'parent-classic-checkpoint',
     user_id: 'user-1',
@@ -2152,7 +2204,7 @@ test('classic mysql worker awaits a guarded parent checkpoint before the next si
     provider: 'internal',
     status: 'queued',
     priority: 0,
-    payload_json: JSON.stringify({ taskPurpose: 'voiceover_translation', removeText: false }),
+    payload_json: JSON.stringify({ taskPurpose: 'voiceover_translation', removeText: true }),
     provider_task_id: null,
     result_json: JSON.stringify({
       audit: 'keep',
@@ -2172,7 +2224,7 @@ test('classic mysql worker awaits a guarded parent checkpoint before the next si
     updated_at: 1_000,
     started_at: null,
     finished_at: null,
-    cancel_requested_at: null,
+    cancel_requested_at: 900,
   };
   const calls = [];
   const toCamel = (column) => ({
@@ -2241,22 +2293,29 @@ test('classic mysql worker awaits a guarded parent checkpoint before the next si
     },
   };
   const sideEffects = [];
+  const creditJobs = [];
   const worker = createJobWorker({
     getPool: async () => pool,
     executeJob: async (_job, _signal, { onResultCheckpoint }) => {
       await onResultCheckpoint({
         voiceoverCheckpoint: {
-          stage: 'audio_extracted',
-          originalAudioAssetId: 'asset-audio',
+          stage: 'subtitle_removal',
+          subtitleRemoval: {
+            childJobId: 'golden-child-0',
+            providerTaskId: 'golden-provider-0',
+            attempt: 0,
+            status: 'submitted',
+          },
         },
       });
-      assert.equal(JSON.parse(row.result_json).voiceoverCheckpoint.stage, 'audio_extracted');
+      assert.equal(JSON.parse(row.result_json).voiceoverCheckpoint.stage, 'subtitle_removal');
       sideEffects.push('paid-call');
-      throw Object.assign(new Error('lost'), { code: 'provider_network_error' });
+      return { result: { ignoredOnCancel: true } };
     },
     getMaxConcurrency: () => 1,
     createLog: async () => {},
     findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+    settleJobCredits: ({ job: creditJob }) => creditJobs.push(creditJob),
     getTaskEngineMode: () => 'mysql',
     isExecutionPaused: () => false,
   });
@@ -2265,9 +2324,18 @@ test('classic mysql worker awaits a guarded parent checkpoint before the next si
   worker.stop();
 
   assert.deepEqual(sideEffects, ['paid-call']);
-  assert.equal(row.status, 'failed');
+  assert.equal(row.status, 'cancelled');
   assert.equal(JSON.parse(row.result_json).audit, 'keep');
-  assert.equal(JSON.parse(row.result_json).voiceoverCheckpoint.stage, 'audio_extracted');
+  assert.equal(JSON.parse(row.result_json).voiceoverCheckpoint.stage, 'subtitle_removal');
+  assert.equal(
+    creditJobs[0]?.result?.voiceoverCheckpoint?.subtitleRemoval?.providerTaskId,
+    'golden-provider-0',
+  );
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: creditJobs[0],
+    error: { code: 'request_cancelled' },
+    aborted: true,
+  }), false);
 });
 
 test('classic mysql worker cannot complete or fail after its terminal claim guard loses a race', async () => {

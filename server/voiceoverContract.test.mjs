@@ -206,7 +206,13 @@ test('confirmed chargeable analysis retry is the only checkpoint rewind path', (
   assert.equal(retried.stage, 'voice_separated');
   assert.equal(retried.analysisAttempt, 1);
   assert.equal(retried.vocalAssetId, 'asset-vocals');
-  assert.throws(() => prepareVoiceoverRetryCheckpoint(submitting, { userConfirmed: false }), (error) => error.code === 'voiceover_analysis_submission_unknown');
+  assert.throws(
+    () => prepareVoiceoverRetryCheckpoint(submitting, { userConfirmed: false }),
+    (error) => (
+      error.code === 'voiceover_analysis_submission_unknown'
+      && error.statusCode === 409
+    ),
+  );
   assert.throws(() => prepareVoiceoverRetryCheckpoint(validCheckpoint(), { userConfirmed: true }), (error) => error.code === 'voiceover_analysis_invalid');
 });
 
@@ -280,6 +286,7 @@ test('all documented voiceover error codes are structured errors', () => {
     'voiceover_language_unsupported', 'voiceover_analysis_invalid', 'voiceover_analysis_submission_unknown', 'voiceover_separation_unavailable',
     'voiceover_separation_timeout', 'voiceover_tts_input_too_large', 'voiceover_timing_out_of_range', 'provider_submission_unknown',
     'provider_balance_insufficient', 'provider_rate_limited', 'provider_timeout', 'voiceover_mix_failed', 'voiceover_result_persist_failed',
+    'voiceover_checkpoint_asset_invalid',
   ]) {
     const error = buildVoiceoverError(code, 'expected', { stage: 'test' });
     assert.equal(error.code, code);

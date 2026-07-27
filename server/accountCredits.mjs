@@ -181,6 +181,41 @@ export const getLocalCreditReservationState = (store, reservation) => {
   return hasProcessedLocalReservation(store, reservation) ? 'processed' : 'pending';
 };
 
+const isVoiceoverParentJob = (job) => (
+  String(job?.taskType || job?.task_type || '') === 'voiceover_translate_video'
+  && String(job?.provider || '') === 'internal'
+);
+
+const getVoiceoverCheckpoint = (job) => {
+  const rawResult = job?.result ?? job?.result_json;
+  let result = rawResult;
+  if (typeof rawResult === 'string') {
+    try {
+      result = JSON.parse(rawResult);
+    } catch {
+      return null;
+    }
+  }
+  return result?.voiceoverCheckpoint || null;
+};
+
+const getCurrentVoiceoverProviderAttempts = (job) => {
+  const checkpoint = getVoiceoverCheckpoint(job);
+  if (!checkpoint || typeof checkpoint !== 'object') return [];
+  const latestTtsByGroup = new Map();
+  for (const attempt of Array.isArray(checkpoint.ttsGroups) ? checkpoint.ttsGroups : []) {
+    const groupIndex = Number(attempt?.index);
+    const previous = latestTtsByGroup.get(groupIndex);
+    if (!previous || Number(attempt?.attempt) > Number(previous?.attempt)) {
+      latestTtsByGroup.set(groupIndex, attempt);
+    }
+  }
+  return [
+    ...(checkpoint.subtitleRemoval ? [checkpoint.subtitleRemoval] : []),
+    ...latestTtsByGroup.values(),
+  ];
+};
+
 export const shouldReleaseJobCreditReservation = ({
   job,
   error,
@@ -189,6 +224,13 @@ export const shouldReleaseJobCreditReservation = ({
 } = {}) => {
   if (retryWaiting) return false;
   const errorCode = String(error?.code || job?.errorCode || '').trim();
+  if (isVoiceoverParentJob(job)) {
+    if (errorCode === 'voiceover_analysis_submission_unknown') return false;
+    const currentAttempts = getCurrentVoiceoverProviderAttempts(job);
+    if (currentAttempts.some((attempt) => attempt?.status === 'submitted')) return false;
+    if (errorCode === 'provider_submission_unknown') return false;
+    return true;
+  }
   if (errorCode === 'provider_submission_unknown') return false;
   const providerTaskId = String(error?.providerTaskId || job?.providerTaskId || '').trim();
   if (providerTaskId && !isDefinitiveProviderTaskFailure({
@@ -207,6 +249,7 @@ export const getJobCreditRetryReservationAction = ({
 } = {}) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation || reservationProcessed) return 'reserve';
+  if (isVoiceoverParentJob(job)) return 'reuse';
   if (!String(job?.providerTaskId || '').trim()) return 'block';
   if (!providerTaskRecoverable) return 'block';
   const errorCode = String(job?.errorCode || '').trim();

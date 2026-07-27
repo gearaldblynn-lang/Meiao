@@ -1732,9 +1732,15 @@ export const cancelInternalJob = async (jobId: string) => {
   });
 };
 
-export const retryInternalJob = async (jobId: string) => {
+export const retryInternalJob = async (
+  jobId: string,
+  options: { confirmNewProviderAttempt?: boolean } = {},
+) => {
   return request<{ ok: boolean }>(`/api/jobs/${encodeURIComponent(jobId)}/retry`, {
     method: 'POST',
+    ...(options.confirmNewProviderAttempt === true
+      ? { body: JSON.stringify({ confirmNewProviderAttempt: true }) }
+      : {}),
   });
 };
 

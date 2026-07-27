@@ -14,6 +14,7 @@ import {
 } from './voiceoverTranslationRunner.mjs';
 import {
   createVoiceoverChildJobLedger,
+  deriveVoiceoverRetryPlan,
   prepareVoiceoverJobRetryResult,
 } from './voiceoverChildJobStore.mjs';
 
@@ -1031,6 +1032,156 @@ test('local process and final persistence failures clean the work root without a
   }
 });
 
+test('corrupt resumed TTS audio stops before the next paid child attempt', async (t) => {
+  const firstSegment = {
+    id: 's1',
+    startMs: 0,
+    endMs: 1_000,
+    sourceText: '第一段',
+    targetText: 'First segment',
+  };
+  const secondSegment = {
+    id: 's2',
+    startMs: 1_200,
+    endMs: 2_200,
+    sourceText: '第二段',
+    targetText: 'Second segment',
+  };
+  const checkpoint = checkpointAt('tts_generating');
+  checkpoint.analysis = {
+    ...checkpoint.analysis,
+    segments: [firstSegment, secondSegment],
+  };
+  checkpoint.translation = {
+    ...checkpoint.translation,
+    segments: [firstSegment, secondSegment],
+  };
+  checkpoint.ttsGroups = [{
+    index: 0,
+    attempt: 0,
+    childJobId: 'child-tts-0',
+    providerTaskId: 'provider-tts-0',
+    assetId: 'asset-tts-corrupt',
+    status: 'succeeded',
+    startMs: 0,
+    endMs: 1_000,
+    actualDurationMs: 900,
+  }];
+  let paidCalls = 0;
+  const harness = await createHarness({
+    job: createParentJob({
+      result: { voiceoverCheckpoint: checkpoint },
+    }),
+    overrides: {
+      buildTtsGroups: () => ([
+        {
+          groupIndex: 0,
+          startMs: 0,
+          endMs: 1_000,
+          dialogueTurns: [{ speaker: 'Speaker 1', text: 'First segment' }],
+          scene: 'First',
+          sampleContext: 'First',
+        },
+        {
+          groupIndex: 1,
+          startMs: 1_200,
+          endMs: 2_200,
+          dialogueTurns: [{ speaker: 'Speaker 1', text: 'Second segment' }],
+          scene: 'Second',
+          sampleContext: 'Second',
+        },
+      ]),
+      resolveOwnedAsset: async ({
+        assetId,
+        sourceUrl,
+        userId,
+        destinationPath,
+        expectedKind,
+      }) => {
+        const requestedId = assetId || String(sourceUrl || '').replace(/^managed:\/\//u, '');
+        if (requestedId === 'asset-tts-corrupt' && expectedKind === 'tts_audio') {
+          throw Object.assign(new Error('wrong media type'), {
+            code: 'voiceover_checkpoint_asset_invalid',
+          });
+        }
+        await mkdir(path.dirname(destinationPath), { recursive: true });
+        await writeFile(destinationPath, requestedId);
+        return {
+          assetId: requestedId,
+          url: `managed://${requestedId}`,
+          path: destinationPath,
+          userId,
+          durationMs: 4_000,
+          hasAudio: true,
+          sizeBytes: 1_024,
+          width: 1080,
+          height: 1920,
+        };
+      },
+      runTts: async () => {
+        paidCalls += 1;
+        throw new Error('must not create the next paid attempt');
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.code === 'voiceover_checkpoint_asset_invalid',
+  );
+  assert.equal(paidCalls, 0);
+});
+
+test('wrong-type persisted final video is rejected instead of returned as playable', async (t) => {
+  const checkpoint = checkpointAt('result_persisted');
+  let mixCalls = 0;
+  const harness = await createHarness({
+    job: createParentJob({
+      result: { voiceoverCheckpoint: checkpoint },
+    }),
+    overrides: {
+      resolveOwnedAsset: async ({
+        assetId,
+        sourceUrl,
+        userId,
+        destinationPath,
+        expectedKind,
+      }) => {
+        const requestedId = assetId || String(sourceUrl || '').replace(/^managed:\/\//u, '');
+        if (expectedKind === 'final_video') {
+          throw Object.assign(new Error('audio file is not a playable video'), {
+            code: 'voiceover_checkpoint_asset_invalid',
+          });
+        }
+        await mkdir(path.dirname(destinationPath), { recursive: true });
+        await writeFile(destinationPath, requestedId);
+        return {
+          assetId: requestedId,
+          url: `managed://${requestedId}`,
+          path: destinationPath,
+          userId,
+          durationMs: 4_000,
+          hasAudio: true,
+          sizeBytes: 1_024,
+          width: 1080,
+          height: 1920,
+        };
+      },
+      mixAudio: async () => {
+        mixCalls += 1;
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.code === 'voiceover_checkpoint_asset_invalid',
+  );
+  assert.equal(mixCalls, 0);
+});
+
 test('cancellation before paid work creates no checkpoint or child and still cleans', async (t) => {
   let childCalls = 0;
   let paidCalls = 0;
@@ -1335,19 +1486,18 @@ test('definitive Golden failure is durable and a confirmed retry advances to att
   );
   const failedCheckpoint = harness.checkpoints.at(-1);
   assert.equal(failedCheckpoint.subtitleRemoval.status, 'failed');
-  const retryResult = prepareVoiceoverJobRetryResult({
+  const failedParent = {
     ...job,
     status: 'failed',
     errorCode: 'provider_job_failed',
     result: { voiceoverCheckpoint: failedCheckpoint },
-  }, {
-    kind: 'provider',
-    target: 'golden',
-    userConfirmed: true,
-    nextChildJobId: 'real-golden-retry-1',
+  };
+  const retryPlan = deriveVoiceoverRetryPlan(failedParent, {
+    confirmNewProviderAttempt: true,
   });
+  const retryResult = prepareVoiceoverJobRetryResult(failedParent, retryPlan);
   assert.deepEqual(retryResult.voiceoverCheckpoint.subtitleRemoval, {
-    childJobId: 'real-golden-retry-1',
+    childJobId: retryPlan.nextChildJobId,
     attempt: 1,
     status: 'queued',
   });
