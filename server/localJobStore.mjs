@@ -22,6 +22,20 @@ const createJobStateChangedError = () => Object.assign(
   { code: 'job_state_changed', statusCode: 409 },
 );
 
+export const assertGenericJobResultPatchAllowed = (job) => {
+  assertGenericJobMutationAllowed(job);
+  if (
+    String(job?.taskType || job?.task_type || '') === 'voiceover_translate_video'
+    && String(job?.provider || '') === 'internal'
+  ) {
+    throw Object.assign(new Error('口播翻译任务结果只能由受信任的后台执行器更新。'), {
+      code: 'voiceover_generic_result_patch_forbidden',
+      statusCode: 409,
+    });
+  }
+  return job;
+};
+
 const assertLocalRunningClaim = (job, expectedClaim) => {
   if (!expectedClaim) return job;
   if (
@@ -540,6 +554,7 @@ export const updateLocalJobResult = (store, jobId, resultPatch = {}) => {
   const index = findJobIndex(store, jobId);
   if (index < 0) return null;
   const current = normalizeJob(store.jobs[index]);
+  assertGenericJobResultPatchAllowed(current);
   const currentResult = current.result && typeof current.result === 'object' ? current.result : {};
   const updatedAt = now();
   const next = normalizeJob({

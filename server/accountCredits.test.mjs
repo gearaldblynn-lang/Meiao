@@ -443,6 +443,206 @@ test('voiceover credit release follows the durable current child attempt instead
   }), true);
 });
 
+test('voiceover analysis submitting stage preserves reservation across restart and cancellation codes', () => {
+  const job = {
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'cancelled',
+    errorCode: 'request_cancelled',
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'speech_analysis_submitting',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-original',
+        vocalAssetId: 'asset-vocal',
+        backgroundAssetId: 'asset-background',
+        analysisAttempt: 0,
+      },
+    },
+  };
+  for (const code of ['service_restarted', 'request_cancelled']) {
+    assert.equal(shouldReleaseJobCreditReservation({
+      job,
+      error: { code },
+    }), false, code);
+  }
+});
+
+test('voiceover credit release uses durable child truth when it is ahead of the parent checkpoint', () => {
+  const parent = {
+    id: 'voiceover-parent-child-ahead',
+    userId: 'user-1',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'cancelled',
+    errorCode: 'request_cancelled',
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'translated',
+        baseVideoAssetId: 'asset-base',
+        analysisAttempt: 0,
+        analysis: {
+          sourceLanguage: 'cmn',
+          speakerCount: 1,
+          voiceProfile: {
+            pitch: 'medium',
+            brightness: 'balanced',
+            energy: 'balanced',
+            pace: 'natural',
+            accentDescription: 'clear',
+          },
+          segments: [{
+            id: 'segment-1',
+            startMs: 0,
+            endMs: 1000,
+            sourceText: '源文',
+            targetText: 'Translation',
+          }],
+        },
+        translation: {
+          targetLanguage: 'en',
+          mode: 'natural',
+          selectedVoiceName: 'Kore',
+          segments: [{
+            id: 'segment-1',
+            startMs: 0,
+            endMs: 1000,
+            sourceText: '源文',
+            targetText: 'Translation',
+          }],
+        },
+      },
+    },
+  };
+  const submittedChild = {
+    id: 'voiceover-child-submitted',
+    userId: 'user-1',
+    taskType: 'kie_tts',
+    provider: 'kie',
+    status: 'running',
+    providerTaskId: 'provider-tts-0',
+    payload: {
+      executionOwner: 'parent',
+      parentJobId: parent.id,
+      childKey: 'tts:0:attempt:0',
+      clientSubmissionKey: `voiceover-child:${parent.id}:tts:0:attempt:0`,
+    },
+  };
+
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: parent,
+    error: { code: 'request_cancelled' },
+    voiceoverChildJobs: [submittedChild],
+  }), false);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: parent,
+    error: { code: 'request_cancelled' },
+    voiceoverChildJobs: [{
+      id: submittedChild.id,
+      user_id: submittedChild.userId,
+      task_type: submittedChild.taskType,
+      provider: submittedChild.provider,
+      status: submittedChild.status,
+      provider_task_id: submittedChild.providerTaskId,
+      payload_json: JSON.stringify(submittedChild.payload),
+    }],
+  }), false, 'raw MySQL child rows must preserve the same durable truth');
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: parent,
+    error: { code: 'request_cancelled' },
+    voiceoverChildJobs: [{
+      ...submittedChild,
+      providerTaskId: '',
+    }],
+  }), false, 'running without provider id must fail closed');
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: parent,
+    error: { code: 'request_cancelled' },
+    voiceoverChildJobs: [{
+      ...submittedChild,
+      status: 'succeeded',
+    }],
+  }), false, 'succeeded current attempt consumed provider work');
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: parent,
+    error: { code: 'request_cancelled' },
+    voiceoverChildJobs: [{
+      ...submittedChild,
+      status: 'queued',
+      providerTaskId: '',
+    }, {
+      ...submittedChild,
+      id: 'wrong-user-child',
+      userId: 'user-other',
+      status: 'succeeded',
+    }, {
+      ...submittedChild,
+      id: 'invalid-identity-child',
+      status: 'succeeded',
+      payload: {
+        ...submittedChild.payload,
+        clientSubmissionKey: 'forged',
+      },
+    }],
+  }), true, 'pure queued current attempt is safe to release');
+  const childForAttempt = (attempt, status, providerTaskId = '') => ({
+    ...submittedChild,
+    id: `voiceover-child-attempt-${attempt}`,
+    status,
+    providerTaskId,
+    payload: {
+      ...submittedChild.payload,
+      childKey: `tts:0:attempt:${attempt}`,
+      clientSubmissionKey: `voiceover-child:${parent.id}:tts:0:attempt:${attempt}`,
+    },
+  });
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: parent,
+    error: { code: 'request_cancelled' },
+    voiceoverChildJobs: [
+      childForAttempt(0, 'succeeded', 'provider-old'),
+      childForAttempt(1, 'failed'),
+    ],
+  }), true, 'historical succeeded attempts must not override a newer definitive failure');
+  const goldenChild = {
+    ...submittedChild,
+    id: 'voiceover-golden-running',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    providerTaskId: '',
+    payload: {
+      ...submittedChild.payload,
+      childKey: 'golden:attempt:0',
+      clientSubmissionKey: `voiceover-child:${parent.id}:golden:attempt:0`,
+    },
+  };
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: parent,
+    error: { code: 'request_cancelled' },
+    voiceoverChildJobs: [goldenChild],
+  }), false, 'Golden running-without-id crash window must also fail closed');
+});
+
+test('all central credit finalizers load durable voiceover children before release decisions', () => {
+  const dbChildrenStart = serverSource.indexOf('const listDbVoiceoverCreditChildren = async');
+  const localChildrenStart = serverSource.indexOf('const listLocalVoiceoverCreditChildren =');
+  const settleDbStart = serverSource.indexOf('const settleDbJobCredits = async');
+  assert.ok(dbChildrenStart >= 0 && localChildrenStart > dbChildrenStart);
+  const dbChildrenSource = serverSource.slice(dbChildrenStart, localChildrenStart);
+  const localChildrenSource = serverSource.slice(localChildrenStart, settleDbStart);
+  assert.ok(dbChildrenSource.includes('pool.query('));
+  assert.ok(dbChildrenSource.includes('user_id = ?'));
+  assert.ok(dbChildrenSource.includes('parentJobId'));
+  assert.ok(dbChildrenSource.includes('[userId, parentJobId]'));
+  assert.ok(localChildrenSource.includes('return store.jobs'));
+  assert.ok(
+    (serverSource.match(/shouldReleaseJobCreditReservation\(\{[\s\S]{0,240}voiceoverChildJobs/g) || []).length >= 4,
+    'db/local settle and release paths must pass durable child snapshots',
+  );
+});
+
 test('retry reuses a pending reservation only when polling an existing provider task', () => {
   const pendingReservation = { id: 'reservation-1', userId: 'user-1', amount: 5 };
   assert.equal(getJobCreditRetryReservationAction({

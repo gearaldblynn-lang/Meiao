@@ -17,6 +17,7 @@ import {
   deriveVoiceoverRetryPlan,
   prepareVoiceoverJobRetryResult,
 } from './voiceoverChildJobStore.mjs';
+import { probeVoiceoverManagedMedia } from './voiceoverMediaProbe.mjs';
 
 const VALID_ANALYSIS = {
   sourceLanguage: 'cmn',
@@ -1150,8 +1151,25 @@ test('wrong-type persisted final video is rejected instead of returned as playab
       }) => {
         const requestedId = assetId || String(sourceUrl || '').replace(/^managed:\/\//u, '');
         if (expectedKind === 'final_video') {
-          throw Object.assign(new Error('audio file is not a playable video'), {
-            code: 'voiceover_checkpoint_asset_invalid',
+          await probeVoiceoverManagedMedia({
+            filePath: destinationPath,
+            expectedKind,
+            probe: async () => ({
+              durationSeconds: 4,
+              sizeBytes: 4096,
+              formatNames: ['mov', 'mp4'],
+              containerBrand: 'isom',
+              videoCodec: 'hevc',
+              pixelFormat: 'yuv420p',
+              width: 1080,
+              height: 1920,
+              audioCodec: 'mp3',
+              sampleRate: 44100,
+              channels: 2,
+              hasVideo: true,
+              hasAudio: true,
+              fastStart: false,
+            }),
           });
         }
         await mkdir(path.dirname(destinationPath), { recursive: true });
@@ -1503,6 +1521,48 @@ test('definitive Golden failure is durable and a confirmed retry advances to att
   });
 });
 
+test('Golden replay backfills a failed child that committed before its parent checkpoint', async (t) => {
+  const job = createParentJob({
+    payload: {
+      removeText: true,
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
+    },
+    result: { voiceoverCheckpoint: checkpointAt('input_prepared') },
+  });
+  let providerCalls = 0;
+  const harness = await createHarness({
+    job,
+    overrides: {
+      childJobs: {
+        getOrCreate: async () => ({
+          id: 'golden-failed-before-parent',
+          status: 'failed',
+          providerTaskId: 'provider-golden-failed',
+          errorCode: 'provider_job_failed',
+          errorMessage: 'Golden failed',
+        }),
+      },
+      runGolden: async () => {
+        providerCalls += 1;
+        throw new Error('must not resubmit a failed Golden child');
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.code === 'provider_job_failed',
+  );
+  assert.equal(providerCalls, 0);
+  assert.deepEqual(harness.checkpoints.at(-1).subtitleRemoval, {
+    childJobId: 'golden-failed-before-parent',
+    providerTaskId: 'provider-golden-failed',
+    attempt: 0,
+    status: 'failed',
+  });
+});
+
 test('recovers a real-ledger TTS success after the child commit wins the parent-checkpoint race', async (t) => {
   const job = createParentJob({
     result: { voiceoverCheckpoint: checkpointAt('translated') },
@@ -1577,6 +1637,108 @@ test('recovers a real-ledger TTS success after the child commit wins the parent-
   assert.equal(
     harness.checkpoints.find((item) => item.stage === 'tts_generating')?.ttsGroups?.[0]?.assetId,
     'asset-tts-0',
+  );
+});
+
+test('replay backfills a failed durable TTS child before deriving attempt one', async (t) => {
+  const job = createParentJob({
+    result: { voiceoverCheckpoint: checkpointAt('translated') },
+  });
+  const store = { jobs: [structuredClone(job)] };
+  const childJobs = createVoiceoverChildJobLedger({
+    mode: 'local',
+    readLocalStore: () => store,
+    mutateLocalStore: async (operation) => operation(store),
+    createJobId: () => 'real-child-failed-before-parent',
+    now: (() => {
+      let value = 32_000;
+      return () => ++value;
+    })(),
+  });
+  const child = await childJobs.getOrCreate({
+    parentJob: job,
+    childKey: 'tts:0:attempt:0',
+    taskType: 'kie_tts',
+    provider: 'kie',
+    payload: {
+      groupIndex: 0,
+      targetLanguage: 'en',
+      voiceName: 'Kore',
+      dialogueTurns: [{ speaker: 'Speaker 1', text: 'Translation' }],
+      temperature: 1,
+      scene: 'Translated product voiceover with natural, controlled pacing.',
+      sampleContext: 'Use one consistent narrator and preserve punctuation and pauses.',
+    },
+  });
+  await childJobs.markFailed(child.id, Object.assign(new Error('provider failed'), {
+    code: 'provider_job_failed',
+  }));
+  let providerCalls = 0;
+  const harness = await createHarness({
+    job,
+    overrides: {
+      childJobs,
+      resolveOwnedAsset: async ({ assetId, sourceUrl, userId, destinationPath }) => {
+        const requestedId = assetId || String(sourceUrl || '').replace(/^managed:\/\//u, '');
+        await mkdir(path.dirname(destinationPath), { recursive: true });
+        await writeFile(destinationPath, requestedId);
+        return {
+          assetId: requestedId,
+          url: `managed://${requestedId}`,
+          path: destinationPath,
+          userId,
+          durationMs: 4_000,
+          hasAudio: true,
+          sizeBytes: 1_024,
+          width: 1080,
+          height: 1920,
+        };
+      },
+      runTts: async () => {
+        providerCalls += 1;
+        throw new Error('must not resubmit a failed durable child');
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.code === 'provider_job_failed',
+  );
+  assert.equal(providerCalls, 0);
+  const reconciledCheckpoint = harness.checkpoints.at(-1);
+  assert.equal(reconciledCheckpoint.stage, 'tts_generating');
+  assert.deepEqual(
+    reconciledCheckpoint.ttsGroups.map(({ index, attempt, childJobId, status }) => ({
+      index,
+      attempt,
+      childJobId,
+      status,
+    })),
+    [{
+      index: 0,
+      attempt: 0,
+      childJobId: child.id,
+      status: 'failed',
+    }],
+  );
+  const failedParent = {
+    ...job,
+    status: 'failed',
+    errorCode: 'provider_job_failed',
+    result: { voiceoverCheckpoint: reconciledCheckpoint },
+  };
+  const retryPlan = deriveVoiceoverRetryPlan(failedParent, {
+    confirmNewProviderAttempt: true,
+  });
+  assert.equal(retryPlan.kind, 'provider');
+  assert.equal(retryPlan.target, 'tts');
+  assert.equal(retryPlan.groupIndex, 0);
+  assert.equal(
+    prepareVoiceoverJobRetryResult(failedParent, retryPlan)
+      .voiceoverCheckpoint.ttsGroups.at(-1).attempt,
+    1,
   );
 });
 

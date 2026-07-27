@@ -1314,6 +1314,80 @@ test('reconcileRestartedMysqlJobs safely requeues providerless internal work', (
   assert.equal(reconciled.finishedAt, null);
 });
 
+test('classic MySQL restart then cancel keeps a speech-analysis submission reservation pending', async () => {
+  const [restarted] = reconcileRestartedMysqlJobs([{
+    id: 'voiceover-analysis-restarted-mysql',
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'running',
+    providerTaskId: '',
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'speech_analysis_submitting',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-original',
+        vocalAssetId: 'asset-vocal',
+        backgroundAssetId: 'asset-background',
+        analysisAttempt: 0,
+      },
+    },
+    createdAt: 500,
+    updatedAt: 1000,
+    startedAt: 1000,
+  }], 2000);
+  const row = {
+    id: restarted.id,
+    user_id: restarted.userId,
+    module: restarted.module,
+    task_type: restarted.taskType,
+    provider: restarted.provider,
+    status: restarted.status,
+    provider_task_id: null,
+    payload_json: '{}',
+    result_json: JSON.stringify(restarted.result),
+    error_code: restarted.errorCode,
+    error_message: restarted.errorMessage,
+    retry_count: 0,
+    max_retries: 0,
+    created_at: restarted.createdAt,
+    updated_at: restarted.updatedAt,
+    started_at: null,
+    finished_at: null,
+    cancel_requested_at: null,
+  };
+  let releaseDecision = null;
+  const connection = {
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    async query(sql) {
+      if (sql.startsWith('SELECT * FROM internal_jobs')) return [[row]];
+      if (sql.includes('UPDATE internal_jobs')) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() {},
+  };
+
+  await requestCancelJob({
+    async getConnection() {
+      return connection;
+    },
+  }, restarted, {
+    releaseQueuedCredits: async (_connection, freshJob) => {
+      releaseDecision = shouldReleaseJobCreditReservation({
+        job: freshJob,
+        error: { code: 'request_cancelled' },
+      });
+    },
+  });
+
+  assert.equal(restarted.errorCode, 'service_restarted');
+  assert.equal(releaseDecision, false);
+});
+
 test('reconcileRestartedMysqlJobs never resubmits a non-queryable kie chat response id', () => {
   const [reconciled] = reconcileRestartedMysqlJobs([{
     id: 'storyboard-chat-restarted',

@@ -980,6 +980,16 @@ export async function runVoiceoverTranslationJob({
       let actualDurationMs = existingAttempt?.actualDurationMs || child.result?.durationMs;
       if (!assetId) {
         if (child.status === 'failed') {
+          await persistStage({
+            stage: 'tts_generating',
+            ttsGroups: [childCheckpoint(child, {
+              index,
+              attempt,
+              startMs: planned.startMs,
+              endMs: planned.endMs,
+              status: 'failed',
+            })],
+          }, durationMs);
           throw Object.assign(new Error(child.errorMessage || 'TTS 子任务失败'), {
             code: child.errorCode || 'provider_job_failed',
             providerTaskId: child.providerTaskId || '',

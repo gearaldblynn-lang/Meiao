@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { isDefinitiveProviderTaskFailure, isRetryableErrorCode } from './jobRuntime.mjs';
+import { isParentOwnedChildJob } from './voiceoverChildJobStore.mjs';
 import { resolveMaxForAiImageModelId } from '../src/utils/maxforaiImageModels.mjs';
 
 export const CREDIT_LIMIT_MODES = {
@@ -199,21 +200,64 @@ const getVoiceoverCheckpoint = (job) => {
   return result?.voiceoverCheckpoint || null;
 };
 
-const getCurrentVoiceoverProviderAttempts = (job) => {
+const parseChildPayload = (child) => {
+  if (child?.payload && typeof child.payload === 'object') return child.payload;
+  try {
+    return JSON.parse(String(child?.payload_json || '{}'));
+  } catch {
+    return {};
+  }
+};
+
+const getCurrentVoiceoverProviderAttempts = (job, voiceoverChildJobs = []) => {
   const checkpoint = getVoiceoverCheckpoint(job);
-  if (!checkpoint || typeof checkpoint !== 'object') return [];
-  const latestTtsByGroup = new Map();
-  for (const attempt of Array.isArray(checkpoint.ttsGroups) ? checkpoint.ttsGroups : []) {
-    const groupIndex = Number(attempt?.index);
-    const previous = latestTtsByGroup.get(groupIndex);
-    if (!previous || Number(attempt?.attempt) > Number(previous?.attempt)) {
-      latestTtsByGroup.set(groupIndex, attempt);
+  const currentAttempts = new Map();
+  const setLatest = (key, attempt, { preferEqual = false } = {}) => {
+    if (!attempt || !Number.isInteger(Number(attempt.attempt))) return;
+    const previous = currentAttempts.get(key);
+    if (
+      !previous
+      || Number(attempt.attempt) > Number(previous.attempt)
+      || (preferEqual && Number(attempt.attempt) === Number(previous.attempt))
+    ) {
+      currentAttempts.set(key, attempt);
+    }
+  };
+  if (checkpoint && typeof checkpoint === 'object') {
+    if (checkpoint.subtitleRemoval) {
+      setLatest('golden', checkpoint.subtitleRemoval);
+    }
+    for (const attempt of Array.isArray(checkpoint.ttsGroups) ? checkpoint.ttsGroups : []) {
+      setLatest(`tts:${Number(attempt?.index)}`, attempt);
     }
   }
-  return [
-    ...(checkpoint.subtitleRemoval ? [checkpoint.subtitleRemoval] : []),
-    ...latestTtsByGroup.values(),
-  ];
+  const parentJobId = String(job?.id || '').trim();
+  const parentUserId = String(job?.userId ?? job?.user_id ?? '').trim();
+  for (const child of Array.isArray(voiceoverChildJobs) ? voiceoverChildJobs : []) {
+    const childPayload = parseChildPayload(child);
+    const childUserId = String(child?.userId ?? child?.user_id ?? '').trim();
+    if (
+      !parentJobId
+      || !parentUserId
+      || childUserId !== parentUserId
+      || !isParentOwnedChildJob(child)
+      || String(childPayload.parentJobId || '').trim() !== parentJobId
+    ) {
+      continue;
+    }
+    const childKey = String(childPayload.childKey || '');
+    const goldenMatch = childKey.match(/^golden:attempt:(\d+)$/u);
+    const ttsMatch = childKey.match(/^tts:(\d+):attempt:(\d+)$/u);
+    if (!goldenMatch && !ttsMatch) continue;
+    const attempt = Number(goldenMatch?.[1] ?? ttsMatch?.[2]);
+    const key = goldenMatch ? 'golden' : `tts:${Number(ttsMatch[1])}`;
+    setLatest(key, {
+      attempt,
+      status: String(child?.status || ''),
+      providerTaskId: String(child?.providerTaskId ?? child?.provider_task_id ?? ''),
+    }, { preferEqual: true });
+  }
+  return [...currentAttempts.values()];
 };
 
 export const shouldReleaseJobCreditReservation = ({
@@ -221,13 +265,19 @@ export const shouldReleaseJobCreditReservation = ({
   error,
   retryWaiting = false,
   aborted = false,
+  voiceoverChildJobs = [],
 } = {}) => {
   if (retryWaiting) return false;
   const errorCode = String(error?.code || job?.errorCode || '').trim();
   if (isVoiceoverParentJob(job)) {
     if (errorCode === 'voiceover_analysis_submission_unknown') return false;
-    const currentAttempts = getCurrentVoiceoverProviderAttempts(job);
-    if (currentAttempts.some((attempt) => attempt?.status === 'submitted')) return false;
+    if (getVoiceoverCheckpoint(job)?.stage === 'speech_analysis_submitting') return false;
+    const currentAttempts = getCurrentVoiceoverProviderAttempts(job, voiceoverChildJobs);
+    if (currentAttempts.some((attempt) => (
+      attempt?.status === 'submitted'
+      || attempt?.status === 'running'
+      || attempt?.status === 'succeeded'
+    ))) return false;
     if (errorCode === 'provider_submission_unknown') return false;
     return true;
   }

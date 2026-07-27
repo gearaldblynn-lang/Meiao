@@ -826,6 +826,54 @@ test('local temporal activity awaits and preserves a parent result checkpoint be
   assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
 });
 
+test('Temporal restart then cancel keeps a speech-analysis submission reservation pending', async () => {
+  const store = createStore();
+  const parent = voiceoverParentJob('retry_waiting');
+  parent.errorCode = 'service_restarted';
+  parent.cancelRequestedAt = 2_000;
+  parent.result.voiceoverCheckpoint = {
+    version: 1,
+    stage: 'speech_analysis_submitting',
+    baseVideoAssetId: 'asset-base',
+    originalAudioAssetId: 'asset-original',
+    vocalAssetId: 'asset-vocal',
+    backgroundAssetId: 'asset-background',
+    analysisAttempt: 0,
+  };
+  store.jobs = [parent];
+  let releaseDecision = null;
+  const activities = createLocalTemporalActivities({
+    readStore: () => store,
+    writeStore: () => {},
+    mutateStore: async (operation) => operation(store),
+    executeJob: async (_job, signal) => {
+      assert.equal(signal.aborted, true);
+      throw Object.assign(new Error('cancelled after restart'), {
+        code: 'request_cancelled',
+      });
+    },
+    createLog: async () => {},
+    findUserById: () => store.users[0],
+    releaseJobCredits: ({ job, error, retryWaiting }) => {
+      releaseDecision = shouldReleaseJobCreditReservation({
+        job,
+        error,
+        retryWaiting,
+      });
+    },
+  });
+
+  const result = await activities.executeLocalJobAttemptActivity({
+    jobId: parent.id,
+    workflowId: 'voiceover-analysis-restarted-workflow',
+    runId: 'run-1',
+  });
+
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.errorCode, 'request_cancelled');
+  assert.equal(releaseDecision, false);
+});
+
 test('local temporal activity cannot complete or fail a newer running claim', async () => {
   for (const outcome of ['complete', 'fail']) {
     const store = createStore();

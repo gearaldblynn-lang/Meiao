@@ -27,6 +27,7 @@ import {
   deriveVoiceoverRetryPlan,
   isParentOwnedChildJob,
 } from './voiceoverChildJobStore.mjs';
+import { shouldReleaseJobCreditReservation } from './accountCredits.mjs';
 
 const createStore = () => ({
   users: [],
@@ -696,6 +697,40 @@ test('reconcileRestartedLocalJobs safely requeues providerless internal work', (
   assert.equal(reconciled.status, 'retry_waiting');
   assert.equal(reconciled.errorCode, 'service_restarted');
   assert.equal(reconciled.finishedAt, null);
+});
+
+test('local restart then cancel keeps a speech-analysis submission reservation pending', () => {
+  const parent = {
+    id: 'voiceover-analysis-restarted-local',
+    userId: 'user-1',
+    module: 'video',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'running',
+    providerTaskId: '',
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'speech_analysis_submitting',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-original',
+        vocalAssetId: 'asset-vocal',
+        backgroundAssetId: 'asset-background',
+        analysisAttempt: 0,
+      },
+    },
+    startedAt: 1000,
+  };
+  const [restarted] = reconcileRestartedLocalJobs([parent], 2000);
+  const store = { jobs: [restarted] };
+  const cancelled = requestLocalCancelJob(store, parent.id);
+
+  assert.equal(restarted.errorCode, 'service_restarted');
+  assert.equal(cancelled.errorCode, 'request_cancelled');
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: cancelled,
+    error: { code: 'request_cancelled' },
+  }), false);
 });
 
 test('reconcileRestartedLocalJobs does not retry a non-queryable kie chat response id', () => {

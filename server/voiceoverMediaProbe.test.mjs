@@ -29,15 +29,28 @@ test('voiceover media probe rejects empty, wrong-type, and unplayable checkpoint
   const validVideo = {
     durationSeconds: 4,
     sizeBytes: 1024,
+    formatNames: ['mov', 'mp4'],
+    containerBrand: 'isom',
     videoCodec: 'h264',
+    pixelFormat: 'yuv420p',
     width: 1080,
     height: 1920,
+    audioCodec: 'aac',
+    sampleRate: 48000,
+    channels: 2,
+    hasVideo: true,
     hasAudio: true,
+    fastStart: true,
   };
   const validAudio = {
     durationSeconds: 1,
     sizeBytes: 256,
+    formatNames: ['wav'],
     audioCodec: 'pcm_s16le',
+    sampleRate: 48000,
+    channels: 1,
+    hasVideo: false,
+    hasAudio: true,
   };
   assert.deepEqual(await probeVoiceoverManagedMedia({
     filePath: '/tmp/video.mp4',
@@ -108,5 +121,63 @@ test('voiceover media probe rejects empty, wrong-type, and unplayable checkpoint
       error?.code === 'voiceover_checkpoint_asset_invalid'
       && !error.message.includes('/secret/path')
     ),
+  );
+});
+
+test('voiceover resume probe enforces stage-specific WAV and MP4 contracts', async () => {
+  const commonAudio = {
+    durationSeconds: 4,
+    sizeBytes: 1024,
+    hasVideo: false,
+  };
+  await assert.rejects(
+    probeVoiceoverManagedMedia({
+      filePath: '/private/background.mp3',
+      expectedKind: 'background_audio',
+      probe: async () => ({
+        ...commonAudio,
+        audioCodec: 'mp3',
+        sampleRate: 44100,
+        channels: 1,
+      }),
+    }),
+    (error) => error?.code === 'voiceover_checkpoint_asset_invalid',
+  );
+  await assert.rejects(
+    probeVoiceoverManagedMedia({
+      filePath: '/private/final.mp4',
+      expectedKind: 'final_video',
+      probe: async () => ({
+        durationSeconds: 4,
+        sizeBytes: 4096,
+        formatNames: ['mov', 'mp4'],
+        containerBrand: 'isom',
+        videoCodec: 'hevc',
+        pixelFormat: 'yuv420p',
+        width: 1080,
+        height: 1920,
+        audioCodec: 'mp3',
+        sampleRate: 44100,
+        channels: 2,
+        hasVideo: true,
+        hasAudio: true,
+        fastStart: false,
+      }),
+    }),
+    (error) => error?.code === 'voiceover_checkpoint_asset_invalid',
+  );
+  await assert.rejects(
+    probeVoiceoverManagedMedia({
+      filePath: '/private/fake-tts.mp4',
+      expectedKind: 'tts_audio',
+      probe: async () => ({
+        ...commonAudio,
+        audioCodec: 'aac',
+        sampleRate: 48000,
+        channels: 1,
+        hasVideo: true,
+      }),
+    }),
+    (error) => error?.code === 'voiceover_checkpoint_asset_invalid',
   );
 });

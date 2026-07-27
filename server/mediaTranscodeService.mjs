@@ -124,6 +124,10 @@ export function parseFfprobeOutput(stdout, kind) {
     formatNames: String(format.format_name || '').split(',').map((item) => item.trim()).filter(Boolean),
     containerBrand: String(format?.tags?.major_brand || '').trim().toLowerCase(),
     audioCodec: audioStream?.codec_name || null,
+    sampleRate: Number(audioStream?.sample_rate || 0),
+    channels: Number(audioStream?.channels || 0),
+    hasVideo: Boolean(videoStream),
+    hasAudio: Boolean(audioStream),
     sizeBytes: Number(format.size || 0),
   };
   if (kind === 'video') {
@@ -134,7 +138,6 @@ export function parseFfprobeOutput(stdout, kind) {
       width: Number(videoStream?.width || 0),
       height: Number(videoStream?.height || 0),
       frameRate: parseFrameRate(videoStream?.avg_frame_rate || videoStream?.r_frame_rate),
-      hasAudio: Boolean(audioStream),
     };
   }
   return result;

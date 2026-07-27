@@ -91,6 +91,7 @@ import {
 import { buildSubmissionResolutionCapability, ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import {
   attachLocalJobWorkflowExecution,
+  assertGenericJobResultPatchAllowed,
   createLocalJobRecord,
   createLocalJobWorker,
   deleteLocalJobRecord,
@@ -6476,15 +6477,47 @@ const reserveLocalJobCredits = (store, user, jobPayload) => {
   });
 };
 
+const isVoiceoverCreditParent = (job) => (
+  String(job?.taskType || job?.task_type || '') === 'voiceover_translate_video'
+  && String(job?.provider || '') === 'internal'
+);
+
+const listDbVoiceoverCreditChildren = async (pool, job) => {
+  if (!isVoiceoverCreditParent(job) || !pool || typeof pool.query !== 'function') return [];
+  const parentJobId = String(job?.id || '').trim();
+  const userId = String(job?.userId ?? job?.user_id ?? '').trim();
+  if (!parentJobId || !userId) return [];
+  const [rows] = await pool.query(
+    `SELECT *
+     FROM internal_jobs
+     WHERE user_id = ?
+       AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.executionOwner')) = 'parent'
+       AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.parentJobId')) = ?`,
+    [userId, parentJobId],
+  );
+  return Array.isArray(rows) ? rows : [];
+};
+
+const listLocalVoiceoverCreditChildren = (store, job) => {
+  if (!isVoiceoverCreditParent(job) || !Array.isArray(store?.jobs)) return [];
+  return store.jobs;
+};
+
 const settleDbJobCredits = async ({ pool, job, output, finishedAt, aborted, rejected = false }) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
   if (aborted) {
+    const voiceoverChildJobs = await listDbVoiceoverCreditChildren(pool, job);
     const creditJob = {
       ...job,
       providerTaskId: String(output?.providerTaskId || job?.providerTaskId || ''),
     };
-    if (!shouldReleaseJobCreditReservation({ job: creditJob, error: { code: 'request_cancelled' }, aborted: true })) {
+    if (!shouldReleaseJobCreditReservation({
+      job: creditJob,
+      error: { code: 'request_cancelled' },
+      aborted: true,
+      voiceoverChildJobs,
+    })) {
       return null;
     }
     return await releaseDbAccountCredits(pool, reservation, {
@@ -6508,7 +6541,13 @@ const settleDbJobCredits = async ({ pool, job, output, finishedAt, aborted, reje
 const releaseDbJobCredits = async ({ pool, job, error, finishedAt, retryWaiting }) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
-  if (!shouldReleaseJobCreditReservation({ job, error, retryWaiting })) return null;
+  const voiceoverChildJobs = await listDbVoiceoverCreditChildren(pool, job);
+  if (!shouldReleaseJobCreditReservation({
+    job,
+    error,
+    retryWaiting,
+    voiceoverChildJobs,
+  })) return null;
   return await releaseDbAccountCredits(pool, reservation, {
     module: job.module,
     taskType: job.taskType,
@@ -6526,11 +6565,17 @@ const settleLocalJobCredits = ({ store, job, output, aborted, rejected = false }
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
   if (aborted) {
+    const voiceoverChildJobs = listLocalVoiceoverCreditChildren(store, job);
     const creditJob = {
       ...job,
       providerTaskId: String(output?.providerTaskId || job?.providerTaskId || ''),
     };
-    if (!shouldReleaseJobCreditReservation({ job: creditJob, error: { code: 'request_cancelled' }, aborted: true })) {
+    if (!shouldReleaseJobCreditReservation({
+      job: creditJob,
+      error: { code: 'request_cancelled' },
+      aborted: true,
+      voiceoverChildJobs,
+    })) {
       return null;
     }
     return releaseLocalAccountCredits(store, reservation, {
@@ -6552,7 +6597,13 @@ const settleLocalJobCredits = ({ store, job, output, aborted, rejected = false }
 const releaseLocalJobCredits = ({ store, job, error, retryWaiting }) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
-  if (!shouldReleaseJobCreditReservation({ job, error, retryWaiting })) return null;
+  const voiceoverChildJobs = listLocalVoiceoverCreditChildren(store, job);
+  if (!shouldReleaseJobCreditReservation({
+    job,
+    error,
+    retryWaiting,
+    voiceoverChildJobs,
+  })) return null;
   return releaseLocalAccountCredits(store, reservation, {
     module: job.module,
     taskType: job.taskType,
@@ -14378,6 +14429,7 @@ const handleMysqlRequest = async (req, res, url) => {
         error.statusCode = 404;
         throw error;
       }
+      assertGenericJobResultPatchAllowed(freshJob);
       const freshResult = {
         ...(freshJob.result && typeof freshJob.result === 'object' ? freshJob.result : {}),
         ...resultPatch,
@@ -18090,6 +18142,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       json(res, 404, { message: '任务不存在。' });
       return;
     }
+    assertGenericJobResultPatchAllowed(job);
     const updatedJob = updateLocalJobResult(store, job.id, resultPatch);
     writeLocalStore(store);
     json(res, 200, { job: updatedJob || job });

@@ -11,6 +11,12 @@ const AUDIO_KINDS = new Set([
   'tts_audio',
   'aligned_audio',
 ]);
+const PCM_WORK_TRACK_CHANNELS = Object.freeze({
+  original_audio: 2,
+  vocal_audio: 2,
+  background_audio: 2,
+  aligned_audio: 1,
+});
 
 const invalidCheckpointAsset = (message) => Object.assign(new Error(message), {
   code: 'voiceover_checkpoint_asset_invalid',
@@ -48,14 +54,51 @@ export const probeVoiceoverManagedMedia = async ({
     && durationSeconds > 0
     && Number.isFinite(sizeBytes)
     && sizeBytes > 0;
-  const typeValid = mediaKind === 'video'
+  const sampleRate = Number(metadata?.sampleRate);
+  const channels = Number(metadata?.channels);
+  const hasMp4Format = Array.isArray(metadata?.formatNames)
+    && metadata.formatNames.some((name) => name === 'mov' || name === 'mp4');
+  const hasValidAudioStream = metadata?.hasAudio === true
+    && metadata?.audioCodec === 'aac'
+    && Number.isFinite(sampleRate)
+    && sampleRate > 0
+    && Number.isFinite(channels)
+    && channels > 0;
+  const videoTypeValid = Boolean(
+    metadata?.hasVideo === true
+    && metadata?.videoCodec === 'h264'
+    && metadata?.pixelFormat === 'yuv420p'
+    && Number(metadata?.width) > 0
+    && Number(metadata?.height) > 0
+    && hasMp4Format
+    && String(metadata?.containerBrand || '').trim()
+    && metadata?.fastStart === true
+    && (
+      hasValidAudioStream
+      || (expectedKind === 'source_video' && metadata?.hasAudio === false)
+    )
+  );
+  const expectedWorkChannels = PCM_WORK_TRACK_CHANNELS[expectedKind];
+  const audioTypeValid = expectedWorkChannels
     ? Boolean(
-        metadata?.videoCodec
-        && Number(metadata?.width) > 0
-        && Number(metadata?.height) > 0
-        && (expectedKind === 'source_video' || metadata?.hasAudio === true)
+        metadata?.hasVideo === false
+        && metadata?.hasAudio === true
+        && metadata?.audioCodec === 'pcm_s16le'
+        && sampleRate === 48000
+        && channels === expectedWorkChannels
+        && Array.isArray(metadata?.formatNames)
+        && metadata.formatNames.includes('wav')
       )
-    : Boolean(metadata?.audioCodec);
+    : Boolean(
+        metadata?.hasVideo === false
+        && metadata?.hasAudio === true
+        && metadata?.audioCodec
+        && Number.isFinite(sampleRate)
+        && sampleRate > 0
+        && Number.isFinite(channels)
+        && channels > 0
+      );
+  const typeValid = mediaKind === 'video' ? videoTypeValid : audioTypeValid;
   if (!commonValid || !typeValid) {
     throw invalidCheckpointAsset('口播翻译检查点媒体为空、损坏或类型不匹配。');
   }

@@ -36,12 +36,39 @@ test('parseFfprobeOutput returns authoritative video metadata', () => {
     videoCodec: 'hevc',
     pixelFormat: null,
     audioCodec: 'aac',
+    sampleRate: 0,
+    channels: 0,
+    hasVideo: true,
     width: 1080,
     height: 1920,
     frameRate: 29.97,
     sizeBytes: 1_024_000,
     hasAudio: true,
   });
+});
+
+test('parseFfprobeOutput exposes audio stream shape and detects video in audio probes', () => {
+  const metadata = parseFfprobeOutput(JSON.stringify({
+    format: {
+      format_name: 'wav',
+      duration: '1.250000',
+      size: '240000',
+    },
+    streams: [
+      { codec_type: 'video', codec_name: 'mjpeg', width: 320, height: 240 },
+      {
+        codec_type: 'audio',
+        codec_name: 'pcm_s16le',
+        sample_rate: '48000',
+        channels: 2,
+      },
+    ],
+  }), 'audio');
+
+  assert.equal(metadata.sampleRate, 48000);
+  assert.equal(metadata.channels, 2);
+  assert.equal(metadata.hasVideo, true);
+  assert.equal(metadata.hasAudio, true);
 });
 
 test('service readiness checks both configured binaries without exposing paths', async () => {
