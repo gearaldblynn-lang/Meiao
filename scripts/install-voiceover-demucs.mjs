@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
@@ -81,12 +81,12 @@ async function sha256File(filePath, deps = {}) {
 
 export async function verifyDemucsModelFiles({ manifest, modelDir, deps = {} }) {
   if (!isValidManifest(manifest)) return { ready: false, files: [] };
-  const getStat = deps.stat || stat;
+  const getLstat = deps.lstat || lstat;
   const files = await Promise.all(manifest.files.map(async (file) => {
     try {
       const target = path.join(modelDir, file.name);
-      const metadata = await getStat(target);
-      if (!metadata.isFile() || metadata.size !== file.size) return { name: file.name, ready: false };
+      const metadata = await getLstat(target);
+      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size !== file.size) return { name: file.name, ready: false };
       const hash = await sha256File(target, deps);
       return { name: file.name, ready: hash === file.sha256 };
     } catch {

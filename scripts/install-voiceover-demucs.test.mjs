@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -79,6 +79,11 @@ test('model verification requires exact byte size and sha256', async (t) => {
   }] };
   assert.deepEqual(await verifyDemucsModelFiles({ manifest, modelDir }), { ready: true, files: [{ name: 'model.th', ready: true }] });
   await writeFile(filePath, Buffer.from('wrong bytes'));
+  assert.deepEqual(await verifyDemucsModelFiles({ manifest, modelDir }), { ready: false, files: [{ name: 'model.th', ready: false }] });
+  await rm(filePath);
+  const linkedModelPath = join(root, 'linked-model.th');
+  await writeFile(linkedModelPath, body);
+  await symlink(linkedModelPath, filePath);
   assert.deepEqual(await verifyDemucsModelFiles({ manifest, modelDir }), { ready: false, files: [{ name: 'model.th', ready: false }] });
 });
 

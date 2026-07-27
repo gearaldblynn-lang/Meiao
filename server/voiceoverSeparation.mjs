@@ -12,9 +12,36 @@ const REQUIRED_FILTERS = Object.freeze(['sidechaincompress', 'amix', 'adelay', '
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = path.join(MODULE_DIR, '..', 'deploy', 'voiceover', 'demucs-models.json');
 const YAML_PATH = path.join(MODULE_DIR, '..', 'deploy', 'voiceover', 'mdx.yaml');
+const DEMUCS_ENV_ALLOWLIST = Object.freeze([
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'TZ',
+  'OMP_NUM_THREADS',
+  'MKL_NUM_THREADS',
+  'OPENBLAS_NUM_THREADS',
+  'NUMEXPR_NUM_THREADS',
+]);
 
 let activeSeparations = 0;
 const separationQueue = [];
+
+function buildDemucsProcessEnv(env, pythonPath) {
+  const childEnv = {
+    PATH: `${path.dirname(pythonPath)}:/usr/bin:/bin`,
+    PYTHONDONTWRITEBYTECODE: '1',
+    PYTHONNOUSERSITE: '1',
+    TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD: '1',
+  };
+  for (const key of DEMUCS_ENV_ALLOWLIST) {
+    const value = String(env?.[key] || '').trim();
+    if (value) childEnv[key] = value;
+  }
+  return childEnv;
+}
 
 function abortError() {
   return Object.assign(new Error('voiceover separation cancelled'), { name: 'AbortError', code: 'voiceover_separation_cancelled' });
@@ -57,9 +84,17 @@ function pumpSeparationQueue() {
   }
 }
 
-function runCommand(command, args, { timeoutMs = 30_000, spawnProcess = spawn } = {}) {
+function runCommand(command, args, {
+  timeoutMs = 30_000,
+  spawnProcess = spawn,
+  env,
+} = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawnProcess(command, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawnProcess(command, args, {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(env ? { env } : {}),
+    });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
@@ -106,7 +141,11 @@ export async function checkVoiceoverSeparationReadiness({
     const result = await verifyModels({ manifest, modelDir: config.demucsModelDir, deps });
     const runtimeYaml = await (deps.readFile || readFile)(path.join(config.demucsModelDir, 'mdx.yaml'), 'utf8');
     if (result?.ready === true && runtimeYaml === EXPECTED_MDX_YAML && config.separationPython) {
-      const loadResult = await runProcess(config.separationPython, ['-c', 'import sys; from pathlib import Path; from demucs.pretrained import get_model; get_model("mdx", Path(sys.argv[1])); print("mdx-load-ok")', config.demucsModelDir]);
+      const loadResult = await runProcess(
+        config.separationPython,
+        ['-c', 'import sys; from pathlib import Path; from demucs.pretrained import get_model; get_model("mdx", Path(sys.argv[1])); print("mdx-load-ok")', config.demucsModelDir],
+        { env: buildDemucsProcessEnv(env, config.separationPython) },
+      );
       modelReady = (loadResult?.exitCode ?? 1) === 0 && String(loadResult?.stdout || '').trim() === 'mdx-load-ok';
     }
   } catch {}
@@ -136,7 +175,14 @@ async function defaultProbeDurationMs(filePath, env, deps) {
   return Math.round(seconds * 1000);
 }
 
-function waitForSeparationProcess({ pythonPath, args, signal, timeoutMs, deps }) {
+function waitForSeparationProcess({
+  pythonPath,
+  args,
+  signal,
+  timeoutMs,
+  deps,
+  env,
+}) {
   const spawnProcess = deps.spawn || spawn;
   const setTimer = deps.setTimeout || setTimeout;
   const clearTimer = deps.clearTimeout || clearTimeout;
@@ -145,7 +191,12 @@ function waitForSeparationProcess({ pythonPath, args, signal, timeoutMs, deps })
     if (signal?.aborted) return reject(abortError());
     let child;
     try {
-      child = spawnProcess(pythonPath, args, { shell: false, detached: true, stdio: 'ignore' });
+      child = spawnProcess(pythonPath, args, {
+        shell: false,
+        detached: true,
+        stdio: 'ignore',
+        env: buildDemucsProcessEnv(env, pythonPath),
+      });
     } catch {
       return reject(buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离不可用'));
     }
@@ -229,12 +280,6 @@ export async function separateVoiceover({
   deps = {},
 } = {}) {
   const config = providedConfig || getVoiceoverConfig(env);
-  const readiness = await (deps.checkReadiness || checkVoiceoverSeparationReadiness)({
-    env,
-    config,
-    deps,
-  });
-  if (!readiness?.ready) throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离不可用');
   if (typeof inputWavPath !== 'string' || !inputWavPath) throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离输入无效');
   const release = await acquireSeparationPermit(signal, config.separationConcurrency);
   let effectiveWorkDir = workDir;
@@ -242,6 +287,12 @@ export async function separateVoiceover({
   const cleanup = deps.rm || rm;
   let releaseAfterClose = null;
   try {
+    const readiness = await (deps.checkReadiness || checkVoiceoverSeparationReadiness)({
+      env,
+      config,
+      deps,
+    });
+    if (!readiness?.ready) throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离不可用');
     if (ownsWorkDir) effectiveWorkDir = await (deps.mkdtemp || mkdtemp)(path.join(tmpdir(), 'meiao-voiceover-'));
     const outputDir = path.join(effectiveWorkDir, 'separated');
     const trackName = path.parse(inputWavPath).name;
@@ -252,6 +303,7 @@ export async function separateVoiceover({
       pythonPath: config.separationPython,
       args: ['-m', 'demucs.separate', '-n', 'mdx', '-d', 'cpu', '-j', '1', '--two-stems=vocals', '--repo', config.demucsModelDir, '--out', outputDir, inputWavPath],
       signal, timeoutMs: config.separationTimeoutMs, deps,
+      env,
     });
     const durationMs = await validateOutput({ inputWavPath, vocalsPath, backgroundPath, durationToleranceMs: config.durationToleranceMs, env, deps });
     return Object.freeze({ vocalsPath, backgroundPath, model: 'mdx', durationMs,
