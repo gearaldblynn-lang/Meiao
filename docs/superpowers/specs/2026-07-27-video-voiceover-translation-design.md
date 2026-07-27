@@ -416,6 +416,7 @@ type VoiceoverAnalysis = {
   - `removeText=false`：规范化原视频。
   - `removeText=true`：Golden 去字幕托管结果。
 - 视频轨在合同兼容时直接复制，不重新编码画面；音频编码为 AAC。
+- 父 runner 传入 FFmpeg/FFprobe 的全部本地路径必须先 canonicalize，并验证位于服务端为该父任务创建和持有的工作根目录内；浏览器不得指定工作根，路径穿越和 symlink 逃逸必须在启动子进程前拒绝。
 - 音轨不足时补静音，超出时按权威视频时长裁切；最终视频总时长与底片误差不超过 `MEIAO_VOICEOVER_DURATION_TOLERANCE_MS`。
 - 最终 MP4 使用 `faststart`，转存后验证 `video/mp4`、H.264、AAC、`ftyp`、时长和 HTTP Range。
 

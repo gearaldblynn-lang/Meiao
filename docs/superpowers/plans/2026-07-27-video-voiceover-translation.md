@@ -1447,6 +1447,10 @@ git commit -m "feat(jobs): checkpoint voiceover parent and child tasks"
 - Export `runVoiceoverTranslationJob({ job, env, signal, onResultCheckpoint, deps })`.
 - Add `executeApplicationJob(job, env, signal, options)` in `server/index.mjs`: parent task to composite runner; all other tasks to `executeProviderJobWithManagedAssetScrub`.
 - Runner dependencies are explicit: owned asset resolver, FFprobe, managed file persistence, Golden adapter, Gemini analysis, TTS adapter, child ledger, Demucs, FFmpeg audio functions, temp cleanup, and logger.
+- Before passing any local input or output path into Task 7 audio helpers, the
+  runner must canonicalize it and prove containment within a server-created,
+  parent-job-owned work root. Browser payloads cannot select or extend this
+  root; symlink or traversal escapes fail before FFmpeg/FFprobe spawn.
 
 - [ ] **Step 1: Add a failing happy-path orchestration test**
 
@@ -1520,6 +1524,9 @@ Also test:
 - with `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND=16`, a one-second segment whose `targetText` is 50 ASCII bytes fails with `voiceover_analysis_invalid` before `child:tts:*:create`; the recorded events contain no TTS child creation or TTS provider side effect.
 - non-default env values prove the runner propagates the normalized overlap tolerance, target-text density rate, group gap, and TTS token limit into the parser/group planner instead of falling back to helper defaults.
 - temp directory cleanup after intermediate persistence.
+- canonical work-root containment accepts server-owned children and rejects
+  relative paths, traversal, symlink escapes, and browser-provided roots before
+  any Task 7 process call.
 - logs contain IDs/stages/durations but no signed URL, full provider body, transcript, key, authorization header, or local path.
 
 - [ ] **Step 3: Run runner tests and confirm RED**

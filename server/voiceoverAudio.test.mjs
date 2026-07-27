@@ -42,6 +42,8 @@ const audioProbe = ({
 
 const videoProbe = ({
   duration = '3.000000',
+  videoDuration,
+  audioDuration,
   videoCodec = 'h264',
   audioCodec = 'aac',
   width = 160,
@@ -49,8 +51,8 @@ const videoProbe = ({
   channels = 2,
 } = {}) => JSON.stringify({
   streams: [
-    { codec_type: 'video', codec_name: videoCodec, width, height },
-    { codec_type: 'audio', codec_name: audioCodec, sample_rate: '48000', channels },
+    { codec_type: 'video', codec_name: videoCodec, width, height, ...(videoDuration ? { duration: videoDuration } : {}) },
+    { codec_type: 'audio', codec_name: audioCodec, sample_rate: '48000', channels, ...(audioDuration ? { duration: audioDuration } : {}) },
   ],
   format: { duration, format_name: 'mov,mp4,m4a,3gp,3g2,mj2', size: '1000' },
 });
@@ -96,6 +98,24 @@ test('probe parser fails closed on malformed JSON and absent audio', () => {
     }), { requireAudio: true, noAudioCode: 'voiceover_source_has_no_audio' }),
     (error) => error.code === 'voiceover_source_has_no_audio',
   );
+});
+
+test('probe exposes distinct durations and treats the video stream as authoritative for video media', () => {
+  const video = parseVoiceoverProbeOutput(videoProbe({
+    duration: '2',
+    videoDuration: '1',
+    audioDuration: '2',
+  }), { requireAudio: true });
+  assert.equal(video.videoDurationMs, 1000);
+  assert.equal(video.audioDurationMs, 2000);
+  assert.equal(video.formatDurationMs, 2000);
+  assert.equal(video.durationMs, 1000);
+
+  const audio = parseVoiceoverProbeOutput(audioProbe({ duration: '2' }), { requireAudio: true });
+  assert.equal(audio.videoDurationMs, null);
+  assert.equal(audio.audioDurationMs, null);
+  assert.equal(audio.formatDurationMs, 2000);
+  assert.equal(audio.durationMs, 2000);
 });
 
 test('probeVoiceoverAudio rejects missing, empty, and invalid audio files', async () => {
@@ -389,27 +409,68 @@ test('runVoiceoverProcess never uses a shell and rejects non-zero exits with bou
   assert.equal(options.shell, false);
 });
 
-test('runVoiceoverProcess kills the child on cancellation and timeout', async () => {
+test('runVoiceoverProcess terminates but stays pending until the child closes', async () => {
   const abortChild = fakeChild();
   const controller = new AbortController();
+  let settled = false;
   const aborted = runVoiceoverProcess('/private/ffmpeg', [], {
     spawnImpl: () => abortChild,
     signal: controller.signal,
     timeoutMs: 1000,
-  });
+    terminationGraceMs: 5,
+    terminationCloseTimeoutMs: 100,
+  }).finally(() => { settled = true; });
   controller.abort();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal(abortChild.killCalls[0], 'SIGTERM');
+  abortChild.emit('error', new Error('late error during termination'));
+  assert.equal(settled, false);
+  abortChild.emit('close', null, 'SIGTERM');
   await assert.rejects(aborted, (error) => error.code === 'voiceover_mix_failed' && error.cancelled === true);
-  assert.deepEqual(abortChild.killCalls, ['SIGKILL']);
 
   const timeoutChild = fakeChild();
+  const timedOut = runVoiceoverProcess('/private/ffmpeg', [], {
+    spawnImpl: () => timeoutChild,
+    timeoutMs: 5,
+    terminationGraceMs: 5,
+    terminationCloseTimeoutMs: 100,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.deepEqual(timeoutChild.killCalls, ['SIGTERM', 'SIGKILL']);
+  timeoutChild.emit('close', null, 'SIGKILL');
   await assert.rejects(
-    runVoiceoverProcess('/private/ffmpeg', [], {
-      spawnImpl: () => timeoutChild,
-      timeoutMs: 5,
-    }),
+    timedOut,
     (error) => error.code === 'voiceover_mix_failed' && error.timedOut === true,
   );
-  assert.deepEqual(timeoutChild.killCalls, ['SIGKILL']);
+});
+
+test('runVoiceoverProcess exposes a close promise when kill completion exceeds its hard deadline', async () => {
+  const child = fakeChild();
+  const controller = new AbortController();
+  const promise = runVoiceoverProcess('/private/ffmpeg', [], {
+    spawnImpl: () => child,
+    signal: controller.signal,
+    timeoutMs: 1000,
+    terminationGraceMs: 2,
+    terminationCloseTimeoutMs: 6,
+  });
+  controller.abort();
+  let terminalError;
+  await assert.rejects(promise, (error) => {
+    terminalError = error;
+    return error.code === 'voiceover_mix_failed'
+      && error.cancelled === true
+      && error.releasePermitWhenClosed instanceof Promise;
+  });
+  let closed = false;
+  terminalError.releasePermitWhenClosed.then(() => { closed = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closed, false);
+  child.emit('error', new Error('late error after caller rejection'));
+  child.emit('close', null, 'SIGKILL');
+  await terminalError.releasePermitWhenClosed;
+  assert.equal(closed, true);
 });
 
 const ffmpegPath = (() => {
@@ -449,7 +510,9 @@ test('packaged FFmpeg fixture retains background, replaces vocals, limits peak, 
   const aligned = path.join(dir, 'aligned.wav');
   const analysisVideo = path.join(dir, 'analysis.mp4');
   const final = path.join(dir, 'final.mp4');
+  const control = path.join(dir, 'control.mp4');
   const pcm = path.join(dir, 'final.f32le');
+  const controlPcm = path.join(dir, 'control.f32le');
   try {
     await runFfmpeg([
       '-hide_banner', '-loglevel', 'error', '-y',
@@ -463,9 +526,9 @@ test('packaged FFmpeg fixture retains background, replaces vocals, limits peak, 
       base,
     ]);
     for (const [output, graph] of [
-      [background, 'sine=frequency=300:sample_rate=48000:duration=3[a];sine=frequency=600:sample_rate=48000:duration=3[b];[a][b]amix=inputs=2:normalize=0,volume=0.35[out]'],
+      [background, 'sine=frequency=300:sample_rate=48000:duration=3[a];sine=frequency=600:sample_rate=48000:duration=3[b];[a][b]amix=inputs=2:normalize=0,volume=3[out]'],
       [vocals, 'sine=frequency=1000:sample_rate=48000:duration=3[out]'],
-      [narration, 'sine=frequency=1400:sample_rate=48000:duration=3,volume=0.35[out]'],
+      [narration, 'sine=frequency=1400:sample_rate=48000:duration=3,volume=5[out]'],
     ]) {
       await runFfmpeg([
         '-hide_banner', '-loglevel', 'error', '-y',
@@ -522,13 +585,33 @@ test('packaged FFmpeg fixture retains background, replaces vocals, limits peak, 
     assert.equal(mixed.fastStart, true);
     assert.ok(Math.abs(mixed.durationMs - 3000) <= 120);
 
+    const { args: controlArgs } = buildFinalMixArgs({
+      baseVideoPath: base,
+      backgroundPath: background,
+      narrationPath: aligned,
+      outputPath: control,
+      durationMs: 3000,
+      duckingDb: 0,
+    });
+    const controlGraphIndex = controlArgs.indexOf('-filter_complex') + 1;
+    controlArgs[controlGraphIndex] = controlArgs[controlGraphIndex]
+      .replace('alimiter=limit=0.8912509381:level=0,', '');
+    await runFfmpeg(controlArgs);
+
     await runFfmpeg([
       '-hide_banner', '-loglevel', 'error', '-y',
       '-i', final, '-map', '0:a:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', pcm,
     ]);
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', control, '-map', '0:a:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', controlPcm,
+    ]);
     const raw = await readFile(pcm);
+    const controlRaw = await readFile(controlPcm);
     const samples = new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4);
+    const controlSamples = new Float32Array(controlRaw.buffer, controlRaw.byteOffset, controlRaw.byteLength / 4);
     const peak = samples.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
+    const controlPeak = controlSamples.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
     const amplitudes = Object.fromEntries([300, 600, 1000, 1400].map((frequency) => (
       [frequency, goertzel(samples, 48000, frequency)]
     )));
@@ -536,7 +619,52 @@ test('packaged FFmpeg fixture retains background, replaces vocals, limits peak, 
     assert.ok(amplitudes[600] > 0.005, `600Hz=${amplitudes[600]}`);
     assert.ok(amplitudes[1400] > 0.01, `1400Hz=${amplitudes[1400]}`);
     assert.ok(amplitudes[1000] < amplitudes[1400] * 0.12, JSON.stringify(amplitudes));
-    assert.ok(peak <= 0.97, `peak=${peak}`);
+    assert.ok(controlPeak > 0.98, `unlimited control peak=${controlPeak}`);
+    // AAC can overshoot the PCM limiter by about 0.44 dB in this fixture.
+    assert.ok(peak <= 0.94, `limited AAC peak=${peak}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('real mix uses 1s video-stream duration instead of a 2s audio/container duration', {
+  skip: ffmpegPath && ffprobePath ? false : 'packaged FFmpeg/FFprobe unavailable',
+  timeout: 30_000,
+}, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'voiceover-duration-fixture-'));
+  const base = path.join(dir, 'base.mp4');
+  const background = path.join(dir, 'background.wav');
+  const narration = path.join(dir, 'narration.wav');
+  const final = path.join(dir, 'final.mp4');
+  try {
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'color=c=blue:s=160x120:r=24:d=1',
+      '-f', 'lavfi', '-i', 'sine=frequency=300:sample_rate=48000:duration=2',
+      '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-movflags', '+faststart', base,
+    ]);
+    for (const [output, channels, frequency] of [
+      [background, '2', '400'],
+      [narration, '1', '1400'],
+    ]) {
+      await runFfmpeg([
+        '-hide_banner', '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', `sine=frequency=${frequency}:sample_rate=48000:duration=2`,
+        '-ac', channels, '-c:a', 'pcm_s16le', output,
+      ]);
+    }
+    const result = await mixVoiceoverResult({
+      baseVideoPath: base,
+      backgroundPath: background,
+      narrationPath: narration,
+      outputPath: final,
+      config: { duckingDb: 4, durationToleranceMs: 120 },
+      deps: { ffmpegPath, ffprobePath },
+    });
+    assert.ok(Math.abs(result.durationMs - 1000) <= 120, JSON.stringify(result));
+    assert.equal(result.videoDurationMs, 1000);
+    assert.ok(result.audioDurationMs <= 1120);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

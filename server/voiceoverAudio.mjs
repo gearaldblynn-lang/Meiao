@@ -92,6 +92,8 @@ export function runVoiceoverProcess(command, args, {
   spawnImpl = spawn,
   maxStdoutBytes = MAX_STDOUT_BYTES,
   maxStderrBytes = MAX_STDERR_BYTES,
+  terminationGraceMs = 250,
+  terminationCloseTimeoutMs = 5_000,
 } = {}) {
   assertAbsoluteFilePath(command, '媒体处理命令');
   if (!Array.isArray(args) || args.some((value) => typeof value !== 'string')) {
@@ -113,7 +115,12 @@ export function runVoiceoverProcess(command, args, {
     }
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
-    let settled = false;
+    let callerSettled = false;
+    let terminalError = null;
+    let killTimer = null;
+    let closeTimer = null;
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
 
     const onStdout = (chunk) => {
       stdout = appendBoundedTail(stdout, chunk, maxStdoutBytes);
@@ -121,43 +128,64 @@ export function runVoiceoverProcess(command, args, {
     const onStderr = (chunk) => {
       stderr = appendBoundedTail(stderr, chunk, maxStderrBytes);
     };
-    const cleanup = () => {
+    const cleanupAfterClose = () => {
       clearTimeout(timer);
+      clearTimeout(killTimer);
+      clearTimeout(closeTimer);
       signal?.removeEventListener('abort', onAbort);
       child.removeListener('error', onError);
       child.removeListener('close', onClose);
       child.stdout?.removeListener('data', onStdout);
       child.stderr?.removeListener('data', onStderr);
     };
-    const settle = (callback, value) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
+    const settleCaller = (callback, value) => {
+      if (callerSettled) return;
+      callerSettled = true;
       callback(value);
     };
-    const onAbort = () => {
-      child.kill('SIGKILL');
-      settle(reject, fail('口播媒体处理已取消', { cancelled: true }));
+    const terminate = (error) => {
+      if (terminalError) return;
+      terminalError = error;
+      child.kill('SIGTERM');
+      killTimer = setTimeout(() => child.kill('SIGKILL'), boundedInteger(
+        terminationGraceMs, 250, 1, 60_000,
+      ));
+      killTimer.unref?.();
+      closeTimer = setTimeout(() => {
+        if (callerSettled) return;
+        Object.defineProperty(terminalError, 'releasePermitWhenClosed', {
+          value: closed,
+          enumerable: false,
+        });
+        signal?.removeEventListener('abort', onAbort);
+        settleCaller(reject, terminalError);
+      }, boundedInteger(terminationCloseTimeoutMs, 5_000, 1, 60_000));
+      closeTimer.unref?.();
     };
+    const onAbort = () => terminate(fail('口播媒体处理已取消', { cancelled: true }));
     const onError = (error) => {
-      settle(reject, fail('媒体处理进程启动失败', { cause: error?.message || String(error) }));
+      if (terminalError) return;
+      terminate(fail('媒体处理进程启动失败', { cause: error?.message || String(error) }));
     };
     const onClose = (exitCode, processSignal) => {
+      resolveClosed();
       const result = {
         stdout: stdout.toString('utf8'),
         stderr: stderr.toString('utf8'),
         exitCode,
         signal: processSignal || null,
       };
-      if (exitCode === 0) {
-        settle(resolve, result);
+      if (terminalError) {
+        settleCaller(reject, terminalError);
+      } else if (exitCode === 0) {
+        settleCaller(resolve, result);
       } else {
-        settle(reject, fail('媒体处理进程失败', result));
+        settleCaller(reject, fail('媒体处理进程失败', result));
       }
+      cleanupAfterClose();
     };
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      settle(reject, fail('口播媒体处理超时', {
+      terminate(fail('口播媒体处理超时', {
         timedOut: true,
         stderr: stderr.toString('utf8'),
       }));
@@ -193,11 +221,16 @@ export function parseVoiceoverProbeOutput(stdout, {
     }
     throw fail('媒体文件没有可用音轨');
   }
-  const durationSeconds = Number(
-    payload?.format?.duration
-      ?? audio?.duration
-      ?? video?.duration,
-  );
+  const finiteDuration = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+  const videoDurationSeconds = finiteDuration(video?.duration);
+  const audioDurationSeconds = finiteDuration(audio?.duration);
+  const formatDurationSeconds = finiteDuration(payload?.format?.duration);
+  const durationSeconds = video
+    ? (videoDurationSeconds ?? formatDurationSeconds)
+    : (audioDurationSeconds ?? formatDurationSeconds);
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
     throw fail('媒体时长无效');
   }
@@ -206,6 +239,9 @@ export function parseVoiceoverProbeOutput(stdout, {
   return {
     durationMs: durationSeconds * 1000,
     durationSeconds,
+    videoDurationMs: videoDurationSeconds === null ? null : videoDurationSeconds * 1000,
+    audioDurationMs: audioDurationSeconds === null ? null : audioDurationSeconds * 1000,
+    formatDurationMs: formatDurationSeconds === null ? null : formatDurationSeconds * 1000,
     formatNames: String(payload?.format?.format_name || '')
       .split(',')
       .map((item) => item.trim())
@@ -621,7 +657,7 @@ export function buildFinalMixArgs({
     '[narr]asplit=2[narr_sc][narr_mix]',
     `[bg][narr_sc]sidechaincompress=threshold=0.02:ratio=${formatNumber(ratio)}:attack=20:release=250:makeup=1[ducked]`,
     '[ducked][narr_mix]amix=inputs=2:duration=longest:normalize=0,'
-      + `alimiter=limit=0.8912509381,atrim=duration=${seconds}[mixed]`,
+      + `alimiter=limit=0.8912509381:level=0,atrim=duration=${seconds}[mixed]`,
   ].join(';');
   return {
     filterGraph,
