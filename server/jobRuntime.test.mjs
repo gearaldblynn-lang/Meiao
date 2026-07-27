@@ -8,6 +8,8 @@ import {
   buildJobFailureLogFields,
   buildJobRuntimeLogMeta,
   buildPublicSystemConfig,
+  buildVoiceoverHealthSnapshot,
+  dispatchApplicationJob,
   getWorkerConcurrencyLimit,
   getNextJobFailureState,
   getProviderCompletedRejectedOutput,
@@ -228,7 +230,175 @@ test('buildPublicSystemConfig publishes the frozen public voiceover contract onl
     ffmpegReady: true,
     separationConcurrency: 1,
   });
+  assert.equal(config.voiceoverTranslation.ready, true);
   assert.equal(JSON.stringify(config.voiceoverTranslation).match(/private|\/Users|token|apiKey/i), null);
+});
+
+test('public voiceover ready remains false when KIE credentials are unavailable', () => {
+  const config = buildPublicSystemConfig({
+    MEIAO_VOICEOVER_TRANSLATION_ENABLED: '1',
+  }, {}, {
+    voiceoverReadiness: {
+      pythonReady: true,
+      modelReady: true,
+      ffmpegReady: true,
+    },
+  });
+
+  assert.equal(config.voiceoverTranslation.enabled, true);
+  assert.equal(config.voiceoverTranslation.ready, false);
+});
+
+test('index dispatches only the voiceover parent through the composite runner', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const dispatcher = source.match(
+    /const executeApplicationJob = async[\s\S]*?\n};/,
+  )?.[0] || '';
+
+  assert.match(dispatcher, /dispatchApplicationJob\(\{/);
+  assert.match(dispatcher, /executeVoiceover:/);
+  assert.match(dispatcher, /runVoiceoverTranslationJob\(/);
+  assert.match(dispatcher, /executeProviderJobWithManagedAssetScrub\(/);
+  assert.equal(
+    (source.match(/const output = await executeApplicationJob\(job, process\.env, signal, options\);/g) || []).length,
+    4,
+  );
+});
+
+test('application dispatch helper preserves the default executor for every non-parent task', async () => {
+  const calls = [];
+  const voiceover = await dispatchApplicationJob({
+    job: { taskType: 'voiceover_translate_video' },
+    executeVoiceover: async () => {
+      calls.push('voiceover');
+      return 'voiceover-result';
+    },
+    executeDefault: async () => {
+      calls.push('default');
+      return 'default-result';
+    },
+  });
+  const ordinary = await dispatchApplicationJob({
+    job: { taskType: 'kie_image' },
+    executeVoiceover: async () => {
+      calls.push('wrong');
+    },
+    executeDefault: async () => {
+      calls.push('default');
+      return 'default-result';
+    },
+  });
+
+  assert.equal(voiceover, 'voiceover-result');
+  assert.equal(ordinary, 'default-result');
+  assert.deepEqual(calls, ['voiceover', 'default']);
+});
+
+test('voiceover health snapshot is bounded and contains no runtime paths', () => {
+  const snapshot = buildVoiceoverHealthSnapshot({
+    MEIAO_VOICEOVER_TRANSLATION_ENABLED: '1',
+    MEIAO_VOICEOVER_SEPARATION_CONCURRENCY: '3',
+    MEIAO_VOICEOVER_SEPARATION_PYTHON: '/Users/private/voiceover/python',
+    MEIAO_VOICEOVER_DEMUCS_MODEL_DIR: '/Users/private/models',
+    KIE_API_KEY: 'secret',
+  }, {
+    ready: true,
+    pythonReady: true,
+    modelReady: true,
+    ffmpegReady: true,
+  });
+
+  assert.deepEqual(snapshot, {
+    enabled: true,
+    ready: true,
+    pythonReady: true,
+    modelReady: true,
+    ffmpegReady: true,
+    separationConcurrency: 1,
+  });
+  assert.doesNotMatch(JSON.stringify(snapshot), /private|\/Users|secret|key/i);
+});
+
+test('voiceover submission preflight runs before policy and credit reservation in both stores', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const mysqlStart = source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'POST')");
+  const localStart = source.lastIndexOf("if (url.pathname === '/api/jobs' && req.method === 'POST')");
+  const mysqlRoute = source.slice(mysqlStart, source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'GET')", mysqlStart));
+  const localRoute = source.slice(localStart, source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'GET')", localStart));
+
+  for (const route of [mysqlRoute, localRoute]) {
+    const preflight = route.indexOf('prepareVoiceoverSubmission({');
+    const policy = route.indexOf('resolveAuthorizedJobSubmissionPolicy(');
+    const reserve = Math.max(
+      route.indexOf('reserveDbJobCreditsForSubmission'),
+      route.indexOf('reserveLocalJobCredits('),
+    );
+    assert.ok(preflight >= 0, 'voiceover preflight is present');
+    assert.ok(policy > preflight, 'trusted media probe finishes before policy');
+    assert.ok(reserve > policy, 'credit reservation happens after trusted policy');
+  }
+});
+
+test('voiceover retry re-probes current-user media before policy and replacement credit reservation', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const mysqlStart = source.indexOf("if (jobRetryMatch && req.method === 'POST')");
+  const localStart = source.lastIndexOf("if (jobRetryMatch && req.method === 'POST')");
+  const mysqlRoute = source.slice(mysqlStart, source.indexOf("if (url.pathname === '/api/jobs/recover'", mysqlStart));
+  const localRoute = source.slice(localStart, source.indexOf("if (url.pathname === '/api/jobs/recover'", localStart));
+
+  for (const route of [mysqlRoute, localRoute]) {
+    const preflight = route.indexOf('prepareVoiceoverSubmission({');
+    const policy = route.indexOf('resolveAuthorizedJobSubmissionPolicy(');
+    const reserve = Math.max(
+      route.indexOf('reserveDbJobCredits('),
+      route.indexOf('reserveLocalJobCredits('),
+    );
+    assert.ok(preflight >= 0, 'voiceover retry preflight is present');
+    assert.ok(policy > preflight, 'retry media probe finishes before policy');
+    assert.ok(reserve > policy, 'replacement credit reservation happens after trusted retry policy');
+    assert.match(route, /stripCreditReservationFromPayload\(job\.payload\)/);
+  }
+});
+
+test('voiceover managed persistence rechecks the active owner on the held MySQL user-lock connection', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const dependencyStart = source.indexOf('const createVoiceoverRunnerDependencies = async');
+  const dependencyEnd = source.indexOf('const executeApplicationJob = async', dependencyStart);
+  const dependencyBlock = source.slice(dependencyStart, dependencyEnd);
+
+  assert.match(
+    dependencyBlock,
+    /withManagedAssetUserLock\(userId, async \(lockedPool\) => \{\s*assertActiveOwner\(await findAnyDbUserById\(userId, lockedPool\)\);\s*return persist\(lockedPool\);/,
+  );
+});
+
+test('voiceover remote materialization is bounded streaming and internal copy is verified after copy', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const materializeStart = source.indexOf('const materializeOwnedVoiceoverAsset = async');
+  const materializeEnd = source.indexOf('const probeOwnedVoiceoverAsset = async', materializeStart);
+  const materializeBlock = source.slice(materializeStart, materializeEnd);
+
+  assert.match(materializeBlock, /const maxBytes = getVoiceoverSourceMaxBytes\(env\)/);
+  assert.match(materializeBlock, /await copyFile\(internalPath, destinationPath\);\s*sizeBytes = Number\(statSync\(destinationPath\)\.size/);
+  assert.match(materializeBlock, /streamVoiceoverAssetToFile\(\{[\s\S]*?maxBytes,[\s\S]*?signal,/);
+  assert.doesNotMatch(materializeBlock, /fetchRemoteAssetBufferWithRetry|fileBuffer|writeFile/);
+});
+
+test('voiceover health exposes readiness booleans and bounded concurrency only', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const healthBlock = source.match(/if \(url\.pathname === '\/api\/health'[\s\S]*?\n\s*return;\n\s*}/)?.[0] || '';
+  const voiceoverBlock = healthBlock.match(/voiceoverTranslation:\s*\{[\s\S]*?\n\s*},/)?.[0] || '';
+
+  assert.match(voiceoverBlock, /enabled:/);
+  assert.match(voiceoverBlock, /ready:/);
+  assert.match(voiceoverBlock, /pythonReady:/);
+  assert.match(voiceoverBlock, /modelReady:/);
+  assert.match(voiceoverBlock, /ffmpegReady:/);
+  assert.match(voiceoverBlock, /separationConcurrency:/);
+  assert.doesNotMatch(
+    voiceoverBlock,
+    /KIE_API_KEY|apiKey|authorization|baseUrl|pythonPath|modelDir|executable|\/Users/i,
+  );
 });
 
 test('buildPublicSystemConfig exposes the normalized Product Restoration rollout', () => {

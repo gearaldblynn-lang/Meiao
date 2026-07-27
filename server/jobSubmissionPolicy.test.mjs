@@ -51,7 +51,7 @@ test('provider policy binds Dreamina video jobs to the Dreamina provider', () =>
 test('video permission and create retry policy covers every video task type', () => {
   assert.deepEqual(
     [...VIDEO_JOB_TASK_TYPES].sort(),
-    ['dreamina_video', 'kie_seedance_video', 'kie_tts', 'kie_veo', 'kie_video', 'maxforai_video', 'subtitle_remove_video']
+    ['dreamina_video', 'kie_seedance_video', 'kie_tts', 'kie_veo', 'kie_video', 'maxforai_video', 'subtitle_remove_video', 'voiceover_translate_video']
   );
 
   for (const taskType of VIDEO_JOB_TASK_TYPES) {
@@ -61,6 +61,8 @@ test('video permission and create retry policy covers every video task type', ()
         ? 'maxforai'
         : taskType === 'subtitle_remove_video'
           ? 'golden_subtitle'
+          : taskType === 'voiceover_translate_video'
+            ? 'internal'
         : 'kie';
     const featureOptions = taskType === 'subtitle_remove_video'
       ? {
@@ -77,6 +79,27 @@ test('video permission and create retry policy covers every video task type', ()
               childKey: 'tts:0:attempt:0',
             },
           }
+      : taskType === 'voiceover_translate_video'
+        ? {
+            module: 'video',
+            subFeature: 'voiceover_translation',
+            payload: {
+              taskPurpose: 'voiceover_translation',
+              subFeature: 'voiceover_translation',
+              removeText: false,
+            },
+            voiceoverEnabled: true,
+            voiceoverKieConfigured: true,
+            voiceoverReadiness: {
+              pythonReady: true,
+              modelReady: true,
+              ffmpegReady: true,
+            },
+            voiceoverSourceProbe: {
+              hasAudio: true,
+              durationMs: 10_000,
+            },
+          }
       : {};
     assert.throws(
       () => resolveJobSubmissionPolicy({ taskType, provider, hasVideoPermission: false, ...featureOptions }),
@@ -87,6 +110,90 @@ test('video permission and create retry policy covers every video task type', ()
     assert.equal(policy.maxCreateRetries, 0, taskType);
     assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000, taskType);
   }
+});
+
+test('voiceover parent policy is internal-only and consumes trusted server readiness and source probe', () => {
+  const ready = {
+    module: 'video',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    subFeature: 'voiceover_translation',
+    payload: {
+      taskPurpose: 'voiceover_translation',
+      subFeature: 'voiceover_translation',
+      removeText: false,
+    },
+    hasVideoPermission: true,
+    voiceoverEnabled: true,
+    voiceoverKieConfigured: true,
+    voiceoverReadiness: {
+      pythonReady: true,
+      modelReady: true,
+      ffmpegReady: true,
+    },
+    voiceoverSourceProbe: {
+      hasAudio: true,
+      durationMs: 20_000,
+    },
+  };
+
+  const policy = resolveJobSubmissionPolicy(ready);
+  assert.equal(policy.provider, 'internal');
+  assert.equal(policy.maxCreateRetries, 0);
+  assert.equal(policy.requiresVideoPermission, true);
+  assert.doesNotThrow(() => resolveJobSubmissionPolicy({
+    ...ready,
+    submissionOperation: 'retry',
+  }));
+  assert.throws(
+    () => resolveJobSubmissionPolicy({
+      ...ready,
+      submissionOperation: 'retry',
+      voiceoverSourceProbe: {},
+    }),
+    (error) => error?.code === 'voiceover_source_has_no_audio',
+  );
+  for (const input of [
+    { ...ready, provider: 'kie' },
+    { ...ready, module: 'translation' },
+    { ...ready, subFeature: 'generation' },
+    { ...ready, voiceoverEnabled: false },
+    { ...ready, voiceoverKieConfigured: false },
+    { ...ready, voiceoverReadiness: { ...ready.voiceoverReadiness, modelReady: false } },
+    { ...ready, voiceoverSourceProbe: { hasAudio: false, durationMs: 20_000 } },
+  ]) {
+    assert.throws(
+      () => resolveJobSubmissionPolicy(input),
+      (error) => /^voiceover_|job_provider_not_allowed/u.test(String(error?.code || '')),
+    );
+  }
+
+  assert.throws(
+    () => resolveJobSubmissionPolicy({
+      ...ready,
+      payload: { ...ready.payload, removeText: true },
+      subtitleRemovalEnabled: true,
+      subtitleRemovalConfigured: true,
+      voiceoverSourceProbe: { hasAudio: true, durationMs: 600_001 },
+    }),
+    (error) => error?.code === 'voiceover_source_too_long',
+  );
+  assert.doesNotThrow(() => resolveJobSubmissionPolicy({
+    ...ready,
+    payload: { ...ready.payload, removeText: true },
+    subtitleRemovalEnabled: true,
+    subtitleRemovalConfigured: true,
+    voiceoverSourceProbe: { hasAudio: true, durationMs: 600_000 },
+  }));
+  assert.throws(
+    () => resolveJobSubmissionPolicy({
+      ...ready,
+      payload: { ...ready.payload, removeText: true },
+      subtitleRemovalEnabled: false,
+      subtitleRemovalConfigured: true,
+    }),
+    (error) => error?.code === 'subtitle_removal_unavailable',
+  );
 });
 
 test('subtitle removal is provider-bound, gated for new work, and recoverable by old task id', () => {

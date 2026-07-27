@@ -88,6 +88,9 @@ const getPayloadCountHint = (payload = {}) => {
 export const estimateCreditReservation = ({ taskType = '', provider = '', payload = {} } = {}) => {
   const normalizedTaskType = String(taskType || '').toLowerCase();
   const normalizedProvider = String(provider || '').toLowerCase();
+  if (normalizedTaskType === 'voiceover_translate_video') {
+    return DEFAULT_VIDEO_CREDIT_ESTIMATE;
+  }
   if (!normalizedTaskType || normalizedTaskType === 'upload_asset' || normalizedProvider === 'internal') return 0;
   const selectedImageModel = payload.model || payload.selectedImageModel || payload.multimodalModel || '';
   if (normalizedProvider === 'maxforai' || resolveMaxForAiImageModelId(selectedImageModel)) return 0;

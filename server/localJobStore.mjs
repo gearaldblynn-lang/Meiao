@@ -704,14 +704,16 @@ export const createLocalJobWorker = ({
               notifiedProviderTaskId = value;
               await mutate((providerStore) => updateLocalJobProviderTaskId(providerStore, refreshedJob.id, value));
             };
-            const onResultCheckpoint = async (resultPatch) => {
+            const onResultCheckpoint = async (resultPatch, checkpointContext = {}) => {
               await mutate((checkpointStore) => persistLocalVoiceoverParentCheckpoint(checkpointStore, {
                 jobId: refreshedJob.id,
                 userId: refreshedJob.userId,
                 startedAt: expectedClaim.startedAt,
                 resultPatch,
                 env: voiceoverEnv,
-                resolveVoiceoverConfig,
+                resolveVoiceoverConfig: checkpointContext.voiceoverConfig
+                  ? () => checkpointContext.voiceoverConfig
+                  : resolveVoiceoverConfig,
               }));
             };
 

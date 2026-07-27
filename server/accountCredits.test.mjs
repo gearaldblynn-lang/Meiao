@@ -286,6 +286,39 @@ test('estimateCreditReservation derives generation estimates from payload hints'
   }), 0);
 });
 
+test('voiceover parent reserves the existing five-credit video estimate despite internal provider', () => {
+  assert.equal(estimateCreditReservation({
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    payload: { subFeature: 'voiceover_translation' },
+  }), 5);
+
+  const store = createLimitedStore();
+  const amount = estimateCreditReservation({
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+  });
+  const reservation = reserveLocalAccountCredits(store, 'user-1', {
+    amount,
+    jobId: 'voiceover-parent-1',
+    module: 'video',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+  });
+  assert.equal(reservation.amount, 5);
+  assert.equal(store.users[0].creditReserved, 5);
+  assert.throws(
+    () => reserveLocalAccountCredits(store, 'user-1', {
+      amount: 6,
+      jobId: 'voiceover-parent-2',
+      module: 'video',
+      taskType: 'voiceover_translate_video',
+      provider: 'internal',
+    }),
+    (error) => error?.code === 'account_credit_insufficient',
+  );
+});
+
 test('createCreditInsufficientError exposes HTTP 402 details', () => {
   const error = createCreditInsufficientError({ required: 5, available: 2 });
 

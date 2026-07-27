@@ -25,6 +25,7 @@ export const VIDEO_JOB_TASK_TYPES = new Set([
   'kie_video',
   'maxforai_video',
   'subtitle_remove_video',
+  'voiceover_translate_video',
 ]);
 
 export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
@@ -83,6 +84,7 @@ const TASK_PROVIDER_POLICIES = new Map([
   ['dreamina_video', new Set(['dreamina'])],
   ['maxforai_video', new Set(['maxforai'])],
   ['subtitle_remove_video', new Set(['golden_subtitle'])],
+  ['voiceover_translate_video', new Set(['internal'])],
   ['openai_responses', new Set(['openai_compatible'])],
   ['openai_tool_calling', new Set(['openai_compatible'])],
   ['upload_asset', new Set(['kie'])],
@@ -138,6 +140,10 @@ export const resolveJobSubmissionPolicy = ({
   subtitleRemovalConfigured = false,
   subtitleRemovalBatchMaxItems = 10,
   trustedParentExecution = false,
+  voiceoverEnabled = false,
+  voiceoverKieConfigured = false,
+  voiceoverReadiness = {},
+  voiceoverSourceProbe = {},
 } = {}) => {
   const normalizedModule = normalizePolicyMarker(module);
   const normalizedTaskType = String(taskType || '').trim();
@@ -200,6 +206,66 @@ export const resolveJobSubmissionPolicy = ({
       throw createPolicyError(
         'parent_owned_job_invalid',
         'KIE TTS 父子任务身份无效。',
+        400,
+      );
+    }
+  }
+
+  if (normalizedTaskType === 'voiceover_translate_video') {
+    if (
+      normalizedModule !== 'video'
+      || normalizedSubFeature !== 'voiceover_translation'
+      || payload?.taskPurpose !== 'voiceover_translation'
+      || payload?.subFeature !== 'voiceover_translation'
+    ) {
+      throw createPolicyError(
+        'voiceover_job_invalid',
+        '口播翻译父任务用途无效。',
+        400,
+      );
+    }
+    if (
+      !voiceoverEnabled
+      || !voiceoverKieConfigured
+      || voiceoverReadiness?.pythonReady !== true
+      || voiceoverReadiness?.modelReady !== true
+      || voiceoverReadiness?.ffmpegReady !== true
+    ) {
+      throw createPolicyError(
+        'voiceover_unavailable',
+        '口播翻译运行环境尚未就绪。',
+        503,
+      );
+    }
+    const durationMs = Number(voiceoverSourceProbe?.durationMs);
+    if (voiceoverSourceProbe?.hasAudio !== true) {
+      throw createPolicyError(
+        'voiceover_source_has_no_audio',
+        '源视频没有可用音轨。',
+        400,
+      );
+    }
+    if (!Number.isFinite(durationMs) || durationMs <= 0) {
+      throw createPolicyError(
+        'voiceover_source_probe_invalid',
+        '源视频媒体探测结果无效。',
+        400,
+      );
+    }
+    if (
+      payload?.removeText === true
+      && (!subtitleRemovalEnabled || !subtitleRemovalConfigured)
+    ) {
+      throw createPolicyError(
+        'subtitle_removal_unavailable',
+        '去字幕功能暂未开放，请联系管理员。',
+        503,
+      );
+    }
+    if (payload?.removeText === true && durationMs > 600_000) {
+      throw createPolicyError(
+        'voiceover_source_too_long',
+        '开启去文案时视频不能超过 600 秒。',
         400,
       );
     }

@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { createReadStream, mkdirSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFile, mkdir as mkdirAsync, mkdtemp, rm } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -131,7 +132,7 @@ import {
   shouldRequireAgentImageInput,
 } from './agentImagePlan.mjs';
 import { compactAppStateForStorage, mergeAppStateForStorage, trimAppStateForStorage, writeMergedAppStateUnderUserLock } from './appStateMerge.mjs';
-import { buildJobRuntimeLogMeta, buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins, runWithTransientRetry, getReconcileBackoffMs, shouldSettleProviderCompletedRejectedJob } from './jobRuntime.mjs';
+import { buildJobRuntimeLogMeta, buildPublicSystemConfig, buildVoiceoverHealthSnapshot, dispatchApplicationJob, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins, runWithTransientRetry, getReconcileBackoffMs, shouldSettleProviderCompletedRejectedJob } from './jobRuntime.mjs';
 import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../src/utils/gptImage2.mjs';
 import { isExternallyReachableBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import {
@@ -154,6 +155,7 @@ import {
   markStoredAssetDeleted,
   normalizeStoredAssetJobId,
   persistAssetBuffer,
+  persistAssetFile,
   persistUploadedAssetBuffer,
   persistInlineImageResult,
   persistRemoteAsset,
@@ -162,6 +164,29 @@ import {
   selectExpiredAssetsForCleanup,
   selectAbandonedPermanentAgentResultAssets,
 } from './assetStore.mjs';
+import {
+  createVoiceoverChildJobLedger,
+} from './voiceoverChildJobStore.mjs';
+import {
+  getVoiceoverConfig,
+} from './voiceoverContract.mjs';
+import {
+  checkVoiceoverSeparationReadiness,
+  separateVoiceover,
+} from './voiceoverSeparation.mjs';
+import {
+  alignVoiceoverGroups,
+  buildVocalOnlyAnalysisVideo,
+  extractVoiceoverAudio,
+  mixVoiceoverResult,
+} from './voiceoverAudio.mjs';
+import {
+  getVoiceoverSourceMaxBytes,
+  prepareVoiceoverSubmission as prepareVoiceoverSubmissionInput,
+  runVoiceoverTranslationJob,
+  streamVoiceoverAssetToFile,
+  withVoiceoverProbeWorkspace,
+} from './voiceoverTranslationRunner.mjs';
 import {
   createVirtualModelDraft,
   createVirtualModelGenerationJobSnapshot,
@@ -452,6 +477,12 @@ let mediaTranscodeReadiness = {
   enabled: mediaTranscodeService.getStatus().enabled,
   ffmpegReady: false,
   ffprobeReady: false,
+};
+let voiceoverTranslationReadiness = {
+  ready: false,
+  pythonReady: false,
+  modelReady: false,
+  ffmpegReady: false,
 };
 const mediaTranscodeApi = createMediaTranscodeApi({
   store: mediaTranscodeSessionStore,
@@ -1808,8 +1839,16 @@ const normalizeUserAnalysisModel = (value = '') => {
 const canUseVideoGenerationFeature = (user) =>
   user?.role === 'admin' || normalizeFeaturePermissions(user?.featurePermissions).videoGeneration;
 
-const resolveAuthorizedJobSubmissionPolicy = (user, body, { submissionOperation = 'create' } = {}) => {
+const resolveAuthorizedJobSubmissionPolicy = (
+  user,
+  body,
+  {
+    submissionOperation = 'create',
+    voiceoverSourceProbe = {},
+  } = {},
+) => {
   const subtitleRemovalConfig = getSubtitleRemovalConfig(process.env);
+  const voiceoverConfig = getVoiceoverConfig(process.env);
   return resolveJobSubmissionPolicy({
     module: body?.module,
     taskType: body?.taskType,
@@ -1824,6 +1863,12 @@ const resolveAuthorizedJobSubmissionPolicy = (user, body, { submissionOperation 
     subtitleRemovalEnabled: subtitleRemovalConfig.enabled,
     subtitleRemovalConfigured: subtitleRemovalConfig.configured,
     subtitleRemovalBatchMaxItems: subtitleRemovalConfig.batchMaxItems,
+    voiceoverEnabled: voiceoverConfig.enabled,
+    voiceoverKieConfigured: Boolean(
+      String(process.env.KIE_API_KEY || process.env.MEIAO_KIE_API_KEY || '').trim(),
+    ),
+    voiceoverReadiness: voiceoverTranslationReadiness,
+    voiceoverSourceProbe,
   });
 };
 
@@ -4427,6 +4472,341 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
     { ...options, assetTransferDeps },
   );
 };
+
+const voiceoverAssetIdFromIdentity = ({ assetId = '', sourceUrl = '' } = {}) => {
+  const explicit = String(assetId || '').trim();
+  if (explicit) return explicit;
+  const managedMatch = String(sourceUrl || '').trim().match(
+    /^(?:managed|asset):\/\/([A-Za-z0-9][A-Za-z0-9._:-]{0,199})$/u,
+  );
+  return managedMatch?.[1] || extractStoredAssetIdFromPublicUrl(sourceUrl) || '';
+};
+
+const resolveOwnedVoiceoverAsset = async ({
+  userId,
+  assetId = '',
+  sourceUrl = '',
+  pool = null,
+} = {}) => {
+  const resolvedAssetId = voiceoverAssetIdFromIdentity({ assetId, sourceUrl });
+  if (!resolvedAssetId) {
+    const error = new Error('请选择当前账号拥有的托管视频');
+    error.code = 'managed_asset_invalid';
+    error.statusCode = 400;
+    throw error;
+  }
+  const asset = await getStoredAssetById(pool, resolvedAssetId);
+  if (
+    !asset
+    || asset.deletedAt
+    || String(asset.storageStatus || 'active') !== 'active'
+    || String(asset.userId || '') !== String(userId || '')
+  ) {
+    const error = new Error('托管素材不存在或不属于当前账号');
+    error.code = 'managed_asset_forbidden';
+    error.statusCode = 403;
+    throw error;
+  }
+  return { ...asset, assetId: asset.id };
+};
+
+const materializeOwnedVoiceoverAsset = async ({
+  asset,
+  userId,
+  destinationPath,
+  pool = null,
+  env = process.env,
+  signal,
+} = {}) => {
+  const internalPath = getStoredAssetStorageProvider(asset) === 'internal'
+    ? resolveStoredAssetPath(asset)
+    : '';
+  const maxBytes = getVoiceoverSourceMaxBytes(env);
+  const declaredBytes = Number(asset?.fileSize || 0);
+  if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+    const error = new Error('源视频文件超过本地处理上限');
+    error.code = 'voiceover_source_too_large';
+    error.statusCode = 400;
+    throw error;
+  }
+  await mkdirAsync(path.dirname(destinationPath), { recursive: true, mode: 0o700 });
+  let sizeBytes = declaredBytes;
+  if (internalPath && existsSync(internalPath)) {
+    sizeBytes = Number(statSync(internalPath).size || 0);
+    if (sizeBytes > maxBytes) {
+      const error = new Error('源视频文件超过本地处理上限');
+      error.code = 'voiceover_source_too_large';
+      error.statusCode = 400;
+      throw error;
+    }
+    await copyFile(internalPath, destinationPath);
+    sizeBytes = Number(statSync(destinationPath).size || 0);
+    if (sizeBytes > maxBytes) {
+      await rm(destinationPath, { force: true });
+      const error = new Error('源视频文件超过本地处理上限');
+      error.code = 'voiceover_source_too_large';
+      error.statusCode = 400;
+      throw error;
+    }
+  } else {
+    const readUrl = await resolveManagedAssetReadUrl(asset.publicUrl, {
+      pool,
+      userId,
+      purpose: 'provider',
+      env,
+    });
+    const streamed = await streamVoiceoverAssetToFile({
+      remoteUrl: readUrl,
+      destinationPath,
+      maxBytes,
+      signal,
+      timeoutMs: Number.parseInt(
+        String(env.MEIAO_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS || ''),
+        10,
+      ) || 120_000,
+    });
+    sizeBytes = streamed.sizeBytes;
+  }
+  return {
+    ...asset,
+    assetId: asset.id,
+    url: asset.publicUrl,
+    path: destinationPath,
+    sizeBytes,
+  };
+};
+
+const probeOwnedVoiceoverAsset = async ({
+  asset,
+  userId,
+  pool = null,
+  signal,
+} = {}) => {
+  const probeParent = path.join(dataDir, 'voiceover-submission-probes');
+  await mkdirAsync(probeParent, { recursive: true, mode: 0o700 });
+  return withVoiceoverProbeWorkspace({
+    createWorkRoot: () => mkdtemp(path.join(probeParent, 'probe-')),
+    cleanupWorkRoot: (probeRoot) => rm(probeRoot, { recursive: true, force: true }),
+    operation: async (probeRoot) => {
+      const localAsset = await materializeOwnedVoiceoverAsset({
+        asset,
+        userId,
+        destinationPath: path.join(probeRoot, 'source.mp4'),
+        pool,
+        signal,
+      });
+      const metadata = await mediaTranscodeService.probe(localAsset.path, 'video', signal);
+      return {
+        durationMs: Number(metadata?.durationSeconds) * 1000,
+        hasAudio: metadata?.hasAudio === true,
+        width: Number(metadata?.width || 0),
+        height: Number(metadata?.height || 0),
+      };
+    },
+  });
+};
+
+const prepareVoiceoverSubmission = async ({
+  body,
+  user,
+  pool = null,
+  signal,
+} = {}) => prepareVoiceoverSubmissionInput({
+  body,
+  userId: user?.id,
+  signal,
+  resolveOwnedAsset: (identity) => resolveOwnedVoiceoverAsset({
+    ...identity,
+    pool,
+  }),
+  probeVideo: (asset, probeSignal) => probeOwnedVoiceoverAsset({
+    asset,
+    userId: user?.id,
+    pool,
+    signal: probeSignal,
+  }),
+});
+
+const createVoiceoverRunnerDependencies = async (job, env) => {
+  const pool = shouldUseMysql ? await getMysqlPool() : null;
+  const childJobs = createVoiceoverChildJobLedger({
+    mode: shouldUseMysql ? 'mysql' : 'local',
+    ...(shouldUseMysql
+      ? { pool }
+      : {
+          readLocalStore,
+          mutateLocalStore,
+        }),
+    env,
+  });
+  const persistManagedFile = async ({
+    filePath,
+    userId,
+    parentJobId,
+    stage,
+  }) => {
+    const isFinal = stage === 'result_persisted';
+    const originalName = isFinal
+      ? 'voiceover-translated.mp4'
+      : `${stage}${stage.includes('video') || stage === 'speech_analysis_media' ? '.mp4' : '.wav'}`;
+    const persist = (lockedPool) => persistAssetFile({
+      pool: lockedPool,
+      publicBaseUrl: getPersistentAssetBaseUrl(),
+      userId,
+      module: 'video',
+      assetType: isFinal ? 'result' : 'intermediate',
+      originalName,
+      mimeType: originalName.endsWith('.mp4') ? 'video/mp4' : 'audio/wav',
+      sourcePath: filePath,
+      provider: 'internal',
+      jobId: parentJobId,
+      ...(isFinal ? {} : { expiresAt: getVoiceoverIntermediateExpiresAt(env) }),
+    });
+    const assertActiveOwner = (owner) => {
+      if (owner && owner.status === 'active') return;
+      const error = new Error('账号已停用或不存在，未保存口播翻译结果');
+      error.code = 'managed_asset_owner_unavailable';
+      error.statusCode = 409;
+      throw error;
+    };
+    const persisted = shouldUseMysql
+      ? await withManagedAssetUserLock(userId, async (lockedPool) => {
+          assertActiveOwner(await findAnyDbUserById(userId, lockedPool));
+          return persist(lockedPool);
+        })
+      : await withLocalManagedAssetUserLock(userId, async () => {
+          assertActiveOwner(findLocalUserById(userId));
+          return persist(null);
+        });
+    return {
+      assetId: persisted.id,
+      url: persisted.publicUrl,
+      path: filePath,
+    };
+  };
+  const persistChildProviderOutput = async (child, output) => (
+    persistJobOutputAssetsIfEnabled(child, output)
+  );
+  return {
+    createWorkRoot: async ({ jobId }) => {
+      const parent = path.join(dataDir, 'voiceover-jobs');
+      await mkdirAsync(parent, { recursive: true, mode: 0o700 });
+      return mkdtemp(path.join(parent, `${String(jobId || 'job').replace(/[^A-Za-z0-9_-]/gu, '_')}-`));
+    },
+    cleanupWorkRoot: (workRoot) => rm(workRoot, { recursive: true, force: true }),
+    resolveOwnedAsset: async ({
+      userId,
+      assetId,
+      sourceUrl,
+      destinationPath,
+      signal,
+    }) => {
+      const owned = await resolveOwnedVoiceoverAsset({
+        userId,
+        assetId,
+        sourceUrl,
+        pool,
+      });
+      return materializeOwnedVoiceoverAsset({
+        asset: owned,
+        userId,
+        destinationPath,
+        pool,
+        env,
+        signal,
+      });
+    },
+    probeMedia: async ({ filePath, signal }) => {
+      const probed = await mediaTranscodeService.probe(filePath, 'video', signal);
+      return {
+        ...probed,
+        durationMs: Number(probed?.durationSeconds) * 1000,
+        hasAudio: probed?.hasAudio === true,
+      };
+    },
+    persistManagedFile,
+    childJobs,
+    extractAudio: ({ config: _config, ...options }) => extractVoiceoverAudio({
+      ...options,
+      deps: { env },
+    }),
+    separateVoice: (options) => separateVoiceover(options),
+    buildVocalOnlyVideo: ({ config, ...options }) => buildVocalOnlyAnalysisVideo({
+      ...options,
+      config,
+      deps: { env },
+    }),
+    analyzeSpeech: async ({ messages, signal }) => {
+      const systemSettings = shouldUseMysql
+        ? await getDbSystemSettings()
+        : getLocalSystemSettings(readLocalStore());
+      const model = resolveConfiguredVideoAnalysisModel(systemSettings);
+      return executeProviderJobWithManagedAssetScrub({
+        id: `${job.id}:analysis`,
+        userId: job.userId,
+        module: 'video',
+        taskType: 'kie_chat',
+        provider: 'kie',
+        payload: { messages, model },
+      }, env, signal);
+    },
+    runGolden: (options) => executeProviderJobWithManagedAssetScrub(
+      options.job,
+      env,
+      options.signal,
+      {
+        onProviderTaskId: options.onProviderTaskId,
+      },
+    ),
+    persistGoldenOutput: async ({ child, output }) => {
+      const persisted = await persistChildProviderOutput(child, output);
+      return {
+        assetId: persisted?.result?.videoUrlAssetId,
+        url: persisted?.result?.videoUrl,
+        durationMs: persisted?.result?.durationMs,
+      };
+    },
+    runTts: (options) => executeProviderJobWithManagedAssetScrub(
+      options.job,
+      env,
+      options.signal,
+      {
+        onProviderTaskId: options.onProviderTaskId,
+        voiceoverConfig: options.config,
+      },
+    ),
+    persistTtsOutput: async ({ child, output }) => {
+      const persisted = await persistChildProviderOutput(child, output);
+      return persisted?.result || {};
+    },
+    alignAudio: ({ config, ...options }) => alignVoiceoverGroups({
+      ...options,
+      config,
+      deps: { env },
+    }),
+    mixAudio: ({ config, ...options }) => mixVoiceoverResult({
+      ...options,
+      config,
+      deps: { env },
+    }),
+    logger: {
+      info: (entry) => console.info('[voiceover]', entry),
+      error: (entry) => console.error('[voiceover]', entry),
+    },
+  };
+};
+
+const executeApplicationJob = async (job, env, signal, options = {}) => dispatchApplicationJob({
+  job,
+  executeVoiceover: async () => runVoiceoverTranslationJob({
+    job,
+    env,
+    signal,
+    onResultCheckpoint: options.onResultCheckpoint,
+    deps: await createVoiceoverRunnerDependencies(job, env),
+  }),
+  executeDefault: () => executeProviderJobWithManagedAssetScrub(job, env, signal, options),
+});
 
 const prepareAgentModelImageUrl = (userId) => async (url) => {
   const resolved = await resolveProviderChatMediaUrlForModel(url, {
@@ -13509,6 +13889,7 @@ const handleMysqlRequest = async (req, res, url) => {
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings,
         userSettings: { analysisModel: user.analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -13537,6 +13918,7 @@ const handleMysqlRequest = async (req, res, url) => {
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings: nextSettings,
         userSettings: { analysisModel: admin.analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -13606,6 +13988,7 @@ const handleMysqlRequest = async (req, res, url) => {
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings: currentSettings,
         userSettings: { analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -13816,20 +14199,29 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/jobs' && req.method === 'POST') {
     const user = await requireDbUser(req, res);
     if (!user) return;
-    const body = await readBody(req);
+    let body = await readBody(req);
     if (!body?.taskType || !body?.provider) {
       json(res, 400, { message: '任务类型和 provider 不能为空。' });
       return;
     }
+    const pool = await getMysqlPool();
     let submissionPolicy;
     try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
+      const prepared = await prepareVoiceoverSubmission({
+        body,
+        user,
+        pool,
+        signal: req.signal,
+      });
+      body = prepared.body;
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body, {
+        voiceoverSourceProbe: prepared.sourceProbe || {},
+      });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
     }
 
-    const pool = await getMysqlPool();
     const jobPayload = {
       module: body.module,
       taskType: submissionPolicy.taskType,
@@ -14123,7 +14515,19 @@ const handleMysqlRequest = async (req, res, url) => {
     }
     let submissionPolicy;
     try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, job, { submissionOperation: 'retry' });
+      const prepared = await prepareVoiceoverSubmission({
+        body: {
+          ...job,
+          payload: stripCreditReservationFromPayload(job.payload),
+        },
+        user,
+        pool,
+        signal: req.signal,
+      });
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, prepared.body, {
+        submissionOperation: 'retry',
+        voiceoverSourceProbe: prepared.sourceProbe || {},
+      });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
@@ -17209,6 +17613,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings,
         userSettings: { analysisModel: user.analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -17236,6 +17641,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings: nextSettings,
         userSettings: { analysisModel: admin.analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -17306,6 +17712,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings: currentSettings,
         userSettings: { analysisModel },
+        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -17526,14 +17933,22 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
   if (url.pathname === '/api/jobs' && req.method === 'POST') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
-    const body = await readBody(req);
+    let body = await readBody(req);
     if (!body?.taskType || !body?.provider) {
       json(res, 400, { message: '任务类型和 provider 不能为空。' });
       return;
     }
     let submissionPolicy;
     try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
+      const prepared = await prepareVoiceoverSubmission({
+        body,
+        user,
+        signal: req.signal,
+      });
+      body = prepared.body;
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body, {
+        voiceoverSourceProbe: prepared.sourceProbe || {},
+      });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
@@ -17767,7 +18182,18 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     }
     let submissionPolicy;
     try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, job, { submissionOperation: 'retry' });
+      const prepared = await prepareVoiceoverSubmission({
+        body: {
+          ...job,
+          payload: stripCreditReservationFromPayload(job.payload),
+        },
+        user,
+        signal: req.signal,
+      });
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, prepared.body, {
+        submissionOperation: 'retry',
+        voiceoverSourceProbe: prepared.sourceProbe || {},
+      });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
@@ -17907,6 +18333,10 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/api/health' && req.method === 'GET') {
       const taskEngine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
       const subtitleRemovalConfig = getSubtitleRemovalConfig(process.env);
+      const voiceoverHealth = buildVoiceoverHealthSnapshot(
+        process.env,
+        voiceoverTranslationReadiness,
+      );
       // worker 字段暴露 Temporal poller 存活状态(S1):poller 静默死亡时 HTTP 仍活着,
       // 只看 ok:true 会误判健康。health 本身永远 HTTP 200,消费方看 worker.healthy。
       const worker = taskEngine === 'temporal'
@@ -17936,6 +18366,14 @@ const server = createServer(async (req, res) => {
         subtitleRemoval: {
           enabled: subtitleRemovalConfig.enabled,
           configured: subtitleRemovalConfig.configured,
+        },
+        voiceoverTranslation: {
+          enabled: voiceoverHealth.enabled,
+          ready: voiceoverHealth.ready,
+          pythonReady: voiceoverHealth.pythonReady,
+          modelReady: voiceoverHealth.modelReady,
+          ffmpegReady: voiceoverHealth.ffmpegReady,
+          separationConcurrency: voiceoverHealth.separationConcurrency,
         },
         ...(Object.keys(creditAlert).length ? { creditAlert } : {}),
       });
@@ -18083,6 +18521,18 @@ const bootstrap = async () => {
   if (mediaTranscodeReadiness.enabled && (!mediaTranscodeReadiness.ffmpegReady || !mediaTranscodeReadiness.ffprobeReady)) {
     console.warn('[media-transcode] runtime is enabled but a binary readiness check failed', mediaTranscodeReadiness);
   }
+  if (getVoiceoverConfig(process.env).enabled) {
+    voiceoverTranslationReadiness = await checkVoiceoverSeparationReadiness({
+      env: process.env,
+    });
+    if (!voiceoverTranslationReadiness.ready) {
+      console.warn('[voiceover] runtime is enabled but local separation readiness failed', {
+        pythonReady: voiceoverTranslationReadiness.pythonReady,
+        modelReady: voiceoverTranslationReadiness.modelReady,
+        ffmpegReady: voiceoverTranslationReadiness.ffmpegReady,
+      });
+    }
+  }
   if (shouldUseMysql) {
     await ensureMysqlSchema();
     const pool = await getMysqlPool();
@@ -18108,7 +18558,7 @@ const bootstrap = async () => {
         activities: createMysqlTemporalActivities({
           getPool: getMysqlPool,
           executeJob: async (job, signal, options) => {
-            const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
+            const output = await executeApplicationJob(job, process.env, signal, options);
             return persistJobOutputAssetsIfEnabled(job, output);
           },
           getMaxConcurrency: getDbWorkerConcurrency,
@@ -18136,7 +18586,7 @@ const bootstrap = async () => {
       jobWorker = createJobWorker({
         getPool: getMysqlPool,
         executeJob: async (job, signal, options) => {
-          const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
+          const output = await executeApplicationJob(job, process.env, signal, options);
           return persistJobOutputAssetsIfEnabled(job, output);
         },
         getMaxConcurrency: getDbWorkerConcurrency,
@@ -18180,7 +18630,7 @@ const bootstrap = async () => {
           writeStore: writeLocalStore,
           mutateStore: mutateLocalStore,
           executeJob: async (job, signal, options) => {
-            const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
+            const output = await executeApplicationJob(job, process.env, signal, options);
             return persistJobOutputAssetsIfEnabled(job, output);
           },
           createLog: (payload) => mutateLocalStore((store) => {
@@ -18199,7 +18649,7 @@ const bootstrap = async () => {
         writeStore: writeLocalStore,
         mutateStore: mutateLocalStore,
         executeJob: async (job, signal, options) => {
-          const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
+          const output = await executeApplicationJob(job, process.env, signal, options);
           return persistJobOutputAssetsIfEnabled(job, output);
         },
         getMaxConcurrency: getLocalWorkerConcurrency,

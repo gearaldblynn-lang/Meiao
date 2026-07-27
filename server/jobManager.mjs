@@ -1684,7 +1684,7 @@ export const createJobWorker = ({
                 meta: { providerTaskId: value },
               }));
             };
-            const onResultCheckpoint = async (resultPatch) => {
+            const onResultCheckpoint = async (resultPatch, checkpointContext = {}) => {
               await persistMysqlVoiceoverParentCheckpoint({
                 pool,
                 jobId: refreshedJob.id,
@@ -1692,7 +1692,9 @@ export const createJobWorker = ({
                 startedAt: claimedAt,
                 resultPatch,
                 env: voiceoverEnv,
-                resolveVoiceoverConfig,
+                resolveVoiceoverConfig: checkpointContext.voiceoverConfig
+                  ? () => checkpointContext.voiceoverConfig
+                  : resolveVoiceoverConfig,
               });
             };
 

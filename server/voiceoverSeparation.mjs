@@ -84,8 +84,12 @@ async function getManifestAndYaml(deps = {}) {
   return manifest;
 }
 
-export async function checkVoiceoverSeparationReadiness({ env = process.env, deps = {} } = {}) {
-  const config = getVoiceoverConfig(env);
+export async function checkVoiceoverSeparationReadiness({
+  env = process.env,
+  config: providedConfig,
+  deps = {},
+} = {}) {
+  const config = providedConfig || getVoiceoverConfig(env);
   const runProcess = deps.runProcess || runCommand;
   const verifyModels = deps.verifyDemucsModelFiles || verifyDemucsModelFiles;
   let pythonReady = false;
@@ -216,9 +220,20 @@ async function validateOutput({ inputWavPath, vocalsPath, backgroundPath, durati
  * browser payload. For a private directory created here, the returned `cleanupWorkDir` transfers
  * ownership to the caller after persistence; failures and cancellations remove it immediately.
  */
-export async function separateVoiceover({ inputWavPath, workDir, signal, env = process.env, deps = {} } = {}) {
-  const config = getVoiceoverConfig(env);
-  const readiness = await (deps.checkReadiness || checkVoiceoverSeparationReadiness)({ env, deps });
+export async function separateVoiceover({
+  inputWavPath,
+  workDir,
+  signal,
+  env = process.env,
+  config: providedConfig,
+  deps = {},
+} = {}) {
+  const config = providedConfig || getVoiceoverConfig(env);
+  const readiness = await (deps.checkReadiness || checkVoiceoverSeparationReadiness)({
+    env,
+    config,
+    deps,
+  });
   if (!readiness?.ready) throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离不可用');
   if (typeof inputWavPath !== 'string' || !inputWavPath) throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离输入无效');
   const release = await acquireSeparationPermit(signal, config.separationConcurrency);

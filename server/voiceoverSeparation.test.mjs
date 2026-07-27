@@ -52,6 +52,33 @@ test('runtime readiness fails closed on one mismatched model hash', async () => 
   assert.equal(readiness.code, 'voiceover_separation_unavailable');
 });
 
+test('separation propagates the parent normalized config snapshot to readiness', async () => {
+  const config = Object.freeze({
+    separationPython: '/snapshot/python',
+    demucsModelDir: '/snapshot/models',
+    separationConcurrency: 1,
+    separationTimeoutMs: 123_456,
+    durationToleranceMs: 77,
+  });
+  const sentinel = Object.assign(new Error('stop after capture'), { code: 'capture' });
+
+  await assert.rejects(
+    separateVoiceover({
+      inputWavPath: '/tmp/input.wav',
+      workDir: '/tmp/work',
+      env: completeEnv(),
+      config,
+      deps: {
+        checkReadiness: async (options) => {
+          assert.equal(options.config, config);
+          throw sentinel;
+        },
+      },
+    }),
+    (error) => error === sentinel,
+  );
+});
+
 test('readiness validates Python imports, the exact Demucs version, and required FFmpeg filters without leaking paths', async () => {
   const calls = [];
   const readiness = await checkVoiceoverSeparationReadiness({

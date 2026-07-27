@@ -2989,6 +2989,7 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
         env,
         signal,
         onProviderTaskId: options.onProviderTaskId,
+        config: options.voiceoverConfig,
         deps: {
           ...(options.kieTtsDeps || {}),
           fetchWithTimeout: fetchKieWithTimeout,

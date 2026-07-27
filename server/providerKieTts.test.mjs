@@ -136,6 +136,28 @@ const fakeKieTts = ({
   };
 };
 
+test('KIE TTS validation honors the parent normalized config snapshot', async () => {
+  let fetchCalls = 0;
+  await assert.rejects(
+    runKieTtsJob({
+      job: newTtsJob(),
+      env: enabledEnv(),
+      config: {
+        ttsMaxInputTokens: 1,
+        kieBaseUrl: 'https://snapshot.invalid',
+      },
+      onProviderTaskId: async () => {},
+      deps: {
+        fetchWithTimeout: async () => {
+          fetchCalls += 1;
+        },
+      },
+    }),
+    (error) => error?.code === 'voiceover_tts_input_too_large',
+  );
+  assert.equal(fetchCalls, 0);
+});
+
 test('create body matches the documented snake_case KIE wrapper contract', () => {
   const body = buildKieTtsCreateBody(newTtsJob().payload);
 

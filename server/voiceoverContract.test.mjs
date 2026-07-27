@@ -276,7 +276,7 @@ test('public config cannot leak local paths or credentials', () => {
 
 test('all documented voiceover error codes are structured errors', () => {
   for (const code of [
-    'voiceover_unavailable', 'voiceover_source_has_no_audio', 'voiceover_no_speech_detected', 'voiceover_multiple_speakers',
+    'voiceover_unavailable', 'voiceover_source_has_no_audio', 'voiceover_source_too_large', 'voiceover_no_speech_detected', 'voiceover_multiple_speakers',
     'voiceover_language_unsupported', 'voiceover_analysis_invalid', 'voiceover_analysis_submission_unknown', 'voiceover_separation_unavailable',
     'voiceover_separation_timeout', 'voiceover_tts_input_too_large', 'voiceover_timing_out_of_range', 'provider_submission_unknown',
     'provider_balance_insufficient', 'provider_rate_limited', 'provider_timeout', 'voiceover_mix_failed', 'voiceover_result_persist_failed',

@@ -257,14 +257,16 @@ export const createLocalTemporalActivities = ({
       await mutate((providerStore) => updateLocalJobProviderTaskId(providerStore, claimedJob.id, value));
       safeHeartbeat(heartbeat, { jobId: claimedJob.id, stage: 'provider_submit', providerTaskId: value });
     };
-    const onResultCheckpoint = async (resultPatch) => {
+    const onResultCheckpoint = async (resultPatch, checkpointContext = {}) => {
       await mutate((checkpointStore) => persistLocalVoiceoverParentCheckpoint(checkpointStore, {
         jobId: claimedJob.id,
         userId: claimedJob.userId,
         startedAt: expectedClaim.startedAt,
         resultPatch,
         env: voiceoverEnv,
-        resolveVoiceoverConfig,
+        resolveVoiceoverConfig: checkpointContext.voiceoverConfig
+          ? () => checkpointContext.voiceoverConfig
+          : resolveVoiceoverConfig,
       }));
     };
 
@@ -514,7 +516,7 @@ export const createMysqlTemporalActivities = ({
           meta: { providerTaskId: value },
         }));
       };
-      const onResultCheckpoint = async (resultPatch) => {
+      const onResultCheckpoint = async (resultPatch, checkpointContext = {}) => {
         await persistMysqlVoiceoverParentCheckpoint({
           pool,
           jobId: refreshedJob.id,
@@ -522,7 +524,9 @@ export const createMysqlTemporalActivities = ({
           startedAt: claimedAt,
           resultPatch,
           env: voiceoverEnv,
-          resolveVoiceoverConfig,
+          resolveVoiceoverConfig: checkpointContext.voiceoverConfig
+            ? () => checkpointContext.voiceoverConfig
+            : resolveVoiceoverConfig,
         });
       };
 

@@ -18,8 +18,10 @@ test('user api persists short-video generation permission per account', () => {
   assert.match(source, /targetUser\.featurePermissions = normalizeFeaturePermissions/);
   assert.match(source, /canUseVideoGenerationFeature/);
   assert.match(source, /resolveJobSubmissionPolicy/);
-  assert.equal(countMatches(/resolveAuthorizedJobSubmissionPolicy\(user, body\)/g), 2);
-  assert.equal(countMatches(/resolveAuthorizedJobSubmissionPolicy\(user, job, \{ submissionOperation: 'retry' \}\)/g), 2);
+  assert.equal(countMatches(/resolveAuthorizedJobSubmissionPolicy\(user, body, \{/g), 2);
+  assert.equal(countMatches(
+    /resolveAuthorizedJobSubmissionPolicy\(user, prepared\.body, \{\s*submissionOperation:\s*'retry'/g,
+  ), 2);
   assert.equal(countMatches(/submissionOperation:\s*'recover'/g), 2);
   assert.doesNotMatch(source, /\['dreamina_video', 'kie_seedance_video'\]\.includes\(body\.taskType\)/);
   assert.match(policySource, /短视频生成暂未对当前账号开放/);

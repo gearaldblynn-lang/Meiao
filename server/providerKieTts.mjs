@@ -117,7 +117,7 @@ const normalizeTemperature = (value) => {
   return temperature;
 };
 
-const normalizePayload = (job, env) => {
+const normalizePayload = (job, env, voiceoverConfig = null) => {
   if (job?.provider !== 'kie' || job?.taskType !== 'kie_tts') {
     throw createTtsError('provider_bad_request', '仅支持 parent-owned kie_tts 子任务', {
       providerStage: 'validation',
@@ -196,7 +196,10 @@ const normalizePayload = (job, env) => {
     scene,
     sampleContext,
   };
-  if (estimateVoiceoverTtsInputTokens(normalized) > getVoiceoverConfig(env).ttsMaxInputTokens) {
+  if (
+    estimateVoiceoverTtsInputTokens(normalized)
+    > (voiceoverConfig || getVoiceoverConfig(env)).ttsMaxInputTokens
+  ) {
     throw createTtsError('voiceover_tts_input_too_large', '口播组超过当前语音模型输入上限', {
       providerStage: 'validation',
       providerStatus: 'input_too_large',
@@ -396,9 +399,11 @@ export async function runKieTtsJob({
   env = process.env,
   signal,
   onProviderTaskId,
+  config: providedConfig,
   deps = {},
 } = {}) {
-  const payload = normalizePayload(job, env);
+  const voiceoverConfig = providedConfig || getVoiceoverConfig(env);
+  const payload = normalizePayload(job, env, voiceoverConfig);
   const kieApiKey = String(env?.KIE_API_KEY || env?.MEIAO_KIE_API_KEY || '').trim();
   if (!kieApiKey) {
     throw createTtsError('provider_auth_invalid', 'KIE API Key 未配置', {
@@ -415,7 +420,6 @@ export async function runKieTtsJob({
       retryable: false,
     });
   }
-  const voiceoverConfig = getVoiceoverConfig(env);
   const operational = getKieTtsOperationalConfig(env);
   const baseUrl = voiceoverConfig.kieBaseUrl.replace(/\/+$/u, '');
   const sleep = deps.sleep || defaultSleep;
