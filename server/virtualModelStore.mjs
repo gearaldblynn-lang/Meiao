@@ -41,10 +41,20 @@ const publicModel = (model, version, assets) => {
 export const toVirtualModelPublicSummary = (model) => model;
 
 const FALLBACK_SELECTION_SLOTS = Object.freeze(['front_close', 'left_45_close', 'right_45_close']);
-const selectVirtualModelAssetSlots = (analysis) => {
+const FULL_PERSON_FALLBACK_SELECTION_SLOTS = Object.freeze(['front_full', 'front_close', 'left_45_close']);
+const normalizeReplacementScope = (value) => value === 'full_person' ? 'full_person' : 'identity_only';
+const selectVirtualModelAssetSlots = (analysis, replacementScope = 'identity_only') => {
   const valid = analysis && typeof analysis === 'object' && ['portrait', 'half_body', 'full_body'].includes(analysis.framing) && ['front', 'left', 'right', 'profile'].includes(analysis.faceDirection);
-  if (!valid) return FALLBACK_SELECTION_SLOTS;
+  const normalizedScope = normalizeReplacementScope(replacementScope);
+  if (!valid) return normalizedScope === 'full_person'
+    ? FULL_PERSON_FALLBACK_SELECTION_SLOTS
+    : FALLBACK_SELECTION_SLOTS;
   const side45 = analysis.faceDirection === 'right' ? 'right_45_close' : 'left_45_close';
+  if (normalizedScope === 'full_person') {
+    if (analysis.faceDirection === 'front') return ['front_full', 'front_close', 'front_half'];
+    if (analysis.faceDirection === 'profile') return ['three_quarter_full', 'profile_close', 'front_close'];
+    return ['three_quarter_full', side45, 'front_close'];
+  }
   if (analysis.framing === 'full_body') {
     if (analysis.faceDirection === 'front') return ['front_close', 'front_half', 'front_full'];
     return analysis.faceDirection === 'profile'
@@ -62,10 +72,14 @@ const sanitizeIdentityDescription = (identityProfile) => {
   return description.replace(/\s+/g, ' ').trim().slice(0, 1200);
 };
 
-const selectedAssetsForAnalysis = (assets, referenceAnalysis) => {
+const selectedAssetsForAnalysis = (assets, referenceAnalysis, replacementScope = 'identity_only') => {
   const bySlot = new Map(assets.map((asset) => [asset.slot, asset]));
-  const selected = selectVirtualModelAssetSlots(referenceAnalysis).map((slot) => bySlot.get(slot));
-  if (selected.length !== 3 || selected.some((asset) => !asset?.assetId) || selected[0]?.isPrimary !== true || new Set(selected.map((asset) => String(asset.assetId).trim())).size !== 3) throw Object.assign(new Error('Virtual model assets are incomplete'), { code: 'MODEL_ASSET_INCOMPLETE' });
+  const normalizedScope = normalizeReplacementScope(replacementScope);
+  const selected = selectVirtualModelAssetSlots(referenceAnalysis, normalizedScope).map((slot) => bySlot.get(slot));
+  const hasValidPrimarySource = normalizedScope === 'full_person'
+    ? selected[0]?.slot === 'front_full' || selected[0]?.slot === 'three_quarter_full'
+    : selected[0]?.isPrimary === true;
+  if (selected.length !== 3 || selected.some((asset) => !asset?.assetId) || !hasValidPrimarySource || new Set(selected.map((asset) => String(asset.assetId).trim())).size !== 3) throw Object.assign(new Error('Virtual model assets are incomplete'), { code: 'MODEL_ASSET_INCOMPLETE' });
   return selected;
 };
 
@@ -322,7 +336,7 @@ export const deleteVirtualModel = async ({ pool = null, store = null, virtualMod
   return { ok: true };
 };
 
-export const createVirtualModelGenerationJobSnapshot = async ({ pool = null, store = null, virtualModelId, virtualModelVersionId, referenceAnalysis = null, allowHistoricalPublishedVersion = false, publishedAt = null, selectedAssetIds = null } = {}) => {
+export const createVirtualModelGenerationJobSnapshot = async ({ pool = null, store = null, virtualModelId, virtualModelVersionId, referenceAnalysis = null, replacementScope = 'identity_only', allowHistoricalPublishedVersion = false, publishedAt = null, selectedAssetIds = null } = {}) => {
   let model; let version; let assets;
   if (pool) {
     const [rows] = allowHistoricalPublishedVersion
@@ -354,22 +368,26 @@ export const createVirtualModelGenerationJobSnapshot = async ({ pool = null, sto
   if (!model || !version) throw Object.assign(new Error('Virtual model is not published'), { code: 'MODEL_NOT_PUBLISHED' });
   const validation = validateVirtualModelVersionForPublish({ assets, identityProfile: version.identityProfile });
   if (!validation.ok) throw Object.assign(new Error('Virtual model assets are incomplete'), { code: 'MODEL_ASSET_INCOMPLETE', issues: validation.issues });
-  const selected = selectedAssetsForAnalysis(assets, referenceAnalysis);
+  const normalizedReplacementScope = normalizeReplacementScope(replacementScope);
+  const selected = selectedAssetsForAnalysis(assets, referenceAnalysis, normalizedReplacementScope);
   const expectedSelectedAssetIds = selected.map((asset) => asset.assetId);
   const historicalSelected = allowHistoricalPublishedVersion === true && Array.isArray(selectedAssetIds)
     ? selectedAssetIds.map((assetId) => assets.find((asset) => asset.assetId === assetId))
     : null;
+  const historicalPrimaryIsValid = normalizedReplacementScope === 'full_person'
+    ? historicalSelected?.[0]?.slot === 'front_full' || historicalSelected?.[0]?.slot === 'three_quarter_full'
+    : historicalSelected?.[0]?.isPrimary === true;
   if (allowHistoricalPublishedVersion === true && (
     !Array.isArray(selectedAssetIds)
     || ![3, 4, 5].includes(selectedAssetIds.length)
     || new Set(selectedAssetIds).size !== selectedAssetIds.length
     || historicalSelected.some((asset) => !asset?.assetId)
-    || historicalSelected[0]?.isPrimary !== true
+    || !historicalPrimaryIsValid
   )) throw Object.assign(new Error('Virtual model snapshot is unavailable'), { code: 'MODEL_SNAPSHOT_UNAVAILABLE' });
   const snapshotSelected = historicalSelected || selected;
   const snapshotAssetIds = snapshotSelected.map((asset) => asset.assetId);
   if (allowHistoricalPublishedVersion === true && snapshotAssetIds.some((assetId, index) => assetId !== selectedAssetIds[index])) throw Object.assign(new Error('Virtual model snapshot is unavailable'), { code: 'MODEL_SNAPSHOT_UNAVAILABLE' });
-  return { identitySource: 'library', virtualModelId: model.id, virtualModelVersionId: version.id, virtualModelCodeSnapshot: model.code, virtualModelNameSnapshot: model.name, virtualModelCoverAssetId: assets.find((asset) => asset.isPrimary)?.assetId || '', publishedAt: version.publishedAt, selectedAssetIds: snapshotAssetIds, selectedIdentitySlots: snapshotSelected.map((asset) => asset.slot), identityImageCount: snapshotSelected.length, identitySelectionStrategy: allowHistoricalPublishedVersion ? 'historical_snapshot' : referenceAnalysis ? 'reference_analysis' : 'fallback', ...(sanitizeIdentityDescription(version.identityProfile) ? { identityDescription: sanitizeIdentityDescription(version.identityProfile) } : {}) };
+  return { identitySource: 'library', virtualModelId: model.id, virtualModelVersionId: version.id, virtualModelCodeSnapshot: model.code, virtualModelNameSnapshot: model.name, virtualModelCoverAssetId: assets.find((asset) => asset.isPrimary)?.assetId || '', publishedAt: version.publishedAt, selectedAssetIds: snapshotAssetIds, selectedIdentitySlots: snapshotSelected.map((asset) => asset.slot), identityImageCount: snapshotSelected.length, replacementScope: normalizedReplacementScope, identitySelectionStrategy: allowHistoricalPublishedVersion ? 'historical_snapshot' : referenceAnalysis ? 'reference_analysis' : 'fallback', ...(sanitizeIdentityDescription(version.identityProfile) ? { identityDescription: sanitizeIdentityDescription(version.identityProfile) } : {}) };
 };
 
 export const resolveHistoricalVirtualModelSelectedAssets = async ({ pool = null, store = null, virtualModelId, virtualModelVersionId, selectedAssetIds = [] } = {}) => {

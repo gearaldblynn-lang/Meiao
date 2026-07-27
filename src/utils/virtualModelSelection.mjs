@@ -3,6 +3,11 @@ const FALLBACK_SLOTS = Object.freeze([
   'left_45_close',
   'right_45_close',
 ]);
+const FULL_PERSON_FALLBACK_SLOTS = Object.freeze([
+  'front_full',
+  'front_close',
+  'left_45_close',
+]);
 
 const createIncompleteAssetsError = () => {
   const error = new Error('Virtual model identity assets are incomplete.');
@@ -16,10 +21,20 @@ const isKnownAnalysis = (analysis) =>
   ['portrait', 'half_body', 'full_body'].includes(analysis.framing) &&
   ['front', 'left', 'right', 'profile'].includes(analysis.faceDirection);
 
-const selectSlots = (analysis) => {
-  if (!isKnownAnalysis(analysis)) return FALLBACK_SLOTS;
+const selectSlots = (analysis, replacementScope = 'identity_only') => {
+  const isFullPerson = replacementScope === 'full_person';
+  if (!isKnownAnalysis(analysis)) return isFullPerson ? FULL_PERSON_FALLBACK_SLOTS : FALLBACK_SLOTS;
 
   const sameSide45 = analysis.faceDirection === 'right' ? 'right_45_close' : 'left_45_close';
+  if (isFullPerson) {
+    if (analysis.faceDirection === 'front') {
+      return ['front_full', 'front_close', 'front_half'];
+    }
+    if (analysis.faceDirection === 'profile') {
+      return ['three_quarter_full', 'profile_close', 'front_close'];
+    }
+    return ['three_quarter_full', sameSide45, 'front_close'];
+  }
   if (analysis.framing === 'full_body') {
     if (analysis.faceDirection === 'front') {
       return ['front_close', 'front_half', 'front_full'];
@@ -39,7 +54,7 @@ const selectSlots = (analysis) => {
   return ['front_close', sameSide45, analysis.faceDirection === 'right' ? 'three_quarter_half' : 'profile_close'];
 };
 
-export const selectVirtualModelIdentityAssets = (assets, referenceAnalysis) => {
+export const selectVirtualModelIdentityAssets = (assets, referenceAnalysis, replacementScope = 'identity_only') => {
   if (!Array.isArray(assets)) throw createIncompleteAssetsError();
 
   const assetsBySlot = new Map();
@@ -49,10 +64,13 @@ export const selectVirtualModelIdentityAssets = (assets, referenceAnalysis) => {
     }
   });
 
-  const selected = selectSlots(referenceAnalysis).map((slot) => assetsBySlot.get(slot));
-  if (selected.length !== 3 || selected.some((asset) => !asset) || selected[0]?.isPrimary !== true || new Set(selected.map((asset) => String(asset.assetId || '').trim())).size !== 3) {
+  const normalizedScope = replacementScope === 'full_person' ? 'full_person' : 'identity_only';
+  const selected = selectSlots(referenceAnalysis, normalizedScope).map((slot) => assetsBySlot.get(slot));
+  const hasValidPrimarySource = normalizedScope === 'full_person'
+    ? selected[0]?.slot === 'front_full' || selected[0]?.slot === 'three_quarter_full'
+    : selected[0]?.isPrimary === true;
+  if (selected.length !== 3 || selected.some((asset) => !asset) || !hasValidPrimarySource || new Set(selected.map((asset) => String(asset.assetId || '').trim())).size !== 3) {
     throw createIncompleteAssetsError();
   }
   return selected;
 };
-
