@@ -697,7 +697,7 @@ Readiness checks:
 ```js
 [
   [pythonPath, ['-c', 'import importlib.metadata as m, torch, torchaudio; print(m.version("demucs"))']],
-  [pythonPath, ['-c', 'LocalRepo(modelDir).get_model("mdx")']],
+  [pythonPath, ['-c', 'import sys; from pathlib import Path; from demucs.pretrained import get_model; get_model("mdx", Path(sys.argv[1])); print("mdx-load-ok")', modelDir]],
   [ffmpegPath, ['-hide_banner', '-filters']],
 ]
 ```
