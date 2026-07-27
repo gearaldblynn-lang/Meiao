@@ -348,13 +348,22 @@ sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
   "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
   "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
   node scripts/install-voiceover-demucs.mjs --check
+sudo chown -R root:root /opt/meiao/voiceover
+sudo find /opt/meiao/voiceover -type d -exec chmod 0555 {} +
+sudo find /opt/meiao/voiceover -type f -perm /111 -exec chmod 0555 {} +
+sudo find /opt/meiao/voiceover -type f ! -perm /111 -exec chmod 0444 {} +
+test "$MEIAO_VOICEOVER_SERVICE_USER" != root
+sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -r /opt/meiao/voiceover/models/mdx.yaml
+! sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -w /opt/meiao/voiceover/models
 ```
 
-`MEIAO_VOICEOVER_SERVICE_USER` 必须替换为实际启动 PM2/Node 口播服务的系统用户；不要照抄一个假定用户名。若 PM2 由 root 运行，也要显式填 `root` 并记录本次确认。安装前后分别用 `id`、`stat -c '%U:%G %a %n' /opt/meiao/voiceover` 和以上 `sudo -u ... test -w` 验证归属、`0750` 权限与服务用户可写性；任一步失败都停止启用。
+`MEIAO_VOICEOVER_SERVICE_USER` 必须替换为实际启动 PM2/Node 口播服务的系统用户；不要照抄一个假定用户名。安装阶段可由当前 PM2 用户写入，但安装与校验完成后必须切成 root 所有、服务用户只读；需要升级模型时仅在维护窗口临时恢复写权限，完成后重新执行全部哈希检查和只读收口。若 PM2 仍由 root 运行，可以安装和做关闭态 readiness，但禁止启用新口播任务，必须先迁移到独立的非 root 服务用户。任一步失败都停止启用。
 
 `MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS` 是单次 socket 读取超时，`MEIAO_VOICEOVER_PIP_RETRIES` 是单连接重试次数，都不是整次安装的总时限；非法值会在创建 venv 前 fail-closed。两者只用于一次性安装命令，不需要写入 `.env.server`。维护窗口若需要总时限，应由运维在命令外层另加受控 timeout。
 
 `deploy/voiceover/requirements.lock`、`build-requirements.lock`、`demucs-models.json` 和 `mdx.yaml` 是受版本控制的安装合同；venv、`.th` 权重和运行时临时媒体不得进入 Git、release 包或 `git status`。安装后仍先保持功能关闭，写好候选环境路径和 KIE 凭证，再执行：
+
+Torch 2.6+ 默认使用受限的 `weights_only` 加载，而 Demucs 4.0.1 的官方 `mdx` 文件是完整的旧式 pickled model。应用拿到单并发许可后会再次拒绝符号链接、核对 manifest 字节数与 SHA-256，再只在紧邻执行的 Demucs readiness/分离子进程中设置 `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`；子进程使用最小环境白名单，不继承数据库、provider、COS 或签名密钥，并主动移除冲突的 `TORCH_FORCE_WEIGHTS_ONLY_LOAD`。禁止把用户上传文件、任意第三方 checkpoint 或未校验权重放入模型目录；该兼容边界不得扩展到主 Node 进程或其他 Python/provider 任务。
 
 ```bash
 npm run probe:voiceover-translation -- --readiness

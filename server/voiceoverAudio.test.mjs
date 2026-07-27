@@ -436,7 +436,10 @@ test('runVoiceoverProcess terminates but stays pending until the child closes', 
     terminationGraceMs: 5,
     terminationCloseTimeoutMs: 100,
   });
-  await new Promise((resolve) => setTimeout(resolve, 15));
+  const killDeadline = Date.now() + 250;
+  while (timeoutChild.killCalls.length < 2 && Date.now() < killDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
   assert.deepEqual(timeoutChild.killCalls, ['SIGTERM', 'SIGKILL']);
   timeoutChild.emit('close', null, 'SIGKILL');
   await assert.rejects(

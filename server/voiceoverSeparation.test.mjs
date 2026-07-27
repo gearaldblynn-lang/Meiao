@@ -81,10 +81,16 @@ test('separation propagates the parent normalized config snapshot to readiness',
 
 test('readiness validates Python imports, the exact Demucs version, and required FFmpeg filters without leaking paths', async () => {
   const calls = [];
+  const env = completeEnv({
+    KIE_API_KEY: 'must-not-reach-demucs',
+    MEIAO_DB_PASSWORD: 'must-not-reach-demucs-either',
+    TORCH_FORCE_WEIGHTS_ONLY_LOAD: '1',
+    TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD: '0',
+  });
   const readiness = await checkVoiceoverSeparationReadiness({
-    env: completeEnv(),
-    deps: readyDeps({ runProcess: async (command, args) => {
-      calls.push({ command, args });
+    env,
+    deps: readyDeps({ runProcess: async (command, args, options) => {
+      calls.push({ command, args, options });
       return args.includes('-filters')
         ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
         : args[1].includes('demucs.pretrained') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
@@ -97,6 +103,12 @@ test('readiness validates Python imports, the exact Demucs version, and required
     ['-c', 'import sys; from pathlib import Path; from demucs.pretrained import get_model; get_model("mdx", Path(sys.argv[1])); print("mdx-load-ok")', '/configured/models'],
     ['-hide_banner', '-filters'],
   ]);
+  assert.equal(calls[1].options.env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '1');
+  assert.equal('TORCH_FORCE_WEIGHTS_ONLY_LOAD' in calls[1].options.env, false);
+  assert.equal('KIE_API_KEY' in calls[1].options.env, false);
+  assert.equal('MEIAO_DB_PASSWORD' in calls[1].options.env, false);
+  assert.equal(env.TORCH_FORCE_WEIGHTS_ONLY_LOAD, '1');
+  assert.equal(env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '0');
   assert.doesNotMatch(JSON.stringify(readiness), /\/configured\/|secret|token|https?:/i);
 });
 
@@ -203,8 +215,15 @@ test('voiceover uses the packaged FFprobe resolver with structured duration argu
 test('spawns mdx cpu two-stem separation without a shell', async () => {
   const calls = [];
   const child = fakeChild();
+  const env = completeEnv({
+    KIE_API_KEY: 'must-not-reach-demucs',
+    MEIAO_DB_PASSWORD: 'must-not-reach-demucs-either',
+    TORCH_FORCE_WEIGHTS_ONLY_LOAD: '1',
+    TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD: '0',
+  });
   const pending = separateVoiceover({
-    inputWavPath: '/tmp/input with $(touch nope).wav', workDir: '/tmp/job-1', env: completeEnv(),
+    inputWavPath: '/tmp/input with $(touch nope).wav', workDir: '/tmp/job-1',
+    env,
     deps: readyDeps({
       spawn: (command, args, options) => { calls.push({ command, args, options }); queueMicrotask(() => child.emit('close', 0)); return child; },
       stat: async () => ({ size: 10 }),
@@ -220,6 +239,12 @@ test('spawns mdx cpu two-stem separation without a shell', async () => {
   assert.equal(calls[0].options.shell, false);
   assert.equal(calls[0].options.detached, true);
   assert.equal(calls[0].options.stdio, 'ignore');
+  assert.equal(calls[0].options.env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '1');
+  assert.equal('TORCH_FORCE_WEIGHTS_ONLY_LOAD' in calls[0].options.env, false);
+  assert.equal('KIE_API_KEY' in calls[0].options.env, false);
+  assert.equal('MEIAO_DB_PASSWORD' in calls[0].options.env, false);
+  assert.equal(env.TORCH_FORCE_WEIGHTS_ONLY_LOAD, '1');
+  assert.equal(env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '0');
   assert.deepEqual(result, {
     vocalsPath: '/tmp/job-1/separated/mdx/input with $(touch nope)/vocals.wav',
     backgroundPath: '/tmp/job-1/separated/mdx/input with $(touch nope)/no_vocals.wav', model: 'mdx', durationMs: 1000,
@@ -229,18 +254,22 @@ test('spawns mdx cpu two-stem separation without a shell', async () => {
 test('global queue is FIFO and keeps the configured concurrency bound', async () => {
   const children = [];
   const calls = [];
+  let readinessCalls = 0;
   const deps = readyDeps({
-    checkReadiness: async () => ({ ready: true }), stat: async () => ({ size: 10 }), probeDurationMs: async () => 1000,
+    checkReadiness: async () => { readinessCalls += 1; return { ready: true }; },
+    stat: async () => ({ size: 10 }), probeDurationMs: async () => 1000,
     spawn: (...args) => { calls.push(args); const child = fakeChild(); children.push(child); return child; },
   });
   const first = separateVoiceover({ inputWavPath: '/tmp/first.wav', workDir: '/tmp/first', env: completeEnv(), deps });
   const second = separateVoiceover({ inputWavPath: '/tmp/second.wav', workDir: '/tmp/second', env: completeEnv(), deps });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 1);
+  assert.equal(readinessCalls, 1);
   children[0].emit('close', 0);
   await first;
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 2);
+  assert.equal(readinessCalls, 2);
   children[1].emit('close', 0);
   await second;
 });
