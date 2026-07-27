@@ -59,7 +59,7 @@ test('deploy_tencent preserves remote server data directory', () => {
   );
 });
 
-test('deploy_tencent never archives local environment files', () => {
+test('deploy_tencent never archives local-only environment or voiceover runtime files', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const archiveStart = source.indexOf('tar \\\n');
   const archiveEnd = source.indexOf('| ssh ', archiveStart);
@@ -68,6 +68,7 @@ test('deploy_tencent never archives local environment files', () => {
   assert.ok(archiveStart >= 0 && archiveEnd > archiveStart, 'deploy archive command must exist');
   assert.match(archive, /--exclude='\.\/\.env\.server'/);
   assert.match(archive, /--exclude='\.\/\.env\.local'/);
+  assert.match(archive, /--exclude='\.\/deploy\/voiceover\/\.runtime'/);
 });
 
 test('deploy_tencent restores nginx traversal permission on the remote app root after copying source', () => {

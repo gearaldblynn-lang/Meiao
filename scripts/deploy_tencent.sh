@@ -133,6 +133,7 @@ tar \
   --exclude='./node_modules' \
   --exclude='./dist' \
   --exclude='./server/data' \
+  --exclude='./deploy/voiceover/.runtime' \
   --exclude='./.env.server' \
   --exclude='./.env.local' \
   --exclude='./._*' \
