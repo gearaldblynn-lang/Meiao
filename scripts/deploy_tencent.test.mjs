@@ -59,6 +59,17 @@ test('deploy_tencent preserves remote server data directory', () => {
   );
 });
 
+test('deploy_tencent never archives local environment files', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const archiveStart = source.indexOf('tar \\\n');
+  const archiveEnd = source.indexOf('| ssh ', archiveStart);
+  const archive = source.slice(archiveStart, archiveEnd);
+
+  assert.ok(archiveStart >= 0 && archiveEnd > archiveStart, 'deploy archive command must exist');
+  assert.match(archive, /--exclude='\.\/\.env\.server'/);
+  assert.match(archive, /--exclude='\.\/\.env\.local'/);
+});
+
 test('deploy_tencent restores nginx traversal permission on the remote app root after copying source', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const copyIndex = source.indexOf('cp -R \\\"$REMOTE_TMP_DIR\\\"/. \\\"$REMOTE_APP_DIR\\\"/');

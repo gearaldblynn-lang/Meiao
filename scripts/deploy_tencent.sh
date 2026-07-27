@@ -134,6 +134,7 @@ tar \
   --exclude='./dist' \
   --exclude='./server/data' \
   --exclude='./.env.server' \
+  --exclude='./.env.local' \
   --exclude='./._*' \
   --exclude='*/._*' \
   -czf - \
