@@ -819,7 +819,7 @@ test('speech_analysis_submitting fails closed without another Gemini call', asyn
         await writeFile(destinationPath, requestedId);
         return {
           assetId: requestedId,
-          url: `managed://${requestedId}`,
+          url: `https://meiao.example/api/assets/file/${requestedId}/source`,
           path: destinationPath,
           userId,
           durationMs: 4_000,
@@ -1261,8 +1261,13 @@ test('runner creates Golden and TTS children through the real local ledger contr
       },
       persistGoldenOutput: async () => ({
         assetId: 'asset-golden',
-        url: 'managed://asset-golden',
+        url: 'https://meiao.example/api/assets/file/asset-golden/result.mp4',
         durationMs: 4_000,
+      }),
+      persistTtsOutput: async () => ({
+        audioUrl: 'http://127.0.0.1:3000/api/assets/file/asset-tts-0/audio.mp3',
+        audioUrlAssetId: 'asset-tts-0',
+        durationMs: 900,
       }),
     },
   });
@@ -1272,6 +1277,18 @@ test('runner creates Golden and TTS children through the real local ledger contr
   const children = store.jobs.filter((item) => item.payload?.executionOwner === 'parent');
 
   assert.equal(output.result.voiceoverStage, 'result_persisted');
+  assert.equal(
+    children.find((item) => item.taskType === 'subtitle_remove_video')?.payload?.sourceUrl,
+    'managed://asset-source',
+  );
+  assert.equal(
+    children.find((item) => item.taskType === 'subtitle_remove_video')?.result?.videoUrl,
+    'managed://asset-golden',
+  );
+  assert.equal(
+    children.find((item) => item.taskType === 'kie_tts')?.result?.audioUrl,
+    'managed://asset-tts-0',
+  );
   assert.deepEqual(
     children.map((item) => [item.taskType, item.payload.childKey, item.status]).sort(),
     [

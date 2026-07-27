@@ -508,7 +508,7 @@ test('child success accepts only managed and scrubbed outputs', async () => {
   assert.equal(succeeded.status, 'succeeded');
   assert.deepEqual(succeeded.result, {
     assetId: 'asset-tts-1',
-    audioUrl: '/api/assets/file/asset-tts-1',
+    audioUrl: 'managed://asset-tts-1',
     durationMs: 1_000,
   });
 
@@ -541,9 +541,112 @@ test('child success accepts only managed and scrubbed outputs', async () => {
   assert.deepEqual(goldenSucceeded.result, {
     assetId: 'asset-video-1',
     resultAssetId: 'asset-video-1',
-    videoUrl: '/api/assets/file/asset-video-1',
+    videoUrl: 'managed://asset-video-1',
     durationMs: 8_000,
   });
+});
+
+test('absolute managed asset URLs normalize to stable identities for Golden source and child outputs', async () => {
+  const goldenParent = validParent({
+    payload: validParentPayload({ removeText: true }),
+  });
+  const goldenHarness = createLocalHarness([goldenParent]);
+  const goldenLedger = createLocalLedger(goldenHarness);
+  const golden = await goldenLedger.getOrCreate({
+    parentJob: goldenParent,
+    childKey: 'golden:attempt:0',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: validGoldenPayload({
+      sourceUrl: 'https://meiao.example/api/assets/file/asset-base/source.mp4',
+    }),
+  });
+  assert.equal(golden.payload.sourceUrl, 'managed://asset-base');
+
+  const goldenSucceeded = await goldenLedger.markSucceeded(golden.id, {
+    assetId: 'asset-video-1',
+    videoUrl: 'https://meiao.example/api/assets/file/asset-video-1/result.mp4',
+    durationMs: 8_000,
+  });
+  assert.deepEqual(goldenSucceeded.result, {
+    assetId: 'asset-video-1',
+    resultAssetId: 'asset-video-1',
+    videoUrl: 'managed://asset-video-1',
+    durationMs: 8_000,
+  });
+
+  const ttsHarness = createLocalHarness();
+  const ttsLedger = createLocalLedger(ttsHarness);
+  const tts = await ttsLedger.getOrCreate({
+    parentJob: validParent(),
+    childKey: 'tts:0:attempt:0',
+    taskType: 'kie_tts',
+    provider: 'kie',
+    payload: validTtsPayload(),
+  });
+  const ttsSucceeded = await ttsLedger.markSucceeded(tts.id, {
+    assetId: 'asset-tts-1',
+    audioUrl: 'http://127.0.0.1:3000/api/assets/file/asset-tts-1/audio.mp3',
+    durationMs: 1_000,
+  });
+  assert.deepEqual(ttsSucceeded.result, {
+    assetId: 'asset-tts-1',
+    audioUrl: 'managed://asset-tts-1',
+    durationMs: 1_000,
+  });
+});
+
+test('managed identity validation rejects external, credentialed, signed, fragmented, and mismatched URLs', async () => {
+  const invalidOutputUrls = [
+    'https://provider.example/audio.mp3',
+    'https://meiao.example/api/assets/file/asset-other/audio.mp3',
+    'https://user:pass@meiao.example/api/assets/file/asset-tts-1/audio.mp3',
+    'https://meiao.example/api/assets/file/asset-tts-1/audio.mp3?signature=secret',
+    'https://meiao.example/api/assets/file/asset-tts-1/audio.mp3#fragment',
+  ];
+  for (const audioUrl of invalidOutputUrls) {
+    const harness = createLocalHarness();
+    const ledger = createLocalLedger(harness);
+    const child = await ledger.getOrCreate({
+      parentJob: validParent(),
+      childKey: 'tts:0:attempt:0',
+      taskType: 'kie_tts',
+      provider: 'kie',
+      payload: validTtsPayload(),
+    });
+    await assert.rejects(
+      ledger.markSucceeded(child.id, {
+        assetId: 'asset-tts-1',
+        audioUrl,
+        durationMs: 1_000,
+      }),
+      (error) => error?.code === 'child_output_unmanaged',
+      audioUrl,
+    );
+  }
+
+  for (const sourceUrl of [
+    'https://provider.example/source.mp4',
+    'https://meiao.example/api/assets/file/asset-other/source.mp4',
+    'https://user:pass@meiao.example/api/assets/file/asset-base/source.mp4',
+    'https://meiao.example/api/assets/file/asset-base/source.mp4?signature=secret',
+    'https://meiao.example/api/assets/file/asset-base/source.mp4#fragment',
+  ]) {
+    const parent = validParent({ payload: validParentPayload({ removeText: true }) });
+    const harness = createLocalHarness([parent]);
+    const ledger = createLocalLedger(harness);
+    await assert.rejects(
+      ledger.getOrCreate({
+        parentJob: parent,
+        childKey: 'golden:attempt:0',
+        taskType: 'subtitle_remove_video',
+        provider: 'golden_subtitle',
+        payload: validGoldenPayload({ sourceUrl }),
+      }),
+      (error) => error?.code === 'child_job_invalid',
+      sourceUrl,
+    );
+  }
 });
 
 const createMysqlLedgerHarness = ({ failInsert = false } = {}) => {

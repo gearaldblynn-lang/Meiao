@@ -14,13 +14,13 @@ import {
   getVoiceoverLanguage,
   getVoiceoverVoice,
 } from '../src/utils/voiceoverCatalog.mjs';
+import { normalizeManagedAssetIdentity } from './managedAssetIdentity.mjs';
 
 const CHILD_MAX_SERIALIZED_BYTES = 256 * 1024;
 const CHILD_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const CHILD_KEY_TTS = /^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d{0,2})$/u;
 const CHILD_KEY_GOLDEN = /^golden:attempt:(0|[1-9]\d{0,2})$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u;
-const MANAGED_ASSET_PATH = /^\/api\/assets\/file\/([A-Za-z0-9][A-Za-z0-9._:-]{0,199})(?:\/[^?#]*)?$/u;
 
 export const PARENT_OWNED_CHILD_SQL_EXCLUSION = `COALESCE(
   JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.executionOwner')),
@@ -376,13 +376,8 @@ const normalizeTtsPayload = (payload, childKey) => {
 };
 
 const normalizeManagedSourceUrl = (value, assetId) => {
-  const sourceUrl = String(value || '').trim();
-  if (
-    sourceUrl === `managed://${assetId}`
-    || MANAGED_ASSET_PATH.exec(sourceUrl)?.[1] === assetId
-  ) {
-    return sourceUrl;
-  }
+  const sourceUrl = normalizeManagedAssetIdentity(value, assetId);
+  if (sourceUrl) return sourceUrl;
   throw createStoreError('child_job_invalid', 'Golden 子任务源视频不是托管素材。', 400);
 };
 
@@ -596,11 +591,8 @@ const normalizeManagedOutput = (child, output) => {
   if (child.taskType === 'kie_tts') {
     assertKnownKeys(output, new Set(['assetId', 'audioUrl', 'durationMs']), 'child_output_unmanaged');
     const assetId = assertSafeId(output.assetId, 'assetId', 'child_output_unmanaged');
-    const audioUrl = String(output.audioUrl || '').trim();
-    if (
-      audioUrl !== `managed://${assetId}`
-      && MANAGED_ASSET_PATH.exec(audioUrl)?.[1] !== assetId
-    ) {
+    const audioUrl = normalizeManagedAssetIdentity(output.audioUrl, assetId);
+    if (!audioUrl) {
       throw createStoreError('child_output_unmanaged', 'TTS 成功结果必须是梅奥托管素材。', 400);
     }
     const durationMs = output.durationMs;
@@ -622,11 +614,8 @@ const normalizeManagedOutput = (child, output) => {
     'child_output_unmanaged',
   );
   const assetId = assertSafeId(output.assetId || output.resultAssetId, 'assetId', 'child_output_unmanaged');
-  const videoUrl = String(output.videoUrl || '').trim();
-  if (
-    videoUrl !== `managed://${assetId}`
-    && MANAGED_ASSET_PATH.exec(videoUrl)?.[1] !== assetId
-  ) {
+  const videoUrl = normalizeManagedAssetIdentity(output.videoUrl, assetId);
+  if (!videoUrl) {
     throw createStoreError('child_output_unmanaged', 'Golden 成功结果必须是梅奥托管素材。', 400);
   }
   return {
