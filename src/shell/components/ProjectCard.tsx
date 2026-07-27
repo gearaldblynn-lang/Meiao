@@ -36,7 +36,11 @@ import { useToast } from './ToastSystem';
 import ProductRestoreAnalysisPanel, { ProductRestoreResultCreditBadge } from '../modules/Retouch/ProductRestoreAnalysisPanel';
 import SubtitleComparisonPlayer from './SubtitleComparisonPlayer';
 import VoiceoverResultPlayer from './VoiceoverResultPlayer';
-import { resolveManagedSourceIdentity } from '../../services/voiceoverTranslationClient';
+import {
+  buildVoiceoverTranslationEntryActions,
+  resolveSafeVoiceoverResultMedia,
+  runVoiceoverRetryRequest,
+} from './voiceoverResultExperience';
 import { getSubtitleRemovalRetryDecision } from '../../utils/subtitleRemovalRetrySafety.mjs';
 import {
   getStoryboardCardSegmentCount,
@@ -123,6 +127,7 @@ const subFeatureNames: Record<string, string> = {
   copy: '纯文案',
   generation: '短视频',
   storyboard: '分镜',
+  voiceover_translation: '口播翻译',
   diagnosis: '诊断',
   subtitle_removal: '去字幕',
   cover: '封面',
@@ -651,20 +656,24 @@ const ProjectCard: React.FC<Props> = ({
     && Boolean(result.videoUrl),
   );
   const subtitleRemovalEntryResult = project.results.find(canRemoveVideoSubtitles);
-  const canTranslateVideoVoiceover = (result: GeneratedResult) => {
-    if (
-      !onTranslateVideoVoiceover
-      || project.subFeature === 'voiceover_translation'
-      || result.status !== 'completed'
-      || !result.videoUrl
-    ) return false;
-    try {
-      return Boolean(resolveManagedSourceIdentity({ sourceUrl: result.videoUrl }));
-    } catch {
-      return false;
-    }
-  };
-  const voiceoverTranslationEntryResult = project.results.find(canTranslateVideoVoiceover);
+  const voiceoverTranslationEntryActions = buildVoiceoverTranslationEntryActions({
+    enabled: Boolean(onTranslateVideoVoiceover),
+    projectSubFeature: project.subFeature,
+    results: project.results,
+  });
+  const displayResults = isVoiceoverTranslationProject
+    ? project.results.map((result) => {
+        const safeMedia = resolveSafeVoiceoverResultMedia(result);
+        return {
+          ...result,
+          sourceAssetId: safeMedia.sourceAssetId,
+          sourceUrl: safeMedia.originalUrl,
+          sourcePreviewUrl: safeMedia.originalUrl,
+          finalAssetId: safeMedia.finalAssetId,
+          videoUrl: safeMedia.finalUrl,
+        };
+      })
+    : project.results;
   const usesMinimalRoleEditPrompt = isOneClickProject || isEverythingReplaceProductEditProject || isEverythingReplaceBackgroundEditProject;
   const getCurrentStoryboardDisplayUrl = (result: GeneratedResult) => {
     if (!isVersionedImageProject) return result.imageUrl;
@@ -676,7 +685,7 @@ const ProjectCard: React.FC<Props> = ({
     );
     return versions[selectedIndex]?.imageUrl || result.imageUrl;
   };
-  const previewableResults = project.results
+  const previewableResults = displayResults
     .map((result) => isVersionedImageProject ? { ...result, imageUrl: getCurrentStoryboardDisplayUrl(result) || '' } : result)
     .filter((result) => result.imageUrl || result.videoUrl);
   const lightboxItems: LightboxMediaItem[] = previewableResults.map((result, index) => ({
@@ -1253,16 +1262,12 @@ const ProjectCard: React.FC<Props> = ({
 
   const requestVoiceoverRetry = (result: GeneratedResult) => {
     if (!onRegenerate) return;
-    if ([
-      'provider_submission_unknown',
-      'voiceover_analysis_submission_unknown',
-      'voiceover_retry_confirmation_required',
-    ].includes(String(result.errorCode || '').trim())) {
-      setVoiceoverRetryResultId(result.id);
-      return;
-    }
-    void onRegenerate(project.id, result.id, undefined, {
-      confirmNewProviderAttempt: false,
+    void runVoiceoverRetryRequest({
+      result,
+      submit: (options) => onRegenerate(project.id, result.id, undefined, options),
+      requestConfirmation: () => setVoiceoverRetryResultId(result.id),
+    }).catch((error) => {
+      addToast(error instanceof Error ? error.message : '口播翻译重试失败', 'error');
     });
   };
 
@@ -1583,15 +1588,18 @@ const ProjectCard: React.FC<Props> = ({
             />
           </div>
         ) : null}
-        {voiceoverTranslationEntryResult ? (
-          <div className="border-t p-2.5" style={{ borderColor: 'var(--border-subtle)' }}>
-            <ResultActionButton
-              icon={<Film size={13} />}
-              label="口播翻译"
-              tone="primary"
-              className="w-full"
-              onClick={() => onTranslateVideoVoiceover?.(project.id, voiceoverTranslationEntryResult.id)}
-            />
+        {voiceoverTranslationEntryActions.length > 0 ? (
+          <div className="space-y-2 border-t p-2.5" style={{ borderColor: 'var(--border-subtle)' }}>
+            {voiceoverTranslationEntryActions.map((action) => (
+              <ResultActionButton
+                key={action.resultId}
+                icon={<Film size={13} />}
+                label={action.label}
+                tone="primary"
+                className="w-full"
+                onClick={() => onTranslateVideoVoiceover?.(project.id, action.resultId)}
+              />
+            ))}
           </div>
         ) : null}
       </div>
@@ -1876,7 +1884,7 @@ const ProjectCard: React.FC<Props> = ({
                 </div>
               ) : isVoiceoverTranslationProject ? (
                 <section className="space-y-3">
-                  {project.results.map((result, index) => {
+                  {displayResults.map((result, index) => {
                     const canCancel = ['generating', 'retry_waiting'].includes(result.status)
                       && result.voiceoverStage !== 'result_persisted'
                       && result.cancelled !== true
@@ -1900,7 +1908,10 @@ const ProjectCard: React.FC<Props> = ({
                           ? () => onCancelTask?.(String(result.backendJobId || project.backendJobId))
                           : undefined}
                         onRetry={onRegenerate ? () => requestVoiceoverRetry(result) : undefined}
-                        onDownloadFinal={() => void handleDownloadSingle(result, index)}
+                        onDownloadFinal={(safeUrl) => void handleDownloadSingle({
+                          ...result,
+                          videoUrl: safeUrl,
+                        }, index)}
                       />
                     );
                   })}

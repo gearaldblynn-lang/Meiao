@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Download, RefreshCw, Square } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
+import {
+  resolveSafeVoiceoverResultMedia,
+  switchVoiceoverPlaybackMode,
+} from './voiceoverResultExperience';
 
 interface Props {
   result: GeneratedResult;
@@ -21,19 +25,29 @@ const VoiceoverResultPlayer: React.FC<Props> = ({
   onRetry,
   onDownloadFinal,
 }) => {
-  const [preferredMode, setPreferredMode] = useState<'original' | 'final'>(result.videoUrl ? 'final' : 'original');
+  const { originalUrl, finalUrl } = resolveSafeVoiceoverResultMedia(result);
+  const [preferredMode, setPreferredMode] = useState<'original' | 'final'>(finalUrl ? 'final' : 'original');
   const originalVideoRef = useRef<HTMLVideoElement | null>(null);
   const finalVideoRef = useRef<HTMLVideoElement | null>(null);
-  const canShowOriginal = Boolean(result.sourceUrl);
-  const canShowFinal = Boolean(result.videoUrl);
+  const canShowOriginal = Boolean(originalUrl);
+  const canShowFinal = Boolean(finalUrl);
   const mode = preferredMode === 'final' && !canShowFinal && canShowOriginal ? 'original' : preferredMode;
-  const activeUrl = mode === 'final' ? result.videoUrl : result.sourceUrl;
+  const activeUrl = mode === 'final' ? finalUrl : originalUrl;
   const activeRef = mode === 'final' ? finalVideoRef : originalVideoRef;
 
   useEffect(() => {
-    const inactiveVideo = mode === 'final' ? originalVideoRef.current : finalVideoRef.current;
-    inactiveVideo?.pause();
-  }, [mode]);
+    const mountedVideo = mode === 'final' ? finalVideoRef.current : originalVideoRef.current;
+    return () => mountedVideo?.pause();
+  }, [activeUrl, mode]);
+
+  const selectMode = (nextMode: 'original' | 'final') => {
+    switchVoiceoverPlaybackMode({
+      currentMode: mode,
+      nextMode,
+      currentVideo: activeRef.current,
+      setMode: setPreferredMode,
+    });
+  };
 
   const cancellationHint = useMemo(() => (
     providerSubmissionStarted
@@ -57,7 +71,7 @@ const VoiceoverResultPlayer: React.FC<Props> = ({
           <button
             type="button"
             disabled={!canShowOriginal}
-            onClick={() => setPreferredMode('original')}
+            onClick={() => selectMode('original')}
             className="rounded-full px-3 py-1.5 text-[11px] font-medium disabled:opacity-40"
             style={{ background: mode === 'original' ? 'var(--bg-base)' : 'transparent', color: mode === 'original' ? 'var(--accent)' : 'var(--text-tertiary)' }}
           >
@@ -66,7 +80,7 @@ const VoiceoverResultPlayer: React.FC<Props> = ({
           <button
             type="button"
             disabled={!canShowFinal}
-            onClick={() => setPreferredMode('final')}
+            onClick={() => selectMode('final')}
             className="rounded-full px-3 py-1.5 text-[11px] font-medium disabled:opacity-40"
             style={{ background: mode === 'final' ? 'var(--bg-base)' : 'transparent', color: mode === 'final' ? 'var(--accent)' : 'var(--text-tertiary)' }}
           >
@@ -78,7 +92,6 @@ const VoiceoverResultPlayer: React.FC<Props> = ({
       <div className="aspect-video bg-black">
         {activeUrl ? (
           <video
-            key={`${mode}:${activeUrl}`}
             ref={(node) => { activeRef.current = node; }}
             src={activeUrl}
             className="h-full w-full object-contain"
@@ -98,7 +111,7 @@ const VoiceoverResultPlayer: React.FC<Props> = ({
           {canShowFinal ? (
             <button
               type="button"
-              onClick={() => onDownloadFinal(result.videoUrl as string)}
+              onClick={() => onDownloadFinal(finalUrl)}
               className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-[11px] font-semibold"
               style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
             >

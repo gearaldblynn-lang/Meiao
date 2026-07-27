@@ -365,14 +365,17 @@ test('subtitle batch retry confirms every possibly-paid retry and blocks unknown
 test('voiceover retry only asks for confirmation when the server requires a new paid attempt', () => {
   const shellSource = read('../../ShellMigratedApp.tsx');
   const projectCardSource = read('./ProjectCard.tsx');
+  const voiceoverExperienceSource = read('./voiceoverResultExperience.ts');
 
   assert.match(shellSource, /project\.subFeature === 'voiceover_translation'/);
   assert.match(shellSource, /buildVoiceoverRetryRequest/);
   assert.match(shellSource, /const voiceoverRetryJobId = String\(result\.backendJobId \|\| project\.backendJobId \|\| ''\)\.trim\(\)/);
   assert.doesNotMatch(shellSource, /const voiceoverRetryJobId = [^\n]*\|\| resultId/);
   assert.doesNotMatch(shellSource, /window\.confirm/);
-  assert.match(projectCardSource, /voiceover_retry_confirmation_required/);
-  assert.match(projectCardSource, /voiceover_analysis_submission_unknown/);
+  assert.match(voiceoverExperienceSource, /voiceover_retry_confirmation_required/);
+  assert.match(voiceoverExperienceSource, /voiceover_analysis_submission_unknown/);
   assert.match(projectCardSource, /confirmNewProviderAttempt:\s*true/);
   assert.match(projectCardSource, /继续可能产生新的上游费用/);
+  assert.match(projectCardSource, /runVoiceoverRetryRequest/);
+  assert.match(shellSource, /voiceover_retry_confirmation_required[\s\S]*?throw error/);
 });

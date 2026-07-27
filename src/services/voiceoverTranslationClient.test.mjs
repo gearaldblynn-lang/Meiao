@@ -127,6 +127,38 @@ test('arbitrary external URLs, provider signatures, local paths, and mismatched 
   );
 });
 
+test('managed playback sources canonicalize to an account-checked asset route', async () => {
+  const client = await import('./voiceoverTranslationClient.ts');
+  assert.equal(typeof client.resolveCanonicalManagedSource, 'function');
+
+  assert.deepEqual(client.resolveCanonicalManagedSource({
+    sourceAssetId: 'asset-video-99',
+  }), {
+    assetId: 'asset-video-99',
+    url: '/api/assets/file/asset-video-99',
+  });
+  assert.deepEqual(client.resolveCanonicalManagedSource({
+    sourceUrl: '/api/assets/file/asset-video-99/source.mp4?accessKey=secret',
+  }), {
+    assetId: 'asset-video-99',
+    url: '/api/assets/file/asset-video-99',
+  });
+
+  for (const sourceUrl of [
+    'https://evil.example/api/assets/file/asset-video-99/source.mp4',
+    '//evil.example/api/assets/file/asset-video-99/source.mp4',
+    'https://user:password@meiao.example/api/assets/file/asset-video-99/source.mp4',
+    '/api/assets/file/%2e%2e/source.mp4',
+    'not-a-managed-url',
+  ]) {
+    assert.throws(
+      () => client.resolveCanonicalManagedSource({ sourceUrl }),
+      (error) => error?.code === 'voiceover_source_invalid',
+      sourceUrl,
+    );
+  }
+});
+
 test('preset voice and remove-text region are normalized without authoring server-owned fields', () => {
   const request = buildVoiceoverJobRequest(validInput({
     voiceMode: 'preset',

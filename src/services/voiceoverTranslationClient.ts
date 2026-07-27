@@ -81,7 +81,7 @@ type VoiceoverClientError = Error & { code: string };
 
 const MANAGED_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/u;
 const MANAGED_SCHEME_PATTERN = /^(?:managed|asset):\/\/([A-Za-z0-9][A-Za-z0-9._-]{0,159})$/u;
-const MANAGED_ROUTE_PATTERN = /^\/api\/(?:(?:assets\/file\/)|assets\/|media\/)([A-Za-z0-9][A-Za-z0-9._-]{0,159})(?:\/[^?#]*)?$/u;
+const MANAGED_ROUTE_PATTERN = /^\/api\/(?:assets\/file\/|assets\/(?!file(?:\/|$))|media\/)([A-Za-z0-9][A-Za-z0-9._-]{0,159})(?:\/[^?#]*)?$/u;
 
 const clientError = (code: string, message: string): VoiceoverClientError => (
   Object.assign(new Error(message), { code })
@@ -136,6 +136,19 @@ export const resolveManagedSourceIdentity = (input: VoiceoverTranslationSource) 
     throw clientError('voiceover_source_invalid', '请选择当前账号拥有的梅奥托管视频');
   }
   return explicitAssetId || routeAssetId;
+};
+
+export const resolveCanonicalManagedSource = (
+  input: { sourceAssetId?: string; sourceUrl?: string },
+) => {
+  const assetId = resolveManagedSourceIdentity({
+    sourceAssetId: input.sourceAssetId,
+    sourceUrl: String(input.sourceUrl || ''),
+  });
+  return {
+    assetId,
+    url: `/api/assets/file/${encodeURIComponent(assetId)}`,
+  };
 };
 
 const normalizeRegion = (input: VoiceoverSubmissionInput) => {

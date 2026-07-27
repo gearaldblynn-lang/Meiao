@@ -70,6 +70,7 @@ import {
   getLatestCompletedTranslationEditVersionUrl,
   mergeTranslationEditVersions,
 } from '../modules/Translation/translationRegionEditUtils.mjs';
+import { resolveCanonicalManagedSource } from '../services/voiceoverTranslationClient.ts';
 
 type ShellProjectStatus = 'planning' | 'generating' | 'completed' | 'error';
 type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
@@ -1082,9 +1083,18 @@ const voiceoverCheckpointFromResult = (result: Record<string, unknown>) => {
   return candidate as unknown as VoiceoverCheckpointV1;
 };
 
-const managedAssetRoute = (assetId: unknown) => {
-  const id = String(assetId || '').trim();
-  return id ? `/api/assets/file/${encodeURIComponent(id)}` : '';
+const resolveCanonicalVoiceoverMedia = (
+  assetId: unknown,
+  url: unknown,
+) => {
+  try {
+    return resolveCanonicalManagedSource({
+      sourceAssetId: String(assetId || '').trim() || undefined,
+      sourceUrl: String(url || '').trim() || undefined,
+    });
+  } catch {
+    return undefined;
+  }
 };
 
 const transcriptFromSegments = (
@@ -1155,30 +1165,40 @@ const buildVoiceoverProjectFromJob = (
     String(result.id || '').trim() === shellResultId
     || String(result.backendJobId || '').trim() === String(job.id || '').trim()
   ));
-  const sourceAssetId = String(
+  const persistedSourceAssetId = String(
     payload.sourceAssetId
     || payload.source_asset_id
     || checkpoint?.baseVideoAssetId
     || '',
   ).trim();
-  const finalAssetId = String(
+  const persistedFinalAssetId = String(
     resultRecord.finalAssetId
     || resultRecord.final_asset_id
     || checkpoint?.finalAssetId
     || '',
   ).trim();
-  const sourceUrl = String(
+  const persistedSourceUrl = String(
     resultRecord.sourceUrl
     || resultRecord.source_url
     || payload.sourceUrl
     || payload.source_url
-    || managedAssetRoute(sourceAssetId),
   ).trim();
-  const videoUrl = String(
+  const persistedVideoUrl = String(
     resultRecord.videoUrl
     || resultRecord.video_url
-    || (finalAssetId ? managedAssetRoute(finalAssetId) : ''),
   ).trim();
+  const sourceMedia = resolveCanonicalVoiceoverMedia(
+    persistedSourceAssetId,
+    persistedSourceUrl,
+  );
+  const finalMedia = resolveCanonicalVoiceoverMedia(
+    persistedFinalAssetId,
+    persistedVideoUrl,
+  );
+  const sourceAssetId = sourceMedia?.assetId || '';
+  const finalAssetId = finalMedia?.assetId || '';
+  const sourceUrl = sourceMedia?.url || '';
+  const videoUrl = finalMedia?.url || '';
   const status = String(job.status || row.job_status || '').trim();
   const cancelled = status === 'cancelled'
     || Boolean(job.cancelRequestedAt || row.cancel_requested_at);
@@ -1743,10 +1763,28 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
       completedAt: project.completedAt != null ? coerceCreatedAtMs(project.completedAt, { id: project.id, updatedAt: project.updatedAt }).ms : undefined,
       results: Array.isArray(project.results) ? project.results.map((result: any, index: number) => {
         const resultModule = toModule(result?.module || project.module);
+        const resultSubFeature = String(result?.subFeature || project.subFeature || '').trim() || undefined;
         const translationEditVersions = resultModule === MODULE_VALUES.TRANSLATION && Array.isArray(result?.translationEditVersions)
           ? mergeTranslationEditVersions([], result.translationEditVersions) as TranslationEditVersion[]
           : undefined;
         const persistedImageUrl = String(result?.imageUrl || '').trim();
+        const voiceoverCheckpoint = voiceoverCheckpointFromResult({
+          voiceoverCheckpoint: result?.voiceoverCheckpoint,
+        });
+        const isVoiceoverTranslationResult = resultModule === MODULE_VALUES.VIDEO
+          && resultSubFeature === 'voiceover_translation';
+        const voiceoverSourceMedia = isVoiceoverTranslationResult
+          ? resolveCanonicalVoiceoverMedia(
+              result?.sourceAssetId || voiceoverCheckpoint?.baseVideoAssetId,
+              result?.sourceUrl || result?.sourcePreviewUrl,
+            )
+          : undefined;
+        const voiceoverFinalMedia = isVoiceoverTranslationResult
+          ? resolveCanonicalVoiceoverMedia(
+              result?.finalAssetId || voiceoverCheckpoint?.finalAssetId,
+              result?.videoUrl,
+            )
+          : undefined;
         return {
         ...getSubtitleRemovalResultMetadata(result),
         id: String(result?.id || `${project.id}-result-${index}`),
@@ -1755,7 +1793,9 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         imageUrl: resultModule === MODULE_VALUES.TRANSLATION
           ? getLatestCompletedTranslationEditVersionUrl({ ...result, imageUrl: persistedImageUrl, translationEditVersions })
           : persistedImageUrl,
-        videoUrl: String(result?.videoUrl || '').trim() || undefined,
+        videoUrl: isVoiceoverTranslationResult
+          ? voiceoverFinalMedia?.url
+          : String(result?.videoUrl || '').trim() || undefined,
         mediaType: result?.mediaType === 'video' ? 'video' : 'image',
         prompt: String(result?.prompt || '').trim(),
         model: normalizeModel(result?.model),
@@ -1771,9 +1811,13 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
                 : 'completed',
         createdAt: coerceCreatedAtMs(result?.createdAt ?? project.createdAt, { id: result?.id ?? project.id, updatedAt: project.updatedAt }).ms,
         module: resultModule,
-        subFeature: String(result?.subFeature || project.subFeature || '').trim() || undefined,
-        sourceUrl: String(result?.sourceUrl || '').trim() || undefined,
-        sourcePreviewUrl: String(result?.sourcePreviewUrl || result?.sourceUrl || '').trim() || undefined,
+        subFeature: resultSubFeature,
+        sourceUrl: isVoiceoverTranslationResult
+          ? voiceoverSourceMedia?.url
+          : String(result?.sourceUrl || '').trim() || undefined,
+        sourcePreviewUrl: isVoiceoverTranslationResult
+          ? voiceoverSourceMedia?.url
+          : String(result?.sourcePreviewUrl || result?.sourceUrl || '').trim() || undefined,
         fileName: String(result?.fileName || '').trim() || undefined,
         relativePath: String(result?.relativePath || '').trim() || undefined,
         taskId: getVisibleTaskId(result),
@@ -1816,7 +1860,9 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         ),
         translationRetryStage: String(result?.translationRetryStage ?? result?.payload?.translationRetryStage ?? '').trim() as TranslationRetryStage || undefined,
         statusText: String(result?.statusText || '').trim() || undefined,
-        sourceAssetId: String(result?.sourceAssetId || '').trim() || undefined,
+        sourceAssetId: isVoiceoverTranslationResult
+          ? voiceoverSourceMedia?.assetId
+          : String(result?.sourceAssetId || '').trim() || undefined,
         sourceLanguage: String(result?.sourceLanguage || '').trim() || undefined,
         targetLanguage: String(result?.targetLanguage || '').trim() || undefined,
         translationMode: toVoiceoverTranslationMode(result?.translationMode),
@@ -1828,10 +1874,10 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         voiceoverStage: VOICEOVER_STAGE_IDS.has(String(result?.voiceoverStage || '').trim())
           ? String(result.voiceoverStage).trim() as VoiceoverCheckpointV1['stage']
           : undefined,
-        voiceoverCheckpoint: voiceoverCheckpointFromResult({
-          voiceoverCheckpoint: result?.voiceoverCheckpoint,
-        }),
-        finalAssetId: String(result?.finalAssetId || '').trim() || undefined,
+        voiceoverCheckpoint,
+        finalAssetId: isVoiceoverTranslationResult
+          ? voiceoverFinalMedia?.assetId
+          : String(result?.finalAssetId || '').trim() || undefined,
         cancelled: result?.cancelled === true || undefined,
         ...(resultModule === MODULE_VALUES.TRANSLATION ? { translationEditVersions } : {}),
       };

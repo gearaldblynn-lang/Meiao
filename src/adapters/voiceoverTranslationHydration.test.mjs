@@ -170,8 +170,8 @@ test('completed MySQL-style aliases hydrate the final and original managed video
   const result = project.results[0];
   assert.equal(project.status, 'completed');
   assert.equal(result.status, 'completed');
-  assert.equal(result.sourceUrl, '/api/assets/file/asset-source/source.mp4');
-  assert.equal(result.videoUrl, '/api/assets/file/asset-final/result.mp4');
+  assert.equal(result.sourceUrl, '/api/assets/file/asset-source');
+  assert.equal(result.videoUrl, '/api/assets/file/asset-final');
   assert.equal(result.finalAssetId, 'asset-final');
   assert.equal(result.translationMode, 'literal');
   assert.equal(result.voiceMode, 'preset');
@@ -222,6 +222,59 @@ test('voice and translation modes fail closed outside the canonical contract', (
   }, []).projects[0].results[0];
   assert.equal(persistedResult.translationMode, undefined);
   assert.equal(persistedResult.voiceMode, undefined);
+});
+
+test('persisted voiceover media rejects unsafe urls and reconstructs canonical managed ids', () => {
+  const persistedProject = (result) => ({
+    id: 'persisted-voiceover-project',
+    name: '持久化口播翻译',
+    module: 'video',
+    subFeature: 'voiceover_translation',
+    status: 'completed',
+    createdAt: 1_000,
+    taskCount: 1,
+    completedCount: 1,
+    results: [{
+      id: 'persisted-voiceover-result',
+      projectId: 'persisted-voiceover-project',
+      imageUrl: '',
+      mediaType: 'video',
+      prompt: '完成',
+      model: 'Gemini 3.1 Flash TTS',
+      aspectRatio: 'auto',
+      status: 'completed',
+      createdAt: 1_000,
+      module: 'video',
+      subFeature: 'voiceover_translation',
+      ...result,
+    }],
+  });
+
+  for (const value of [
+    'https://evil.example/video.mp4',
+    '//evil.example/video.mp4',
+    'https://user:password@meiao.example/api/assets/file/stolen/video.mp4',
+    '/api/assets/file/%2e%2e/video.mp4',
+  ]) {
+    const result = buildShellDataSnapshot({
+      shellProjects: [persistedProject({ sourceUrl: value, videoUrl: value })],
+    }, []).projects[0].results[0];
+    assert.equal(result.sourceUrl, undefined, value);
+    assert.equal(result.sourcePreviewUrl, undefined, value);
+    assert.equal(result.videoUrl, undefined, value);
+  }
+
+  const reconstructed = buildShellDataSnapshot({
+    shellProjects: [persistedProject({
+      sourceAssetId: 'asset-source-safe',
+      finalAssetId: 'asset-final-safe',
+    })],
+  }, []).projects[0].results[0];
+  assert.equal(reconstructed.sourceAssetId, 'asset-source-safe');
+  assert.equal(reconstructed.sourceUrl, '/api/assets/file/asset-source-safe');
+  assert.equal(reconstructed.sourcePreviewUrl, '/api/assets/file/asset-source-safe');
+  assert.equal(reconstructed.finalAssetId, 'asset-final-safe');
+  assert.equal(reconstructed.videoUrl, '/api/assets/file/asset-final-safe');
 });
 
 test('failed, cancelled and retry-waiting parent states survive refresh', () => {

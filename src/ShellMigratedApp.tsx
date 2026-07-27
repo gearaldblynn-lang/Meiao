@@ -11241,6 +11241,13 @@ const AppContent: React.FC<{
       await persistProjectToSharedState(completedProject);
       addToast('重生成已完成', 'success');
       } catch (error) {
+        if (
+          error
+          && typeof error === 'object'
+          && String((error as { code?: unknown }).code || '') === 'voiceover_retry_confirmation_required'
+        ) {
+          throw error;
+        }
         if (bailIfFrontendResourceError(error)) return;
         addToast(error instanceof Error ? error.message : '重新生成失败', 'error');
         setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));

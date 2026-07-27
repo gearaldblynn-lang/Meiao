@@ -84,7 +84,7 @@ export interface VoiceoverTranscriptSegment {
   targetText: string;
 }
 
-export interface VoiceoverTranslationSegment extends VoiceoverTranscriptSegment {}
+export type VoiceoverTranslationSegment = VoiceoverTranscriptSegment;
 
 export interface VoiceoverTranslationPayload {
   taskType: 'voiceover_translate_video';
