@@ -136,6 +136,20 @@ test('CLI check marks a missing configured runtime YAML as non-ready', async (t)
   assert.match(result.stdout, /"modelReady":false/);
 });
 
+test('CLI reports allowlisted invalid pip controls without echoing the supplied value', () => {
+  const scriptPath = fileURLToPath(new URL('./install-voiceover-demucs.mjs', import.meta.url));
+  const secretLikeValue = '999999999999';
+  const result = spawnSync(process.execPath, [scriptPath, '--install'], {
+    encoding: 'utf8',
+    env: { ...process.env, MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS: secretLikeValue },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS/);
+  assert.match(result.stderr, /30-3600/);
+  assert.doesNotMatch(result.stderr, new RegExp(secretLikeValue));
+  assert.doesNotMatch(result.stderr, /\/Users\/|\/opt\/|https?:\/\//i);
+});
+
 test('installer downloads each model via part file and rejects a wrong manifest model or YAML', async (t) => {
   const root = await withTempRoot(t);
   const modelDir = join(root, 'models');
@@ -197,16 +211,77 @@ test('installer installs the pinned build toolchain before the no-isolation runt
   await writeFile(buildRequirementsLock, '--index-url https://pypi.org/simple\n');
   const calls = [];
   const result = await runInstaller(['--install'], {
+    env: {
+      MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS: '900',
+      MEIAO_VOICEOVER_PIP_RETRIES: '12',
+    },
     paths: { manifestPath, yamlPath, requirementsLock, buildRequirementsLock, venvDir, modelDir: join(root, 'models'), installPython: 'python3' },
     spawnProcess: async (command, args, options) => { calls.push({ command, args, options }); return { exitCode: 0 }; },
   });
   assert.equal(result.mode, 'install');
   assert.equal(result.modelReady, false);
   assert.deepEqual(calls, [
-    { command: 'python3', args: ['-m', 'venv', venvDir], options: { shell: false } },
-    { command: join(venvDir, 'bin', 'python'), args: ['-m', 'pip', 'install', '--require-hashes', '-r', buildRequirementsLock], options: { shell: false } },
-    { command: join(venvDir, 'bin', 'python'), args: ['-m', 'pip', 'install', '--require-hashes', '--no-build-isolation', '-r', requirementsLock], options: { shell: false } },
+    {
+      command: 'python3', args: ['-m', 'venv', venvDir],
+      options: { shell: false, stdio: ['ignore', 'inherit', 'inherit'] },
+    },
+    {
+      command: join(venvDir, 'bin', 'python'),
+      args: ['-m', 'pip', 'install', '--no-input', '--timeout', '900', '--retries', '12', '--require-hashes', '-r', buildRequirementsLock],
+      options: { shell: false, stdio: ['ignore', 'inherit', 'inherit'] },
+    },
+    {
+      command: join(venvDir, 'bin', 'python'),
+      args: ['-m', 'pip', 'install', '--no-input', '--timeout', '900', '--retries', '12', '--require-hashes', '--no-build-isolation', '-r', requirementsLock],
+      options: { shell: false, stdio: ['ignore', 'inherit', 'inherit'] },
+    },
   ]);
+});
+
+test('installer rejects invalid pip network controls before creating a venv', async (t) => {
+  const root = await withTempRoot(t);
+  const manifestPath = join(root, 'manifest.json');
+  const yamlPath = join(root, 'mdx.yaml');
+  await writeFile(manifestPath, JSON.stringify({ schemaVersion: 1, model: 'mdx', files: [{
+    name: 'model.th', url: 'https://example.invalid/model.th', size: 1, sha256: '0'.repeat(64),
+  }] }));
+  await writeFile(yamlPath, mdxYaml);
+  let spawnCalls = 0;
+  await assert.rejects(runInstaller(['--install'], {
+    env: { MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS: '0' },
+    paths: {
+      manifestPath, yamlPath, requirementsLock: join(root, 'requirements.lock'),
+      buildRequirementsLock: join(root, 'build.lock'), venvDir: join(root, 'venv'),
+      modelDir: join(root, 'models'), installPython: 'python3',
+    },
+    spawnProcess: async () => { spawnCalls += 1; return { exitCode: 0 }; },
+  }), /MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS.*30-3600/i);
+  assert.equal(spawnCalls, 0);
+});
+
+test('installer stops after a failed pip subprocess and does not publish runtime YAML', async (t) => {
+  const root = await withTempRoot(t);
+  const manifestPath = join(root, 'manifest.json');
+  const yamlPath = join(root, 'mdx.yaml');
+  const modelDir = join(root, 'models');
+  await writeFile(manifestPath, JSON.stringify({ schemaVersion: 1, model: 'mdx', files: [{
+    name: 'model.th', url: 'https://example.invalid/model.th', size: 1, sha256: '0'.repeat(64),
+  }] }));
+  await writeFile(yamlPath, mdxYaml);
+  const calls = [];
+  await assert.rejects(runInstaller(['--install'], {
+    paths: {
+      manifestPath, yamlPath, requirementsLock: join(root, 'requirements.lock'),
+      buildRequirementsLock: join(root, 'build.lock'), venvDir: join(root, 'venv'),
+      modelDir, installPython: 'python3',
+    },
+    spawnProcess: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return { exitCode: calls.length === 2 ? 17 : 0 };
+    },
+  }), /installer process failed/i);
+  assert.equal(calls.length, 2);
+  await assert.rejects(readFile(join(modelDir, 'mdx.yaml')), { code: 'ENOENT' });
 });
 
 test('installer rejects a manifest with a non-mdx model before creating a venv', async (t) => {

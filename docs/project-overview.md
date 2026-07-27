@@ -222,7 +222,7 @@ npm run dev
 
 ### 5.1 口播翻译环境合同
 
-所有数值越界或非法值都回落到保守默认值；路径和密钥只存在服务端，不进入公开配置、health 或探针输出。
+应用运行时数值越界或非法值都回落到保守默认值；路径和密钥只存在服务端，不进入公开配置、health 或探针输出。两个 Demucs 一次性安装网络旋钮只用于安装命令、无需持久化，非法值会在创建 venv 前 fail-closed。
 
 | 变量 | 默认值 | 合法范围 / 合同 |
 |---|---:|---|
@@ -230,6 +230,8 @@ npm run dev
 | `MEIAO_VOICEOVER_SEPARATION_PYTHON` | 空 | 运维提供的 venv Python 绝对路径 |
 | `MEIAO_VOICEOVER_DEMUCS_MODEL` | `mdx` | 仅 `mdx` |
 | `MEIAO_VOICEOVER_DEMUCS_MODEL_DIR` | 空 | Git 和 release 目录外的模型绝对路径 |
+| `MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS` | `600` | 一次性安装 socket 超时；整数 `30-3600` 秒 |
+| `MEIAO_VOICEOVER_PIP_RETRIES` | `8` | 一次性安装单连接重试；整数 `0-20` |
 | `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY` | `1` | 整数 `1-2`；生产首发保持 `1` |
 | `MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS` | `3600000` | 整数 `300000-7200000` |
 | `MEIAO_VOICEOVER_MIN_ATEMPO` | `0.75` | `0.5-1` |

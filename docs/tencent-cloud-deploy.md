@@ -314,10 +314,15 @@ sudo install -d \
 sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -w /opt/meiao/voiceover
 export MEIAO_VOICEOVER_VENV_DIR=/opt/meiao/voiceover/venv
 export MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=/opt/meiao/voiceover/models
+# 跨境链路较慢时可调；脚本默认 600 秒、8 次，合法范围分别为 30-3600 秒、0-20 次。
+export MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS=600
+export MEIAO_VOICEOVER_PIP_RETRIES=8
 sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
   "PATH=$PATH" \
   "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
   "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
+  "MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS=$MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS" \
+  "MEIAO_VOICEOVER_PIP_RETRIES=$MEIAO_VOICEOVER_PIP_RETRIES" \
   node scripts/install-voiceover-demucs.mjs --install
 sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
   "PATH=$PATH" \
@@ -332,6 +337,8 @@ sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
 ```
 
 `MEIAO_VOICEOVER_SERVICE_USER` 必须替换为实际启动 PM2/Node 口播服务的系统用户；不要照抄一个假定用户名。若 PM2 由 root 运行，也要显式填 `root` 并记录本次确认。安装前后分别用 `id`、`stat -c '%U:%G %a %n' /opt/meiao/voiceover` 和以上 `sudo -u ... test -w` 验证归属、`0750` 权限与服务用户可写性；任一步失败都停止启用。
+
+`MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS` 是单次 socket 读取超时，`MEIAO_VOICEOVER_PIP_RETRIES` 是单连接重试次数，都不是整次安装的总时限；非法值会在创建 venv 前 fail-closed。两者只用于一次性安装命令，不需要写入 `.env.server`。维护窗口若需要总时限，应由运维在命令外层另加受控 timeout。
 
 `deploy/voiceover/requirements.lock`、`build-requirements.lock`、`demucs-models.json` 和 `mdx.yaml` 是受版本控制的安装合同；venv、`.th` 权重和运行时临时媒体不得进入 Git、release 包或 `git status`。安装后仍先保持功能关闭，写好候选环境路径和 KIE 凭证，再执行：
 
