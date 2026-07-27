@@ -26,6 +26,35 @@ test('normalizes both supported replacement scopes and defaults all other values
   assert.equal(normalizeModelReplacementScope(), 'identity_only');
 });
 
+test('builds materially different RTCFE contracts for identity-only and full-person replacement', () => {
+  const identityOnly = buildModelReplacePrompt({
+    identityCount: 3,
+    replacementScope: 'identity_only',
+    aspectRatio: '3:4',
+  });
+  const fullPerson = buildModelReplacePrompt({
+    identityCount: 3,
+    replacementScope: 'full_person',
+    aspectRatio: '3:4',
+  });
+
+  assertRtcfeSections(identityOnly);
+  assertRtcfeSections(fullPerson);
+  assert.notEqual(fullPerson, identityOnly);
+  assert.match(identityOnly, /只允许替换图B人物的脸部身份、头发与发型，以及轻量分析列出的裸露皮肤区域/);
+  assert.match(identityOnly, /图B是唯一的表情、视线和面部肌肉状态来源/);
+  assert.match(fullPerson, /整体替换图B中的原人物/);
+  assert.match(fullPerson, /身份、肤色、头发、年龄与人物气质、可见身体特征、身材比例、服装和配饰均来自图A-1/);
+  assert.match(fullPerson, /姿势、动作、表情和视线以图A-1为人物来源/);
+  assert.match(fullPerson, /图B只提供商品、Logo、文字、背景、主构图、镜头、光线、景深和画幅/);
+  assert.match(fullPerson, /允许仅为适配图B的商品、画布和透视做最小的人物位置、尺寸、姿势、遮挡和商品接触关系几何调整/);
+  assert.match(fullPerson, /绝不回退为图B原模特的身材、服装、配饰、动作或身份/);
+  assert.match(fullPerson, /商品准确性优先；不得删除、替换、重绘或改变图B中的商品/);
+  assert.doesNotMatch(fullPerson, /只允许替换图B人物的脸部身份/);
+  assert.doesNotMatch(fullPerson, /图B是唯一的表情、视线和面部肌肉状态来源/);
+  assert.doesNotMatch(fullPerson, /身体轮廓.*必须保持不变/);
+});
+
 test('uses a concise multi-image identity mapping and one authoritative edit boundary', () => {
   const prompt = buildModelReplacePrompt({
     identityCount: 5,

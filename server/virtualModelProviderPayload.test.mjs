@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildVirtualModelProviderPayload } from './virtualModelProviderPayload.mjs';
+import {
+  buildVirtualModelProviderPayload,
+  resolveVirtualModelProviderPayload,
+} from './virtualModelProviderPayload.mjs';
 
 test('library provider payload prepends trusted identity assets and exposes only their ids for reads', () => {
   const result = buildVirtualModelProviderPayload({
@@ -38,4 +41,33 @@ test('uploaded identity payload never receives a shared-library read allowlist',
 
   assert.equal(result.payload, payload);
   assert.deepEqual([...result.authorizedManagedAssetIds], []);
+});
+
+test('provider orchestration resolves trusted assets before building payload and never allowlists client ids', async () => {
+  const calls = [];
+  const result = await resolveVirtualModelProviderPayload({
+    identitySource: 'library',
+    virtualModelId: 'model-1',
+    virtualModelVersionId: 'version-1',
+    selectedAssetIds: ['client-id'],
+    prompt: 'F Format 格式',
+    imageUrls: ['https://managed/reference.png'],
+  }, async (selection) => {
+    calls.push(selection);
+    return [
+      { assetId: 'trusted-id', slot: 'front_close', url: 'https://managed/trusted.png' },
+    ];
+  });
+
+  assert.deepEqual(calls, [{
+    virtualModelId: 'model-1',
+    virtualModelVersionId: 'version-1',
+    selectedAssetIds: ['client-id'],
+  }]);
+  assert.deepEqual(result.payload.imageUrls, [
+    'https://managed/trusted.png',
+    'https://managed/reference.png',
+  ]);
+  assert.deepEqual([...result.authorizedManagedAssetIds], ['trusted-id']);
+  assert.ok(!result.authorizedManagedAssetIds.has('client-id'));
 });

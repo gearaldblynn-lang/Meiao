@@ -269,7 +269,7 @@ test('worker resolves library assets only immediately before provider execution'
   const source = await readFile(new URL('./index.mjs', import.meta.url), 'utf8');
   const worker = source.slice(source.indexOf('const injectLibraryModelAssetsForProvider'), source.indexOf('const executeProviderJobWithManagedAssetScrub'));
   assert.match(worker, /resolveHistoricalVirtualModelSelectedAssets/);
-  assert.match(worker, /return buildVirtualModelProviderPayload\(payload, assets\)/);
+  assert.match(worker, /return resolveVirtualModelProviderPayload\(payload, \(selection\) =>/);
   const intake = source.slice(source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'POST')"), source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'GET')"));
   assert.match(intake, /createLibraryModelJobPayload/);
   assert.doesNotMatch(intake, /selectedIdentityAssetIds/);

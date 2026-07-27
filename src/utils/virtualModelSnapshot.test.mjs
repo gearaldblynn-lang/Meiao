@@ -5,6 +5,7 @@ import * as virtualModelSnapshot from './virtualModelSnapshot.mjs';
 const {
   buildLibraryModelReplaceContext,
   buildLibraryModelReplaceJobMetadata,
+  createVirtualModelSnapshotTracker,
   getLibraryModelReplaceIdentityCount,
   sanitizeVirtualModelSnapshot,
   snapshotVirtualModelFromJobPayload,
@@ -124,4 +125,38 @@ test('rebuilds a URL-free historical retry snapshot from the authoritative job p
     selectedAssetIds: ['asset-1', 'asset-2', 'asset-3'],
   });
   assert.equal(snapshotVirtualModelFromJobPayload({ identitySource: 'upload' }), undefined);
+});
+
+test('snapshot tracker preserves the authoritative library snapshot across early job exits', () => {
+  const tracker = createVirtualModelSnapshotTracker({
+    identitySource: 'library',
+    virtualModelId: 'model-1',
+    virtualModelVersionId: 'version-1',
+    virtualModelNameSnapshot: '韩系女生',
+    publishedAt: 123,
+    selectedAssetIds: ['asset-1', 'asset-2', 'asset-3'],
+    imageUrls: ['https://must-not-leak.example/source.png'],
+  });
+
+  assert.deepEqual(tracker.attach({
+    imageUrl: '',
+    status: 'interrupted',
+    message: '任务已取消',
+  }), {
+    imageUrl: '',
+    status: 'interrupted',
+    message: '任务已取消',
+    virtualModelSnapshot: {
+      identitySource: 'library',
+      virtualModelId: 'model-1',
+      virtualModelVersionId: 'version-1',
+      modelName: '韩系女生',
+      allowHistoricalPublishedVersion: true,
+      publishedAt: 123,
+      selectedAssetIds: ['asset-1', 'asset-2', 'asset-3'],
+    },
+  });
+
+  tracker.update({ identitySource: 'upload' });
+  assert.equal(tracker.current()?.virtualModelId, 'model-1');
 });

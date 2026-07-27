@@ -182,7 +182,7 @@ import {
   respondVirtualModelApiError,
 } from './virtualModelHttpApi.mjs';
 import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
-import { buildVirtualModelProviderPayload } from './virtualModelProviderPayload.mjs';
+import { resolveVirtualModelProviderPayload } from './virtualModelProviderPayload.mjs';
 import {
   getManagedAssetAccessKeyFromUrl,
   stripManagedAssetAccessKey,
@@ -4306,18 +4306,17 @@ const createLibraryModelJobPayload = async ({
 
 const injectLibraryModelAssetsForProvider = async (payload) => {
   if (payload?.identitySource !== 'library') {
-    return buildVirtualModelProviderPayload(payload);
+    return resolveVirtualModelProviderPayload(payload);
   }
   const source = shouldUseMysql
     ? { pool: await getMysqlPool() }
     : { store: readLocalStore() };
-  const assets = await resolveHistoricalVirtualModelSelectedAssets({
-    ...source,
-    virtualModelId: payload.virtualModelId,
-    virtualModelVersionId: payload.virtualModelVersionId,
-    selectedAssetIds: payload.selectedAssetIds,
-  });
-  return buildVirtualModelProviderPayload(payload, assets);
+  return resolveVirtualModelProviderPayload(payload, (selection) => (
+    resolveHistoricalVirtualModelSelectedAssets({
+      ...source,
+      ...selection,
+    })
+  ));
 };
 
 const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options) => {

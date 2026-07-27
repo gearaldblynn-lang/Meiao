@@ -120,6 +120,25 @@ export const snapshotVirtualModelFromJobPayload = (payload = {}) => (
   }, { forceHistorical: true })
 );
 
+export const createVirtualModelSnapshotTracker = (initialJobPayload = {}) => {
+  let snapshot = snapshotVirtualModelFromJobPayload(initialJobPayload);
+  return {
+    update(payload = {}) {
+      snapshot = snapshotVirtualModelFromJobPayload(payload) || snapshot;
+      return snapshot;
+    },
+    current() {
+      return snapshot;
+    },
+    attach(result = {}) {
+      return {
+        ...result,
+        ...(snapshot ? { virtualModelSnapshot: snapshot } : {}),
+      };
+    },
+  };
+};
+
 export const sanitizeModelReplaceGenerationContext = (context = {}) => {
   const snapshot = sanitizeVirtualModelSnapshot(context?.virtualModelSnapshot);
   if (!snapshot || context?.identitySource !== 'library') return {
