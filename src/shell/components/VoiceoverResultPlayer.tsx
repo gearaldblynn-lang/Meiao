@@ -119,7 +119,7 @@ const VoiceoverResultPlayer: React.FC<Props> = ({
               下载结果
             </button>
           ) : null}
-          {onRetry && ['error', 'retry_waiting'].includes(result.status) ? (
+          {onRetry && result.status === 'error' ? (
             <button
               type="button"
               onClick={onRetry}

@@ -169,6 +169,11 @@ test('voiceover retry and cancellation use explicit safe in-app boundaries', () 
   assert.match(cardSource, /Boolean\(result\.backendJobId \|\| project\.backendJobId\)/);
 });
 
+test('voiceover manual retry is hidden while an automatic retry is waiting', () => {
+  assert.match(playerSource, /onRetry && result\.status === 'error'/);
+  assert.doesNotMatch(playerSource, /\['error', 'retry_waiting'\]\.includes\(result\.status\)/);
+});
+
 test('voiceover project cards use the approved Chinese subfeature label', () => {
   assert.match(cardSource, /voiceover_translation:\s*'口播翻译'/);
   assert.match(cardSource, /subFeatureNames\[project\.subFeature\]/);
