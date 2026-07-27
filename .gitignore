@@ -24,6 +24,7 @@ dist-ssr
 *.sln
 *.sw?
 server/data/
+deploy/voiceover/.runtime/
 backups/
 .superpowers/
 .worktrees/

@@ -335,7 +335,9 @@ export function normalizeKieTtsRecordResponse(body, taskId) {
     });
   }
   const state = String(body?.data?.state || '').trim();
-  if (state === 'waiting') return { state, providerTaskId };
+  if (!state || state === 'waiting') {
+    return { state: 'waiting', providerTaskId };
+  }
   if (state === 'fail') {
     const failCode = String(body?.data?.failCode || '').trim();
     const failMsg = String(body?.data?.failMsg || body?.msg || 'KIE TTS 合成失败').trim();

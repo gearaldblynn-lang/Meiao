@@ -145,6 +145,7 @@ npm run dev
 - `MEIAO_COS_SECRET_ID` / `MEIAO_COS_SECRET_KEY`：Gemini 视频专用腾讯 COS 服务端凭证；必须来自只允许目标桶 `gemini-video/*` 执行 `PutObject`、`GetObject` 的 CAM 子用户，不得下发前端或使用主账号密钥。
 - `MEIAO_COS_BUCKET` / `MEIAO_COS_REGION`：Gemini 视频私有桶与地域。内部托管视频会先写入该桶，再把签名 GET URL 直接交给 Gemini；无需 CDN，建议给 `gemini-video/` 设置 3 天自动删除生命周期。
 - `MEIAO_COS_SIGNED_URL_TTL_SECONDS`：默认 `10800`（3 小时），限制 `300-86400` 秒；控制 Gemini 可读取 COS 对象的时间窗口。
+- `MEIAO_GEMINI_VIDEO_MEDIA_MODE`：默认 `cos-direct`；托管视频在付费 Gemini 请求前写入私有 COS 并使用签名 GET URL。对会先发 `HEAD` 再 `GET` 的 KIE Gemini 网关可显式设为 `kie-stage`，在付费推理前使用现有 KIE file-stream-upload 生成同时支持元数据读取与完整下载的临时 URL。该模式只改变提交前素材准备，不允许失败后自动重提、切换素材路由或切换模型。
 - `MEIAO_MANAGED_IMAGE_UPLOAD_MODE`：用户新上传图片的存储模式，支持 `disabled|cos|local`。空配置用 `disabled` fail closed；生产标准部署只接受 `cos` 且必须在 PM2 平滑 reload 前通过真探针。`local` 仅允许 `NODE_ENV=development/test` 且公网基址为本机或内网的本地联调环境，生产与公网配置会拒绝启动本地写入。图片 COS 失败时不回退到本地或 KIE。
 - `MEIAO_MANAGED_ASSET_ACCESS_SECRET` / `MEIAO_MANAGED_ASSET_ACCESS_PREVIOUS_SECRET`：绑定素材 ID 与用户的访问 capability 密钥及轮换兼容值；至少 24 字符，只存服务端。
 - `MEIAO_IMAGE_COS_SECRET_ID` / `MEIAO_IMAGE_COS_SECRET_KEY` / `MEIAO_IMAGE_COS_BUCKET` / `MEIAO_IMAGE_COS_REGION`：新 source/reference/chat 图片的独立私有 COS 配置，与 Gemini 视频桶及凭证完全分开。云上目标为 `meiao-managed-images-1406860462` / `ap-guangzhou`，CAM 仅授予 `managed-images/*` 的对象读写删权限。
@@ -162,7 +163,7 @@ npm run dev
 - `MEIAO_ASSET_CLEANUP_ALERT_BACKLOG` / `MEIAO_ASSET_CLEANUP_ALERT_OLDEST_MS` / `MEIAO_ASSET_UPLOAD_STALE_MS`：默认 `100` / `86400000` / `900000`；`/api/health.managedAssetCleanup` 会报 backlog、最老等待、重试、manual review 和卡住上传。
 - `/api/health.managedImageUpload` 暴露 `mode/configured/ready/status/lastProbeAt/lastProbeAgeMs/alerting`，探针失败时只附脱敏 `failureCode`。部署门禁要求 `ready=true`，不再只看 HTTP 和 worker。
 - `MEIAO_ASSET_CLEANUP_AUDIT_RETENTION_MS`：默认 `2592000000`（30 天）；只裁剪 complete/protected 审计记录，不删待处理或人工复核任务。
-- `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；图片、PDF 等非视频素材仅在 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 时直连优先，明确读取失败且无 `providerTaskId` 时才允许转存 KIE。Gemini 视频不受该开关影响，始终使用 COS 或已有外部稳定 URL，禁止 KIE 暂存、KIE 失败回退和模型回退。
+- `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；图片、PDF 等非视频素材仅在 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 时直连优先，明确读取失败且无 `providerTaskId` 时才允许转存 KIE。Gemini 视频不受该开关影响，由独立的 `MEIAO_GEMINI_VIDEO_MEDIA_MODE` 决定提交前走 COS 直连或 KIE 暂存；任何模式都禁止付费失败后的素材回退和模型回退。
 - `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY`：默认 `3`；真正进入 KIE file-stream-upload 时的进程级跨任务并发总上限，补足单任务素材解析限流无法约束多任务同时上传的问题。
 - `MEIAO_KIE_ASSET_UPLOAD_RETRIES` / `MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS`：默认 `2` / `1000`；只用于文件上传 POST 的连接错误与 `429/500/502/503/504` 响应重试，不放宽 createTask/chat 等可能扣费的提交 POST。
 - `MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS` / `MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES`：默认 `1800000` / `2000`；成功转存 URL 的进程内缓存与容量上限，并发上传同一素材会共享一个 Promise，失败不缓存。

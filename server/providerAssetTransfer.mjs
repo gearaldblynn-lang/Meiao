@@ -214,6 +214,15 @@ export const resolveKieManagedAssetMode = (env = {}) => {
 export const shouldUseDirectManagedAssetUrls = (env = {}) =>
   resolveKieManagedAssetMode(env) === 'direct-first';
 
+export const resolveGeminiVideoMediaMode = (env = {}) => {
+  const configured = String(
+    env.MEIAO_GEMINI_VIDEO_MEDIA_MODE
+    || process.env.MEIAO_GEMINI_VIDEO_MEDIA_MODE
+    || 'cos-direct'
+  ).trim().toLowerCase();
+  return configured === 'kie-stage' ? 'kie-stage' : 'cos-direct';
+};
+
 export const resolveExternallyReachableManagedAssetUrl = (value, env = {}) => {
   const normalized = String(value || '').trim();
   if (!isManagedAssetUrl(normalized)) return '';
@@ -628,6 +637,14 @@ export const resolveProviderGeminiChatMediaUrl = async (value, envOrOptions = {}
   if (!normalized) return '';
   if (isVideoMediaUrl(normalized)) {
     if (isManagedAssetUrl(normalized)) {
+      if (resolveGeminiVideoMediaMode(normalizedOptions.env) === 'kie-stage') {
+        return convertManagedAssetUrlToKieFileUrl(normalized, {
+          ...normalizedOptions,
+          forceUpload: true,
+          stageResolvedManagedAsset: true,
+          uploadPath: 'mayo-storage/gemini-video',
+        });
+      }
       const uploadGeminiVideoToCos = normalizedOptions.deps.uploadGeminiVideoToCos;
       if (typeof uploadGeminiVideoToCos !== 'function') {
         throw createProviderError('provider_config_error', 'COS 视频直连依赖未配置');

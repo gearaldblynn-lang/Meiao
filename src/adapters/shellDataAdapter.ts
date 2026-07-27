@@ -1096,9 +1096,13 @@ const resolveCanonicalVoiceoverMedia = (
   url: unknown,
 ) => {
   try {
+    const normalizedAssetId = String(assetId || '').trim();
     return resolveCanonicalManagedSource({
-      sourceAssetId: String(assetId || '').trim() || undefined,
-      sourceUrl: String(url || '').trim() || undefined,
+      sourceAssetId: normalizedAssetId || undefined,
+      // Job hydration treats the server-owned asset ID as authoritative and
+      // rebuilds the same-origin route. Local API results may contain an
+      // absolute :3100 URL while the browser runs on :3000.
+      sourceUrl: normalizedAssetId ? undefined : String(url || '').trim() || undefined,
     });
   } catch {
     return undefined;

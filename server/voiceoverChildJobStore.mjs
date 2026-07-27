@@ -21,6 +21,11 @@ const CHILD_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const CHILD_KEY_TTS = /^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d{0,2})$/u;
 const CHILD_KEY_GOLDEN = /^golden:attempt:(0|[1-9]\d{0,2})$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u;
+const VOICEOVER_ANALYSIS_RETRY_ERROR_CODES = new Set([
+  'voiceover_analysis_submission_unknown',
+  'provider_config_error',
+  'provider_bad_response',
+]);
 
 export const PARENT_OWNED_CHILD_SQL_EXCLUSION = `COALESCE(
   JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.executionOwner')),
@@ -954,7 +959,10 @@ export const deriveVoiceoverRetryPlan = (job, retryRequest = {}, options = {}) =
     normalized.result.voiceoverCheckpoint,
     checkpointOptions,
   );
-  if (normalized.errorCode === 'voiceover_analysis_submission_unknown') {
+  if (
+    checkpoint.stage === 'speech_analysis_submitting'
+    && VOICEOVER_ANALYSIS_RETRY_ERROR_CODES.has(normalized.errorCode)
+  ) {
     return {
       kind: 'analysis',
       userConfirmed: request.confirmNewProviderAttempt,
@@ -1025,7 +1033,7 @@ export const prepareVoiceoverJobRetryResult = (job, voiceoverRetryPlan = {}, opt
   const kind = String(voiceoverRetryPlan.kind || 'reuse');
   let voiceoverCheckpoint = current;
   if (kind === 'analysis') {
-    if (normalized.errorCode !== 'voiceover_analysis_submission_unknown') {
+    if (!VOICEOVER_ANALYSIS_RETRY_ERROR_CODES.has(normalized.errorCode)) {
       throw createStoreError('voiceover_retry_invalid', '当前失败不需要新分析尝试。', 400);
     }
     voiceoverCheckpoint = prepareVoiceoverRetryCheckpoint(

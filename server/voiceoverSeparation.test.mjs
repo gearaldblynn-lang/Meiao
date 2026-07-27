@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
+  buildNormalizeDemucsStemArgs,
   checkVoiceoverSeparationReadiness,
   separateVoiceover,
 } from './voiceoverSeparation.mjs';
@@ -30,7 +31,8 @@ const readyDeps = (extra = {}) => ({
     ? { exitCode: 0, stdout: ' ... sidechaincompress ... amix ... adelay ... afade ... atempo ... alimiter ... ' }
     : args[0] === '-c' && args[1].includes('demucs.pretrained')
       ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-      : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' },
+      : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' },
+  normalizeStem: async ({ outputPath }) => outputPath,
   ...extra,
 });
 
@@ -42,6 +44,62 @@ function fakeChild() {
   return child;
 }
 
+test('normalizes Demucs stems to the canonical 48 kHz stereo PCM work-track contract', () => {
+  assert.deepEqual(
+    buildNormalizeDemucsStemArgs('/tmp/raw vocals.wav', '/tmp/canonical vocals.wav'),
+    [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', '/tmp/raw vocals.wav',
+      '-map', '0:a:0',
+      '-vn',
+      '-ac', '2',
+      '-ar', '48000',
+      '-c:a', 'pcm_s16le',
+      '/tmp/canonical vocals.wav',
+    ],
+  );
+  assert.throws(
+    () => buildNormalizeDemucsStemArgs('/tmp/same.wav', '/tmp/same.wav'),
+    (error) => error?.code === 'voiceover_separation_unavailable',
+  );
+});
+
+test('returns normalized stem paths and preserves the raw Demucs outputs as internal intermediates', async () => {
+  const child = fakeChild();
+  const calls = [];
+  const result = await separateVoiceover({
+    inputWavPath: '/tmp/input.wav',
+    workDir: '/tmp/normalized-job',
+    env: completeEnv(),
+    deps: readyDeps({
+      checkReadiness: async () => ({ ready: true }),
+      spawn: () => {
+        queueMicrotask(() => child.emit('close', 0));
+        return child;
+      },
+      normalizeStem: async (options) => {
+        calls.push(options);
+        return options.outputPath;
+      },
+      stat: async () => ({ size: 10 }),
+      probeDurationMs: async () => 1_000,
+    }),
+  });
+
+  assert.deepEqual(calls.map(({ inputPath, outputPath }) => ({ inputPath, outputPath })), [
+    {
+      inputPath: '/tmp/normalized-job/separated/mdx/input/vocals.wav',
+      outputPath: '/tmp/normalized-job/separated/mdx/input/vocals.pcm.wav',
+    },
+    {
+      inputPath: '/tmp/normalized-job/separated/mdx/input/no_vocals.wav',
+      outputPath: '/tmp/normalized-job/separated/mdx/input/no_vocals.pcm.wav',
+    },
+  ]);
+  assert.equal(result.vocalsPath, '/tmp/normalized-job/separated/mdx/input/vocals.pcm.wav');
+  assert.equal(result.backgroundPath, '/tmp/normalized-job/separated/mdx/input/no_vocals.pcm.wav');
+});
+
 test('runtime readiness fails closed on one mismatched model hash', async () => {
   const readiness = await checkVoiceoverSeparationReadiness({
     env: completeEnv(),
@@ -50,6 +108,41 @@ test('runtime readiness fails closed on one mismatched model hash', async () => 
   assert.equal(readiness.ready, false);
   assert.equal(readiness.modelReady, false);
   assert.equal(readiness.code, 'voiceover_separation_unavailable');
+});
+
+test('runtime readiness accepts the pinned macOS arm64 package versions', async () => {
+  const readiness = await checkVoiceoverSeparationReadiness({
+    env: completeEnv(),
+    deps: readyDeps({
+      runProcess: async (_command, args) => args.includes('-filters')
+        ? { exitCode: 0, stdout: ' ... sidechaincompress ... amix ... adelay ... afade ... atempo ... alimiter ... ' }
+        : args[0] === '-c' && args[1].includes('demucs.pretrained')
+          ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
+          : { exitCode: 0, stdout: 'darwin|arm64|4.0.1|2.7.1|2.7.1|0.13.1\n' },
+    }),
+  });
+  assert.deepEqual(readiness, {
+    ready: true,
+    code: null,
+    pythonReady: true,
+    modelReady: true,
+    ffmpegReady: true,
+  });
+});
+
+test('runtime readiness rejects macOS arm64 without the pinned soundfile backend', async () => {
+  const readiness = await checkVoiceoverSeparationReadiness({
+    env: completeEnv(),
+    deps: readyDeps({
+      runProcess: async (_command, args) => args.includes('-filters')
+        ? { exitCode: 0, stdout: ' ... sidechaincompress ... amix ... adelay ... afade ... atempo ... alimiter ... ' }
+        : args[0] === '-c' && args[1].includes('demucs.pretrained')
+          ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
+          : { exitCode: 0, stdout: 'darwin|arm64|4.0.1|2.7.1|2.7.1|missing\n' },
+    }),
+  });
+  assert.equal(readiness.pythonReady, false);
+  assert.equal(readiness.ready, false);
 });
 
 test('separation propagates the parent normalized config snapshot to readiness', async () => {
@@ -94,12 +187,12 @@ test('readiness validates Python imports, the exact Demucs version, and required
       return args.includes('-filters')
         ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
         : args[1].includes('demucs.pretrained') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-        : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' };
+        : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' };
     } }),
   });
   assert.deepEqual(readiness, { ready: true, code: null, pythonReady: true, modelReady: true, ffmpegReady: true });
   assert.deepEqual(calls.map((call) => call.args), [
-    ['-c', 'import importlib.metadata as m, torch, torchaudio; print("|".join((m.version("demucs"), m.version("torch"), m.version("torchaudio"))))'],
+    ['-c', 'import importlib.metadata as m, platform, sys, torch, torchaudio; print("|".join((sys.platform, platform.machine().lower(), m.version("demucs"), m.version("torch"), m.version("torchaudio"), m.version("soundfile") if sys.platform == "darwin" else "missing")))'],
     ['-c', 'import sys; from pathlib import Path; from demucs.pretrained import get_model; get_model("mdx", Path(sys.argv[1])); print("mdx-load-ok")', '/configured/models'],
     ['-hide_banner', '-filters'],
   ]);
@@ -131,7 +224,7 @@ test('readiness fails closed when package versions or FFmpeg filters drift', asy
     deps: readyDeps({ runProcess: async (_command, args) => args.includes('-filters')
       ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
       : args[1].includes('demucs.pretrained') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-      : { exitCode: 0, stdout: '4.0.1|2.7.1|2.7.1\n' } }),
+      : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1|2.7.1|missing\n' } }),
   });
   assert.deepEqual(versionDrift, { ready: false, code: 'voiceover_separation_unavailable', pythonReady: false, modelReady: true, ffmpegReady: true });
   const filterDrift = await checkVoiceoverSeparationReadiness({
@@ -139,7 +232,7 @@ test('readiness fails closed when package versions or FFmpeg filters drift', asy
     deps: readyDeps({ runProcess: async (_command, args) => args.includes('-filters')
       ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo' }
       : args[1].includes('demucs.pretrained') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-      : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' } }),
+      : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' } }),
   });
   assert.deepEqual(filterDrift, { ready: false, code: 'voiceover_separation_unavailable', pythonReady: true, modelReady: true, ffmpegReady: false });
 });
@@ -153,7 +246,7 @@ test('readiness requires the installed mdx.yaml and the local Demucs load gate',
     env: completeEnv(), deps: readyDeps({ runProcess: async (_command, args) => args.includes('-filters')
       ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
       : args[1].includes('demucs.pretrained') ? { exitCode: 1, stdout: '' }
-      : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' } }),
+      : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' } }),
   });
   assert.equal(badLoad.modelReady, false);
 });
@@ -168,7 +261,7 @@ test('readiness uses the packaged FFmpeg resolver when the environment has no ov
         calls.push(command);
         return args.includes('-filters') ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
           : args[1].includes('demucs.pretrained') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-          : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' };
+          : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' };
       },
     }),
   });
@@ -216,6 +309,8 @@ test('spawns mdx cpu two-stem separation without a shell', async () => {
   const calls = [];
   const child = fakeChild();
   const env = completeEnv({
+    MEIAO_FFMPEG_PATH: '/configured/ffmpeg/bin/ffmpeg',
+    MEIAO_FFPROBE_PATH: '/configured/ffprobe/bin/ffprobe',
     KIE_API_KEY: 'must-not-reach-demucs',
     MEIAO_DB_PASSWORD: 'must-not-reach-demucs-either',
     TORCH_FORCE_WEIGHTS_ONLY_LOAD: '1',
@@ -239,6 +334,9 @@ test('spawns mdx cpu two-stem separation without a shell', async () => {
   assert.equal(calls[0].options.shell, false);
   assert.equal(calls[0].options.detached, true);
   assert.equal(calls[0].options.stdio, 'ignore');
+  assert.deepEqual(calls[0].options.env.PATH.split(':'), [
+    '/configured/venv/bin', '/configured/ffmpeg/bin', '/configured/ffprobe/bin', '/usr/bin', '/bin',
+  ]);
   assert.equal(calls[0].options.env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '1');
   assert.equal('TORCH_FORCE_WEIGHTS_ONLY_LOAD' in calls[0].options.env, false);
   assert.equal('KIE_API_KEY' in calls[0].options.env, false);
@@ -246,8 +344,8 @@ test('spawns mdx cpu two-stem separation without a shell', async () => {
   assert.equal(env.TORCH_FORCE_WEIGHTS_ONLY_LOAD, '1');
   assert.equal(env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '0');
   assert.deepEqual(result, {
-    vocalsPath: '/tmp/job-1/separated/mdx/input with $(touch nope)/vocals.wav',
-    backgroundPath: '/tmp/job-1/separated/mdx/input with $(touch nope)/no_vocals.wav', model: 'mdx', durationMs: 1000,
+    vocalsPath: '/tmp/job-1/separated/mdx/input with $(touch nope)/vocals.pcm.wav',
+    backgroundPath: '/tmp/job-1/separated/mdx/input with $(touch nope)/no_vocals.pcm.wav', model: 'mdx', durationMs: 1000,
   });
 });
 
@@ -384,7 +482,7 @@ test('duration drift fails closed and never cleans the server-owned parent direc
     deps: readyDeps({
       checkReadiness: async () => ({ ready: true }), spawn: () => { queueMicrotask(() => child.emit('close', 0)); return child; },
       stat: async () => ({ size: 10 }), rm: async () => { cleanupCalls += 1; },
-      probeDurationMs: async (filePath) => filePath.includes('vocals.wav') ? 1_250 : 1_000,
+      probeDurationMs: async (filePath) => filePath.endsWith('/vocals.pcm.wav') ? 1_250 : 1_000,
     }),
   });
   await assert.rejects(pending, (error) => error?.code === 'voiceover_separation_unavailable');

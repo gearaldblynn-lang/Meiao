@@ -3,8 +3,44 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('./VoiceoverTranslationWorkspace.tsx', import.meta.url), 'utf8');
+const composerSource = readFileSync(new URL('./VoiceoverTranslationComposer.tsx', import.meta.url), 'utf8');
+const renderSource = `${source}\n${composerSource}`;
 const videoModuleSource = readFileSync(new URL('../modules/Video/VideoModule.tsx', import.meta.url), 'utf8');
 const shellSource = readFileSync(new URL('../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
+
+test('voiceover creation reuses the shared composer and removes page-level configuration cards', () => {
+  assert.match(composerSource, /from '.\/layout\/ComposerPrimitives'/);
+  assert.match(composerSource, /<ComposerSurface/);
+  assert.match(composerSource, /<ComposerToolbar/);
+  assert.match(composerSource, /<ComposerSelect/);
+  assert.match(composerSource, /<ComposerSubmitButton/);
+  assert.doesNotMatch(renderSource, /max-w-\[1180px\]/);
+  assert.doesNotMatch(renderSource, /grid gap-5 lg:grid-cols-2/);
+  assert.doesNotMatch(renderSource, /<textarea/);
+});
+
+test('voiceover composer owns upload progress preview drag-drop and four ordered controls', () => {
+  assert.match(composerSource, /onDragOver=/);
+  assert.match(composerSource, /onDrop=/);
+  assert.match(composerSource, /正在准备视频/);
+  assert.match(composerSource, /<video/);
+  assert.match(composerSource, /替换视频/);
+  assert.match(composerSource, /清除视频/);
+
+  const language = composerSource.indexOf('title="目标语言"');
+  const mode = composerSource.indexOf('title="翻译方式"');
+  const voice = composerSource.indexOf('title="口播音色"');
+  const removeText = composerSource.indexOf('aria-label="去文案设置"');
+  assert.ok(language >= 0 && language < mode && mode < voice && voice < removeText);
+});
+
+test('remove-text editor opens from the composer capsule and keeps the normalized default', () => {
+  assert.match(composerSource, /ComposerCapsuleButton/);
+  assert.match(composerSource, /aria-label="去文案设置"/);
+  assert.match(composerSource, /<SubtitleRegionEditor/);
+  assert.match(renderSource, /DEFAULT_SUBTITLE_REGION/);
+  assert.match(source, /setSubtitleRegion\(\{ \.\.\.DEFAULT_SUBTITLE_REGION \}\)/);
+});
 
 test('workspace owns exactly one MP4 or MOV source and confirms replacement', () => {
   assert.match(source, /type="file"/);
@@ -28,7 +64,10 @@ test('workspace prepares direct and existing-result sources with the voiceover m
 test('workspace renders server-owned language and voice catalogs without drifting copies', () => {
   assert.match(source, /publicConfig\.languages/);
   assert.match(source, /\.filter\(\(language\) => language\.common\)/);
-  assert.match(source, /更多语言/);
+  assert.ok(
+    source.indexOf('...commonLanguages.map') < source.indexOf('...moreLanguages.map'),
+    'common languages should stay ahead of the remaining server-owned catalog',
+  );
   assert.match(source, /voices\.map/);
   assert.match(source, /voice\.trait/);
   assert.doesNotMatch(source, /const VOICEOVER_(?:LANGUAGES|VOICES)/);
@@ -36,17 +75,17 @@ test('workspace renders server-owned language and voice catalogs without driftin
 
 test('workspace exposes natural or literal translation and auto or preset voice modes', () => {
   assert.match(source, /useState<VoiceoverTranslationMode>\('natural'\)/);
-  assert.match(source, /value="natural"/);
-  assert.match(source, /value="literal"/);
+  assert.match(composerSource, /value: 'natural'/);
+  assert.match(composerSource, /value: 'literal'/);
   assert.match(source, /useState<VoiceoverVoiceMode>\('auto'\)/);
-  assert.match(source, /value="auto"/);
-  assert.match(source, /value="preset"/);
+  assert.match(source, /value === '__auto__'/);
+  assert.match(source, /setVoiceMode\('preset'\)/);
 });
 
 test('remove-text starts off and reuses the existing normalized subtitle editor', () => {
   assert.match(source, /useState\(false\)/);
   assert.match(source, /DEFAULT_SUBTITLE_REGION/);
-  assert.match(source, /<SubtitleRegionEditor/);
+  assert.match(composerSource, /<SubtitleRegionEditor/);
   assert.match(source, /subtitleRegionNormalized/);
   assert.match(source, /setSubtitleRegion\(\{ \.\.\.DEFAULT_SUBTITLE_REGION \}\)/);
 });
@@ -87,7 +126,7 @@ test('video-generation permission blocks upload and transcode without hiding the
     prepareBlock.indexOf('if (!canCreate)') < prepareBlock.indexOf('createMediaTranscodeSession({'),
   );
   assert.match(source, /useEffect\(\(\) => \{\s*if \(!canCreate\) return undefined;\s*const identity = sourceIdentity\(initialSource\)/);
-  assert.match(source, /disabled=\{!canCreate \|\| preparing \|\| submitting\}/);
+  assert.match(composerSource, /disabled=\{!canCreate \|\| preparing \|\| submitting\}/);
   assert.match(videoModuleSource, /creationDisabledReason=\{voiceoverCreationDisabledReason\}/);
 });
 

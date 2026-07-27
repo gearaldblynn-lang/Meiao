@@ -5,6 +5,22 @@ import { existsSync, readFileSync } from 'node:fs';
 const source = () => readFileSync(new URL('./BottomInputBar.tsx', import.meta.url), 'utf8');
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
+test('bottom input uses shared composer visual primitives', () => {
+  const bottomInputBar = source();
+  const primitivesUrl = new URL('./ComposerPrimitives.tsx', import.meta.url);
+
+  assert.equal(existsSync(primitivesUrl), true, 'shared composer primitives should exist');
+  const primitives = read('./ComposerPrimitives.tsx');
+  assert.match(bottomInputBar, /from '.\/ComposerPrimitives'/);
+  assert.match(bottomInputBar, /<ComposerSurface/);
+  assert.match(bottomInputBar, /<ComposerToolbar/);
+  assert.match(bottomInputBar, /<ComposerSelect/);
+  assert.match(bottomInputBar, /<ComposerSubmitButton/);
+  assert.doesNotMatch(bottomInputBar, /const CompactSelect:/);
+  assert.match(primitives, /max-w-\[896px\]/);
+  assert.match(primitives, /rounded-3xl border/);
+});
+
 test('logo replacement integrates the new guarded replacement contract', () => {
   const bottomInputBar = source();
   const workflow = read('../../../adapters/shellWorkflow.ts');
@@ -68,11 +84,13 @@ test('model replacement exposes both supported replacement scopes', () => {
 
 test('shell select params support old frontend custom platform and language input flow', () => {
   const bottomInputBar = source();
+  const composerPrimitives = read('./ComposerPrimitives.tsx');
+  const selectSources = `${bottomInputBar}\n${composerPrimitives}`;
 
-  assert.match(bottomInputBar, /allowCustom\?: boolean/);
-  assert.match(bottomInputBar, /customInputs/);
-  assert.match(bottomInputBar, /\+ 自定义/);
-  assert.match(bottomInputBar, /请输入自定义/);
+  assert.match(selectSources, /allowCustom\?: boolean/);
+  assert.match(selectSources, /customInputs/);
+  assert.match(selectSources, /\+ 自定义/);
+  assert.match(selectSources, /请输入自定义/);
   assert.match(bottomInputBar, /platform/);
   assert.match(bottomInputBar, /key: 'lang'/);
   assert.match(bottomInputBar, /label: '目标文案语言'/);
@@ -434,7 +452,7 @@ test('xhs cover preset preview assets from the old frontend are available in the
 
 test('shell generation button displays image credit estimate above submit action', () => {
   const bottomInputBar = source();
-  const generateButtonBlock = bottomInputBar.match(/\{billingEstimate\.billable[\s\S]*?<button[\s\S]*?<span>\{submitLabel\}<\/span>/)?.[0] || '';
+  const generateButtonBlock = bottomInputBar.match(/\{billingEstimate\.billable[\s\S]*?<ComposerSubmitButton[\s\S]*?label=\{submitLabel\}/)?.[0] || '';
 
   assert.match(bottomInputBar, /estimateImageBilling/);
   assert.match(bottomInputBar, /billingEstimate/);
@@ -451,7 +469,8 @@ test('shell generation button displays image credit estimate above submit action
 
 test('shell generation button uses an explicit submit lock instead of global running tasks', () => {
   const bottomInputBar = source();
-  const generateButtonBlock = bottomInputBar.match(/<button\s*\n\s*onClick=\{handleGenerateClick\}[\s\S]*?<span>\{submitLabel\}<\/span>/)?.[0] || '';
+  const composerPrimitives = read('./ComposerPrimitives.tsx');
+  const generateButtonBlock = bottomInputBar.match(/<ComposerSubmitButton\s*\n\s*onClick=\{handleGenerateClick\}[\s\S]*?label=\{submitLabel\}/)?.[0] || '';
 
   assert.match(bottomInputBar, /const isGenerateDisabled = isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)/);
   assert.match(bottomInputBar, /const isSubmitBusy = isSubmitLocked/);
@@ -459,19 +478,21 @@ test('shell generation button uses an explicit submit lock instead of global run
   assert.match(bottomInputBar, /const handleGenerateClick = \(\) => \{\s*if \(!isGenerateDisabled\) onGenerate\(\);\s*\}/);
   assert.match(generateButtonBlock, /disabled=\{isGenerateDisabled\}/);
   assert.match(bottomInputBar, /onKeyDown=\{\(e\) => \{[\s\S]*?handleGenerateClick\(\)/);
-  assert.match(generateButtonBlock, /Loader2/);
+  assert.match(composerPrimitives, /Loader2/);
   assert.doesNotMatch(generateButtonBlock, /disabled=\{[^}]*isGenerating/);
 });
 
 test('resolution dropdown shows per-image credit cost for image models', () => {
   const bottomInputBar = source();
+  const composerPrimitives = read('./ComposerPrimitives.tsx');
+  const selectSources = `${bottomInputBar}\n${composerPrimitives}`;
 
   assert.match(bottomInputBar, /getImageModelCreditCost/);
   assert.match(bottomInputBar, /getOptionMeta/);
   assert.match(bottomInputBar, /积分\/张/);
-  assert.match(bottomInputBar, /isResolutionSelect/);
+  assert.match(selectSources, /isResolutionSelect/);
   assert.match(bottomInputBar, /currentParams\.model/);
-  assert.match(bottomInputBar, /optionMeta/);
+  assert.match(selectSources, /optionMeta/);
 });
 
 test('video generation exposes api and cli seedance fast paths with api credit estimate', () => {

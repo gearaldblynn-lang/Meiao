@@ -395,16 +395,17 @@ type VoiceoverAnalysis = {
 - 创建接口：
   - `POST https://api.kie.ai/api/v1/jobs/createTask`
   - `model='google/gemini-3-1-flash-tts'`
-  - `input.speakers` 和 `input.dialogue_turns` 按文档要求序列化为 JSON 字符串。
-  - 单人口播精确序列化为
-    `speakers='[{"speaker_id":"Speaker 1","voice_name":"Kore"}]'` 与
-    `dialogue_turns='[{"speaker_id":"Speaker 1","text":"..."}]'`；内部 camelCase 字段不得泄漏到 provider body。
+  - `input.speakers` 和 `input.dialogue_turns` 必须是 JSON 数组，不能二次序列化为字符串。
+  - 单人口播精确提交为
+    `speakers=[{"speaker_id":"Speaker 1","voice_name":"Kore","audio_profile":"","style":"Deadpan","pace":"Natural","accent":"Neutral"}]` 与
+    `dialogue_turns=[{"speaker_id":"Speaker 1","text":"..."}]`；内部 camelCase 字段不得泄漏到 provider body。
+  - 2026-07-28 真实 KIE canary 证明：文档示例的二次序列化字符串会创建任务但以 Fastjson `expect {, actual string` 失败；同一最小输入改为结构化数组后成功返回音频。运行合同因此以可复现的 live provider 行为为准，并由 adapter 回归锁定。
 - 查询接口：
   - `GET https://api.kie.ai/api/v1/jobs/recordInfo?taskId=...`
 - 适配器负责：
   - 输入和音色白名单校验。
   - 创建、查询和状态归一化。
-  - `waiting | success | fail` 映射。
+  - `waiting | success | fail` 映射；任务刚创建后的空 `state` 视为有界轮询中的瞬时未就绪，继续查询同一 task ID，其他未知非空状态仍 fail closed。
   - `resultJson` 二次 JSON 解析和音频 URL 提取。
   - 401、402、429、5xx、网络、超时和无效响应分类。
   - provider task ID 即时 checkpoint。
@@ -421,8 +422,8 @@ type VoiceoverAnalysis = {
 - 每组保存目标起止时间、译文、预计语速、实际音频时长和安全变速比。
 - TTS 提交前根据目标时间预算选择 `pace`。
 - TTS 完成后使用 FFmpeg `atempo` 做无变调时间适配。
-- 适配比必须位于 `MEIAO_VOICEOVER_MIN_ATEMPO..MEIAO_VOICEOVER_MAX_ATEMPO`。
-- 超出安全范围时返回 `voiceover_timing_out_of_range`；不得静默创建第二个收费 TTS 任务。
+- 实际语音短于目标窗且所需慢速低于 `MEIAO_VOICEOVER_MIN_ATEMPO` 时，把 `atempo` 钳制到该可理解下限，剩余时间由静音床补齐，不为拉长时长创建第二个收费 TTS 任务。
+- 实际语音长于目标窗且所需加速超过 `MEIAO_VOICEOVER_MAX_ATEMPO` 时返回 `voiceover_timing_out_of_range`，避免通过裁切丢失口播内容。
 
 ### 10.2 混音
 

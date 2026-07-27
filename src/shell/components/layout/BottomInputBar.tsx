@@ -5,7 +5,7 @@ import type { OneClickReferencePreset } from '../../../types';
 import {
   Send, ImagePlus, X, ChevronDown, Check, SlidersHorizontal,
   Wand2, Globe, Users, Sparkles, Play, Layers, Palette, Type,
-  BoxSelect, Monitor, Folder, Search, Clapperboard, Plus, Loader2, AtSign, Music2,
+  BoxSelect, Monitor, Folder, Search, Clapperboard, Plus, AtSign, Music2,
 } from 'lucide-react';
 import UploadTypeSelector, { type MaterialType } from '../UploadTypeSelector';
 import MaterialPreviewBar from '../MaterialPreviewBar';
@@ -26,6 +26,12 @@ import {
 } from '../../modules/Retouch/productRestoreUi.mjs';
 import { normalizeProductRestoreFocusIds } from '../../../modules/Retouch/productRestoreContract.mjs';
 import PresetLibrary, { type Preset } from '../PresetLibrary';
+import {
+  ComposerSelect,
+  ComposerSubmitButton,
+  ComposerSurface,
+  ComposerToolbar,
+} from './ComposerPrimitives';
 import { estimateImageBilling, getImageModelCreditCost } from '../../../utils/imageBilling.mjs';
 import {
   MODEL_OPTIONS,
@@ -1135,166 +1141,6 @@ const getGenerateLabelForContext = (module: AppModule, activeSubFeature?: string
 const isPendingShellSubFeature = (module: AppModule, activeSubFeature?: string) =>
   (module === AppModuleObj.BUYER_SHOW && activeSubFeature === 'copy')
   || (module === AppModuleObj.RETOUCH && (activeSubFeature === 'background_replace' || activeSubFeature === 'enhance'));
-
-/* ── Compact Dropdown ── */
-const CompactSelect: React.FC<{
-  value: string;
-  options: Array<SelectOption>;
-  onChange: (v: string) => void;
-  icon?: React.ReactNode;
-  title?: string;
-  allowCustom?: boolean;
-  recommendedValue?: string;
-  recommendedLabel?: string;
-  secondaryRecommendedValue?: string;
-  secondaryRecommendedLabel?: string;
-  getOptionMeta?: (value: string) => string;
-  disabled?: boolean;
-}> = ({
-  value,
-  options,
-  onChange,
-  icon,
-  title,
-  allowCustom,
-  recommendedValue,
-  recommendedLabel = '推荐',
-  secondaryRecommendedValue,
-  secondaryRecommendedLabel = '常用',
-  getOptionMeta,
-  disabled,
-}) => {
-  const [open, setOpen] = useState(false);
-  const [customInputs, setCustomInputs] = useState(false);
-  const [customValue, setCustomValue] = useState('');
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, []);
-
-  const commitCustom = () => {
-    const next = customValue.trim();
-    if (!next) return;
-    onChange(title?.includes('数量') || title?.includes('张数') || title?.includes('屏数') ? next.replace(/[^\d]/g, '') || next : next);
-    setCustomInputs(false);
-    setCustomValue('');
-    setOpen(false);
-  };
-
-  const isRecommended = Boolean(recommendedValue && value === recommendedValue);
-  const isSecondaryRecommended = Boolean(secondaryRecommendedValue && value === secondaryRecommendedValue);
-  const selectedOption = options.map(toSelectOption).find((opt) => opt.value === value);
-  const displayValue = selectedOption?.label || value;
-  const isModelSelect = title?.includes('模型');
-  const isResolutionSelect = Boolean(title && (title.includes('分辨率') || title.includes('渲染质量')));
-  const displayClassName = isModelSelect ? 'max-w-[142px] truncate' : 'max-w-[92px] truncate';
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => { if (!disabled) setOpen(!open); }}
-        disabled={disabled}
-        className="flex items-center gap-1 px-3 py-1.5 rounded-2xl text-[11px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-45"
-        style={{
-          color: open ? 'var(--accent)' : 'var(--text-secondary)',
-          background: open ? 'var(--accent-soft)' : 'var(--bg-elevated)',
-        }}
-      >
-        {icon}
-        <span className={displayClassName}>{title?.includes('数量') || title?.includes('张数') || title?.includes('屏数') ? `${String(value).replace(/[^\d]/g, '') || value}张` : displayValue}</span>
-        {isRecommended ? (
-          <span className="ml-1 rounded-full px-1.5 py-0.5 text-[9px] font-black" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-            {recommendedLabel}
-          </span>
-        ) : isSecondaryRecommended ? (
-          <span className="ml-1 rounded-full px-1.5 py-0.5 text-[9px] font-black" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-            {secondaryRecommendedLabel}
-          </span>
-        ) : null}
-        <ChevronDown size={9} className="transition-transform" style={{ transform: open ? 'rotate(180deg)' : 'none' }} />
-      </button>
-      {open && !disabled && (
-        <div
-          className={`absolute bottom-full left-0 mb-1.5 rounded-2xl py-2 px-1.5 border z-[200] ${isModelSelect ? 'min-w-[240px]' : 'min-w-[170px]'}`}
-          style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', boxShadow: 'var(--shadow-elevated)' }}
-        >
-          {title && (
-            <div className="px-3 pb-1.5 mb-1" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-              <span className="text-[10px] font-medium" style={{ color: 'var(--text-tertiary)' }}>{title}</span>
-            </div>
-          )}
-          {customInputs ? (
-            <div className="px-2 pb-1 pt-1">
-              <input
-                autoFocus
-                value={customValue}
-                onChange={(event) => setCustomValue(event.target.value)}
-                onKeyDown={(event) => {
-                  if (isImeComposing(event)) return;
-                  if ('Enter' === event.key) commitCustom();
-                  if ('Escape' === event.key) setCustomInputs(false);
-                }}
-                placeholder="请输入自定义"
-                className="input-field w-full rounded-2xl px-3 py-2 text-[12px]"
-              />
-              <div className="mt-2 flex gap-2">
-                <button type="button" onClick={commitCustom} className="flex-1 rounded-2xl px-3 py-1.5 text-[11px] font-medium" style={{ background: 'var(--accent)', color: '#fff' }}>确定</button>
-                <button type="button" onClick={() => setCustomInputs(false)} className="rounded-2xl px-3 py-1.5 text-[11px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>返回</button>
-              </div>
-            </div>
-          ) : options.map((optItem) => {
-            const opt = toSelectOption(optItem);
-            const active = opt.value === value;
-            const optionMeta = getOptionMeta?.(opt.value);
-            return (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => { onChange(opt.value); setOpen(false); }}
-              className="flex items-center gap-2 w-full px-3 py-2 text-[12px] transition-colors rounded-2xl"
-              style={{
-                color: active ? 'var(--accent)' : 'var(--text-secondary)',
-                background: active ? 'var(--accent-soft)' : 'transparent',
-              }}
-            >
-              {active && <Check size={11} />}
-              <span className="flex min-w-0 flex-col items-start">
-                <span className="truncate">{opt.label}</span>
-                {(isModelSelect || isResolutionSelect) && optionMeta ? (
-                  <span className="mt-0.5 text-[10px] font-medium" style={{ color: active ? 'var(--accent)' : 'var(--text-tertiary)' }}>
-                    {optionMeta}
-                  </span>
-                ) : null}
-              </span>
-              {recommendedValue && opt.value === recommendedValue ? (
-                <span className="ml-auto rounded-full px-1.5 py-0.5 text-[9px] font-black" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-                  {recommendedLabel}
-                </span>
-              ) : secondaryRecommendedValue && opt.value === secondaryRecommendedValue ? (
-                <span className="ml-auto rounded-full px-1.5 py-0.5 text-[9px] font-black" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-                  {secondaryRecommendedLabel}
-                </span>
-              ) : null}
-            </button>
-          );})}
-          {allowCustom && !customInputs && (
-            <button
-              type="button"
-              onClick={() => setCustomInputs(true)}
-              className="mt-1 flex w-full items-center gap-2 rounded-2xl px-3 py-2 text-[12px] transition-colors"
-              style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
-            >
-              <span>+ 自定义</span>
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
 
 /* ── Main Component ── */
 interface Props {
@@ -3127,14 +2973,7 @@ const BottomInputBar: React.FC<Props> = ({
         )}
 
         {/* Input container — much larger */}
-        <div
-          className="relative mx-auto w-full max-w-[896px] rounded-3xl border transition-all"
-          style={{
-            borderColor: showPromptInput && promptText ? 'var(--accent)' : 'var(--border-subtle)',
-            background: 'var(--bg-surface)',
-            boxShadow: showPromptInput && promptText ? '0 0 0 3px var(--accent-soft)' : 'none',
-          }}
-        >
+        <ComposerSurface highlighted={showPromptInput && Boolean(promptText)}>
           {canUseVideoMaterialMentions && materialMentionOpen && (
             <div
               id="video-material-mention-listbox"
@@ -3277,7 +3116,7 @@ const BottomInputBar: React.FC<Props> = ({
           )}
 
           {/* Toolbar */}
-          <div className={`flex items-center justify-between px-3 ${showPromptInput ? 'pb-3' : 'py-5'}`}>
+          <ComposerToolbar spacious={!showPromptInput}>
             {/* Left toolbar */}
             <div className="flex items-center gap-1 flex-wrap">
               {/* Upload */}
@@ -3524,7 +3363,7 @@ const BottomInputBar: React.FC<Props> = ({
               {/* Quick params */}
                   {quickParams.map((p) => (
                 <React.Fragment key={p.key}>
-                  <CompactSelect
+                  <ComposerSelect
                     value={getSelectValue(p)}
                     options={p.options}
                     onChange={(v) => handleTranslationParamChange(p.key, v)}
@@ -3599,7 +3438,7 @@ const BottomInputBar: React.FC<Props> = ({
 	                                  if (p.type === 'select') return (
 	                                    <div key={p.key}>
 	                                      <label className="block text-[10px] mb-1.5" style={{ color: 'var(--text-tertiary)' }}>{p.label}</label>
-	                                      <CompactSelect value={val} options={p.options || []} onChange={(v) => handleTranslationParamChange(p.key, v)} allowCustom={p.allowCustom} disabled={isParamDisabled} />
+	                                      <ComposerSelect value={val} options={p.options || []} onChange={(v) => handleTranslationParamChange(p.key, v)} allowCustom={p.allowCustom} disabled={isParamDisabled} />
 	                                    </div>
 	                                  );
 	                                  if (p.type === 'number') return (
@@ -3663,18 +3502,16 @@ const BottomInputBar: React.FC<Props> = ({
                   预计消耗 {billingEstimate.estimatedCredits} 积分
                 </p>
               )}
-              <button
+              <ComposerSubmitButton
                 onClick={handleGenerateClick}
                 disabled={isGenerateDisabled}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-3xl text-[13px] font-semibold text-white transition-all disabled:opacity-30"
-                style={{ background: 'var(--accent)' }}
-              >
-                {isSubmitBusy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-                <span>{submitLabel}</span>
-              </button>
+                busy={isSubmitBusy}
+                icon={<Send size={14} />}
+                label={submitLabel}
+              />
             </div>
-          </div>
-      </div>
+          </ComposerToolbar>
+      </ComposerSurface>
       </div>
 
     </div>

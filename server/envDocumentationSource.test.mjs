@@ -50,6 +50,7 @@ test('Gemini 视频 COS 直连配置同步到模板、总览和云上部署文�
     'MEIAO_COS_BUCKET',
     'MEIAO_COS_REGION',
     'MEIAO_COS_SIGNED_URL_TTL_SECONDS',
+    'MEIAO_GEMINI_VIDEO_MEDIA_MODE',
   ];
 
   for (const key of requiredKeys) {
@@ -58,7 +59,8 @@ test('Gemini 视频 COS 直连配置同步到模板、总览和云上部署文�
     assert.match(deployDoc, new RegExp(key));
   }
   assert.match(deployDoc, /无需 CDN/);
-  assert.match(deployDoc, /禁止把视频转存到 KIE/);
+  assert.match(deployDoc, /任何付费 Gemini POST 之前/);
+  assert.match(deployDoc, /失败后再换素材路由或换模型兜底/);
 });
 
 test('用户上传图片 COS 和持久清理配置同步到模板、总览和云上部署文档', () => {

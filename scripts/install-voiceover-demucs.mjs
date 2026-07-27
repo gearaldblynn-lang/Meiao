@@ -19,6 +19,13 @@ class InstallerConfigError extends Error {
   }
 }
 
+class InstallerRuntimeError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'InstallerRuntimeError';
+  }
+}
+
 function readBoundedInteger(env, name, fallback, { min, max }) {
   const raw = String(env[name] ?? '').trim();
   if (!raw) return fallback;
@@ -34,12 +41,20 @@ const isValidManifest = (manifest) => manifest && manifest.schemaVersion === 1 &
     && /^https:\/\/[^/?#]+(?:\/[A-Za-z0-9._-]+)*\/[A-Za-z0-9._-]+\.th$/u.test(String(file?.url || ''))
     && Number.isInteger(file?.size) && file.size > 0 && /^[a-f0-9]{64}$/u.test(String(file?.sha256 || '')));
 
-function installerPaths(env = {}) {
+function runtimeRequirementsFile(runtime = process) {
+  const platform = String(runtime?.platform || '');
+  const arch = String(runtime?.arch || '');
+  if (platform === 'linux' && arch === 'x64') return 'requirements.lock';
+  if (platform === 'darwin' && arch === 'arm64') return 'requirements-darwin-arm64.lock';
+  throw new InstallerRuntimeError('unsupported voiceover runtime: expected linux/x64 or darwin/arm64');
+}
+
+function installerPaths(env = {}, runtime = process) {
   const voiceoverDir = path.join(PROJECT_ROOT, 'deploy', 'voiceover');
   const runtimeDir = path.join(voiceoverDir, '.runtime');
   return {
     requirementsIn: path.join(voiceoverDir, 'requirements.in'),
-    requirementsLock: path.join(voiceoverDir, 'requirements.lock'),
+    requirementsLock: path.join(voiceoverDir, runtimeRequirementsFile(runtime)),
     buildRequirementsLock: path.join(voiceoverDir, 'build-requirements.lock'),
     manifestPath: path.join(voiceoverDir, 'demucs-models.json'),
     yamlPath: path.join(voiceoverDir, 'mdx.yaml'),
@@ -195,7 +210,7 @@ async function installYaml({ yamlText, modelDir, deps }) {
 export async function runInstaller(argv, options = {}) {
   const mode = parseMode(argv);
   const env = options.env || process.env;
-  const paths = { ...installerPaths(env), ...(options.paths || {}) };
+  const paths = { ...installerPaths(env, options.runtime || process), ...(options.paths || {}) };
   const deps = options;
   const manifest = await loadDemucsManifest(paths.manifestPath, deps).catch(() => null);
   const sourceYamlReady = await verifyYaml(paths.yamlPath, deps);
@@ -204,6 +219,14 @@ export async function runInstaller(argv, options = {}) {
   if (mode === 'install') {
     const makeDir = deps.mkdir || mkdir;
     await makeDir(path.dirname(paths.venvDir), { recursive: true, mode: 0o700 });
+    try {
+      await runSpawn(paths.installPython, [
+        '-c',
+        'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 64)',
+      ], { shell: false }, deps.spawnProcess);
+    } catch {
+      throw new InstallerRuntimeError('unsupported Python runtime: expected CPython 3.11');
+    }
     await runSpawn(paths.installPython, ['-m', 'venv', paths.venvDir], { shell: false }, deps.spawnProcess);
     const venvPython = path.join(paths.venvDir, 'bin', 'python');
     const networkArgs = ['--no-input', '--timeout', String(paths.pipTimeoutSeconds), '--retries', String(paths.pipRetries)];
@@ -222,7 +245,9 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     if (result.mode === 'check' && (!result.yamlReady || !result.modelReady)) process.exitCode = 1;
   } catch (error) {
-    if (error instanceof InstallerConfigError) process.stderr.write(`voiceover Demucs installer configuration error: ${error.message}\n`);
+    if (error instanceof InstallerConfigError || error instanceof InstallerRuntimeError) {
+      process.stderr.write(`voiceover Demucs installer configuration error: ${error.message}\n`);
+    }
     else process.stderr.write('voiceover Demucs installer failed\n');
     process.exitCode = 1;
   }

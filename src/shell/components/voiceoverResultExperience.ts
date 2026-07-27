@@ -21,9 +21,10 @@ const resolveManagedMedia = (
   url: unknown,
 ): ManagedMediaIdentity => {
   try {
+    const normalizedAssetId = String(assetId || '').trim();
     const managed = resolveCanonicalManagedSource({
-      sourceAssetId: String(assetId || '').trim() || undefined,
-      sourceUrl: String(url || '').trim() || undefined,
+      sourceAssetId: normalizedAssetId || undefined,
+      sourceUrl: normalizedAssetId ? undefined : String(url || '').trim() || undefined,
     });
     return managed;
   } catch {
@@ -93,6 +94,14 @@ export const requiresVoiceoverRetryConfirmation = (
     return true;
   }
   const checkpoint = result.voiceoverCheckpoint;
+  if (
+    checkpoint?.stage === 'speech_analysis_submitting'
+    && ['provider_bad_response', 'provider_config_error'].includes(
+      String(result.errorCode || '').trim(),
+    )
+  ) {
+    return true;
+  }
   if (needsNewProviderAttempt(checkpoint?.subtitleRemoval)) return true;
   const latestAttemptByGroup = new Map<number, ProviderAttempt>();
   for (const group of checkpoint?.ttsGroups || []) {
