@@ -11,7 +11,7 @@ export const VOICEOVER_CHECKPOINT_VERSION = 1;
 
 export const VOICEOVER_DEFAULTS = Object.freeze({
   enabled: false,
-  demucsModel: 'mdx_q',
+  demucsModel: 'mdx',
   separationConcurrency: 1,
   separationTimeoutMs: 3_600_000,
   minAtempo: 0.75,
@@ -97,7 +97,7 @@ const safeServerUrl = (value, fallback) => {
 export function getVoiceoverConfig(env = {}) {
   return {
     enabled: parseEnabled(env.MEIAO_VOICEOVER_TRANSLATION_ENABLED),
-    demucsModel: String(env.MEIAO_VOICEOVER_DEMUCS_MODEL || '').trim() === 'mdx_q' ? 'mdx_q' : VOICEOVER_DEFAULTS.demucsModel,
+    demucsModel: String(env.MEIAO_VOICEOVER_DEMUCS_MODEL || '').trim() === 'mdx' ? 'mdx' : VOICEOVER_DEFAULTS.demucsModel,
     separationConcurrency: boundedNumber(env.MEIAO_VOICEOVER_SEPARATION_CONCURRENCY, VOICEOVER_DEFAULTS.separationConcurrency, VOICEOVER_BOUNDS.separationConcurrency, true),
     separationTimeoutMs: boundedNumber(env.MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS, VOICEOVER_DEFAULTS.separationTimeoutMs, VOICEOVER_BOUNDS.separationTimeoutMs, true),
     minAtempo: boundedNumber(env.MEIAO_VOICEOVER_MIN_ATEMPO, VOICEOVER_DEFAULTS.minAtempo, VOICEOVER_BOUNDS.minAtempo),

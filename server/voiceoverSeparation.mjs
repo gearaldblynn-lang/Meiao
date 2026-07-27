@@ -1,17 +1,17 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildVoiceoverError, getVoiceoverConfig } from './voiceoverContract.mjs';
-import { loadDemucsManifest, verifyDemucsModelFiles } from '../scripts/install-voiceover-demucs.mjs';
+import { resolvePackagedFfmpegPath, resolvePackagedFfprobePath } from './mediaTranscodeService.mjs';
+import { EXPECTED_MDX_YAML, loadDemucsManifest, verifyDemucsModelFiles } from '../scripts/install-voiceover-demucs.mjs';
 
 const REQUIRED_FILTERS = Object.freeze(['sidechaincompress', 'amix', 'adelay', 'afade', 'atempo', 'alimiter']);
-const EXPECTED_YAML = `models: ['6b9c2ca1', 'b72baf4e', '42e558d4', '305bc58f']\nweights: [\n  [1., 1., 0., 0.],\n  [0., 1., 0., 0.],\n  [1., 0., 1., 1.],\n  [1., 0., 1., 1.],\n]\nsegment: 44\n`;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = path.join(MODULE_DIR, '..', 'deploy', 'voiceover', 'demucs-models.json');
-const YAML_PATH = path.join(MODULE_DIR, '..', 'deploy', 'voiceover', 'mdx_q.yaml');
+const YAML_PATH = path.join(MODULE_DIR, '..', 'deploy', 'voiceover', 'mdx.yaml');
 
 let activeSeparations = 0;
 const separationQueue = [];
@@ -80,7 +80,7 @@ function runCommand(command, args, { timeoutMs = 30_000, spawnProcess = spawn } 
 async function getManifestAndYaml(deps = {}) {
   const manifest = deps.manifest || await loadDemucsManifest(MANIFEST_PATH, deps);
   const yamlText = deps.yamlText ?? await (deps.readFile || readFile)(YAML_PATH, 'utf8');
-  if (yamlText !== EXPECTED_YAML || manifest.model !== 'mdx_q') throw new Error('invalid model configuration');
+  if (yamlText !== EXPECTED_MDX_YAML || manifest.model !== 'mdx') throw new Error('invalid model configuration');
   return manifest;
 }
 
@@ -100,10 +100,16 @@ export async function checkVoiceoverSeparationReadiness({ env = process.env, dep
   try {
     const manifest = await getManifestAndYaml(deps);
     const result = await verifyModels({ manifest, modelDir: config.demucsModelDir, deps });
-    modelReady = result?.ready === true;
+    const runtimeYaml = await (deps.readFile || readFile)(path.join(config.demucsModelDir, 'mdx.yaml'), 'utf8');
+    if (result?.ready === true && runtimeYaml === EXPECTED_MDX_YAML && config.separationPython) {
+      const loadResult = await runProcess(config.separationPython, ['-c', 'from demucs.repo import LocalRepo; LocalRepo("' + config.demucsModelDir.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '").get_model("mdx"); print("mdx-load-ok")']);
+      modelReady = (loadResult?.exitCode ?? 1) === 0 && String(loadResult?.stdout || '').trim() === 'mdx-load-ok';
+    }
   } catch {}
   try {
-    const result = await runProcess(String(env.MEIAO_FFMPEG_PATH || '').trim() || 'ffmpeg', ['-hide_banner', '-filters']);
+    const ffmpegPath = String(env.MEIAO_FFMPEG_PATH || '').trim() || (deps.resolveFfmpegPath || resolvePackagedFfmpegPath)();
+    if (!ffmpegPath) throw new Error('packaged ffmpeg unavailable');
+    const result = await runProcess(ffmpegPath, ['-hide_banner', '-filters']);
     const output = String(result?.stdout || '');
     ffmpegReady = (result?.exitCode ?? 1) === 0 && REQUIRED_FILTERS.every((filter) => output.includes(filter));
   } catch {}
@@ -117,7 +123,8 @@ function defaultKillProcessGroup(pid, signal) {
 }
 
 async function defaultProbeDurationMs(filePath, env, deps) {
-  const ffprobePath = String(env.MEIAO_FFPROBE_PATH || '').trim() || 'ffprobe';
+  const ffprobePath = String(env.MEIAO_FFPROBE_PATH || '').trim() || (deps.resolveFfprobePath || resolvePackagedFfprobePath)();
+  if (!ffprobePath) throw new Error('packaged ffprobe unavailable');
   const result = await runCommand(ffprobePath, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', filePath], { spawnProcess: deps.spawn || spawn });
   if ((result?.exitCode ?? 1) !== 0) throw new Error('duration probe failed');
   const seconds = Number(JSON.parse(String(result.stdout || '{}'))?.format?.duration);
@@ -140,22 +147,25 @@ function waitForSeparationProcess({ pythonPath, args, signal, timeoutMs, deps })
     }
     let settled = false;
     let killTimer = null;
+    let closeTimer = null;
     let terminalError = null;
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
       clearTimer(timer);
       if (killTimer) clearTimer(killTimer);
+      if (closeTimer) clearTimer(closeTimer);
       signal?.removeEventListener('abort', onAbort);
       callback(value);
     };
     const terminate = (error) => {
       if (terminalError) return;
       terminalError = error;
-      killProcessGroup(child?.pid, 'SIGTERM');
+      try { killProcessGroup(child?.pid, 'SIGTERM'); } catch {}
       killTimer = setTimer(() => {
-        killProcessGroup(child?.pid, 'SIGKILL');
-        finish(reject, terminalError);
+        try { killProcessGroup(child?.pid, 'SIGKILL'); } catch {}
+        closeTimer = setTimer(() => finish(reject, terminalError), 5_000);
+        closeTimer?.unref?.();
       }, 5_000);
       killTimer?.unref?.();
     };
@@ -196,29 +206,36 @@ async function validateOutput({ inputWavPath, vocalsPath, backgroundPath, durati
 
 /**
  * `workDir` is an internal, server-created parent job directory. It is never derived from a
- * browser payload; callers without one receive a private mkdtemp directory. This function never
- * removes it because the parent persists both stems before owning cleanup.
+ * browser payload. For a private directory created here, the returned `cleanupWorkDir` transfers
+ * ownership to the caller after persistence; failures and cancellations remove it immediately.
  */
 export async function separateVoiceover({ inputWavPath, workDir, signal, env = process.env, deps = {} } = {}) {
   const config = getVoiceoverConfig(env);
   const readiness = await (deps.checkReadiness || checkVoiceoverSeparationReadiness)({ env, deps });
   if (!readiness?.ready) throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离不可用');
   if (typeof inputWavPath !== 'string' || !inputWavPath) throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离输入无效');
-  const effectiveWorkDir = workDir || await (deps.mkdtemp || mkdtemp)(path.join(tmpdir(), 'meiao-voiceover-'));
-  const outputDir = path.join(effectiveWorkDir, 'separated');
-  const trackName = path.parse(inputWavPath).name;
-  const stemDir = path.join(outputDir, 'mdx_q', trackName);
-  const vocalsPath = path.join(stemDir, 'vocals.wav');
-  const backgroundPath = path.join(stemDir, 'no_vocals.wav');
   const release = await acquireSeparationPermit(signal, config.separationConcurrency);
+  let effectiveWorkDir = workDir;
+  const ownsWorkDir = !workDir;
+  const cleanup = deps.rm || rm;
   try {
+    if (ownsWorkDir) effectiveWorkDir = await (deps.mkdtemp || mkdtemp)(path.join(tmpdir(), 'meiao-voiceover-'));
+    const outputDir = path.join(effectiveWorkDir, 'separated');
+    const trackName = path.parse(inputWavPath).name;
+    const stemDir = path.join(outputDir, 'mdx', trackName);
+    const vocalsPath = path.join(stemDir, 'vocals.wav');
+    const backgroundPath = path.join(stemDir, 'no_vocals.wav');
     await waitForSeparationProcess({
       pythonPath: config.separationPython,
-      args: ['-m', 'demucs.separate', '-n', 'mdx_q', '-d', 'cpu', '-j', '1', '--two-stems=vocals', '--repo', config.demucsModelDir, '--out', outputDir, inputWavPath],
+      args: ['-m', 'demucs.separate', '-n', 'mdx', '-d', 'cpu', '-j', '1', '--two-stems=vocals', '--repo', config.demucsModelDir, '--out', outputDir, inputWavPath],
       signal, timeoutMs: config.separationTimeoutMs, deps,
     });
     const durationMs = await validateOutput({ inputWavPath, vocalsPath, backgroundPath, durationToleranceMs: config.durationToleranceMs, env, deps });
-    return Object.freeze({ vocalsPath, backgroundPath, model: 'mdx_q', durationMs });
+    return Object.freeze({ vocalsPath, backgroundPath, model: 'mdx', durationMs,
+      ...(ownsWorkDir ? { cleanupWorkDir: () => cleanup(effectiveWorkDir, { recursive: true, force: true }) } : {}), });
+  } catch (error) {
+    if (ownsWorkDir && effectiveWorkDir) await cleanup(effectiveWorkDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
   } finally {
     release();
   }

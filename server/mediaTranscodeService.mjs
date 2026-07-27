@@ -11,7 +11,7 @@ import {
 
 const require = createRequire(import.meta.url);
 
-function resolvePackagedFfmpegPath() {
+export function resolvePackagedFfmpegPath() {
   try {
     return require('ffmpeg-static');
   } catch {
@@ -19,7 +19,7 @@ function resolvePackagedFfmpegPath() {
   }
 }
 
-function resolvePackagedFfprobePath() {
+export function resolvePackagedFfprobePath() {
   try {
     return require('@ffprobe-installer/ffprobe')?.path || null;
   } catch {

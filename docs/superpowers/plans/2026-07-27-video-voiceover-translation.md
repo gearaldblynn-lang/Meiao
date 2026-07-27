@@ -4,9 +4,9 @@
 
 **Goal:** 在「短视频」中交付独立的「口播翻译」子功能：把当前用户拥有的单人口播视频自动识别、翻译并改用 Gemini 3.1 Flash TTS 口播，同时保留背景音乐、环境音和音效，并可选复用 Golden 去文案。
 
-**Architecture:** 浏览器只负责单视频准备、目标语言/翻译模式/音色/去文案区域配置和 durable job 提交。服务端以 `voiceover_translate_video` 内部父任务编排受托管资产保护的流水线：可选 Golden 去文案、本地 Demucs `mdx_q` 分离、Gemini 严格 JSON 分析与翻译、按输入预算分组的 KIE TTS 子任务、FFmpeg 对齐/ducking/混音和最终资产持久化。父任务以版本化 checkpoint 恢复；每个付费子任务单独保存 `providerTaskId`，已有 ID 时只能查询。
+**Architecture:** 浏览器只负责单视频准备、目标语言/翻译模式/音色/去文案区域配置和 durable job 提交。服务端以 `voiceover_translate_video` 内部父任务编排受托管资产保护的流水线：可选 Golden 去文案、本地 Demucs `mdx` 分离、Gemini 严格 JSON 分析与翻译、按输入预算分组的 KIE TTS 子任务、FFmpeg 对齐/ducking/混音和最终资产持久化。父任务以版本化 checkpoint 恢复；每个付费子任务单独保存 `providerTaskId`，已有 ID 时只能查询。
 
-**Tech Stack:** React 19、TypeScript 5.9、Node.js ESM、Node test runner、MySQL/本地 JSON job ledger、Temporal、FFmpeg/FFprobe、Python 3 独立虚拟环境、Demucs `mdx_q`、现有 Gemini 视频分析链、KIE Gemini 3.1 Flash TTS、Golden 去字幕链和 MEIAO managed asset store。
+**Tech Stack:** React 19、TypeScript 5.9、Node.js ESM、Node test runner、MySQL/本地 JSON job ledger、Temporal、FFmpeg/FFprobe、Python 3 独立虚拟环境、Demucs `mdx`、现有 Gemini 视频分析链、KIE Gemini 3.1 Flash TTS、Golden 去字幕链和 MEIAO managed asset store。
 
 ## Global Constraints
 
@@ -14,7 +14,7 @@
 - 本计划只授权本地当前版本实现、测试和本地验收。不得推送 GitHub、安装腾讯云生产模型、修改生产环境变量或部署腾讯云。
 - `voiceover_translate_video` 只接受当前用户拥有的 managed video identity。浏览器传入的 URL、时长、尺寸、编码和音轨信息都不是权威值。
 - 首版仅支持单视频、单说话人；不做音色克隆、嘴型同步、画面重生成、多说话人分配、译文编辑和目标语言字幕生成。
-- Demucs 固定使用官方 `mdx_q`、CPU、`--two-stems=vocals`；运行时不得联网下载 Python 包或模型，子进程必须使用参数数组而不是 shell 字符串。
+- Demucs 固定使用官方非量化 `mdx`、CPU、`--two-stems=vocals`；运行时不得联网下载 Python 包或模型，子进程必须使用参数数组而不是 shell 字符串。
 - Demucs 默认全局单并发。Python、模型或 FFmpeg filter readiness 不通过时，必须在 Gemini、Golden 或 KIE 的付费 POST 前拒绝新任务。
 - Gemini 同步分析在调用前持久化 `speech_analysis_submitting`。进程若在提交与成功 checkpoint 之间中断，失败码必须是 `voiceover_analysis_submission_unknown`，不得自动重提。
 - Golden 与每个 KIE TTS 组都使用父任务派生的稳定子任务键。已有 `providerTaskId` 只能查询；创建请求结果不明时使用 `provider_submission_unknown` 并停止自动恢复。
@@ -35,7 +35,7 @@
 - Gemini 3.1 Flash TTS token contract: `https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-tts-preview`
 - Official Demucs source and `--two-stems=vocals`: `https://github.com/facebookresearch/demucs`
 - Official Demucs remote inventory: `https://raw.githubusercontent.com/facebookresearch/demucs/main/demucs/remote/files.txt`
-- Official `mdx_q` ensemble config: `https://raw.githubusercontent.com/facebookresearch/demucs/main/demucs/remote/mdx_q.yaml`
+- Official v4.0.1 `mdx` ensemble config: `https://raw.githubusercontent.com/facebookresearch/demucs/v4.0.1/demucs/remote/mdx.yaml`
 - KIE create/query body and response contract: the user-supplied API document attached to the approved design conversation; all required fields are copied into Task 6 so implementation does not depend on an unavailable browser session.
 
 ---
@@ -75,8 +75,8 @@
 
 - `deploy/voiceover/requirements.in`: 人工维护的顶层 Python 依赖。
 - `deploy/voiceover/requirements.lock`: 带版本与 hashes 的可复现 CPU 运行依赖。
-- `deploy/voiceover/demucs-models.json`: `mdx_q` 四个权重的官方 URL、字节数和 SHA-256。
-- `deploy/voiceover/mdx_q.yaml`: 与模型 manifest 同版本的官方 ensemble 配置。
+- `deploy/voiceover/demucs-models.json`: `mdx` 四个权重的官方 URL、字节数和 SHA-256。
+- `deploy/voiceover/mdx.yaml`: 与模型 manifest 同版本的官方 ensemble 配置。
 - `scripts/install-voiceover-demucs.mjs`: 显式安装/校验命令；应用启动与 job 执行不调用它。
 - `scripts/install-voiceover-demucs.test.mjs`: dry-run、哈希失败、重复安装和路径安全测试。
 - `scripts/probe-voiceover-translation.mjs`: readiness、fixture dry-run 和显式 live canary。
@@ -229,7 +229,7 @@ Use these defaults and bounds:
 ```js
 export const VOICEOVER_DEFAULTS = Object.freeze({
   enabled: false,
-  demucsModel: 'mdx_q',
+  demucsModel: 'mdx',
   separationConcurrency: 1,
   separationTimeoutMs: 3_600_000,
   minAtempo: 0.75,
@@ -574,8 +574,10 @@ git commit -m "feat(assets): persist voiceover intermediates safely"
 
 - Create: `deploy/voiceover/requirements.in`
 - Create: `deploy/voiceover/requirements.lock`
+- Create: `deploy/voiceover/build-requirements.in`
+- Create: `deploy/voiceover/build-requirements.lock`
 - Create: `deploy/voiceover/demucs-models.json`
-- Create: `deploy/voiceover/mdx_q.yaml`
+- Create: `deploy/voiceover/mdx.yaml`
 - Create: `scripts/install-voiceover-demucs.mjs`
 - Create: `scripts/install-voiceover-demucs.test.mjs`
 - Create: `server/voiceoverSeparation.mjs`
@@ -585,7 +587,7 @@ git commit -m "feat(assets): persist voiceover intermediates safely"
 
 - Export installer functions `loadDemucsManifest(path)`, `verifyDemucsModelFiles({ manifest, modelDir })`, and CLI modes `--check`, `--install`, `--download-models`.
 - Export runtime functions `checkVoiceoverSeparationReadiness({ env, deps })` and `separateVoiceover({ inputWavPath, workDir, signal, env, deps })`.
-- Runtime output is `{ vocalsPath, backgroundPath, model: 'mdx_q', durationMs }`.
+- Runtime output is `{ vocalsPath, backgroundPath, model: 'mdx', durationMs }`; private work directories return a cleanup callback after the caller has persisted both stems.
 
 - [ ] **Step 1: Add the exact model manifest**
 
@@ -594,40 +596,40 @@ git commit -m "feat(assets): persist voiceover intermediates safely"
 ```json
 {
   "schemaVersion": 1,
-  "model": "mdx_q",
+  "model": "mdx",
   "files": [
     {
-      "name": "6b9c2ca1-3fd82607.th",
-      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/6b9c2ca1-3fd82607.th",
-      "size": 59648321,
-      "sha256": "3fd82607b051e9f8ed0e86a30791023a3b589a427fb994c8bbfdff8c1903eeff"
+      "name": "0d19c1c6-0f06f20e.th",
+      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/0d19c1c6-0f06f20e.th",
+      "size": 178048329,
+      "sha256": "0f06f20ed6ddc8058fa72ccc4845f3a88916eff7d007b623924193de217bbcf4"
     },
     {
-      "name": "b72baf4e-8778635e.th",
-      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/b72baf4e-8778635e.th",
-      "size": 44368175,
-      "sha256": "8778635e98a9d4b34b3d132300597758f8f3f2978510eb20c202fd0d54a7bbf0"
+      "name": "7ecf8ec1-70f50cc9.th",
+      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/7ecf8ec1-70f50cc9.th",
+      "size": 178048329,
+      "sha256": "70f50cc947d08f32e6dd8e2b687d398fa5ef9e51d1bd7600e32205d1f44be6b9"
     },
     {
-      "name": "42e558d4-196e0e1b.th",
-      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/42e558d4-196e0e1b.th",
-      "size": 58227087,
-      "sha256": "196e0e1bc5e83ea6ffbf0750b1abae1305b83de12ec98e5b50915a7139c52759"
+      "name": "c511e2ab-fe698775.th",
+      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/c511e2ab-fe698775.th",
+      "size": 167334095,
+      "sha256": "fe6987756a7087d339bf63b19bb481b12cea02d3bc0de7583df7597210209649"
     },
     {
-      "name": "305bc58f-18378783.th",
-      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/305bc58f-18378783.th",
-      "size": 46847123,
-      "sha256": "18378783cf76d44213f7a0c87da872a35b976c31ac11c4b367438b4674a2f0fe"
+      "name": "7d865c68-3d5dd56b.th",
+      "url": "https://dl.fbaipublicfiles.com/demucs/mdx_final/7d865c68-3d5dd56b.th",
+      "size": 167918783,
+      "sha256": "3d5dd56b5bc986f136dff98655ded22b2b033f465ccec7a28640a6b15fd71ed6"
     }
   ]
 }
 ```
 
-Also vendor the exact official `mdx_q.yaml` as `deploy/voiceover/mdx_q.yaml`; do not vendor model weights:
+Use official nonquantized `mdx`: it avoids the previous `mdx_q`/diffq route and its CC-BY-NC/native-build risk on CPython 3.11. Vendor the exact official `mdx.yaml` as `deploy/voiceover/mdx.yaml`; do not vendor model weights. The full hashes below were measured once from the official FBA URLs and cross-checked against the published filename prefixes:
 
 ```yaml
-models: ['6b9c2ca1', 'b72baf4e', '42e558d4', '305bc58f']
+models: ['0d19c1c6', '7ecf8ec1', 'c511e2ab', '7d865c68']
 weights: [
   [1., 1., 0., 0.],
   [0., 1., 0., 0.],
@@ -647,7 +649,7 @@ torch==2.7.1
 torchaudio==2.7.1
 ```
 
-Generate `requirements.lock` with `pip-compile --generate-hashes` on the deployment Python/CPU target. If the current package index cannot resolve this exact trio, stop and record the resolver conflict before choosing another compatible pinned trio; do not commit an unhashed or partially resolved lock.
+Generate `requirements.lock` with hashes on the deployment Python/CPU target. `build-requirements.lock` pins and hashes `setuptools` and `wheel` for Tencent x86_64 manylinux_2_28 CPython 3.11; install it first, then install the application lock with `--require-hashes --no-build-isolation`. This makes the source-build path reproducible without fetching an unpinned isolated builder.
 
 - [ ] **Step 3: Add failing installer and readiness tests**
 
@@ -655,7 +657,7 @@ Generate `requirements.lock` with `pip-compile --generate-hashes` on the deploym
 test('runtime readiness fails closed on one mismatched model hash', async () => {
   const readiness = await checkVoiceoverSeparationReadiness({
     env: completeEnv(),
-    deps: fakeDeps({ mismatchedFile: '42e558d4-196e0e1b.th' }),
+    deps: fakeDeps({ mismatchedFile: 'c511e2ab-fe698775.th' }),
   });
   assert.equal(readiness.ready, false);
   assert.equal(readiness.modelReady, false);
@@ -686,8 +688,8 @@ Expected: FAIL because the modules do not exist.
 Installer behavior:
 
 - `--check`: read-only verification.
-- `--install`: create/update the configured venv using `python -m pip install --require-hashes -r requirements.lock`.
-- `--download-models`: download each file to `name.part`, verify size/hash, then atomic rename.
+- `--install`: create/update the configured venv from the pinned build lock, then use `python -m pip install --require-hashes --no-build-isolation -r requirements.lock`.
+- `--download-models`: download each file to `name.part`, verify size/hash, atomically publish it, and atomically install `mdx.yaml` into the same model directory.
 - never print absolute configured paths, access tokens, or full URLs containing query strings.
 
 Readiness checks:
@@ -695,6 +697,7 @@ Readiness checks:
 ```js
 [
   [pythonPath, ['-c', 'import importlib.metadata as m, torch, torchaudio; print(m.version("demucs"))']],
+  [pythonPath, ['-c', 'LocalRepo(modelDir).get_model("mdx")']],
   [ffmpegPath, ['-hide_banner', '-filters']],
 ]
 ```
@@ -704,7 +707,7 @@ Require `sidechaincompress`, `amix`, `adelay`, `afade`, `atempo`, and `alimiter`
 - [ ] **Step 6: Add failing separation state-machine tests**
 
 ```js
-test('spawns mdx_q cpu two-stem separation without a shell', async () => {
+test('spawns mdx cpu two-stem separation without a shell', async () => {
   const result = await separateVoiceover({
     inputWavPath: '/tmp/input with $(touch nope).wav',
     workDir: '/tmp/job-1',
@@ -713,7 +716,7 @@ test('spawns mdx_q cpu two-stem separation without a shell', async () => {
   });
   assert.deepEqual(result.spawn.args, [
     '-m', 'demucs.separate',
-    '-n', 'mdx_q',
+    '-n', 'mdx',
     '-d', 'cpu',
     '-j', '1',
     '--two-stems=vocals',
@@ -733,14 +736,14 @@ Use a module-level semaphore sized by `separationConcurrency`. Create task direc
 
 ```js
 const trackName = path.parse(inputWavPath).name;
-const stemDir = path.join(outputDir, 'mdx_q', trackName);
+const stemDir = path.join(outputDir, 'mdx', trackName);
 return {
   vocalsPath: path.join(stemDir, 'vocals.wav'),
   backgroundPath: path.join(stemDir, 'no_vocals.wav'),
 };
 ```
 
-Do not delete the working directory inside `separateVoiceover`; the parent runner owns cleanup after both stems have been persisted.
+Acquire the semaphore before creating a private work directory. On failure or cancellation remove a private directory; after success return a one-shot cleanup callback so the parent can persist both stems before removal. Never remove a caller-supplied work directory.
 
 - [ ] **Step 8: Run Task 4 tests, harness, and commit**
 
@@ -757,7 +760,7 @@ Expected: PASS; no model weight appears in `git status --short`.
 Commit:
 
 ```bash
-git add deploy/voiceover/requirements.in deploy/voiceover/requirements.lock deploy/voiceover/demucs-models.json deploy/voiceover/mdx_q.yaml scripts/install-voiceover-demucs.mjs scripts/install-voiceover-demucs.test.mjs server/voiceoverSeparation.mjs server/voiceoverSeparation.test.mjs
+git add deploy/voiceover/requirements.in deploy/voiceover/requirements.lock deploy/voiceover/build-requirements.in deploy/voiceover/build-requirements.lock deploy/voiceover/demucs-models.json deploy/voiceover/mdx.yaml scripts/install-voiceover-demucs.mjs scripts/install-voiceover-demucs.test.mjs server/voiceoverSeparation.mjs server/voiceoverSeparation.test.mjs
 git commit -m "feat(video): add local demucs separation runtime"
 ```
 

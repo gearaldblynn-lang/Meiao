@@ -1,0 +1,7 @@
+--index-url https://pypi.org/simple
+
+# Demucs 4.0.1 and antlr4-python3-runtime are source distributions on the
+# Tencent x86_64 manylinux_2_28 / CPython 3.11 target.  These are installed
+# before the application lock, which is then installed with --no-build-isolation.
+setuptools==80.9.0
+wheel==0.45.1

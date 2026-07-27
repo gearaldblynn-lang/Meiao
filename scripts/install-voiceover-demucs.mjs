@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { link, mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
@@ -9,10 +9,10 @@ import path from 'node:path';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(SCRIPT_DIR, '..');
-const EXPECTED_YAML = `models: ['6b9c2ca1', 'b72baf4e', '42e558d4', '305bc58f']\nweights: [\n  [1., 1., 0., 0.],\n  [0., 1., 0., 0.],\n  [1., 0., 1., 1.],\n  [1., 0., 1., 1.],\n]\nsegment: 44\n`;
+export const EXPECTED_MDX_YAML = `models: ['0d19c1c6', '7ecf8ec1', 'c511e2ab', '7d865c68']\nweights: [\n  [1., 1., 0., 0.],\n  [0., 1., 0., 0.],\n  [1., 0., 1., 1.],\n  [1., 0., 1., 1.],\n]\nsegment: 44\n`;
 const SAFE_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.th$/u;
 
-const isValidManifest = (manifest) => manifest && manifest.schemaVersion === 1 && manifest.model === 'mdx_q'
+const isValidManifest = (manifest) => manifest && manifest.schemaVersion === 1 && manifest.model === 'mdx'
   && Array.isArray(manifest.files) && manifest.files.length > 0
   && manifest.files.every((file) => SAFE_FILE_NAME.test(String(file?.name || ''))
     && /^https:\/\/[^/?#]+(?:\/[A-Za-z0-9._-]+)*\/[A-Za-z0-9._-]+\.th$/u.test(String(file?.url || ''))
@@ -24,8 +24,9 @@ function installerPaths(env = {}) {
   return {
     requirementsIn: path.join(voiceoverDir, 'requirements.in'),
     requirementsLock: path.join(voiceoverDir, 'requirements.lock'),
+    buildRequirementsLock: path.join(voiceoverDir, 'build-requirements.lock'),
     manifestPath: path.join(voiceoverDir, 'demucs-models.json'),
-    yamlPath: path.join(voiceoverDir, 'mdx_q.yaml'),
+    yamlPath: path.join(voiceoverDir, 'mdx.yaml'),
     venvDir: String(env.MEIAO_VOICEOVER_VENV_DIR || '').trim() || path.join(runtimeDir, 'venv'),
     modelDir: String(env.MEIAO_VOICEOVER_DEMUCS_MODEL_DIR || '').trim() || path.join(runtimeDir, 'models'),
     installPython: String(env.MEIAO_VOICEOVER_INSTALL_PYTHON || '').trim() || 'python3',
@@ -76,7 +77,7 @@ export async function verifyDemucsModelFiles({ manifest, modelDir, deps = {} }) 
 async function verifyYaml(yamlPath, deps = {}) {
   const read = deps.readFile || readFile;
   try {
-    return (await read(yamlPath, 'utf8')) === EXPECTED_YAML;
+    return (await read(yamlPath, 'utf8')) === EXPECTED_MDX_YAML;
   } catch {
     return false;
   }
@@ -138,6 +139,32 @@ async function downloadModels({ manifest, modelDir, deps }) {
   }
 }
 
+async function installYaml({ yamlText, modelDir, deps }) {
+  const makeDir = deps.mkdir || mkdir;
+  const remove = deps.rm || rm;
+  const publish = deps.link || link;
+  const write = deps.writeFile || writeFile;
+  const read = deps.readFile || readFile;
+  const target = path.join(modelDir, 'mdx.yaml');
+  const partial = `${target}.part`;
+  await makeDir(modelDir, { recursive: true, mode: 0o700 });
+  try {
+    try {
+      if (await read(target, 'utf8') === yamlText) return;
+      throw new Error('Demucs model YAML target already exists');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    await remove(partial, { force: true });
+    await write(partial, yamlText, { flag: 'wx', mode: 0o600 });
+    await publish(partial, target);
+    await remove(partial, { force: true });
+  } catch (error) {
+    await remove(partial, { force: true });
+    throw error;
+  }
+}
+
 export async function runInstaller(argv, options = {}) {
   const mode = parseMode(argv);
   const env = options.env || process.env;
@@ -152,8 +179,10 @@ export async function runInstaller(argv, options = {}) {
     await makeDir(path.dirname(paths.venvDir), { recursive: true, mode: 0o700 });
     await runSpawn(paths.installPython, ['-m', 'venv', paths.venvDir], { shell: false }, deps.spawnProcess);
     const venvPython = path.join(paths.venvDir, 'bin', 'python');
-    await runSpawn(venvPython, ['-m', 'pip', 'install', '--require-hashes', '-r', paths.requirementsLock], { shell: false }, deps.spawnProcess);
+    await runSpawn(venvPython, ['-m', 'pip', 'install', '--require-hashes', '-r', paths.buildRequirementsLock], { shell: false }, deps.spawnProcess);
+    await runSpawn(venvPython, ['-m', 'pip', 'install', '--require-hashes', '--no-build-isolation', '-r', paths.requirementsLock], { shell: false }, deps.spawnProcess);
   }
+  if (mode !== 'check') await installYaml({ yamlText: EXPECTED_MDX_YAML, modelDir: paths.modelDir, deps });
   const modelResult = manifest ? await verifyDemucsModelFiles({ manifest, modelDir: paths.modelDir, deps }) : { ready: false, files: [] };
   return Object.freeze({ mode, yamlReady, modelReady: modelResult.ready, downloadCalls: mode === 'download-models' ? manifest.files.length : 0 });
 }

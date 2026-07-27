@@ -264,7 +264,7 @@ type VoiceoverCheckpointV1 = {
 
 ### 7.1 模型与运行方式
 
-- 使用官方 Demucs，固定 `mdx_q` 量化模型和 `--two-stems=vocals`。
+- 使用官方 Demucs v4.0.1 非量化 `mdx` 模型和 `--two-stems=vocals`；避免原 `mdx_q`/diffq 的 CC-BY-NC 与 CPython 3.11 native-build 风险。
 - 使用独立 Python 虚拟环境运行，不把 PyTorch 加入 Node 主进程。
 - Node 通过参数数组调用 `python -m demucs.separate`，禁止拼接 shell 字符串。
 - 输入为服务端生成的 WAV，输出为 `vocals.wav` 和 `no_vocals.wav`。
@@ -290,7 +290,7 @@ type VoiceoverCheckpointV1 = {
 
 - `MEIAO_VOICEOVER_TRANSLATION_ENABLED`：默认关闭。
 - `MEIAO_VOICEOVER_SEPARATION_PYTHON`：独立虚拟环境 Python 路径。
-- `MEIAO_VOICEOVER_DEMUCS_MODEL`：默认 `mdx_q`，仅允许服务端白名单。
+- `MEIAO_VOICEOVER_DEMUCS_MODEL`：默认 `mdx`，仅允许服务端白名单。
 - `MEIAO_VOICEOVER_DEMUCS_MODEL_DIR`：持久模型目录。
 - `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY`：默认 `1`，限制 `1..2`。
 - `MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS`：默认 `3600000`，限制 `300000..7200000`。
@@ -476,7 +476,7 @@ type VoiceoverAnalysis = {
 ### 15.2 本地分离 runner
 
 - Python、模型、哈希和 FFmpeg readiness。
-- `mdx_q`、CPU、two-stems 参数精确且不经过 shell。
+- `mdx`、CPU、two-stems 参数精确且不经过 shell。
 - 文件名含空格和特殊字符时不注入命令。
 - 单并发、排队、超时、取消、进程组退出和临时目录清理。
 - vocals/no-vocals 缺失、空文件、时长漂移和无效 WAV 失败。

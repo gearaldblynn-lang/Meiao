@@ -7,8 +7,8 @@ import {
   separateVoiceover,
 } from './voiceoverSeparation.mjs';
 
-const manifest = { schemaVersion: 1, model: 'mdx_q', files: [{ name: 'model.th', size: 4, sha256: 'a'.repeat(64), url: 'https://example.invalid/model.th' }] };
-const mdxQYaml = `models: ['6b9c2ca1', 'b72baf4e', '42e558d4', '305bc58f']\nweights: [\n  [1., 1., 0., 0.],\n  [0., 1., 0., 0.],\n  [1., 0., 1., 1.],\n  [1., 0., 1., 1.],\n]\nsegment: 44\n`;
+const manifest = { schemaVersion: 1, model: 'mdx', files: [{ name: 'model.th', size: 4, sha256: 'a'.repeat(64), url: 'https://example.invalid/model.th' }] };
+const mdxYaml = `models: ['0d19c1c6', '7ecf8ec1', 'c511e2ab', '7d865c68']\nweights: [\n  [1., 1., 0., 0.],\n  [0., 1., 0., 0.],\n  [1., 0., 1., 1.],\n  [1., 0., 1., 1.],\n]\nsegment: 44\n`;
 
 const completeEnv = (extra = {}) => ({
   MEIAO_VOICEOVER_TRANSLATION_ENABLED: '1',
@@ -21,11 +21,14 @@ const completeEnv = (extra = {}) => ({
 
 const readyDeps = (extra = {}) => ({
   manifest,
-  yamlText: mdxQYaml,
+  yamlText: mdxYaml,
+  readFile: async () => mdxYaml,
   verifyDemucsModelFiles: async () => ({ ready: true, files: [] }),
   runProcess: async (_command, args) => args.includes('-filters')
     ? { exitCode: 0, stdout: ' ... sidechaincompress ... amix ... adelay ... afade ... atempo ... alimiter ... ' }
-    : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' },
+    : args[0] === '-c' && args[1].includes('LocalRepo')
+      ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
+      : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' },
   ...extra,
 });
 
@@ -55,12 +58,14 @@ test('readiness validates Python imports, the exact Demucs version, and required
       calls.push({ command, args });
       return args.includes('-filters')
         ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
+        : args[1].includes('LocalRepo') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
         : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' };
     } }),
   });
   assert.deepEqual(readiness, { ready: true, code: null, pythonReady: true, modelReady: true, ffmpegReady: true });
   assert.deepEqual(calls.map((call) => call.args), [
     ['-c', 'import importlib.metadata as m, torch, torchaudio; print("|".join((m.version("demucs"), m.version("torch"), m.version("torchaudio"))))'],
+    ['-c', 'from demucs.repo import LocalRepo; LocalRepo("/configured/models").get_model("mdx"); print("mdx-load-ok")'],
     ['-hide_banner', '-filters'],
   ]);
   assert.doesNotMatch(JSON.stringify(readiness), /\/configured\/|secret|token|https?:/i);
@@ -77,6 +82,7 @@ test('readiness fails closed when package versions or FFmpeg filters drift', asy
     env: completeEnv(),
     deps: readyDeps({ runProcess: async (_command, args) => args.includes('-filters')
       ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
+      : args[1].includes('LocalRepo') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
       : { exitCode: 0, stdout: '4.0.1|2.7.1|2.7.1\n' } }),
   });
   assert.deepEqual(versionDrift, { ready: false, code: 'voiceover_separation_unavailable', pythonReady: false, modelReady: true, ffmpegReady: true });
@@ -84,12 +90,46 @@ test('readiness fails closed when package versions or FFmpeg filters drift', asy
     env: completeEnv(),
     deps: readyDeps({ runProcess: async (_command, args) => args.includes('-filters')
       ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo' }
+      : args[1].includes('LocalRepo') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
       : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' } }),
   });
   assert.deepEqual(filterDrift, { ready: false, code: 'voiceover_separation_unavailable', pythonReady: true, modelReady: true, ffmpegReady: false });
 });
 
-test('spawns mdx_q cpu two-stem separation without a shell', async () => {
+test('readiness requires the installed mdx.yaml and the local Demucs load gate', async () => {
+  const missingYaml = await checkVoiceoverSeparationReadiness({
+    env: completeEnv(), deps: readyDeps({ readFile: async () => 'models: []\n' }),
+  });
+  assert.equal(missingYaml.modelReady, false);
+  const badLoad = await checkVoiceoverSeparationReadiness({
+    env: completeEnv(), deps: readyDeps({ runProcess: async (_command, args) => args.includes('-filters')
+      ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
+      : args[1].includes('LocalRepo') ? { exitCode: 1, stdout: '' }
+      : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' } }),
+  });
+  assert.equal(badLoad.modelReady, false);
+});
+
+test('readiness uses the packaged FFmpeg resolver when the environment has no override', async () => {
+  const calls = [];
+  const readiness = await checkVoiceoverSeparationReadiness({
+    env: completeEnv({ MEIAO_FFMPEG_PATH: '' }),
+    deps: readyDeps({
+      resolveFfmpegPath: () => '/packaged/ffmpeg',
+      runProcess: async (command, args) => {
+        calls.push(command);
+        return args.includes('-filters') ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
+          : args[1].includes('LocalRepo') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
+          : { exitCode: 0, stdout: '4.0.1|2.7.1+cpu|2.7.1+cpu\n' };
+      },
+    }),
+  });
+  assert.equal(readiness.ffmpegReady, true);
+  assert.ok(calls.includes('/packaged/ffmpeg'));
+  assert.equal(calls.includes('ffmpeg'), false);
+});
+
+test('spawns mdx cpu two-stem separation without a shell', async () => {
   const calls = [];
   const child = fakeChild();
   const pending = separateVoiceover({
@@ -103,15 +143,15 @@ test('spawns mdx_q cpu two-stem separation without a shell', async () => {
   });
   const result = await pending;
   assert.deepEqual(calls[0].args, [
-    '-m', 'demucs.separate', '-n', 'mdx_q', '-d', 'cpu', '-j', '1', '--two-stems=vocals',
+    '-m', 'demucs.separate', '-n', 'mdx', '-d', 'cpu', '-j', '1', '--two-stems=vocals',
     '--repo', '/configured/models', '--out', '/tmp/job-1/separated', '/tmp/input with $(touch nope).wav',
   ]);
   assert.equal(calls[0].options.shell, false);
   assert.equal(calls[0].options.detached, true);
   assert.equal(calls[0].options.stdio, 'ignore');
   assert.deepEqual(result, {
-    vocalsPath: '/tmp/job-1/separated/mdx_q/input with $(touch nope)/vocals.wav',
-    backgroundPath: '/tmp/job-1/separated/mdx_q/input with $(touch nope)/no_vocals.wav', model: 'mdx_q', durationMs: 1000,
+    vocalsPath: '/tmp/job-1/separated/mdx/input with $(touch nope)/vocals.wav',
+    backgroundPath: '/tmp/job-1/separated/mdx/input with $(touch nope)/no_vocals.wav', model: 'mdx', durationMs: 1000,
   });
 });
 
@@ -134,7 +174,7 @@ test('global queue is FIFO and keeps the configured concurrency bound', async ()
   await second;
 });
 
-test('abort terminates the detached process group then bounds a SIGKILL fallback', async () => {
+test('abort does not release until the detached process group closes after termination', async () => {
   const controller = new AbortController();
   const signals = [];
   const child = fakeChild();
@@ -148,6 +188,7 @@ test('abort terminates the detached process group then bounds a SIGKILL fallback
   });
   await new Promise((resolve) => setImmediate(resolve));
   controller.abort();
+  child.emit('close', null);
   await assert.rejects(pending, (error) => error?.name === 'AbortError');
   assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
 });
@@ -180,6 +221,7 @@ test('FIFO permit stays occupied until an aborted process group reaches bounded 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 1);
   timers.find((timer) => timer.delay === 5_000).callback();
+  children[0].emit('close', null);
   await assert.rejects(first, (error) => error?.name === 'AbortError');
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 2);
@@ -216,4 +258,76 @@ test('duration drift fails closed and never cleans the server-owned parent direc
   });
   await assert.rejects(pending, (error) => error?.code === 'voiceover_separation_unavailable');
   assert.equal(cleanupCalls, 0);
+});
+
+test('private work directories are created after a permit, cleaned on failure, and transferable on success', async () => {
+  const child = fakeChild();
+  const cleanupCalls = [];
+  const success = separateVoiceover({
+    inputWavPath: '/tmp/input.wav', env: completeEnv(),
+    deps: readyDeps({
+      checkReadiness: async () => ({ ready: true }),
+      mkdtemp: async () => '/tmp/private-success',
+      rm: async (...args) => { cleanupCalls.push(args); },
+      spawn: () => { queueMicrotask(() => child.emit('close', 0)); return child; },
+      stat: async () => ({ size: 10 }), probeDurationMs: async () => 1000,
+    }),
+  });
+  const result = await success;
+  assert.equal(typeof result.cleanupWorkDir, 'function');
+  await result.cleanupWorkDir();
+  assert.deepEqual(cleanupCalls, [['/tmp/private-success', { recursive: true, force: true }]]);
+
+  const failedChild = fakeChild();
+  const failedCleanup = [];
+  await assert.rejects(separateVoiceover({
+    inputWavPath: '/tmp/input.wav', env: completeEnv(),
+    deps: readyDeps({
+      checkReadiness: async () => ({ ready: true }), mkdtemp: async () => '/tmp/private-failure',
+      rm: async (...args) => { failedCleanup.push(args); },
+      spawn: () => { queueMicrotask(() => failedChild.emit('close', 1)); return failedChild; },
+    }),
+  }));
+  assert.deepEqual(failedCleanup, [['/tmp/private-failure', { recursive: true, force: true }]]);
+});
+
+test('a queued private job does not allocate a work directory before its FIFO permit', async () => {
+  const children = [fakeChild(), fakeChild()];
+  let spawnCount = 0;
+  let mkdtempCount = 0;
+  const deps = readyDeps({
+    checkReadiness: async () => ({ ready: true }), stat: async () => ({ size: 10 }), probeDurationMs: async () => 1000,
+    spawn: () => children[spawnCount++],
+    mkdtemp: async () => { mkdtempCount += 1; return '/tmp/queued-private'; },
+    rm: async () => {},
+  });
+  const first = separateVoiceover({ inputWavPath: '/tmp/first.wav', workDir: '/tmp/external-first', env: completeEnv(), deps });
+  const second = separateVoiceover({ inputWavPath: '/tmp/second.wav', env: completeEnv(), deps });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(mkdtempCount, 0);
+  children[0].emit('close', 0);
+  await first;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(mkdtempCount, 1);
+  children[1].emit('close', 0);
+  const result = await second;
+  await result.cleanupWorkDir();
+});
+
+test('cancelling an allocated private job cleans its owned directory after child close', async () => {
+  const controller = new AbortController();
+  const child = fakeChild();
+  const cleanupCalls = [];
+  const pending = separateVoiceover({
+    inputWavPath: '/tmp/input.wav', signal: controller.signal, env: completeEnv(),
+    deps: readyDeps({
+      checkReadiness: async () => ({ ready: true }), mkdtemp: async () => '/tmp/private-abort', spawn: () => child,
+      killProcessGroup: () => {}, rm: async (...args) => { cleanupCalls.push(args); },
+    }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  child.emit('close', null);
+  await assert.rejects(pending, (error) => error?.name === 'AbortError');
+  assert.deepEqual(cleanupCalls, [['/tmp/private-abort', { recursive: true, force: true }]]);
 });
