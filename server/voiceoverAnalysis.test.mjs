@@ -386,8 +386,9 @@ test('UTF-8 estimator is the conservative serialized provider-input byte upper b
     sampleContext: 'One consistent narrator.',
   };
   const expected = Buffer.byteLength(JSON.stringify({
-    speakers: [{ speaker: 'Speaker 1', voiceName: 'Kore' }],
-    dialogue_turns: input.dialogueTurns,
+    speakers: JSON.stringify([{ speaker_id: 'Speaker 1', voice_name: 'Kore' }]),
+    dialogue_turns: JSON.stringify([{ speaker_id: 'Speaker 1', text: '你好, world.' }]),
+    temperature: 1,
     scene: input.scene,
     sample_context: input.sampleContext,
   }), 'utf8');
@@ -411,8 +412,9 @@ test('UTF-8 estimator is the conservative serialized provider-input byte upper b
   assert.equal(
     estimateVoiceoverTtsInputTokens(padded),
     Buffer.byteLength(JSON.stringify({
-      speakers: [{ speaker: 'Speaker 1', voiceName: 'Kore' }],
-      dialogue_turns: padded.dialogueTurns,
+      speakers: JSON.stringify([{ speaker_id: 'Speaker 1', voice_name: 'Kore' }]),
+      dialogue_turns: JSON.stringify([{ speaker_id: 'Speaker 1', text: '  keep provider spacing  ' }]),
+      temperature: 1,
       scene: padded.scene,
       sample_context: padded.sampleContext,
     }), 'utf8'),

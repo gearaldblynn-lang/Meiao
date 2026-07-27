@@ -908,11 +908,15 @@ Estimate all serialized fields:
 
 ```js
 const serialized = JSON.stringify({
-  speakers: [{ speaker: 'Speaker 1', voiceName: selectedVoiceName }],
-  dialogue_turns: group.segments.map((segment) => ({
-    speaker: 'Speaker 1',
+  speakers: JSON.stringify([{
+    speaker_id: 'Speaker 1',
+    voice_name: selectedVoiceName,
+  }]),
+  dialogue_turns: JSON.stringify(group.segments.map((segment) => ({
+    speaker_id: 'Speaker 1',
     text: segment.targetText,
-  })),
+  }))),
+  temperature: 1,
   scene,
   sample_context: sampleContext,
 });
@@ -973,8 +977,8 @@ test('create body matches the documented KIE wrapper contract', () => {
   }), {
     model: 'google/gemini-3-1-flash-tts',
     input: {
-      speakers: JSON.stringify([{ speaker: 'Speaker 1', voiceName: 'Kore' }]),
-      dialogue_turns: JSON.stringify([{ speaker: 'Speaker 1', text: 'Hello world.' }]),
+      speakers: JSON.stringify([{ speaker_id: 'Speaker 1', voice_name: 'Kore' }]),
+      dialogue_turns: JSON.stringify([{ speaker_id: 'Speaker 1', text: 'Hello world.' }]),
       temperature: 1,
       scene: 'Warm product presentation with controlled pacing.',
       sample_context: 'One consistent narrator. Preserve pauses between claims.',
@@ -1074,6 +1078,13 @@ Never retry POST inside the adapter. Poll only after `await onProviderTaskId(tas
 ```
 
 The managed-output persistence layer replaces `audioUrl` with `{ audioUrl: managedUrl, assetId }` before the child is marked succeeded.
+
+Operational controls are server-only and bounded:
+
+- `MEIAO_KIE_TTS_REQUEST_TIMEOUT_MS`: default `60000`, bounds `5000..300000`.
+- `MEIAO_KIE_TTS_POLL_INTERVAL_MS`: default `4000`, bounds `500..30000`.
+- `MEIAO_KIE_TTS_POLL_MAX_ATTEMPTS`: default `180`, bounds `1..720`.
+- `MEIAO_KIE_TTS_NOT_FOUND_GRACE_MS`: default `45000`, bounds `0..300000`.
 
 - [ ] **Step 5: Constrain dispatch and browser creation**
 
@@ -2044,6 +2055,10 @@ MEIAO_VOICEOVER_DURATION_TOLERANCE_MS
 MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS
 MEIAO_KIE_TTS_BASE_URL
 MEIAO_KIE_TTS_MODEL
+MEIAO_KIE_TTS_REQUEST_TIMEOUT_MS
+MEIAO_KIE_TTS_POLL_INTERVAL_MS
+MEIAO_KIE_TTS_POLL_MAX_ATTEMPTS
+MEIAO_KIE_TTS_NOT_FOUND_GRACE_MS
 ```
 
 Document:

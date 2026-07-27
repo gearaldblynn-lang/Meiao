@@ -33,6 +33,7 @@ import {
   KIE_IMAGE_MODEL_ALIASES,
   runKieImageJob as runKieImageProviderJob,
 } from './providerKieImage.mjs';
+import { runKieTtsJob } from './providerKieTts.mjs';
 import { runMaxForAiImageJob } from './providerMaxForAiImage.mjs';
 import { runMaxForAiVideoJob } from './providerMaxForAiVideo.mjs';
 import { runSubtitleRemovalJob } from './providerSubtitleRemoval.mjs';
@@ -2982,6 +2983,22 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
   switch (job.taskType) {
     case 'upload_asset':
       return uploadAssetViaKieStream(normalizeUploadAssetStreamPayload(job.payload), env, signal);
+    case 'kie_tts':
+      return runKieTtsJob({
+        job,
+        env,
+        signal,
+        onProviderTaskId: options.onProviderTaskId,
+        deps: {
+          ...(options.kieTtsDeps || {}),
+          fetchWithTimeout: fetchKieWithTimeout,
+        },
+      });
+    case 'voiceover_translate_video':
+      throw createProviderError(
+        'provider_bad_request',
+        '口播翻译父任务由内部 runner 执行，不能进入 provider gateway',
+      );
     case 'kie_image':
       if (job.provider === 'maxforai' || isMaxForAiImageModel(job.payload?.model)) {
         if (job.providerTaskId) {

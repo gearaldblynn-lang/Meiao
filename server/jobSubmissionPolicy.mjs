@@ -20,6 +20,7 @@ const PRODUCT_RESTORE_TASK_PURPOSES = new Set([
 export const VIDEO_JOB_TASK_TYPES = new Set([
   'dreamina_video',
   'kie_seedance_video',
+  'kie_tts',
   'kie_veo',
   'kie_video',
   'maxforai_video',
@@ -30,6 +31,7 @@ export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
   'dreamina_video',
   'kie_image',
   'kie_seedance_video',
+  'kie_tts',
   'kie_veo',
   'kie_video',
   'maxforai_video',
@@ -37,7 +39,9 @@ export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
 ]);
 
 export const KIE_RECOVERY_SOURCE_TASK_TYPES = new Set(
-  Array.from(RECOVERABLE_PROVIDER_TASK_TYPES).filter((taskType) => taskType.startsWith('kie_')),
+  Array.from(RECOVERABLE_PROVIDER_TASK_TYPES).filter(
+    (taskType) => taskType.startsWith('kie_') && taskType !== 'kie_tts',
+  ),
 );
 
 export const canRecoverProviderTaskById = ({
@@ -133,6 +137,7 @@ export const resolveJobSubmissionPolicy = ({
   subtitleRemovalEnabled = false,
   subtitleRemovalConfigured = false,
   subtitleRemovalBatchMaxItems = 10,
+  trustedParentExecution = false,
 } = {}) => {
   const normalizedModule = normalizePolicyMarker(module);
   const normalizedTaskType = String(taskType || '').trim();
@@ -173,6 +178,31 @@ export const resolveJobSubmissionPolicy = ({
       `未知任务类型 ${normalizedTaskType || 'empty'} 只允许使用 internal provider。`,
       400
     );
+  }
+
+  if (normalizedTaskType === 'kie_tts') {
+    if (!trustedParentExecution) {
+      throw createPolicyError(
+        'parent_owned_job_forbidden',
+        'KIE TTS 子任务只能由口播翻译父任务创建或恢复。',
+        403,
+      );
+    }
+    const parentJobId = String(payload?.parentJobId || '').trim();
+    const childKey = String(payload?.childKey || '').trim();
+    const childMatch = childKey.match(/^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d*)$/u);
+    if (
+      payload?.executionOwner !== 'parent'
+      || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/u.test(parentJobId)
+      || !childMatch
+      || !Number.isSafeInteger(Number(childMatch?.[2]))
+    ) {
+      throw createPolicyError(
+        'parent_owned_job_invalid',
+        'KIE TTS 父子任务身份无效。',
+        400,
+      );
+    }
   }
 
   if (

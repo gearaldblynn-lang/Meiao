@@ -5,6 +5,7 @@ import {
   isAuthorizedProviderTaskRecoverySource,
   canRecoverProviderTaskById,
   getJobSubmissionLockTimeoutSeconds,
+  RECOVERABLE_PROVIDER_TASK_TYPES,
   resolveJobSubmissionPolicy,
   VIDEO_JOB_TASK_TYPES,
 } from './jobSubmissionPolicy.mjs';
@@ -50,7 +51,7 @@ test('provider policy binds Dreamina video jobs to the Dreamina provider', () =>
 test('video permission and create retry policy covers every video task type', () => {
   assert.deepEqual(
     [...VIDEO_JOB_TASK_TYPES].sort(),
-    ['dreamina_video', 'kie_seedance_video', 'kie_veo', 'kie_video', 'maxforai_video', 'subtitle_remove_video']
+    ['dreamina_video', 'kie_seedance_video', 'kie_tts', 'kie_veo', 'kie_video', 'maxforai_video', 'subtitle_remove_video']
   );
 
   for (const taskType of VIDEO_JOB_TASK_TYPES) {
@@ -67,6 +68,15 @@ test('video permission and create retry policy covers every video task type', ()
           subtitleRemovalConfigured: true,
           payload: { batchCount: 1, batchIndex: 0 },
         }
+      : taskType === 'kie_tts'
+        ? {
+            trustedParentExecution: true,
+            payload: {
+              executionOwner: 'parent',
+              parentJobId: 'voiceover-parent-1',
+              childKey: 'tts:0:attempt:0',
+            },
+          }
       : {};
     assert.throws(
       () => resolveJobSubmissionPolicy({ taskType, provider, hasVideoPermission: false, ...featureOptions }),
@@ -271,6 +281,7 @@ test('provider task recovery is limited to task types with a real query path', (
     ['kie_image', 'kie'],
     ['kie_video', 'kie'],
     ['kie_seedance_video', 'kie'],
+    ['kie_tts', 'kie'],
     ['kie_veo', 'kie'],
     ['dreamina_video', 'dreamina'],
     ['maxforai_video', 'maxforai'],
@@ -294,6 +305,80 @@ test('provider task recovery is limited to task types with a real query path', (
     payload: { model: 'maxforai-image-2-relay' },
   }), false);
   assert.equal(canRecoverProviderTaskById({ taskType: 'kie_video', providerTaskId: '' }), false);
+  assert.equal(RECOVERABLE_PROVIDER_TASK_TYPES.has('kie_tts'), true);
+});
+
+test('parent-owned KIE TTS children require trusted internal policy context', () => {
+  const input = {
+    module: 'video',
+    taskType: 'kie_tts',
+    provider: 'kie',
+    payload: {
+      executionOwner: 'parent',
+      parentJobId: 'voiceover-parent-1',
+      childKey: 'tts:3:attempt:0',
+    },
+    hasVideoPermission: true,
+  };
+
+  assert.throws(
+    () => resolveJobSubmissionPolicy(input),
+    (error) => error?.code === 'parent_owned_job_forbidden' && error?.statusCode === 403,
+  );
+  const policy = resolveJobSubmissionPolicy({
+    ...input,
+    trustedParentExecution: true,
+  });
+  assert.equal(policy.requiresVideoPermission, true);
+  assert.equal(policy.maxCreateRetries, 0);
+  assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000);
+  assert.doesNotThrow(() => resolveJobSubmissionPolicy({
+    ...input,
+    submissionOperation: 'recover',
+    trustedParentExecution: true,
+  }));
+
+  for (const payload of [
+    { ...input.payload, executionOwner: 'browser' },
+    { ...input.payload, parentJobId: '' },
+    { ...input.payload, childKey: 'tts:3' },
+    { ...input.payload, childKey: 'tts:100:attempt:0' },
+    { ...input.payload, childKey: 'tts:3:attempt:-1' },
+    { ...input.payload, childKey: `tts:3:attempt:${'9'.repeat(40)}` },
+  ]) {
+    assert.throws(
+      () => resolveJobSubmissionPolicy({
+        ...input,
+        payload,
+        trustedParentExecution: true,
+      }),
+      (error) => error?.code === 'parent_owned_job_invalid' && error?.statusCode === 400,
+    );
+  }
+});
+
+test('parent-owned KIE TTS is not exposed through generic browser recovery', () => {
+  const source = {
+    userId: 'user-1',
+    provider: 'kie',
+    taskType: 'kie_tts',
+    providerTaskId: 'tts-provider-1',
+    payload: {
+      executionOwner: 'parent',
+      parentJobId: 'voiceover-parent-1',
+      childKey: 'tts:0:attempt:0',
+    },
+  };
+  const request = {
+    userId: 'user-1',
+    provider: 'kie',
+    taskType: 'kie_recover',
+    providerTaskId: 'tts-provider-1',
+    payload: { isVideo: true },
+  };
+
+  assert.equal(canRecoverProviderTaskById(source), true);
+  assert.equal(isAuthorizedProviderTaskRecoverySource(source, request), false);
 });
 
 test('provider task recovery source belongs to the authenticated user and matches KIE media mode', () => {

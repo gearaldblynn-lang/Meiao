@@ -388,8 +388,32 @@ const validateEstimatorInput = (input) => {
   }
   const scene = input.scene;
   const sampleContext = input.sampleContext;
-  return { voiceName, dialogueTurns, scene, sampleContext };
+  const temperature = input.temperature === undefined ? 1 : Number(input.temperature);
+  if (!Number.isFinite(temperature)
+    || temperature < 0
+    || temperature > 2
+    || Math.abs(temperature * 100 - Math.round(temperature * 100)) > Number.EPSILON * 100) {
+    throw invalidAnalysis('TTS 温度无效');
+  }
+  return { voiceName, dialogueTurns, temperature, scene, sampleContext };
 };
+
+export function buildVoiceoverTtsProviderInput(input) {
+  const normalized = validateEstimatorInput(input);
+  return {
+    speakers: JSON.stringify([{
+      speaker_id: SPEAKER,
+      voice_name: normalized.voiceName,
+    }]),
+    dialogue_turns: JSON.stringify(normalized.dialogueTurns.map((turn) => ({
+      speaker_id: SPEAKER,
+      text: turn.text,
+    }))),
+    temperature: normalized.temperature,
+    scene: normalized.scene,
+    sample_context: normalized.sampleContext,
+  };
+}
 
 /**
  * Returns a conservative upper-bound estimate based on the UTF-8 byte length of
@@ -397,13 +421,7 @@ const validateEstimatorInput = (input) => {
  * Gemini tokenizer or exact token count.
  */
 export function estimateVoiceoverTtsInputTokens(input) {
-  const normalized = validateEstimatorInput(input);
-  const serialized = JSON.stringify({
-    speakers: [{ speaker: SPEAKER, voiceName: normalized.voiceName }],
-    dialogue_turns: normalized.dialogueTurns,
-    scene: normalized.scene,
-    sample_context: normalized.sampleContext,
-  });
+  const serialized = JSON.stringify(buildVoiceoverTtsProviderInput(input));
   return Buffer.byteLength(serialized, 'utf8');
 }
 

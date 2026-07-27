@@ -307,6 +307,10 @@ type VoiceoverCheckpointV1 = {
 - `MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS`：默认 `259200000`（72 小时），限制 `3600000..2592000000`。
 - `MEIAO_KIE_TTS_BASE_URL`：默认 `https://api.kie.ai`，只由服务端读取。
 - `MEIAO_KIE_TTS_MODEL`：默认 `google/gemini-3-1-flash-tts`，只允许服务端白名单。
+- `MEIAO_KIE_TTS_REQUEST_TIMEOUT_MS`：默认 `60000`，限制 `5000..300000`。
+- `MEIAO_KIE_TTS_POLL_INTERVAL_MS`：默认 `4000`，限制 `500..30000`。
+- `MEIAO_KIE_TTS_POLL_MAX_ATTEMPTS`：默认 `180`，限制 `1..720`。
+- `MEIAO_KIE_TTS_NOT_FOUND_GRACE_MS`：默认 `45000`，限制 `0..300000`，只容忍任务创建后短暂的查询 404。
 
 非法值回到保守默认。所有变量同步写入 `.env.server.example`、部署文档和项目概览。
 
@@ -373,6 +377,9 @@ type VoiceoverAnalysis = {
   - `POST https://api.kie.ai/api/v1/jobs/createTask`
   - `model='google/gemini-3-1-flash-tts'`
   - `input.speakers` 和 `input.dialogue_turns` 按文档要求序列化为 JSON 字符串。
+  - 单人口播精确序列化为
+    `speakers='[{"speaker_id":"Speaker 1","voice_name":"Kore"}]'` 与
+    `dialogue_turns='[{"speaker_id":"Speaker 1","text":"..."}]'`；内部 camelCase 字段不得泄漏到 provider body。
 - 查询接口：
   - `GET https://api.kie.ai/api/v1/jobs/recordInfo?taskId=...`
 - 适配器负责：
