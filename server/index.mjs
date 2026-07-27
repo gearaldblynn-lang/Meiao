@@ -4356,6 +4356,7 @@ const createLibraryModelJobPayload = async ({
     virtualModelId: String(payload.virtualModelId || '').trim(),
     virtualModelVersionId: String(payload.virtualModelVersionId || '').trim(),
     referenceAnalysis: payload.referenceAnalysis || null,
+    replacementScope: payload.replacementScope,
     allowHistoricalPublishedVersion,
     publishedAt: payload.publishedAt,
     selectedAssetIds: payload.selectedAssetIds,

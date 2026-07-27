@@ -114,6 +114,41 @@ test('each lightweight reference analysis selects its own matching three-asset s
   }
 });
 
+test('full-person library selection puts a complete body source in A1 while identity-only keeps the primary face anchor', async () => {
+  const { store, model, version } = await createPublishedModel();
+  const referenceAnalysis = {
+    framing: 'full_body',
+    faceDirection: 'right',
+    headPitch: 'level',
+    occlusion: 'low',
+    exposedSkinRegions: ['face', 'hands', 'legs'],
+  };
+
+  const identityOnly = await createVirtualModelGenerationJobSnapshot({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: version.id,
+    referenceAnalysis,
+    replacementScope: 'identity_only',
+  });
+  const fullPerson = await createVirtualModelGenerationJobSnapshot({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: version.id,
+    referenceAnalysis,
+    replacementScope: 'full_person',
+  });
+
+  assert.deepEqual(identityOnly.selectedIdentitySlots, [
+    'front_close', 'right_45_close', 'three_quarter_full',
+  ]);
+  assert.deepEqual(fullPerson.selectedIdentitySlots, [
+    'three_quarter_full', 'right_45_close', 'front_close',
+  ]);
+  assert.equal(fullPerson.selectedIdentitySlots[0].endsWith('_full'), true);
+  assert.equal(fullPerson.replacementScope, 'full_person');
+});
+
 test('server selection covers every approved framing and face-direction combination', async () => {
   const { store, model, version } = await createPublishedModel();
   const cases = [
@@ -374,6 +409,7 @@ test('job intake derives historical library authorization from owned persisted j
   assert.match(intake, /createLibraryModelJobPayload\(\{ payload: body\.payload, pool, user \}\)/);
   const libraryPayload = source.slice(source.indexOf('const createLibraryModelJobPayload'), source.indexOf('const injectLibraryModelAssetsForProvider'));
   assert.match(libraryPayload, /findOwnedHistoricalVirtualModelSnapshot/);
+  assert.match(libraryPayload, /replacementScope: payload\.replacementScope/);
   assert.doesNotMatch(libraryPayload, /payload\.allowHistoricalPublishedVersion === true/);
 });
 

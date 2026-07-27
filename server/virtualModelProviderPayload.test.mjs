@@ -71,3 +71,27 @@ test('provider orchestration resolves trusted assets before building payload and
   assert.deepEqual([...result.authorizedManagedAssetIds], ['trusted-id']);
   assert.ok(!result.authorizedManagedAssetIds.has('client-id'));
 });
+
+test('full-person provider payload preserves the server-selected full-body A1 ordering', async () => {
+  const result = await resolveVirtualModelProviderPayload({
+    identitySource: 'library',
+    replacementScope: 'full_person',
+    virtualModelId: 'model-1',
+    virtualModelVersionId: 'version-1',
+    selectedAssetIds: ['full-id', 'close-id', 'front-id'],
+    prompt: '图A-1是唯一主人物来源图\n\nF Format 格式',
+    imageUrls: ['https://managed/reference.png'],
+  }, async () => [
+    { assetId: 'full-id', slot: 'three_quarter_full', url: 'https://managed/full.png' },
+    { assetId: 'close-id', slot: 'right_45_close', url: 'https://managed/close.png' },
+    { assetId: 'front-id', slot: 'front_close', url: 'https://managed/front.png' },
+  ]);
+
+  assert.deepEqual(result.payload.imageUrls, [
+    'https://managed/full.png',
+    'https://managed/close.png',
+    'https://managed/front.png',
+    'https://managed/reference.png',
+  ]);
+  assert.match(result.payload.prompt, /图A-1（输入图1）：四分之三全身/);
+});
