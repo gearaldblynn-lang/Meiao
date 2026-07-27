@@ -35,18 +35,21 @@ test('kieAiService keeps internal backend ids out of visible task ids before ups
 });
 
 test('kieAiService returns the authoritative URL-free virtual-model snapshot for every job outcome', () => {
-  assert.match(kieAiSource, /snapshotVirtualModelFromJobPayload\(finalJob\.payload\)/);
+  assert.match(kieAiSource, /createVirtualModelSnapshotTracker\(initialJobPayload\)/);
+  assert.match(kieAiSource, /snapshotTracker\.update\(currentJob\?\.payload\)/);
+  assert.match(kieAiSource, /snapshotTracker\.update\(finalJob\.payload\)/);
   assert.match(kieAiSource, /const withVirtualModelSnapshot = <T extends KieAiResult>/);
   assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'success'/);
   assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'interrupted'/);
   assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'task_not_found'/);
   assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'error'/);
+  assert.match(kieAiSource, /waitForJobResult\(job\.id,[\s\S]*job\.payload\)/);
 });
 
 test('kieAiService can resume waiting on an internal job id before falling back to provider recovery', () => {
   assert.match(
     kieAiSource,
-    /const existingJob = await fetchInternalJob\(taskId\)\.catch\(\(\) => null\);[\s\S]*if \(existingJob\?\.job\) \{[\s\S]*waitForJobResult\(existingJob\.job\.id, signal, KIE_RECOVER_TIMEOUT, false, Boolean\(apiConfig\.kieApiKey\)\);[\s\S]*\} else \{[\s\S]*recoverKieProviderTask\(taskId, signal, isVideo, Boolean\(apiConfig\.kieApiKey\)\);[\s\S]*\}/,
+    /const existingJob = await fetchInternalJob\(taskId\)\.catch\(\(\) => null\);[\s\S]*if \(existingJob\?\.job\) \{[\s\S]*waitForJobResult\(existingJob\.job\.id, signal, KIE_RECOVER_TIMEOUT, false, Boolean\(apiConfig\.kieApiKey\), undefined, existingJob\.job\.payload\);[\s\S]*\} else \{[\s\S]*recoverKieProviderTask\(taskId, signal, isVideo, Boolean\(apiConfig\.kieApiKey\)\);[\s\S]*\}/,
   );
 });
 

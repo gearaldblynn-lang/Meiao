@@ -53,3 +53,18 @@ export const buildVirtualModelProviderPayload = (payload, resolvedAssets = []) =
     authorizedManagedAssetIds: new Set(assets.map((asset) => asset.assetId)),
   };
 };
+
+export const resolveVirtualModelProviderPayload = async (payload, resolveSelectedAssets) => {
+  if (payload?.identitySource !== 'library') {
+    return buildVirtualModelProviderPayload(payload);
+  }
+  if (typeof resolveSelectedAssets !== 'function') {
+    throw new TypeError('resolveSelectedAssets must be a function');
+  }
+  const assets = await resolveSelectedAssets({
+    virtualModelId: payload.virtualModelId,
+    virtualModelVersionId: payload.virtualModelVersionId,
+    selectedAssetIds: payload.selectedAssetIds,
+  });
+  return buildVirtualModelProviderPayload(payload, assets);
+};

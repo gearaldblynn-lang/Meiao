@@ -189,12 +189,15 @@ test('library mode submits only selection and reference analysis', async () => {
   assert.equal(calls.process[0][9].modelCode, 'HD-001');
   assert.equal(calls.process[0][9].versionNumber, 2);
   assert.equal(calls.process[0][9].identityImageCount, 3);
+  assert.equal(calls.process[0][9].replacementScope, 'full_person');
   assert.deepEqual(calls.process.map((call) => call[9].referenceAnalysis?.index), [1, 2]);
   assert.match(calls.process[0][5], /轻量分析：半身构图，脸部正面，头部平视，遮挡较少/);
-  assert.match(calls.process[0][5], /裸露皮肤区域：脸部、耳朵、颈部、手部/);
+  assert.match(calls.process[0][5], /整体替换图B中的原人物/);
+  assert.doesNotMatch(calls.process[0][5], /裸露皮肤区域/);
   assert.doesNotMatch(calls.process[0][5], /全身构图，脸部朝右|腿部/);
   assert.match(calls.process[1][5], /轻量分析：全身构图，脸部朝右，头部微低，存在中等遮挡/);
-  assert.match(calls.process[1][5], /裸露皮肤区域：脸部、颈部、手臂、手部、腿部/);
+  assert.match(calls.process[1][5], /图B只提供商品、Logo、文字、背景、主构图、镜头、光线、景深和画幅/);
+  assert.doesNotMatch(calls.process[1][5], /裸露皮肤区域/);
   assert.doesNotMatch(calls.process[1][5], /半身构图，脸部正面/);
   assert.equal(JSON.stringify(calls.process[0][9]).includes('library.example'), false);
 });

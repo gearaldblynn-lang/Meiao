@@ -7,7 +7,7 @@ import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 import { isRecoverableError } from '../utils/errorClassification.mjs';
 import { isMaxForAiImageModel } from '../utils/maxforaiImageModels.mjs';
-import { snapshotVirtualModelFromJobPayload } from '../utils/virtualModelSnapshot.mjs';
+import { createVirtualModelSnapshotTracker } from '../utils/virtualModelSnapshot.mjs';
 
 const logKieEvent = (action: string, message: string, status: 'started' | 'success' | 'failed' | 'interrupted', detail = '', meta: Record<string, unknown> | null = null) => {
   const module = getActiveModuleContext() || 'unknown';
@@ -138,7 +138,7 @@ const recoverKieProviderTask = async (
     maxRetries: 1,
   });
 
-  return await waitForJobResult(job.id, signal, KIE_RECOVER_TIMEOUT, false, kieClientConfigPresent);
+  return await waitForJobResult(job.id, signal, KIE_RECOVER_TIMEOUT, false, kieClientConfigPresent, undefined, job.payload);
 };
 
 const waitForJobResult = async (
@@ -147,14 +147,12 @@ const waitForJobResult = async (
   maxWaitMs = 0,
   allowAutoRecover = true,
   kieClientConfigPresent = false,
-  onProviderTaskId?: (providerTaskId: string) => void
+  onProviderTaskId?: (providerTaskId: string) => void,
+  initialJobPayload: Record<string, unknown> = {},
 ): Promise<KieAiResult> => {
   let notifiedProviderTaskId = '';
-  let virtualModelSnapshot: Record<string, unknown> | undefined;
-  const withVirtualModelSnapshot = <T extends KieAiResult>(result: T): T => ({
-    ...result,
-    ...(virtualModelSnapshot ? { virtualModelSnapshot } : {}),
-  });
+  const snapshotTracker = createVirtualModelSnapshotTracker(initialJobPayload);
+  const withVirtualModelSnapshot = <T extends KieAiResult>(result: T): T => snapshotTracker.attach(result) as T;
   const notifyProviderTaskId = (providerTaskId: unknown) => {
     const value = String(providerTaskId || '').trim();
     if (!value || value === notifiedProviderTaskId) return;
@@ -163,12 +161,13 @@ const waitForJobResult = async (
   };
   try {
     const finalJob = await waitForInternalJob(jobId, signal, 2500, maxWaitMs, (currentJob) => {
+      snapshotTracker.update(currentJob?.payload);
       notifyProviderTaskId(currentJob?.providerTaskId);
     });
     if (!finalJob || typeof finalJob !== 'object') {
       throw Object.assign(new Error('任务状态同步失败'), { code: 'job_state_missing' });
     }
-    virtualModelSnapshot = snapshotVirtualModelFromJobPayload(finalJob.payload);
+    snapshotTracker.update(finalJob.payload);
     notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
     const finalProviderTaskId = getUserVisibleTaskId(finalJob) || undefined;
     const finalBackendJobId = String(finalJob.id || jobId || '').trim() || undefined;
@@ -231,7 +230,7 @@ const waitForJobResult = async (
     }
     if (error.code === 'job_timeout') {
       const timeoutJob = await fetchInternalJob(jobId).catch(() => null);
-      virtualModelSnapshot = snapshotVirtualModelFromJobPayload(timeoutJob?.job?.payload) || virtualModelSnapshot;
+      snapshotTracker.update(timeoutJob?.job?.payload);
       if (allowAutoRecover && shouldAutoRecoverKieJob(timeoutJob?.job)) {
         return withVirtualModelSnapshot(await recoverKieProviderTask(timeoutJob.job.providerTaskId, signal, timeoutJob.job.taskType === 'kie_video', kieClientConfigPresent));
       }
@@ -373,7 +372,7 @@ export const recoverKieAiTask = async (
   const existingJob = await fetchInternalJob(taskId).catch(() => null);
   let result: KieAiResult;
   if (existingJob?.job) {
-    result = await waitForJobResult(existingJob.job.id, signal, KIE_RECOVER_TIMEOUT, false, Boolean(apiConfig.kieApiKey));
+    result = await waitForJobResult(existingJob.job.id, signal, KIE_RECOVER_TIMEOUT, false, Boolean(apiConfig.kieApiKey), undefined, existingJob.job.payload);
   } else {
     result = await recoverKieProviderTask(taskId, signal, isVideo, Boolean(apiConfig.kieApiKey));
   }
@@ -415,7 +414,7 @@ export const createSoraVideoTask = async (
   onJobCreated?.(job.id);
   const notifyProviderTaskId = (providerTaskId: string) => onJobCreated?.(job.id, providerTaskId);
 
-  const result = await waitForJobResult(job.id, signal, KIE_VIDEO_TIMEOUT, true, Boolean(apiConfig.kieApiKey), notifyProviderTaskId);
+  const result = await waitForJobResult(job.id, signal, KIE_VIDEO_TIMEOUT, true, Boolean(apiConfig.kieApiKey), notifyProviderTaskId, job.payload);
   logKieEvent(
     'create_video_task',
     result.status === 'success' ? '视频任务完成' : result.status === 'interrupted' ? '视频任务已中断' : '视频任务失败',
@@ -537,7 +536,7 @@ export const processWithKieAi = async (
 
   const imageTimeout = KIE_IMAGE_TIMEOUT[moduleConfig.model] || KIE_IMAGE_DEFAULT_TIMEOUT;
   const allowAutoRecover = !isMaxForAiModel;
-  const result = await waitForJobResult(job.id, signal, imageTimeout, allowAutoRecover, Boolean(apiConfig.kieApiKey), notifyProviderTaskId);
+  const result = await waitForJobResult(job.id, signal, imageTimeout, allowAutoRecover, Boolean(apiConfig.kieApiKey), notifyProviderTaskId, job.payload);
   const logStatus = result.status === 'success'
     ? 'success'
     : result.status === 'interrupted'
