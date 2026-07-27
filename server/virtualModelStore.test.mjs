@@ -237,28 +237,29 @@ test('admin all-model listings exclude deleted models in local and MySQL storage
 });
 
 test('admin listings prefer the newest editable draft over the currently published version', async () => {
-  const models = await listAdminVirtualModels({
-    store: {
-      virtualModels: [{
-        id: 'model-1',
-        code: 'VM-1',
-        name: 'Model',
-        tags: [],
-        status: 'published',
-        currentVersionId: 'version-1',
-        createdAt: 1,
-        updatedAt: 3,
-      }],
-      virtualModelVersions: [
-        { id: 'version-1', virtualModelId: 'model-1', versionNumber: 1, identityProfile: { description: 'published' }, status: 'published', publishedAt: 2, createdAt: 1 },
-        { id: 'version-2', virtualModelId: 'model-1', versionNumber: 2, identityProfile: { description: 'draft' }, status: 'draft', publishedAt: null, createdAt: 3 },
-      ],
-      virtualModelAssets: [],
-    },
-  });
+  const store = {
+    virtualModels: [{
+      id: 'model-1',
+      code: 'VM-1',
+      name: 'Model',
+      tags: [],
+      status: 'published',
+      currentVersionId: 'version-1',
+      createdAt: 1,
+      updatedAt: 3,
+    }],
+    virtualModelVersions: [
+      { id: 'version-1', virtualModelId: 'model-1', versionNumber: 1, identityProfile: { description: 'published' }, status: 'published', publishedAt: 2, createdAt: 1 },
+      { id: 'version-2', virtualModelId: 'model-1', versionNumber: 2, identityProfile: { description: 'draft' }, status: 'draft', publishedAt: null, createdAt: 3 },
+    ],
+    virtualModelAssets: [],
+  };
+  const models = await listAdminVirtualModels({ store });
 
   assert.equal(models[0].version.id, 'version-2');
   assert.equal(models[0].version.status, 'draft');
+  assert.deepEqual((await listAdminVirtualModels({ store, status: 'draft' })).map((model) => model.id), ['model-1']);
+  assert.deepEqual(await listAdminVirtualModels({ store, status: 'published' }), []);
 });
 
 test('all local lifecycle writes reject a deleted model without mutation', async () => {

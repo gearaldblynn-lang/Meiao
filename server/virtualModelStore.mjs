@@ -133,16 +133,16 @@ export const listAdminVirtualModels = async ({ pool = null, store = null, status
   const allowedStatus = ['draft', 'published', 'unpublished', 'all'].includes(status) ? status : 'all';
   let models; let versions; let assets;
   if (pool) {
-    const [modelRows] = await pool.query(allowedStatus === 'all' ? "SELECT * FROM virtual_models WHERE status <> 'deleted' ORDER BY updated_at DESC" : 'SELECT * FROM virtual_models WHERE status = ? ORDER BY updated_at DESC', allowedStatus === 'all' ? [] : [allowedStatus]);
+    const [modelRows] = await pool.query("SELECT * FROM virtual_models WHERE status <> 'deleted' ORDER BY updated_at DESC", []);
     const [versionRows] = await pool.query('SELECT * FROM virtual_model_versions');
     const [assetRows] = await pool.query('SELECT * FROM virtual_model_assets');
     models = modelRows.map(modelFromRow); versions = versionRows.map(versionFromRow); assets = assetRows.map(assetFromRow);
   } else {
     const normalized = normalizeVirtualModelLocalStore(store);
-    models = normalized.virtualModels.map(modelFromRow).filter((model) => allowedStatus === 'all' ? model.status !== 'deleted' : model.status === allowedStatus).sort((a, b) => b.updatedAt - a.updatedAt);
+    models = normalized.virtualModels.map(modelFromRow).filter((model) => model.status !== 'deleted').sort((a, b) => b.updatedAt - a.updatedAt);
     versions = normalized.virtualModelVersions.map(versionFromRow); assets = normalized.virtualModelAssets.map(assetFromRow);
   }
-  return models.map((model) => {
+  const adminModels = models.map((model) => {
     const modelVersions = versions.filter((item) => item.virtualModelId === model.id).sort((a, b) => b.versionNumber - a.versionNumber);
     const version = modelVersions.find((item) => item.status === 'draft')
       || modelVersions.find((item) => item.id === model.currentVersionId)
@@ -151,6 +151,10 @@ export const listAdminVirtualModels = async ({ pool = null, store = null, status
     const versionAssets = version ? assets.filter((item) => item.virtualModelVersionId === version.id) : [];
     return { ...model, coverUrl: versionAssets.find((item) => item.isPrimary)?.publicUrl || '', version: version ? { ...version, assets: versionAssets } : null };
   });
+  if (allowedStatus === 'all') return adminModels;
+  return adminModels.filter((model) => (
+    model.version?.status === 'draft' ? 'draft' : model.status
+  ) === allowedStatus);
 };
 
 export const createVirtualModelDraft = async ({ pool = null, store = null, code, name, tags = [] } = {}) => {
