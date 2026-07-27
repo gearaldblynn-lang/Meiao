@@ -194,6 +194,14 @@ import {
 import { getMediaBudget, validateMediaQueueSelection } from './utils/mediaTrimRules.mjs';
 import { shouldUseSeedanceMediaPreparation } from './utils/videoReferenceUploadPolicy.mjs';
 import { buildSubtitleRemovalJobRequest } from './services/subtitleRemovalClient';
+import {
+  buildVoiceoverSubmissionKey,
+  buildVoiceoverJobRequest,
+  findActiveVoiceoverSubmissionIdentity,
+  resolveVoiceoverCreatedJobIdentity,
+  type VoiceoverTranslationDraft,
+  type VoiceoverTranslationSource,
+} from './services/voiceoverTranslationClient';
 import { mapWithSubtitleConcurrency } from './utils/subtitleRemovalBatch.mjs';
 import {
   getSubtitleRemovalRetryDecision,
@@ -1644,6 +1652,7 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
   [AppModuleObj.VIDEO]: [
     { id: 'generation', label: '短视频生成' },
     { id: 'storyboard', label: '分镜生成' },
+    { id: 'voiceover_translation', label: '口播翻译' },
     { id: 'subtitle_removal', label: '去字幕' },
     { id: 'diagnosis', label: '视频诊断' },
   ],
@@ -2441,6 +2450,8 @@ const AppContent: React.FC<{
     [inputStateByScope, activeScopeKey],
   );
   const [videoMemory, setVideoMemoryState] = useState<VideoPersistentState | null>(null);
+  const [voiceoverInitialSource, setVoiceoverInitialSource] = useState<VoiceoverTranslationSource | null>(null);
+  const voiceoverSubmitLockRef = useRef(false);
   const [subtitleRemovalDraft, setSubtitleRemovalDraft] = useState<SubtitleRemovalSourceDraft | null>(null);
   const [subtitleRemovalSubmitting, setSubtitleRemovalSubmitting] = useState(false);
   const subtitleRemovalSubmitLockRef = useRef(false);
@@ -3610,6 +3621,8 @@ const AppContent: React.FC<{
     saveShellRuntimeSnapshot(runtimeSnapshot, userId);
     setHasHydratedSharedData(false);
     setVideoMemoryState(null);
+    setVoiceoverInitialSource(null);
+    voiceoverSubmitLockRef.current = false;
     setSubtitleRemovalDraft(null);
     setSubtitleRemovalSubmitting(false);
     subtitleRemovalSubmitLockRef.current = false;
@@ -3760,6 +3773,280 @@ const AppContent: React.FC<{
     };
     return sharedStateWriteQueueRef.current!.enqueue(isCurrent, write, staleValue);
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]) as PersistProjectToSharedState;
+
+  const handleVoiceoverTranslationSubmit = useCallback(async (draft: VoiceoverTranslationDraft) => {
+    if (voiceoverSubmitLockRef.current) {
+      throw new Error('口播翻译任务正在提交，请等待当前请求完成');
+    }
+    const userId = String(currentUser?.id || '').trim();
+    if (!userId) throw new Error('登录状态已失效，请重新登录');
+    const voiceoverConfig = systemConfig?.voiceoverTranslation;
+    if (!voiceoverConfig?.enabled || !voiceoverConfig.ready) {
+      throw new Error('口播翻译当前未就绪，暂时不能创建新任务');
+    }
+
+    voiceoverSubmitLockRef.current = true;
+    let shellProjectId = '';
+    let shellResultId = '';
+    let shellProjectName = '';
+    let identityPersisted = false;
+    let jobCreationStarted = false;
+    let checkpointProject: Project | null = null;
+
+    const showProject = (project: Project, obsoleteProjectId = '') => {
+      setProjects((previousProjects) => {
+        const nextProjects = [
+          project,
+          ...previousProjects.filter((item) => (
+            item.id !== project.id && item.id !== obsoleteProjectId
+          )),
+        ];
+        projectsRef.current = nextProjects;
+        return nextProjects;
+      });
+    };
+
+    try {
+      const clientSubmissionKey = buildVoiceoverSubmissionKey({
+        ...draft,
+        userId,
+        shellProjectId: 'pending',
+        shellProjectName: '口播翻译',
+        shellResultId: 'pending-result',
+      });
+      const activeSubmission = findActiveVoiceoverSubmissionIdentity(
+        projectsRef.current,
+        clientSubmissionKey,
+      );
+      if (activeSubmission) {
+        addToast(
+          activeSubmission.creationUncertain
+            ? '相同任务的创建结果仍待确认，为防止重复计费，本次未重复提交'
+            : '相同口播翻译任务正在处理中，已保留原任务卡',
+          'info',
+        );
+        return;
+      }
+
+      const createdAt = Date.now();
+      shellProjectId = createRuntimeId('voiceover-');
+      shellResultId = createRuntimeId('voiceover-result-');
+      shellProjectName = reserveShortProjectName();
+      const request = buildVoiceoverJobRequest({
+        ...draft,
+        userId,
+        shellProjectId,
+        shellProjectName,
+        shellResultId,
+      });
+      const initialResult: GeneratedResult = {
+        id: shellResultId,
+        imageUrl: '',
+        videoUrl: '',
+        mediaType: 'video',
+        prompt: `将原视频口播翻译为 ${draft.targetLanguage}`,
+        model: voiceoverConfig.model.id,
+        aspectRatio: 'auto',
+        status: 'error',
+        createdAt,
+        module: AppModuleObj.VIDEO,
+        subFeature: 'voiceover_translation',
+        sourceUrl: draft.sourceUrl,
+        sourceProjectId: draft.sourceProjectId,
+        sourceResultId: draft.sourceResultId,
+        fileName: draft.fileName,
+        originalWidth: draft.width,
+        originalHeight: draft.height,
+        clientSubmissionKey: request.payload.clientSubmissionKey,
+        subtitleRegionNormalized: draft.subtitleRegionNormalized,
+        error: '已保存提交身份，等待创建后台任务',
+        errorCode: 'voiceover_job_create_ready',
+      };
+      checkpointProject = {
+        id: shellProjectId,
+        name: shellProjectName,
+        module: AppModuleObj.VIDEO,
+        status: 'generating',
+        createdAt,
+        createdAtPrecise: true,
+        results: [initialResult],
+        taskCount: 1,
+        completedCount: 0,
+        subFeature: 'voiceover_translation',
+        sourceType: 'job',
+      };
+
+      identityPersisted = Boolean(await persistSyncedProjectsToSharedState([checkpointProject]));
+      if (!identityPersisted) {
+        throw new Error('任务卡未能同步到云端，未发起可能计费的处理，请稍后重试');
+      }
+      showProject(checkpointProject);
+      void safeCreateInternalLog({
+        level: 'info',
+        module: AppModuleObj.VIDEO,
+        action: 'voiceover_translation_started',
+        message: '口播翻译提交身份已保存，准备创建后台任务',
+        status: 'started',
+        meta: {
+          subFeature: 'voiceover_translation',
+          shellProjectId,
+          shellResultId,
+          targetLanguage: draft.targetLanguage,
+          translationMode: draft.translationMode,
+          voiceMode: draft.voiceMode,
+          removeText: draft.removeText,
+        },
+      });
+
+      jobCreationStarted = true;
+      const createdSubmission = await createInternalJob(request) as Awaited<ReturnType<typeof createInternalJob>> & {
+        deduped?: boolean;
+      };
+      const createdJob = createdSubmission.job;
+      const canonicalIdentity = resolveVoiceoverCreatedJobIdentity(createdJob, {
+        shellProjectId,
+        shellProjectName,
+        shellResultId,
+      });
+      const dedupedToCanonicalIdentity = createdSubmission.deduped === true && (
+        canonicalIdentity.shellProjectId !== shellProjectId
+        || canonicalIdentity.shellResultId !== shellResultId
+      );
+      let identityCleanupSucceeded = true;
+      if (dedupedToCanonicalIdentity) {
+        try {
+          identityCleanupSucceeded = Boolean(await persistDeletionToSharedState({
+            projectId: shellProjectId,
+          }));
+        } catch (error) {
+          identityCleanupSucceeded = false;
+          logShellError('voiceover_translation_duplicate_identity_cleanup', error, {
+            shellProjectId,
+            canonicalShellProjectId: canonicalIdentity.shellProjectId,
+          }, '口播翻译重复任务卡清理失败');
+        }
+      }
+      const existingCanonicalProject = dedupedToCanonicalIdentity
+        ? projectsRef.current.find((project) => project.id === canonicalIdentity.shellProjectId)
+        : undefined;
+      const submittedResult: GeneratedResult = {
+        ...initialResult,
+        id: canonicalIdentity.shellResultId,
+        status: 'generating',
+        backendJobId: createdJob.id,
+        error: undefined,
+        errorCode: undefined,
+      };
+      const submittedProject: Project = {
+        ...(existingCanonicalProject || checkpointProject),
+        id: canonicalIdentity.shellProjectId,
+        name: canonicalIdentity.shellProjectName,
+        status: 'generating',
+        completedAt: undefined,
+        backendJobId: createdJob.id,
+        results: existingCanonicalProject
+          ? existingCanonicalProject.results.some((result) => result.id === canonicalIdentity.shellResultId)
+            ? existingCanonicalProject.results.map((result) => (
+                result.id === canonicalIdentity.shellResultId ? { ...result, ...submittedResult } : result
+              ))
+            : [submittedResult, ...existingCanonicalProject.results]
+          : [submittedResult],
+      };
+      checkpointProject = submittedProject;
+      showProject(submittedProject, dedupedToCanonicalIdentity ? shellProjectId : '');
+      let syncedToRemote = false;
+      try {
+        const canonicalSynced = Boolean(await persistSyncedProjectsToSharedState([submittedProject]));
+        syncedToRemote = identityCleanupSucceeded && canonicalSynced;
+      } catch (error) {
+        logShellError('voiceover_translation_project_persist', error, {
+          shellProjectId,
+          shellResultId,
+          backendJobId: createdJob.id,
+        }, '口播翻译任务卡保存失败');
+      }
+      void safeCreateInternalLog({
+        level: 'info',
+        module: AppModuleObj.VIDEO,
+        action: 'voiceover_translation_submitted',
+        message: '口播翻译后台任务已创建',
+        status: 'success',
+        meta: {
+          subFeature: 'voiceover_translation',
+          shellProjectId: canonicalIdentity.shellProjectId,
+          shellResultId: canonicalIdentity.shellResultId,
+          backendJobId: createdJob.id,
+          clientSubmissionKey: request.payload.clientSubmissionKey,
+          deduped: createdSubmission.deduped === true,
+        },
+      });
+      addToast(
+        syncedToRemote
+          ? createdSubmission.deduped === true
+            ? '已识别到相同的处理中任务，并恢复原任务卡'
+            : '口播翻译任务已提交，可以离开当前页面'
+          : '任务已进入本机任务栏，但云端任务卡同步失败；请勿重复提交并稍后刷新',
+        syncedToRemote ? 'success' : 'warning',
+      );
+    } catch (error) {
+      const message = getRuntimeErrorMessage(error, '口播翻译任务提交失败');
+      if (identityPersisted && checkpointProject) {
+        const creationUnknown = jobCreationStarted && (
+          !(error instanceof ApiError)
+          || error.status === 0
+          || error.status >= 500
+          || error.code === 'timeout'
+        );
+        const failedMessage = creationUnknown
+          ? '后台任务创建结果暂时无法确认。为防止重复计费，系统已停止自动重提。'
+          : message;
+        const failedProject: Project = {
+          ...checkpointProject,
+          status: 'error',
+          completedAt: Date.now(),
+          error: failedMessage,
+          results: checkpointProject.results.map((result) => ({
+            ...result,
+            status: 'error',
+            error: failedMessage,
+            errorCode: creationUnknown ? 'job_creation_unknown' : 'voiceover_job_create_failed',
+          })),
+        };
+        showProject(failedProject);
+        void persistSyncedProjectsToSharedState([failedProject]).catch(() => false);
+      }
+      void safeCreateInternalLog({
+        level: 'error',
+        module: AppModuleObj.VIDEO,
+        action: 'voiceover_translation_failed',
+        message: `口播翻译提交失败：${message}`.slice(0, 1000),
+        detail: getRuntimeErrorDetail(error),
+        status: 'failed',
+        meta: {
+          subFeature: 'voiceover_translation',
+          shellProjectId,
+          shellResultId,
+          jobCreationStarted,
+        },
+      });
+      addToast(message, 'error');
+      throw error instanceof Error ? error : new Error(message);
+    } finally {
+      voiceoverSubmitLockRef.current = false;
+    }
+  }, [
+    addToast,
+    currentUser?.id,
+    logShellError,
+    persistDeletionToSharedState,
+    persistSyncedProjectsToSharedState,
+    reserveShortProjectName,
+    systemConfig?.voiceoverTranslation,
+  ]);
+
+  const handleClearVoiceoverInitialSource = useCallback(() => {
+    setVoiceoverInitialSource(null);
+  }, []);
 
   const handleSubtitleRemovalSubmit = useCallback(async (inputs: Array<{
     clientItemId: string;
@@ -12689,6 +12976,11 @@ const AppContent: React.FC<{
 	  });
 	  const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit(activeModule)
 	    && Boolean(generationSubmitLocks[currentGenerationSubmitLockKey]);
+    const usesDedicatedVideoComposer = (
+      pageMode === 'module'
+      && activeModule === AppModuleObj.VIDEO
+      && ['voiceover_translation', 'subtitle_removal'].includes(activeSubFeature)
+    );
 
 	  const activeModuleView = (() => {
     switch (pageMode) {
@@ -12853,6 +13145,10 @@ const AppContent: React.FC<{
           showGenerationProgress={showGenerationProgress}
           persistentState={videoMemory || createDefaultVideoState()}
           onStateChange={setVideoMemory}
+          voiceoverInitialSource={voiceoverInitialSource}
+          onClearVoiceoverInitialSource={handleClearVoiceoverInitialSource}
+          voiceoverTranslationConfig={systemConfig?.voiceoverTranslation}
+          onSubmitVoiceoverTranslation={handleVoiceoverTranslationSubmit}
           subtitleRemovalDraft={subtitleRemovalDraft}
           onSubtitleRemovalDraftChange={setSubtitleRemovalDraft}
           onSubtitleRemovalSubmit={handleSubtitleRemovalSubmit}
@@ -12905,6 +13201,14 @@ const AppContent: React.FC<{
             </Suspense>
           </main>
 
+          {pageMode === 'module' && activeModule === AppModuleObj.VIDEO && activeSubFeature === 'voiceover_translation' && (
+            <div
+              id="voiceover-translation-composer-slot"
+              className="shrink-0"
+              style={{ background: 'var(--bg-base)' }}
+            />
+          )}
+
           {pageMode === 'module' && activeModule === AppModuleObj.VIDEO && activeSubFeature === 'subtitle_removal' && (
             <div
               id="subtitle-removal-composer-slot"
@@ -12913,7 +13217,7 @@ const AppContent: React.FC<{
             />
           )}
 
-          {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && activeModule !== AppModuleObj.AI_CUSTOMER_SERVICE && activeModule !== AppModuleObj.SMART_FACTORY && activeModule !== AppModuleObj.IMAGE_CROP && (activeModule !== AppModuleObj.VIDEO || activeSubFeature !== 'subtitle_removal') && (
+          {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && activeModule !== AppModuleObj.AI_CUSTOMER_SERVICE && activeModule !== AppModuleObj.SMART_FACTORY && activeModule !== AppModuleObj.IMAGE_CROP && !usesDedicatedVideoComposer && (
             <Suspense fallback={null}>
               <BottomInputBar
                 module={activeModule}

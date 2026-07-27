@@ -3820,7 +3820,7 @@ test('video subtitle removal workspace creates bounded durable jobs under one ba
   assert.match(shellApp, /subtitleRemovalDraft=\{subtitleRemovalDraft\}/);
   assert.match(shellApp, /onSubtitleRemovalDraftChange=\{setSubtitleRemovalDraft\}/);
   assert.match(shellApp, /onSubtitleRemovalSubmit=\{handleSubtitleRemovalSubmit\}/);
-  assert.match(shellApp, /activeSubFeature !== 'subtitle_removal'/);
+  assert.match(shellApp, /\['voiceover_translation', 'subtitle_removal'\]\.includes\(activeSubFeature\)/);
 
   assert.match(videoModule, /<SubtitleRemovalWorkspace/);
   assert.match(videoModule, /afterProjects=\{subtitleRemovalWorkspace\}/);
@@ -3869,4 +3869,26 @@ test('translation retry and region edit ids do not require browser crypto random
   assert.match(shellApp, /createId: \(\) => createRuntimeId\('result-retry-'\)/);
   assert.match(shellApp, /const versionId = createRuntimeId\('translation-edit-'\);/);
   assert.doesNotMatch(shellApp, /crypto\.randomUUID\(\)/);
+});
+
+test('voiceover translation is ordered between storyboard and subtitle removal', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(
+    shellApp,
+    /\{ id: 'storyboard', label: '分镜生成' \},\s*\{ id: 'voiceover_translation', label: '口播翻译' \},\s*\{ id: 'subtitle_removal', label: '去字幕' \}/,
+  );
+});
+
+test('voiceover translation and subtitle removal share the dedicated video composer decision', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const videoModule = read('../shell/modules/Video/VideoModule.tsx');
+
+  assert.match(shellApp, /const usesDedicatedVideoComposer = \(/);
+  assert.match(shellApp, /\['voiceover_translation', 'subtitle_removal'\]\.includes\(activeSubFeature\)/);
+  assert.match(shellApp, /id="voiceover-translation-composer-slot"/);
+  assert.match(shellApp, /!usesDedicatedVideoComposer/);
+  assert.match(videoModule, /<VoiceoverTranslationWorkspace/);
+  assert.match(videoModule, /publicConfig=\{voiceoverTranslationConfig\}/);
+  assert.match(videoModule, /onSubmit=\{onSubmitVoiceoverTranslation\}/);
 });
