@@ -374,18 +374,24 @@ export const createVirtualModelGenerationJobSnapshot = async ({ pool = null, sto
   const historicalSelected = allowHistoricalPublishedVersion === true && Array.isArray(selectedAssetIds)
     ? selectedAssetIds.map((assetId) => assets.find((asset) => asset.assetId === assetId))
     : null;
+  const historicalSelectionIsComplete = Array.isArray(selectedAssetIds)
+    && [3, 4, 5].includes(selectedAssetIds.length)
+    && new Set(selectedAssetIds).size === selectedAssetIds.length
+    && Array.isArray(historicalSelected)
+    && historicalSelected.every((asset) => Boolean(asset?.assetId));
   const historicalPrimaryIsValid = normalizedReplacementScope === 'full_person'
     ? historicalSelected?.[0]?.isPrimary === true
       || historicalSelected?.[0]?.slot === 'front_full'
       || historicalSelected?.[0]?.slot === 'three_quarter_full'
     : historicalSelected?.[0]?.isPrimary === true;
-  if (allowHistoricalPublishedVersion === true && (
-    !Array.isArray(selectedAssetIds)
-    || ![3, 4, 5].includes(selectedAssetIds.length)
-    || new Set(selectedAssetIds).size !== selectedAssetIds.length
-    || historicalSelected.some((asset) => !asset?.assetId)
-    || !historicalPrimaryIsValid
-  )) throw Object.assign(new Error('Virtual model snapshot is unavailable'), { code: 'MODEL_SNAPSHOT_UNAVAILABLE' });
+  if (allowHistoricalPublishedVersion === true && (!historicalSelectionIsComplete || !historicalPrimaryIsValid)) {
+    throw Object.assign(new Error('Virtual model snapshot is unavailable'), { code: 'MODEL_SNAPSHOT_UNAVAILABLE' });
+  }
+  if (allowHistoricalPublishedVersion === true
+    && normalizedReplacementScope === 'full_person'
+    && !historicalSelected.some((asset) => asset.slot === 'front_full' || asset.slot === 'three_quarter_full')) {
+    throw Object.assign(new Error('Full-person source is incomplete'), { code: 'MODEL_FULL_PERSON_SOURCE_INCOMPLETE' });
+  }
   const snapshotSelected = historicalSelected || selected;
   const snapshotAssetIds = snapshotSelected.map((asset) => asset.assetId);
   if (allowHistoricalPublishedVersion === true && snapshotAssetIds.some((assetId, index) => assetId !== selectedAssetIds[index])) throw Object.assign(new Error('Virtual model snapshot is unavailable'), { code: 'MODEL_SNAPSHOT_UNAVAILABLE' });

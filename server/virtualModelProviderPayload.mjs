@@ -29,6 +29,9 @@ export const buildVirtualModelProviderPayload = (payload, resolvedAssets = []) =
   const firstFullBodyIndex = payload?.replacementScope === 'full_person'
     ? assets.findIndex((asset) => asset.slot === 'front_full' || asset.slot === 'three_quarter_full')
     : -1;
+  if (payload?.replacementScope === 'full_person' && firstFullBodyIndex < 0) {
+    throw Object.assign(new Error('Full-person source is incomplete'), { code: 'MODEL_FULL_PERSON_SOURCE_INCOMPLETE' });
+  }
   const orderedAssets = firstFullBodyIndex > 0
     ? [assets[firstFullBodyIndex], ...assets.filter((_asset, index) => index !== firstFullBodyIndex)]
     : assets;
