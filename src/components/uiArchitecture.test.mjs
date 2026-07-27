@@ -1267,7 +1267,9 @@ test('one click shell submissions route through real planning before image gener
 
 test('project result regeneration submits a real per-result image task instead of only refilling the composer', () => {
   const app = read('../ShellMigratedApp.tsx');
-  const regenerateBody = app.match(/const handleRegenerateResult = useCallback\(async \(projectId: string, resultId: string, revisionInstruction = ''\) => \{([\s\S]*?)\n  \}, \[projects, addToast/)?.[1] || '';
+  const regenerateBody = app.match(
+    /const handleRegenerateResult = useCallback\(async \(\s*projectId: string,\s*resultId: string,\s*revisionInstruction = '',\s*(?:voiceoverRetryOptions: \{ confirmNewProviderAttempt\?: boolean \} = \{},\s*)?\) => \{([\s\S]*?)\n  \}, \[projects,/,
+  )?.[1] || '';
 
   assert.match(regenerateBody, /const updateProjectWithRegeneratedResult = \(nextResult: GeneratedResult\) =>/);
   assert.match(regenerateBody, /status: 'generating'/);
@@ -3895,4 +3897,50 @@ test('voiceover translation and subtitle removal share the dedicated video compo
   assert.match(videoModule, /<VoiceoverTranslationWorkspace/);
   assert.match(videoModule, /publicConfig=\{voiceoverTranslationConfig\}/);
   assert.match(videoModule, /onSubmit=\{onSubmitVoiceoverTranslation\}/);
+});
+
+test('managed video results expose the account-scoped voiceover translation callback chain', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const projectList = read('../shell/components/ProjectListView.tsx');
+  const videoModule = read('../shell/modules/Video/VideoModule.tsx');
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  [projectCard, projectList, videoModule, shellApp].forEach((source) => {
+    assert.match(source, /onTranslateVideoVoiceover/);
+  });
+  assert.match(projectCard, /result\.status === 'completed'/);
+  assert.match(projectCard, /project\.subFeature (?:===|!==) 'voiceover_translation'/);
+  assert.match(projectCard, /口播翻译/);
+  assert.match(shellApp, /resolveManagedSourceIdentity/);
+  assert.match(shellApp, /sourceProjectId:\s*project\.id/);
+  assert.match(shellApp, /sourceResultId:\s*result\.id/);
+  assert.match(shellApp, /setVoiceoverInitialSource/);
+  assert.match(shellApp, /\[AppModuleObj\.VIDEO\]: 'voiceover_translation'/);
+  assert.match(
+    shellApp,
+    /onTranslateVideoVoiceover=\{canUseVideoGenerationFeature\(currentUser\) \? handleTranslateVideoVoiceover : undefined\}/,
+  );
+});
+
+test('voiceover cards use the dedicated direct-playback result experience', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(projectCard, /<VoiceoverResultPlayer/);
+  assert.match(shellApp, /buildVoiceoverRetryRequest/);
+  assert.doesNotMatch(shellApp, /window\.confirm/);
+});
+
+test('voiceover download logs stay bound to the originating account and omit content', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const handler = shellApp.slice(
+    shellApp.indexOf('const handleVoiceoverResultDownloaded = useCallback'),
+    shellApp.indexOf('const handleSubtitleRemovalSubmit = useCallback'),
+  );
+
+  assert.match(handler, /const scopeUserId = shellLocalScopeUserId/);
+  assert.match(handler, /currentShellScopeUserIdRef\.current !== scopeUserId/);
+  assert.match(handler, /projectsRef\.current\.find/);
+  assert.match(handler, /project\?\.results\.find/);
+  assert.doesNotMatch(handler, /videoUrl|sourceTranscript|translatedTranscript|query/i);
 });

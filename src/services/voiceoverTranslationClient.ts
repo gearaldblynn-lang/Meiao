@@ -124,7 +124,7 @@ const assetIdFromSourceUrl = (sourceUrl: unknown) => {
   }
 };
 
-const resolveManagedSourceIdentity = (input: VoiceoverTranslationSource) => {
+export const resolveManagedSourceIdentity = (input: VoiceoverTranslationSource) => {
   const explicitAssetId = String(input.sourceAssetId || '').trim();
   const routeAssetId = assetIdFromSourceUrl(input.sourceUrl);
   if (

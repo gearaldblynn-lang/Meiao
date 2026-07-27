@@ -24,12 +24,14 @@ interface Props {
   tasks: Task[];
   onDeleteResult: (projectId: string, resultId: string) => void;
   onDeleteProject: (projectId: string) => void;
-  onRegenerateResult?: (projectId: string, resultId: string, instruction?: string) => void;
+  onRegenerateResult?: (projectId: string, resultId: string, instruction?: string, options?: { confirmNewProviderAttempt?: boolean }) => void;
   onEditResult?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
   onConfirmStoryboardImaging?: (projectId: string) => void;
   onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number, imageUrl?: string) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
   onRemoveVideoSubtitles?: (projectId: string, resultId: string) => void;
+  onTranslateVideoVoiceover?: (projectId: string, resultId: string) => void;
+  onVoiceoverResultDownloaded: (projectId: string, resultId: string) => void | Promise<void>;
   onCancelTask: (taskId: string) => void;
   subFeatures?: SubFeatureOption[];
   activeSubFeature?: string;
@@ -171,6 +173,8 @@ const VideoModule: React.FC<Props> = ({
   onImportStoryboardToGeneration,
   onRecoverResult,
   onRemoveVideoSubtitles,
+  onTranslateVideoVoiceover,
+  onVoiceoverResultDownloaded,
   onCancelTask,
   subFeatures,
   activeSubFeature = 'generation',
@@ -291,6 +295,8 @@ const VideoModule: React.FC<Props> = ({
       onImportStoryboardToGeneration={onImportStoryboardToGeneration}
       onRecoverResult={onRecoverResult}
       onRemoveVideoSubtitles={onRemoveVideoSubtitles}
+      onTranslateVideoVoiceover={onTranslateVideoVoiceover}
+      onVoiceoverResultDownloaded={onVoiceoverResultDownloaded}
       onCancelTask={activeSubFeature === 'subtitle_removal' ? undefined : onCancelTask}
       subFeatures={subFeatures}
       activeSubFeature={activeSubFeature}

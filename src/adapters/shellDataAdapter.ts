@@ -10,6 +10,7 @@ import type {
   TranslationConfigSnapshot,
   TranslationEditVersion,
   TranslationRetryStage,
+  VoiceoverCheckpointV1,
   VideoStoryboardBoard,
   VideoStoryboardConfig,
   VideoStoryboardProject,
@@ -134,6 +135,20 @@ export interface ShellGeneratedResult {
   translationGenerationCreditsConsumed?: number;
   translationRetryStage?: TranslationRetryStage;
   translationEditVersions?: TranslationEditVersion[];
+  statusText?: string;
+  sourceAssetId?: string;
+  sourceLanguage?: string;
+  targetLanguage?: string;
+  translationMode?: 'natural' | 'literal';
+  voiceMode?: 'auto' | 'preset';
+  voiceName?: string;
+  removeText?: boolean;
+  sourceTranscript?: string;
+  translatedTranscript?: string;
+  voiceoverStage?: VoiceoverCheckpointV1['stage'];
+  voiceoverCheckpoint?: VoiceoverCheckpointV1;
+  finalAssetId?: string;
+  cancelled?: boolean;
 }
 
 export interface ShellProjectData {
@@ -965,6 +980,24 @@ const toOptionalInteger = (value: unknown) => {
   return Number.isInteger(parsed) ? parsed : undefined;
 };
 
+const toOptionalBoolean = (value: unknown) => {
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (['true', '1'].includes(normalized)) return true;
+  if (['false', '0'].includes(normalized)) return false;
+  return undefined;
+};
+
+const toVoiceoverTranslationMode = (value: unknown): 'natural' | 'literal' | undefined => {
+  const normalized = String(value ?? '').trim();
+  return normalized === 'natural' || normalized === 'literal' ? normalized : undefined;
+};
+
+const toVoiceMode = (value: unknown): 'auto' | 'preset' | undefined => {
+  const normalized = String(value ?? '').trim();
+  return normalized === 'auto' || normalized === 'preset' ? normalized : undefined;
+};
+
 const getSubtitleRemovalResultMetadata = (value: unknown) => {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const payload = item.payload && typeof item.payload === 'object' ? item.payload as Record<string, unknown> : {};
@@ -998,6 +1031,319 @@ const isSubtitleRemovalJob = (job: InternalJob, module = toModule(job?.module)) 
     || String(job?.payload?.taskPurpose || '').trim() === 'subtitle_removal'
   )
 );
+
+export const VOICEOVER_STAGE_LABELS = Object.freeze({
+  input_prepared: '准备视频',
+  subtitle_removal: '去除画面文案',
+  audio_extracted: '提取音频',
+  voice_separated: '分离原口播',
+  speech_analysis_submitting: '识别原文',
+  speech_analyzed: '识别原文',
+  translated: '翻译口播',
+  tts_generating: '生成新口播',
+  audio_aligned: '对齐混音',
+  result_persisted: '保存结果',
+} satisfies Record<VoiceoverCheckpointV1['stage'], string>);
+
+const VOICEOVER_STAGE_IDS = new Set(Object.keys(VOICEOVER_STAGE_LABELS));
+
+const parseRecordAlias = (value: unknown): Record<string, unknown> => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== 'string' || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+};
+
+const voiceoverJobResult = (job: InternalJob) => {
+  const row = job as InternalJob & Record<string, unknown>;
+  return parseRecordAlias(
+    job.result
+    ?? row.resultJson
+    ?? row.result_json,
+  );
+};
+
+const voiceoverCheckpointFromResult = (result: Record<string, unknown>) => {
+  const candidate = parseRecordAlias(
+    result.voiceoverCheckpoint
+    ?? result.voiceover_checkpoint
+    ?? result.checkpoint,
+  );
+  const stage = String(candidate.stage || '').trim();
+  if (Number(candidate.version) !== 1 || !VOICEOVER_STAGE_IDS.has(stage)) return undefined;
+  return candidate as unknown as VoiceoverCheckpointV1;
+};
+
+const managedAssetRoute = (assetId: unknown) => {
+  const id = String(assetId || '').trim();
+  return id ? `/api/assets/file/${encodeURIComponent(id)}` : '';
+};
+
+const transcriptFromSegments = (
+  segments: unknown,
+  key: 'sourceText' | 'targetText',
+) => (
+  (Array.isArray(segments) ? segments : [])
+    .map((segment) => String((segment as Record<string, unknown>)?.[key] || '').trim())
+    .filter(Boolean)
+    .join('\n')
+);
+
+const isVoiceoverParentJob = (job: InternalJob) => (
+  String(job?.taskType || '').trim() === 'voiceover_translate_video'
+);
+
+const isVoiceoverChildJob = (job: InternalJob) => {
+  const payload = parseRecordAlias(job?.payload);
+  const parentJobId = String(payload.parentJobId || payload.parent_job_id || '').trim();
+  if (!parentJobId) return false;
+  return (
+    String(payload.executionOwner || payload.execution_owner || '').trim() === 'parent'
+    || String(payload.clientSubmissionKey || payload.client_submission_key || '').startsWith('voiceover-child:')
+  ) && (
+    String(job?.taskType || '').trim() === 'kie_tts'
+    || (
+      String(job?.taskType || '').trim() === 'subtitle_remove_video'
+      && String(job?.provider || '').trim() === 'golden_subtitle'
+    )
+  );
+};
+
+const buildVoiceoverProjectFromJob = (
+  job: InternalJob,
+  persistedProjects: ShellProjectData[],
+): { project: ShellProjectData; task?: ShellTaskData } | null => {
+  const row = job as InternalJob & Record<string, unknown>;
+  const payload = parseRecordAlias(job.payload);
+  const ownerId = String(job.userId || row.user_id || '').trim();
+  const payloadOwnerId = String(payload.userId || payload.user_id || '').trim();
+  if (ownerId && payloadOwnerId && ownerId !== payloadOwnerId) return null;
+
+  const resultRecord = voiceoverJobResult(job);
+  const checkpoint = voiceoverCheckpointFromResult(resultRecord);
+  const stage = String(
+    resultRecord.voiceoverStage
+    || resultRecord.voiceover_stage
+    || checkpoint?.stage
+    || 'input_prepared',
+  ) as VoiceoverCheckpointV1['stage'];
+  const safeStage = VOICEOVER_STAGE_IDS.has(stage) ? stage : 'input_prepared';
+  const stageLabel = VOICEOVER_STAGE_LABELS[safeStage];
+  const shellProjectId = String(
+    payload.shellProjectId
+    || payload.shell_project_id
+    || `job-${job.id}`,
+  ).trim();
+  const shellResultId = String(
+    payload.shellResultId
+    || payload.shell_result_id
+    || `${job.id}-result-1`,
+  ).trim();
+  const matchedProject = persistedProjects.find((project) => (
+    String(project.id || '').trim() === shellProjectId
+    || String(project.backendJobId || '').trim() === String(job.id || '').trim()
+  ));
+  const matchedResult = matchedProject?.results.find((result) => (
+    String(result.id || '').trim() === shellResultId
+    || String(result.backendJobId || '').trim() === String(job.id || '').trim()
+  ));
+  const sourceAssetId = String(
+    payload.sourceAssetId
+    || payload.source_asset_id
+    || checkpoint?.baseVideoAssetId
+    || '',
+  ).trim();
+  const finalAssetId = String(
+    resultRecord.finalAssetId
+    || resultRecord.final_asset_id
+    || checkpoint?.finalAssetId
+    || '',
+  ).trim();
+  const sourceUrl = String(
+    resultRecord.sourceUrl
+    || resultRecord.source_url
+    || payload.sourceUrl
+    || payload.source_url
+    || managedAssetRoute(sourceAssetId),
+  ).trim();
+  const videoUrl = String(
+    resultRecord.videoUrl
+    || resultRecord.video_url
+    || (finalAssetId ? managedAssetRoute(finalAssetId) : ''),
+  ).trim();
+  const status = String(job.status || row.job_status || '').trim();
+  const cancelled = status === 'cancelled'
+    || Boolean(job.cancelRequestedAt || row.cancel_requested_at);
+  const succeededWithoutResult = status === 'succeeded' && !videoUrl;
+  const resultStatus: ShellGeneratedResult['status'] = status === 'succeeded' && videoUrl
+    ? 'completed'
+    : status === 'retry_waiting'
+      ? 'retry_waiting'
+      : ['failed', 'cancelled'].includes(status) || succeededWithoutResult
+        ? 'error'
+        : 'generating';
+  const projectStatus: ShellProjectData['status'] = resultStatus === 'completed'
+    ? 'completed'
+    : resultStatus === 'error'
+      ? 'error'
+      : 'generating';
+  const errorCode = String(
+    job.errorCode
+    || row.error_code
+    || (cancelled ? 'request_cancelled' : '')
+    || (succeededWithoutResult ? 'voiceover_result_missing' : ''),
+  ).trim();
+  const errorMessage = String(
+    job.errorMessage
+    || row.error_message
+    || (cancelled ? '口播翻译已取消' : '')
+    || (succeededWithoutResult ? '口播翻译任务完成但未返回结果视频' : ''),
+  ).trim();
+  const analysis = checkpoint?.analysis;
+  const translation = checkpoint?.translation;
+  const sourceTranscript = String(
+    resultRecord.sourceTranscript
+    || resultRecord.source_transcript
+    || transcriptFromSegments(analysis?.segments, 'sourceText'),
+  ).trim();
+  const translatedTranscript = String(
+    resultRecord.translatedTranscript
+    || resultRecord.translated_transcript
+    || transcriptFromSegments(translation?.segments, 'targetText'),
+  ).trim();
+  const voiceMode = toVoiceMode(
+    resultRecord.voiceMode
+    || resultRecord.voice_mode
+    || payload.voiceMode
+    || payload.voice_mode
+  );
+  const providerTaskId = String(
+    job.providerTaskId
+    || row.provider_task_id
+    || resultRecord.providerTaskId
+    || resultRecord.provider_task_id
+    || '',
+  ).trim();
+  const createdAt = toCreatedMs(job.createdAt || row.created_at);
+  const completedAt = resultStatus === 'completed'
+    ? toCreatedMs(job.finishedAt || row.finished_at || job.updatedAt || row.updated_at || job.createdAt)
+    : undefined;
+  const nextResult: ShellGeneratedResult = {
+    ...(matchedResult || {}),
+    id: shellResultId,
+    projectId: shellProjectId,
+    imageUrl: '',
+    videoUrl: videoUrl || undefined,
+    mediaType: 'video',
+    prompt: stageLabel,
+    model: normalizeModel(
+      resultRecord.model
+      || payload.model
+      || (translation?.selectedVoiceName ? 'Gemini 3.1 Flash TTS' : '口播翻译'),
+    ),
+    aspectRatio: String(resultRecord.aspectRatio || resultRecord.aspect_ratio || 'auto'),
+    status: resultStatus,
+    statusText: stageLabel,
+    createdAt,
+    module: MODULE_VALUES.VIDEO,
+    subFeature: 'voiceover_translation',
+    sourceAssetId: sourceAssetId || undefined,
+    sourceUrl: sourceUrl || undefined,
+    sourcePreviewUrl: sourceUrl || undefined,
+    sourceProjectId: String(payload.sourceProjectId || payload.source_project_id || '').trim() || undefined,
+    sourceResultId: String(payload.sourceResultId || payload.source_result_id || '').trim() || undefined,
+    targetLanguage: String(
+      resultRecord.targetLanguage
+      || resultRecord.target_language
+      || translation?.targetLanguage
+      || payload.targetLanguage
+      || payload.target_language
+      || '',
+    ).trim() || undefined,
+    sourceLanguage: String(
+      resultRecord.sourceLanguage
+      || resultRecord.source_language
+      || analysis?.sourceLanguage
+      || '',
+    ).trim() || undefined,
+    translationMode: toVoiceoverTranslationMode(
+      resultRecord.translationMode
+      || resultRecord.translation_mode
+      || translation?.mode
+      || payload.translationMode
+      || payload.translation_mode
+    ),
+    voiceMode,
+    voiceName: String(
+      resultRecord.voiceName
+      || resultRecord.voice_name
+      || translation?.selectedVoiceName
+      || payload.voiceName
+      || payload.voice_name
+      || '',
+    ).trim() || undefined,
+    removeText: toOptionalBoolean(
+      resultRecord.removeText
+      ?? resultRecord.remove_text
+      ?? payload.removeText
+      ?? payload.remove_text,
+    ),
+    sourceTranscript: sourceTranscript || undefined,
+    translatedTranscript: translatedTranscript || undefined,
+    voiceoverStage: safeStage,
+    voiceoverCheckpoint: checkpoint,
+    finalAssetId: finalAssetId || undefined,
+    clientSubmissionKey: String(payload.clientSubmissionKey || payload.client_submission_key || '').trim() || undefined,
+    subtitleRegionNormalized: toSubtitleRemovalRegion(
+      payload.subtitleRegionNormalized || payload.subtitle_region_normalized,
+    ),
+    taskId: providerTaskId || undefined,
+    backendJobId: String(job.id || '').trim(),
+    error: resultStatus === 'error' ? (errorMessage || errorCode || '口播翻译失败') : undefined,
+    errorCode: errorCode || undefined,
+    errorDetail: String(job.errorDetail || row.error_detail || '').trim() || undefined,
+    cancelled,
+  };
+  const project: ShellProjectData = {
+    ...(matchedProject || {}),
+    id: shellProjectId,
+    name: String(payload.shellProjectName || payload.shell_project_name || matchedProject?.name || '口播翻译').trim(),
+    module: MODULE_VALUES.VIDEO,
+    status: projectStatus,
+    createdAt: matchedProject?.createdAt || createdAt,
+    completedAt,
+    results: [nextResult],
+    taskCount: 1,
+    completedCount: resultStatus === 'completed' ? 1 : 0,
+    subFeature: 'voiceover_translation',
+    sourceType: 'job',
+    backendJobId: String(job.id || '').trim(),
+    error: resultStatus === 'error' ? nextResult.error : undefined,
+    errorCode: resultStatus === 'error' ? errorCode || undefined : undefined,
+  };
+  const task = ['queued', 'running', 'retry_waiting'].includes(status) ? {
+    id: String(job.id || '').trim(),
+    projectId: shellProjectId,
+    module: MODULE_VALUES.VIDEO,
+    type: 'video' as const,
+    status: status === 'retry_waiting' ? 'retry_waiting' as const : status === 'queued' ? 'pending' as const : 'generating' as const,
+    title: stageLabel,
+    prompt: stageLabel,
+    progress: status === 'queued' ? 8 : 42,
+    createdAt,
+    subFeature: 'voiceover_translation',
+    backendJobId: String(job.id || '').trim(),
+  } : undefined;
+  return { project, task };
+};
 
 const resultFromItem = (
   item: any,
@@ -1469,6 +1815,24 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
           result?.translationGenerationCreditsConsumed ?? result?.payload?.translationGenerationCreditsConsumed,
         ),
         translationRetryStage: String(result?.translationRetryStage ?? result?.payload?.translationRetryStage ?? '').trim() as TranslationRetryStage || undefined,
+        statusText: String(result?.statusText || '').trim() || undefined,
+        sourceAssetId: String(result?.sourceAssetId || '').trim() || undefined,
+        sourceLanguage: String(result?.sourceLanguage || '').trim() || undefined,
+        targetLanguage: String(result?.targetLanguage || '').trim() || undefined,
+        translationMode: toVoiceoverTranslationMode(result?.translationMode),
+        voiceMode: toVoiceMode(result?.voiceMode),
+        voiceName: String(result?.voiceName || '').trim() || undefined,
+        removeText: toOptionalBoolean(result?.removeText),
+        sourceTranscript: String(result?.sourceTranscript || '').trim() || undefined,
+        translatedTranscript: String(result?.translatedTranscript || '').trim() || undefined,
+        voiceoverStage: VOICEOVER_STAGE_IDS.has(String(result?.voiceoverStage || '').trim())
+          ? String(result.voiceoverStage).trim() as VoiceoverCheckpointV1['stage']
+          : undefined,
+        voiceoverCheckpoint: voiceoverCheckpointFromResult({
+          voiceoverCheckpoint: result?.voiceoverCheckpoint,
+        }),
+        finalAssetId: String(result?.finalAssetId || '').trim() || undefined,
+        cancelled: result?.cancelled === true || undefined,
         ...(resultModule === MODULE_VALUES.TRANSLATION ? { translationEditVersions } : {}),
       };
       }) : [],
@@ -2016,6 +2380,22 @@ const mapJobs = (
   const recoveredOneClickPlanningProjects = new Map<string, ShellProjectData>();
   const groupedStoryboardJobIds = new Set<string>();
   const storyboardGroups = new Map<string, InternalJob[]>();
+  const groupedVoiceoverJobIds = new Set<string>();
+
+  jobs.forEach((job) => {
+    const jobId = String(job?.id || '').trim();
+    if (!jobId || hiddenJobIds.has(jobId)) return;
+    if (isVoiceoverChildJob(job)) {
+      groupedVoiceoverJobIds.add(jobId);
+      return;
+    }
+    if (!isVoiceoverParentJob(job)) return;
+    groupedVoiceoverJobIds.add(jobId);
+    const hydrated = buildVoiceoverProjectFromJob(job, persistedProjects);
+    if (!hydrated) return;
+    projects.push(hydrated.project);
+    if (hydrated.task) tasks.push(hydrated.task);
+  });
 
   jobs.forEach((job) => {
     const jobId = String(job?.id || '').trim();
@@ -2809,6 +3189,7 @@ const mapJobs = (
 	    if (groupedTranslationPlanningJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedOneClickPlanningJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedStoryboardJobIds.has(String(job.id || '').trim())) return;
+	    if (groupedVoiceoverJobIds.has(String(job.id || '').trim())) return;
     const module = toModule(job.module);
     const providerErrorText = getProviderErrorText(job);
     const projectStatus = taskStatusToProject(job.status) === 'completed' && providerErrorText

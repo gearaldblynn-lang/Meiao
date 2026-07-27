@@ -2,7 +2,7 @@ import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, TranslationConfigSnapshot, TranslationEditRegion, TranslationEditVersion, TranslationRetryStage, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, TranslationConfigSnapshot, TranslationEditRegion, TranslationEditVersion, TranslationRetryStage, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject, VoiceoverCheckpointV1 } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
@@ -197,7 +197,9 @@ import { buildSubtitleRemovalJobRequest } from './services/subtitleRemovalClient
 import {
   buildVoiceoverSubmissionKey,
   buildVoiceoverJobRequest,
+  buildVoiceoverRetryRequest,
   findActiveVoiceoverSubmissionIdentity,
+  resolveManagedSourceIdentity,
   resolveVoiceoverCreatedJobIdentity,
   type VoiceoverTranslationDraft,
   type VoiceoverTranslationSource,
@@ -365,6 +367,20 @@ export interface GeneratedResult {
   translationGenerationCreditsConsumed?: number;
   translationRetryStage?: TranslationRetryStage;
   translationEditVersions?: TranslationEditVersion[];
+  statusText?: string;
+  sourceAssetId?: string;
+  sourceLanguage?: string;
+  targetLanguage?: string;
+  translationMode?: 'natural' | 'literal';
+  voiceMode?: 'auto' | 'preset';
+  voiceName?: string;
+  removeText?: boolean;
+  sourceTranscript?: string;
+  translatedTranscript?: string;
+  voiceoverStage?: VoiceoverCheckpointV1['stage'];
+  voiceoverCheckpoint?: VoiceoverCheckpointV1;
+  finalAssetId?: string;
+  cancelled?: boolean;
 }
 
 export interface Material {
@@ -4098,6 +4114,68 @@ const AppContent: React.FC<{
   const handleClearVoiceoverInitialSource = useCallback(() => {
     setVoiceoverInitialSource(null);
   }, []);
+
+  const handleTranslateVideoVoiceover = useCallback((projectId: string, resultId: string) => {
+    if (!currentUser || !canUseVideoGenerationFeature(currentUser)) {
+      addToast('当前账号未开通短视频生成权限，不能创建口播翻译任务', 'warning');
+      return;
+    }
+    const project = projectsRef.current.find((item) => item.id === projectId);
+    const result = project?.results.find((item) => item.id === resultId);
+    if (
+      !project
+      || !result
+      || result.status !== 'completed'
+      || project.subFeature === 'voiceover_translation'
+      || !result.videoUrl
+    ) {
+      addToast('当前视频结果还未准备好', 'warning');
+      return;
+    }
+    try {
+      const sourceAssetId = resolveManagedSourceIdentity({ sourceUrl: result.videoUrl });
+      setVoiceoverInitialSource({
+        sourceAssetId,
+        sourceUrl: result.videoUrl,
+        sourceProjectId: project.id,
+        sourceResultId: result.id,
+      });
+      setActiveModule(AppModuleObj.VIDEO);
+      setActiveSubFeatureByModule((prev) => ({
+        ...prev,
+        [AppModuleObj.VIDEO]: 'voiceover_translation',
+      }));
+      setPageMode('module');
+      addToast('已进入口播翻译，请确认目标语言和音色', 'success');
+    } catch {
+      addToast('该视频不是当前账号可用的梅奥托管素材', 'warning');
+    }
+  }, [addToast, currentUser]);
+
+  const handleVoiceoverResultDownloaded = useCallback((projectId: string, resultId: string) => {
+    const scopeUserId = shellLocalScopeUserId;
+    if (!scopeUserId || currentShellScopeUserIdRef.current !== scopeUserId) return;
+    const project = projectsRef.current.find((item) => (
+      item.id === projectId
+      && item.module === AppModuleObj.VIDEO
+      && item.subFeature === 'voiceover_translation'
+    ));
+    const result = project?.results.find((item) => item.id === resultId);
+    if (!result) return;
+    void safeCreateInternalLog({
+      level: 'info',
+      module: AppModuleObj.VIDEO,
+      action: 'voiceover_translation_result_downloaded',
+      message: '口播翻译结果已下载',
+      status: 'success',
+      meta: {
+        module: AppModuleObj.VIDEO,
+        subFeature: 'voiceover_translation',
+        shellProjectId: projectId,
+        shellResultId: resultId,
+      },
+    });
+  }, [shellLocalScopeUserId]);
 
   const handleSubtitleRemovalSubmit = useCallback(async (inputs: Array<{
     clientItemId: string;
@@ -9351,15 +9429,21 @@ const AppContent: React.FC<{
     return () => window.clearTimeout(timeoutId);
   }, [handleConfirmStoryboardImaging, videoMemory?.storyboard?.projects]);
 
-  const handleRegenerateResult = useCallback(async (projectId: string, resultId: string, revisionInstruction = '') => {
+  const handleRegenerateResult = useCallback(async (
+    projectId: string,
+    resultId: string,
+    revisionInstruction = '',
+    voiceoverRetryOptions: { confirmNewProviderAttempt?: boolean } = {},
+  ) => {
     const actionKey = `regenerate:${projectId}:${resultId}`;
     if (!beginExclusiveAction(actionKey, '重生成任务已提交，请等待当前任务完成')) return;
     try {
       const project = projects.find((p) => p.id === projectId);
       if (!project) return;
+      const result = project.results.find((item) => item.id === resultId);
+      if (!result) return;
       if (project.module === AppModuleObj.VIDEO && project.subFeature === 'subtitle_removal') {
-        const result = project.results.find((item) => item.id === resultId);
-        if (!result || result.status !== 'error') {
+        if (result.status !== 'error') {
           addToast('只有失败的去字幕子任务可以重试', 'info');
           return;
         }
@@ -10888,28 +10972,17 @@ const AppContent: React.FC<{
           releaseTranslationRetryScopeLock(translationRetryScopeLocksRef.current, translationRetryScopeKey);
         }
       }
-      if (project.sourceType === 'job') {
-        try {
-          await retryInternalJob(resultId);
-        } catch (error) {
-          const retryErrorCode = String((error as { code?: unknown })?.code || '');
-          const needsVoiceoverPaidConfirmation = project.subFeature === 'voiceover_translation'
-            && [
-              'voiceover_retry_confirmation_required',
-              'voiceover_analysis_submission_unknown',
-            ].includes(retryErrorCode);
-          if (!needsVoiceoverPaidConfirmation) throw error;
-          const confirmed = window.confirm(
-            '继续重试可能产生新的语音或分析费用，是否确认继续？',
-          );
-          if (!confirmed) {
-            addToast('已取消口播翻译重试', 'info');
-            return;
-          }
-          await retryInternalJob(resultId, {
-            confirmNewProviderAttempt: true,
-          });
+      if (project.subFeature === 'voiceover_translation') {
+        const voiceoverRetryJobId = String(result.backendJobId || project.backendJobId || '').trim();
+        if (!voiceoverRetryJobId) {
+          addToast('该口播翻译结果缺少后端任务标识，无法安全重试', 'warning');
+          return;
         }
+        const retryRequest = buildVoiceoverRetryRequest(
+          { taskType: 'voiceover_translate_video', provider: 'internal' },
+          voiceoverRetryOptions,
+        );
+        await retryInternalJob(voiceoverRetryJobId, retryRequest);
         setProjects((prev) => prev.map((item) => item.id === projectId ? {
           ...item,
           status: 'generating',
@@ -10924,8 +10997,22 @@ const AppContent: React.FC<{
         window.setTimeout(() => void hydrateShellJobs(), 800);
         return;
       }
-      const result = project.results.find((item) => item.id === resultId);
-      if (!result) return;
+      if (project.sourceType === 'job') {
+        await retryInternalJob(resultId);
+        setProjects((prev) => prev.map((item) => item.id === projectId ? {
+          ...item,
+          status: 'generating',
+          error: undefined,
+          results: item.results.map((result) => result.id === resultId ? {
+            ...result,
+            status: 'generating',
+            error: undefined,
+          } : result),
+        } : item));
+        addToast('已提交后端重试', 'success');
+        window.setTimeout(() => void hydrateShellJobs(), 800);
+        return;
+      }
       if (result.mediaType === 'video' || result.videoUrl || project.module === AppModuleObj.VIDEO) {
         addToast('视频结果暂不支持单张重生成，请重新提交视频生成任务', 'info');
         return;
@@ -13194,6 +13281,8 @@ const AppContent: React.FC<{
           onImportStoryboardToGeneration={handleImportStoryboardToGeneration}
           onRecoverResult={handleRecoverResult}
           onRemoveVideoSubtitles={handleRemoveVideoSubtitles}
+          onTranslateVideoVoiceover={canUseVideoGenerationFeature(currentUser) ? handleTranslateVideoVoiceover : undefined}
+          onVoiceoverResultDownloaded={handleVoiceoverResultDownloaded}
           onCancelTask={handleCancelTask}
           pendingActionKeys={pendingActionKeys}
           showGenerationProgress={showGenerationProgress}
