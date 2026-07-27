@@ -8,6 +8,7 @@ import {
   getVoiceoverConfig,
   normalizeVoiceoverCheckpoint,
 } from '../server/voiceoverContract.mjs';
+import { buildVoiceoverTtsGroups } from '../server/voiceoverAnalysis.mjs';
 import {
   createMediaTranscodeService,
   inspectMp4Container,
@@ -27,7 +28,10 @@ import {
   getVoiceoverSourceMaxBytes,
   streamVoiceoverAssetToFile,
 } from '../server/voiceoverTranslationRunner.mjs';
-import { getVoiceoverLanguage } from '../src/utils/voiceoverCatalog.mjs';
+import {
+  getVoiceoverLanguage,
+  selectAutomaticVoice,
+} from '../src/utils/voiceoverCatalog.mjs';
 
 const MANAGED_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/u;
 const INTERNAL_JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u;
@@ -58,6 +62,7 @@ class VoiceoverProbeUsageError extends Error {
 
 const clean = (value) => String(value || '').trim();
 const usageError = (message) => new VoiceoverProbeUsageError(message);
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
 const takeValue = (argv, index, option) => {
   const value = argv[index + 1];
@@ -486,9 +491,22 @@ const latestTtsGroups = (groups) => {
   return [...latestByIndex.values()];
 };
 
+const translationMatchesAnalysis = (analysisSegments, translationSegments) => (
+  analysisSegments.length === translationSegments.length
+  && analysisSegments.every((analysisSegment, index) => {
+    const translationSegment = translationSegments[index];
+    return analysisSegment.id === translationSegment.id
+      && analysisSegment.startMs === translationSegment.startMs
+      && analysisSegment.endMs === translationSegment.endMs
+      && analysisSegment.sourceText === translationSegment.sourceText
+      && analysisSegment.targetText === translationSegment.targetText;
+  })
+);
+
 const requireCanonicalLiveCheckpoint = ({
   job,
   removeText,
+  targetLanguage,
   finalIdentity,
   durationMs,
   env,
@@ -496,6 +514,9 @@ const requireCanonicalLiveCheckpoint = ({
   const rawCheckpoint = job?.result?.voiceoverCheckpoint;
   if (!rawCheckpoint || typeof rawCheckpoint !== 'object' || Array.isArray(rawCheckpoint)) {
     throw new Error('口播翻译成功任务缺少规范的持久化检查点。');
+  }
+  if (!hasOwn(rawCheckpoint, 'analysisAttempt')) {
+    throw new Error('口播翻译持久化检查点缺少分析尝试索引。');
   }
   const config = getVoiceoverConfig(env);
   const checkpoint = normalizeVoiceoverCheckpoint(rawCheckpoint, {
@@ -508,15 +529,41 @@ const requireCanonicalLiveCheckpoint = ({
   if (
     checkpoint.stage !== 'result_persisted'
     || checkpoint.finalAssetId !== finalIdentity.assetId
-    || checkpoint.analysisAttempt < 1
     || !checkpoint.analysis
     || !checkpoint.translation
   ) {
     throw new Error('口播翻译持久化检查点尚未形成可验证终态。');
   }
-  const latestGroups = latestTtsGroups(checkpoint.ttsGroups);
   if (
-    latestGroups.length === 0
+    checkpoint.translation.targetLanguage !== targetLanguage
+    || checkpoint.translation.mode !== 'natural'
+    || !translationMatchesAnalysis(
+      checkpoint.analysis.segments,
+      checkpoint.translation.segments,
+    )
+    || checkpoint.translation.selectedVoiceName
+      !== selectAutomaticVoice(checkpoint.analysis.voiceProfile)
+  ) {
+    throw new Error('口播翻译持久化检查点与本次分析、文本或音色合同不一致。');
+  }
+  const plannedGroups = buildVoiceoverTtsGroups({
+    segments: checkpoint.translation.segments,
+    selectedVoiceName: checkpoint.translation.selectedVoiceName,
+    maxInputTokens: config.ttsMaxInputTokens,
+    groupGapMs: config.groupGapMs,
+  });
+  const latestGroups = latestTtsGroups(checkpoint.ttsGroups);
+  const latestByIndex = new Map(latestGroups.map((group) => [group.index, group]));
+  if (
+    latestGroups.length !== plannedGroups.length
+    || plannedGroups.some((planned) => {
+      const group = latestByIndex.get(planned.groupIndex);
+      return (
+        !group
+        || group.startMs !== planned.startMs
+        || group.endMs !== planned.endMs
+      );
+    })
     || latestGroups.some((group) => (
       group.status !== 'succeeded'
       || !INTERNAL_JOB_ID_PATTERN.test(group.childJobId)
@@ -905,6 +952,7 @@ export async function runVoiceoverProbe(argv = [], deps = {}) {
     const checkpoint = requireCanonicalLiveCheckpoint({
       job,
       removeText: args.removeText,
+      targetLanguage: args.targetLanguage,
       finalIdentity,
       durationMs,
       env,

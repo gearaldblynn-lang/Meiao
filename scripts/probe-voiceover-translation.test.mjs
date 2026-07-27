@@ -34,7 +34,7 @@ const canonicalVoiceoverCheckpoint = ({ removeText = false, ...overrides } = {})
     originalAudioAssetId: 'asset-original-audio',
     vocalAssetId: 'asset-vocals',
     backgroundAssetId: 'asset-background',
-    analysisAttempt: 1,
+    analysisAttempt: 0,
     ...(removeText ? {
       subtitleRemoval: {
         childJobId: 'voiceover-child-golden-safe',
@@ -59,7 +59,7 @@ const canonicalVoiceoverCheckpoint = ({ removeText = false, ...overrides } = {})
     translation: {
       targetLanguage: 'en',
       mode: 'natural',
-      selectedVoiceName: 'Kore',
+      selectedVoiceName: 'Charon',
       segments: [{ ...segment }],
     },
     ttsGroups: [{
@@ -530,6 +530,7 @@ test('confirmed live mode creates exactly once with only the explicitly supplied
   assert.equal(JSON.parse(result.stdout).rangeReadable, true);
   assert.equal(JSON.parse(result.stdout).parentJobId, 'parent-job-safe');
   assert.equal(JSON.parse(result.stdout).finalCheckpointStage, 'result_persisted');
+  assert.equal(JSON.parse(result.stdout).analysisAttempt, 0);
   assert.deepEqual(JSON.parse(result.stdout).childJobIds, ['voiceover-child-tts-safe']);
   assert.doesNotMatch(result.stdout, /provider-task-never-print|providerTaskId|accessKey|never-print|kie-secret|session-secret/);
 });
@@ -540,6 +541,7 @@ test('successful live evidence contains only bounded internal checkpoint identit
       MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED: '1',
       MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
       MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+      MEIAO_VOICEOVER_GROUP_GAP_MS: '0',
     },
     liveResult: {
       job: {
@@ -549,6 +551,38 @@ test('successful live evidence contains only bounded internal checkpoint identit
           voiceoverCheckpoint: canonicalVoiceoverCheckpoint({
             removeText: true,
             analysisAttempt: 3,
+            analysis: {
+              ...canonicalVoiceoverCheckpoint().analysis,
+              segments: [{
+                id: 'segment-1',
+                startMs: 0,
+                endMs: 400,
+                sourceText: '第一段',
+                targetText: 'First.',
+              }, {
+                id: 'segment-2',
+                startMs: 500,
+                endMs: 800,
+                sourceText: '第二段',
+                targetText: 'Second.',
+              }],
+            },
+            translation: {
+              ...canonicalVoiceoverCheckpoint().translation,
+              segments: [{
+                id: 'segment-1',
+                startMs: 0,
+                endMs: 400,
+                sourceText: '第一段',
+                targetText: 'First.',
+              }, {
+                id: 'segment-2',
+                startMs: 500,
+                endMs: 800,
+                sourceText: '第二段',
+                targetText: 'Second.',
+              }],
+            },
             ttsGroups: [{
               index: 0,
               attempt: 0,
@@ -565,7 +599,7 @@ test('successful live evidence contains only bounded internal checkpoint identit
               providerTaskId: 'tts-provider-one-never-print',
               assetId: 'asset-tts-one',
               status: 'succeeded',
-              startMs: 400,
+              startMs: 500,
               endMs: 800,
             }],
           }),
@@ -617,6 +651,8 @@ test('succeeded live jobs fail closed unless the authoritative final checkpoint 
     MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
   };
   const baseTtsGroup = canonicalVoiceoverCheckpoint().ttsGroups[0];
+  const missingAnalysisAttempt = canonicalVoiceoverCheckpoint();
+  delete missingAnalysisAttempt.analysisAttempt;
   const cases = [{
     name: 'no checkpoint',
     removeText: false,
@@ -649,10 +685,18 @@ test('succeeded live jobs fail closed unless the authoritative final checkpoint 
       videoUrl: '/api/assets/file/managed-final',
     },
   }, {
-    name: 'analysis attempt never submitted',
+    name: 'missing analysis attempt index',
     removeText: false,
     result: {
-      voiceoverCheckpoint: canonicalVoiceoverCheckpoint({ analysisAttempt: 0 }),
+      voiceoverCheckpoint: missingAnalysisAttempt,
+      finalAssetId: 'managed-final',
+      videoUrl: '/api/assets/file/managed-final',
+    },
+  }, {
+    name: 'negative analysis attempt index',
+    removeText: false,
+    result: {
+      voiceoverCheckpoint: canonicalVoiceoverCheckpoint({ analysisAttempt: -1 }),
       finalAssetId: 'managed-final',
       videoUrl: '/api/assets/file/managed-final',
     },
@@ -755,6 +799,148 @@ test('succeeded live jobs fail closed unless the authoritative final checkpoint 
   assert.equal(invalidDurationResult.exitCode, 1);
   assert.equal(invalidDuration.calls.providerCreate, 1);
   assert.equal(JSON.parse(invalidDurationResult.stderr).parentJobId, 'parent-job-safe');
+});
+
+test('succeeded live jobs require durable TTS groups to match the production logical plan', async () => {
+  const plannedSegments = [{
+    id: 'segment-1',
+    startMs: 0,
+    endMs: 400,
+    sourceText: '第一段',
+    targetText: 'First.',
+  }, {
+    id: 'segment-2',
+    startMs: 500,
+    endMs: 800,
+    sourceText: '第二段',
+    targetText: 'Second.',
+  }];
+  const base = canonicalVoiceoverCheckpoint();
+  const plannedCheckpoint = canonicalVoiceoverCheckpoint({
+    analysisAttempt: 1,
+    analysis: {
+      ...base.analysis,
+      segments: structuredClone(plannedSegments),
+    },
+    translation: {
+      ...base.translation,
+      segments: structuredClone(plannedSegments),
+    },
+    ttsGroups: [{
+      ...base.ttsGroups[0],
+      index: 0,
+      childJobId: 'voiceover-child-tts-0',
+      providerTaskId: 'provider-tts-0-never-print',
+      assetId: 'asset-tts-0',
+      startMs: 0,
+      endMs: 400,
+    }, {
+      ...base.ttsGroups[0],
+      index: 1,
+      childJobId: 'voiceover-child-tts-1',
+      providerTaskId: 'provider-tts-1-never-print',
+      assetId: 'asset-tts-1',
+      startMs: 500,
+      endMs: 800,
+    }],
+  });
+  const [group0, group1] = plannedCheckpoint.ttsGroups;
+  const cases = [{
+    name: 'missing planned group',
+    checkpoint: {
+      ...plannedCheckpoint,
+      ttsGroups: [group0],
+    },
+  }, {
+    name: 'sparse high group index',
+    checkpoint: {
+      ...plannedCheckpoint,
+      ttsGroups: [group0, { ...group1, index: 99 }],
+    },
+  }, {
+    name: 'extra logical group',
+    checkpoint: {
+      ...plannedCheckpoint,
+      ttsGroups: [
+        group0,
+        group1,
+        {
+          ...group1,
+          index: 2,
+          childJobId: 'voiceover-child-tts-extra',
+          providerTaskId: 'provider-tts-extra-never-print',
+          assetId: 'asset-tts-extra',
+        },
+      ],
+    },
+  }, {
+    name: 'wrong planned timing',
+    checkpoint: {
+      ...plannedCheckpoint,
+      ttsGroups: [group0, { ...group1, startMs: 550 }],
+    },
+  }, {
+    name: 'translation text drift',
+    checkpoint: {
+      ...plannedCheckpoint,
+      translation: {
+        ...plannedCheckpoint.translation,
+        segments: plannedCheckpoint.translation.segments.map((segment, index) => (
+          index === 1 ? { ...segment, targetText: 'Wrong text.' } : segment
+        )),
+      },
+    },
+  }, {
+    name: 'automatic voice drift',
+    checkpoint: {
+      ...plannedCheckpoint,
+      translation: {
+        ...plannedCheckpoint.translation,
+        selectedVoiceName: 'Kore',
+      },
+    },
+  }, {
+    name: 'configured grouping drift',
+    checkpoint: plannedCheckpoint,
+    env: { MEIAO_VOICEOVER_GROUP_GAP_MS: '800' },
+  }];
+
+  for (const item of cases) {
+    const deps = probeDeps({
+      env: {
+        MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED: '1',
+        MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
+        MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+        MEIAO_VOICEOVER_GROUP_GAP_MS: '0',
+        ...item.env,
+      },
+      liveResult: {
+        job: {
+          id: `parent-plan-${item.name.replaceAll(' ', '-')}`,
+          status: 'succeeded',
+          result: {
+            voiceoverCheckpoint: item.checkpoint,
+            finalAssetId: 'managed-final',
+            videoUrl: '/api/assets/file/managed-final',
+          },
+        },
+      },
+    });
+    const result = await runVoiceoverProbe([
+      '--live',
+      '--source-asset-id', 'owned-managed-asset',
+      '--target-language', 'en',
+    ], deps);
+
+    assert.equal(result.exitCode, 1, item.name);
+    assert.equal(deps.calls.providerCreate, 1, item.name);
+    assert.equal(JSON.parse(result.stderr).parentJobId.startsWith('parent-plan-'), true);
+    assert.doesNotMatch(
+      result.stderr,
+      /providerTaskId|provider-tts-|First\.|Second\.|Wrong text|第一段|第二段/,
+      item.name,
+    );
+  }
 });
 
 test('post-create timeout and terminal failure preserve safe parent recovery evidence without recreating', async () => {
