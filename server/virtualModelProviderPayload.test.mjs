@@ -95,3 +95,25 @@ test('full-person provider payload preserves the server-selected full-body A1 or
   ]);
   assert.match(result.payload.prompt, /图A-1（输入图1）：四分之三全身/);
 });
+
+test('full-person provider payload migrates a trusted legacy close-first snapshot to full-body A1', () => {
+  const result = buildVirtualModelProviderPayload({
+    identitySource: 'library',
+    replacementScope: 'full_person',
+    prompt: '图A-1是唯一主人物来源图\n\nF Format 格式',
+    imageUrls: ['https://managed/reference.png'],
+  }, [
+    { assetId: 'front-id', slot: 'front_close', url: 'https://managed/front.png' },
+    { assetId: 'close-id', slot: 'right_45_close', url: 'https://managed/close.png' },
+    { assetId: 'full-id', slot: 'three_quarter_full', url: 'https://managed/full.png' },
+  ]);
+
+  assert.deepEqual(result.payload.imageUrls, [
+    'https://managed/full.png',
+    'https://managed/front.png',
+    'https://managed/close.png',
+    'https://managed/reference.png',
+  ]);
+  assert.match(result.payload.prompt, /图A-1（输入图1）：四分之三全身/);
+  assert.deepEqual([...result.authorizedManagedAssetIds], ['full-id', 'front-id', 'close-id']);
+});

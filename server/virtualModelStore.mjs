@@ -375,7 +375,9 @@ export const createVirtualModelGenerationJobSnapshot = async ({ pool = null, sto
     ? selectedAssetIds.map((assetId) => assets.find((asset) => asset.assetId === assetId))
     : null;
   const historicalPrimaryIsValid = normalizedReplacementScope === 'full_person'
-    ? historicalSelected?.[0]?.slot === 'front_full' || historicalSelected?.[0]?.slot === 'three_quarter_full'
+    ? historicalSelected?.[0]?.isPrimary === true
+      || historicalSelected?.[0]?.slot === 'front_full'
+      || historicalSelected?.[0]?.slot === 'three_quarter_full'
     : historicalSelected?.[0]?.isPrimary === true;
   if (allowHistoricalPublishedVersion === true && (
     !Array.isArray(selectedAssetIds)

@@ -254,6 +254,34 @@ test('historical retry accepts its durable published version after a newer versi
   );
 });
 
+test('historical full-person retries accept the legacy close-first snapshot for provider migration', async () => {
+  const { store, model, version } = await createPublishedModel();
+  const legacy = await createVirtualModelGenerationJobSnapshot({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: version.id,
+    referenceAnalysis: { framing: 'full_body', faceDirection: 'right' },
+    replacementScope: 'identity_only',
+  });
+
+  const replay = await createVirtualModelGenerationJobSnapshot({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: version.id,
+    referenceAnalysis: { framing: 'full_body', faceDirection: 'right' },
+    replacementScope: 'full_person',
+    allowHistoricalPublishedVersion: true,
+    publishedAt: legacy.publishedAt,
+    selectedAssetIds: legacy.selectedAssetIds,
+  });
+
+  assert.deepEqual(replay.selectedAssetIds, legacy.selectedAssetIds);
+  assert.deepEqual(replay.selectedIdentitySlots, [
+    'front_close', 'right_45_close', 'three_quarter_full',
+  ]);
+  assert.equal(replay.replacementScope, 'full_person');
+});
+
 test('historical four-image library jobs remain replayable after new jobs adopt three images', async () => {
   const { store, model, version } = await createPublishedModel();
   const legacySelections = [

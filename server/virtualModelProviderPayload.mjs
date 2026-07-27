@@ -26,8 +26,14 @@ export const buildVirtualModelProviderPayload = (payload, resolvedAssets = []) =
   const assets = Array.isArray(resolvedAssets)
     ? resolvedAssets.filter((asset) => asset?.assetId && asset?.url)
     : [];
-  const identityAnchorConstraint = assets.length > 0
-    ? `【图A实际素材角度】\n${assets
+  const firstFullBodyIndex = payload?.replacementScope === 'full_person'
+    ? assets.findIndex((asset) => asset.slot === 'front_full' || asset.slot === 'three_quarter_full')
+    : -1;
+  const orderedAssets = firstFullBodyIndex > 0
+    ? [assets[firstFullBodyIndex], ...assets.filter((_asset, index) => index !== firstFullBodyIndex)]
+    : assets;
+  const identityAnchorConstraint = orderedAssets.length > 0
+    ? `【图A实际素材角度】\n${orderedAssets
       .map((asset, index) => `图A-${index + 1}（输入图${index + 1}）：${IDENTITY_ASSET_SLOT_LABELS[asset.slot] || asset.slot}。`)
       .join('\n')}`
     : '';
@@ -46,11 +52,11 @@ export const buildVirtualModelProviderPayload = (payload, resolvedAssets = []) =
         ? { prompt: insertModelReplaceLibraryMetadata(payload.prompt, libraryMetadata) }
         : {}),
       imageUrls: [
-        ...assets.map((asset) => asset.url),
+        ...orderedAssets.map((asset) => asset.url),
         ...(Array.isArray(payload.imageUrls) ? payload.imageUrls : []),
       ],
     },
-    authorizedManagedAssetIds: new Set(assets.map((asset) => asset.assetId)),
+    authorizedManagedAssetIds: new Set(orderedAssets.map((asset) => asset.assetId)),
   };
 };
 
