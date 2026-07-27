@@ -662,6 +662,38 @@ test('markLocalJobFailed keeps providerTaskId for later recovery', () => {
   assert.equal(failed.providerTaskId, 'kie-task-123');
 });
 
+test('local terminal helpers treat a missing expected claim as job_state_changed', () => {
+  const store = createStore();
+  const expectedClaim = {
+    id: 'deleted-running-job',
+    userId: 'user-1',
+    startedAt: 1_000,
+  };
+
+  assert.throws(
+    () => markLocalJobCompleted(
+      store,
+      expectedClaim.id,
+      { result: { stale: true } },
+      false,
+      expectedClaim,
+    ),
+    (error) => error.code === 'job_state_changed' && error.statusCode === 409,
+  );
+  assert.throws(
+    () => markLocalJobFailed(
+      store,
+      expectedClaim.id,
+      Object.assign(new Error('stale failure'), { code: 'provider_network_error' }),
+      expectedClaim,
+    ),
+    (error) => error.code === 'job_state_changed' && error.statusCode === 409,
+  );
+
+  assert.equal(markLocalJobCompleted(store, expectedClaim.id, { result: {} }), null);
+  assert.equal(markLocalJobFailed(store, expectedClaim.id, new Error('missing')), null);
+});
+
 test('local kie chat failure keeps its response id but never resubmits it as a recoverable task', () => {
   const store = createStore();
   const user = createUser();
@@ -1093,6 +1125,7 @@ test('local voiceover reuse follows the current provider attempt instead of hist
       index: 0,
       attempt: 1,
       childJobId: 'child-attempt-1',
+      providerTaskId: 'provider-attempt-1',
       status: 'submitted',
       startMs: 0,
       endMs: 800,
@@ -1104,7 +1137,7 @@ test('local voiceover reuse follows the current provider attempt instead of hist
     status: 'failed',
     startedAt: null,
     finishedAt: 4_000,
-    providerTaskId: 'provider-attempt-1',
+    providerTaskId: '',
     errorCode: 'provider_submission_unknown',
     result: {
       audit: 'keep',
@@ -1115,17 +1148,91 @@ test('local voiceover reuse follows the current provider attempt instead of hist
     voiceoverRetryPlan: { kind: 'reuse' },
   });
   assert.equal(queryRetry.status, 'queued');
-  assert.equal(queryRetry.providerTaskId, 'provider-attempt-1');
+  assert.equal(
+    queryRetry.result.voiceoverCheckpoint.ttsGroups.at(-1).providerTaskId,
+    'provider-attempt-1',
+  );
 
+  const unknownCheckpoint = structuredClone(queryCheckpoint);
+  delete unknownCheckpoint.ttsGroups[0].providerTaskId;
   const unknownStore = createStore();
   unknownStore.jobs = [createVoiceoverParent({
     status: 'failed',
     startedAt: null,
     finishedAt: 4_000,
+    providerTaskId: 'unrelated-parent-provider',
+    errorCode: 'provider_submission_unknown',
+    result: {
+      audit: 'keep',
+      voiceoverCheckpoint: unknownCheckpoint,
+    },
+  })];
+  assert.throws(
+    () => requestLocalRetryJob(unknownStore, 'voiceover-parent-1', {
+      voiceoverRetryPlan: { kind: 'reuse' },
+    }),
+    (error) => error.code === 'voiceover_retry_confirmation_required',
+  );
+});
+
+test('local voiceover Golden reuse classifies recovery from the current child attempt provider id', () => {
+  const checkpoint = {
+    version: 1,
+    stage: 'subtitle_removal',
+    baseVideoAssetId: 'asset-base',
+    subtitleRemoval: {
+      childJobId: 'golden-attempt-1',
+      providerTaskId: 'golden-provider-attempt-1',
+      attempt: 1,
+      status: 'submitted',
+    },
+    analysisAttempt: 0,
+  };
+  const recoverableStore = createStore();
+  recoverableStore.jobs = [createVoiceoverParent({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 4_000,
+    payload: {
+      taskPurpose: 'voiceover_translation',
+      removeText: true,
+    },
     providerTaskId: '',
     errorCode: 'provider_submission_unknown',
-    result: queryStore.jobs[0].result,
+    result: {
+      audit: 'keep',
+      voiceoverCheckpoint: checkpoint,
+    },
   })];
+
+  const retried = requestLocalRetryJob(recoverableStore, 'voiceover-parent-1', {
+    voiceoverRetryPlan: { kind: 'reuse' },
+  });
+  assert.equal(retried.status, 'queued');
+  assert.equal(
+    retried.result.voiceoverCheckpoint.subtitleRemoval.providerTaskId,
+    'golden-provider-attempt-1',
+  );
+
+  const unknownCheckpoint = structuredClone(checkpoint);
+  delete unknownCheckpoint.subtitleRemoval.providerTaskId;
+  const unknownStore = createStore();
+  unknownStore.jobs = [createVoiceoverParent({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 4_000,
+    payload: {
+      taskPurpose: 'voiceover_translation',
+      removeText: true,
+    },
+    providerTaskId: 'unrelated-parent-provider',
+    errorCode: 'provider_submission_unknown',
+    result: {
+      audit: 'keep',
+      voiceoverCheckpoint: unknownCheckpoint,
+    },
+  })];
+
   assert.throws(
     () => requestLocalRetryJob(unknownStore, 'voiceover-parent-1', {
       voiceoverRetryPlan: { kind: 'reuse' },
@@ -1210,5 +1317,42 @@ test('classic local worker cannot complete or fail a newer running claim', async
     assert.equal(persisted.result.staleExecutor, undefined);
     assert.equal(persisted.errorCode, '', outcome);
     assert.deepEqual(creditFinalizations, [], outcome);
+  }
+});
+
+test('classic local worker treats deletion during execution as a stale claim', async () => {
+  for (const outcome of ['complete', 'fail']) {
+    const store = createStore();
+    store.users.push(createUser());
+    store.jobs = [createVoiceoverParent({ status: 'queued', startedAt: null })];
+    const creditFinalizations = [];
+    const worker = createLocalJobWorker({
+      readStore: () => store,
+      writeStore: () => {},
+      mutateStore: async (operation) => operation(store),
+      executeJob: async () => {
+        store.jobs = [];
+        if (outcome === 'fail') {
+          throw Object.assign(new Error('deleted executor failed'), {
+            code: 'provider_network_error',
+          });
+        }
+        return { result: { deletedExecutor: true } };
+      },
+      getMaxConcurrency: () => 1,
+      createLog: (entry) => store.logs.push(entry),
+      findUserById: (userId) => store.users.find((user) => user.id === userId),
+      settleJobCredits: () => creditFinalizations.push('settle'),
+      releaseJobCredits: () => creditFinalizations.push('release'),
+      isExecutionPaused: () => false,
+    });
+
+    worker.start(5);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    worker.stop();
+
+    assert.deepEqual(store.jobs, [], outcome);
+    assert.deepEqual(creditFinalizations, [], outcome);
+    assert.deepEqual(store.logs, [], outcome);
   }
 });

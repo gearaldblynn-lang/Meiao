@@ -866,6 +866,42 @@ test('local temporal activity cannot complete or fail a newer running claim', as
   }
 });
 
+test('local temporal activity treats deletion during execution as a stale claim', async () => {
+  for (const outcome of ['complete', 'fail']) {
+    const store = createStore();
+    store.jobs = [voiceoverParentJob()];
+    const creditFinalizations = [];
+    const activities = createLocalTemporalActivities({
+      readStore: () => store,
+      writeStore: () => {},
+      mutateStore: async (operation) => operation(store),
+      executeJob: async () => {
+        store.jobs = [];
+        if (outcome === 'fail') {
+          throw Object.assign(new Error('deleted executor failed'), {
+            code: 'provider_network_error',
+          });
+        }
+        return { result: { deletedExecutor: true } };
+      },
+      createLog: (entry) => store.logs.push(entry),
+      findUserById: () => store.users[0],
+      settleJobCredits: () => creditFinalizations.push('settle'),
+      releaseJobCredits: () => creditFinalizations.push('release'),
+    });
+
+    const result = await activities.executeLocalJobAttemptActivity({
+      jobId: 'voiceover-parent-temporal',
+    });
+
+    assert.equal(result.jobId, 'voiceover-parent-temporal', outcome);
+    assert.equal(result.status, 'running', outcome);
+    assert.deepEqual(store.jobs, [], outcome);
+    assert.deepEqual(creditFinalizations, [], outcome);
+    assert.deepEqual(store.logs, [], outcome);
+  }
+});
+
 test('local temporal activity refuses to claim a parent-owned child', async () => {
   const store = createStore();
   store.jobs = [parentOwnedTemporalChild()];

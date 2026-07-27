@@ -1007,13 +1007,13 @@ export const prepareVoiceoverJobRetryResult = (job, voiceoverRetryPlan = {}, opt
     const hasDefinitiveChildFailure = currentProviderAttempts.some(
       (attempt) => attempt.status === 'failed',
     );
-    const hasUnqueryableRunningAttempt = !normalized.providerTaskId
-      && currentProviderAttempts.some((attempt) => attempt.status === 'submitted');
+    const hasUnqueryableRunningAttempt = currentProviderAttempts.some(
+      (attempt) => attempt.status === 'submitted' && !attempt.providerTaskId,
+    );
     if (
       hasDefinitiveChildFailure
       || hasUnqueryableRunningAttempt
       || normalized.errorCode === 'voiceover_analysis_submission_unknown'
-      || (normalized.errorCode === 'provider_submission_unknown' && !normalized.providerTaskId)
     ) {
       throw createStoreError(
         'voiceover_retry_confirmation_required',

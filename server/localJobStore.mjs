@@ -540,7 +540,10 @@ export const markLocalJobCompleted = (
   expectedClaim,
 ) => {
   const index = findJobIndex(store, jobId);
-  if (index < 0) return null;
+  if (index < 0) {
+    if (expectedClaim) throw createJobStateChangedError();
+    return null;
+  }
   const finishedAt = now();
   const current = assertLocalRunningClaim(store.jobs[index], expectedClaim);
   const outputResult = output?.result && typeof output.result === 'object' ? cloneValue(output.result) : null;
@@ -584,7 +587,10 @@ export const updateLocalJobProviderTaskId = (store, jobId, providerTaskId) => {
 
 export const markLocalJobFailed = (store, jobId, error, expectedClaim) => {
   const index = findJobIndex(store, jobId);
-  if (index < 0) return null;
+  if (index < 0) {
+    if (expectedClaim) throw createJobStateChangedError();
+    return null;
+  }
   const current = assertLocalRunningClaim(store.jobs[index], expectedClaim);
   const errorFields = buildJobFailureErrorFields(error);
   const providerTaskId = String(error?.providerTaskId || current.providerTaskId || '');
