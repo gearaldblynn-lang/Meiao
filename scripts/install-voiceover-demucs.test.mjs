@@ -49,14 +49,20 @@ test('Linux CPU lock controls only PyPI and official PyTorch CPU sources and has
   assert.match(lock, /^--extra-index-url https:\/\/download\.pytorch\.org\/whl\/cpu$/m);
   assert.match(lock, /^torch==2\.7\.1\+cpu \\/m);
   assert.match(lock, /^torchaudio==2\.7\.1\+cpu \\/m);
-  const blocks = lock.split(/\n(?=[a-z0-9][a-z0-9._-]*==)/i).filter((block) => /^[a-z0-9][a-z0-9._-]*==/i.test(block));
-  assert.ok(blocks.length >= 20);
-  for (const block of blocks) {
-    assert.match(block, /--hash=sha256:[a-f0-9]{64}/i, `missing hash for ${block.split('==')[0]}`);
-  }
+  const assertEveryPinHasHashes = (lockedText, minimumPins) => {
+    const blocks = lockedText.split(/\n(?=[a-z0-9][a-z0-9._-]*==)/i).filter((block) => /^[a-z0-9][a-z0-9._-]*==/i.test(block));
+    assert.ok(blocks.length >= minimumPins);
+    for (const block of blocks) {
+      const pin = block.match(/^([a-z0-9][a-z0-9._-]*==[^\s]+)/i)?.[1];
+      assert.ok(pin, 'missing pinned package header');
+      assert.match(block, /^\s*--hash=sha256:[a-f0-9]{64}/im, `missing hash for ${pin}`);
+    }
+  };
+  assertEveryPinHasHashes(lock, 20);
   const buildLock = await readFile(new URL('../deploy/voiceover/build-requirements.lock', import.meta.url), 'utf8');
   assert.match(buildLock, /^setuptools==80\.9\.0 \\/m);
   assert.match(buildLock, /^wheel==0\.45\.1 \\/m);
+  assertEveryPinHasHashes(buildLock, 2);
   assert.equal(/diffq/i.test(`${source}\n${lock}\n${buildLock}`), false);
 });
 
@@ -93,12 +99,41 @@ test('installer check is read-only and does not download or create a venv', asyn
   assert.equal(result.downloadCalls, 0);
 });
 
+test('installer check uses modelDir/mdx.yaml rather than the source YAML as runtime evidence', async (t) => {
+  const root = await withTempRoot(t);
+  const modelDir = join(root, 'models');
+  const manifestPath = join(root, 'manifest.json');
+  const yamlPath = join(root, 'source-mdx.yaml');
+  await writeFile(manifestPath, JSON.stringify({ schemaVersion: 1, model: 'mdx', files: [{
+    name: 'model.th', url: 'https://example.invalid/model.th', size: 1, sha256: '0'.repeat(64),
+  }] }));
+  await writeFile(yamlPath, mdxYaml);
+  const paths = { manifestPath, yamlPath, modelDir, venvDir: join(root, 'venv'), requirementsLock: join(root, 'requirements.lock'), buildRequirementsLock: join(root, 'build.lock') };
+  const missingRuntimeYaml = await runInstaller(['--check'], { paths });
+  assert.deepEqual(missingRuntimeYaml, { mode: 'check', yamlReady: false, modelReady: false, downloadCalls: 0 });
+  await (await import('node:fs/promises')).mkdir(modelDir);
+  await writeFile(join(modelDir, 'mdx.yaml'), 'models: []\n');
+  const driftedRuntimeYaml = await runInstaller(['--check'], { paths });
+  assert.deepEqual(driftedRuntimeYaml, { mode: 'check', yamlReady: false, modelReady: false, downloadCalls: 0 });
+});
+
 test('CLI check reports a non-ready runtime with a nonzero status and no path disclosure', () => {
   const scriptPath = fileURLToPath(new URL('./install-voiceover-demucs.mjs', import.meta.url));
   const result = spawnSync(process.execPath, [scriptPath, '--check'], { encoding: 'utf8' });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /"mode":"check"/);
   assert.doesNotMatch(`${result.stdout}${result.stderr}`, /\/Users\/|\.runtime|https?:\/\//i);
+});
+
+test('CLI check marks a missing configured runtime YAML as non-ready', async (t) => {
+  const root = await withTempRoot(t);
+  const scriptPath = fileURLToPath(new URL('./install-voiceover-demucs.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [scriptPath, '--check'], {
+    encoding: 'utf8', env: { ...process.env, MEIAO_VOICEOVER_DEMUCS_MODEL_DIR: join(root, 'models') },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /"yamlReady":false/);
+  assert.match(result.stdout, /"modelReady":false/);
 });
 
 test('installer downloads each model via part file and rejects a wrong manifest model or YAML', async (t) => {

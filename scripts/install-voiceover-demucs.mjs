@@ -171,8 +171,8 @@ export async function runInstaller(argv, options = {}) {
   const paths = { ...installerPaths(env), ...(options.paths || {}) };
   const deps = options;
   const manifest = await loadDemucsManifest(paths.manifestPath, deps).catch(() => null);
-  const yamlReady = await verifyYaml(paths.yamlPath, deps);
-  if ((manifest && !yamlReady) || ((mode === 'install' || mode === 'download-models') && !manifest)) throw new Error('invalid model configuration');
+  const sourceYamlReady = await verifyYaml(paths.yamlPath, deps);
+  if ((manifest && !sourceYamlReady) || ((mode === 'install' || mode === 'download-models') && !manifest)) throw new Error('invalid model configuration');
   if (mode === 'download-models') await downloadModels({ manifest, modelDir: paths.modelDir, deps });
   if (mode === 'install') {
     const makeDir = deps.mkdir || mkdir;
@@ -183,8 +183,9 @@ export async function runInstaller(argv, options = {}) {
     await runSpawn(venvPython, ['-m', 'pip', 'install', '--require-hashes', '--no-build-isolation', '-r', paths.requirementsLock], { shell: false }, deps.spawnProcess);
   }
   if (mode !== 'check') await installYaml({ yamlText: EXPECTED_MDX_YAML, modelDir: paths.modelDir, deps });
+  const yamlReady = await verifyYaml(path.join(paths.modelDir, 'mdx.yaml'), deps);
   const modelResult = manifest ? await verifyDemucsModelFiles({ manifest, modelDir: paths.modelDir, deps }) : { ready: false, files: [] };
-  return Object.freeze({ mode, yamlReady, modelReady: modelResult.ready, downloadCalls: mode === 'download-models' ? manifest.files.length : 0 });
+  return Object.freeze({ mode, yamlReady, modelReady: yamlReady && modelResult.ready, downloadCalls: mode === 'download-models' ? manifest.files.length : 0 });
 }
 
 async function main() {

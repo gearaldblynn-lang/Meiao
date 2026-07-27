@@ -645,8 +645,8 @@ segment: 44
 
 ```text
 demucs==4.0.1
-torch==2.7.1
-torchaudio==2.7.1
+torch==2.7.1+cpu
+torchaudio==2.7.1+cpu
 ```
 
 Generate `requirements.lock` with hashes on the deployment Python/CPU target. `build-requirements.lock` pins and hashes `setuptools` and `wheel` for Tencent x86_64 manylinux_2_28 CPython 3.11; install it first, then install the application lock with `--require-hashes --no-build-isolation`. This makes the source-build path reproducible without fetching an unpinned isolated builder.

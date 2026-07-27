@@ -102,7 +102,7 @@ export async function checkVoiceoverSeparationReadiness({ env = process.env, dep
     const result = await verifyModels({ manifest, modelDir: config.demucsModelDir, deps });
     const runtimeYaml = await (deps.readFile || readFile)(path.join(config.demucsModelDir, 'mdx.yaml'), 'utf8');
     if (result?.ready === true && runtimeYaml === EXPECTED_MDX_YAML && config.separationPython) {
-      const loadResult = await runProcess(config.separationPython, ['-c', 'from demucs.repo import LocalRepo; LocalRepo("' + config.demucsModelDir.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '").get_model("mdx"); print("mdx-load-ok")']);
+      const loadResult = await runProcess(config.separationPython, ['-c', 'import sys; from pathlib import Path; from demucs.pretrained import get_model; get_model("mdx", Path(sys.argv[1])); print("mdx-load-ok")', config.demucsModelDir]);
       modelReady = (loadResult?.exitCode ?? 1) === 0 && String(loadResult?.stdout || '').trim() === 'mdx-load-ok';
     }
   } catch {}
@@ -149,6 +149,8 @@ function waitForSeparationProcess({ pythonPath, args, signal, timeoutMs, deps })
     let killTimer = null;
     let closeTimer = null;
     let terminalError = null;
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
@@ -164,7 +166,11 @@ function waitForSeparationProcess({ pythonPath, args, signal, timeoutMs, deps })
       try { killProcessGroup(child?.pid, 'SIGTERM'); } catch {}
       killTimer = setTimer(() => {
         try { killProcessGroup(child?.pid, 'SIGKILL'); } catch {}
-        closeTimer = setTimer(() => finish(reject, terminalError), 5_000);
+        closeTimer = setTimer(() => {
+          if (settled) return;
+          Object.defineProperty(terminalError, 'releasePermitWhenClosed', { value: closed, enumerable: false });
+          finish(reject, terminalError);
+        }, 5_000);
         closeTimer?.unref?.();
       }, 5_000);
       killTimer?.unref?.();
@@ -179,6 +185,7 @@ function waitForSeparationProcess({ pythonPath, args, signal, timeoutMs, deps })
     signal?.addEventListener('abort', onAbort, { once: true });
     child.once?.('error', () => finish(reject, terminalError || buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离不可用')));
     child.once?.('close', (exitCode) => {
+      resolveClosed();
       if (terminalError) finish(reject, terminalError);
       else if (exitCode === 0) finish(resolve, { exitCode: 0 });
       else finish(reject, buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离失败'));
@@ -218,6 +225,7 @@ export async function separateVoiceover({ inputWavPath, workDir, signal, env = p
   let effectiveWorkDir = workDir;
   const ownsWorkDir = !workDir;
   const cleanup = deps.rm || rm;
+  let releaseAfterClose = null;
   try {
     if (ownsWorkDir) effectiveWorkDir = await (deps.mkdtemp || mkdtemp)(path.join(tmpdir(), 'meiao-voiceover-'));
     const outputDir = path.join(effectiveWorkDir, 'separated');
@@ -234,9 +242,16 @@ export async function separateVoiceover({ inputWavPath, workDir, signal, env = p
     return Object.freeze({ vocalsPath, backgroundPath, model: 'mdx', durationMs,
       ...(ownsWorkDir ? { cleanupWorkDir: () => cleanup(effectiveWorkDir, { recursive: true, force: true }) } : {}), });
   } catch (error) {
-    if (ownsWorkDir && effectiveWorkDir) await cleanup(effectiveWorkDir, { recursive: true, force: true }).catch(() => {});
+    if (error?.releasePermitWhenClosed) {
+      releaseAfterClose = error.releasePermitWhenClosed.then(async () => {
+        if (ownsWorkDir && effectiveWorkDir) await cleanup(effectiveWorkDir, { recursive: true, force: true }).catch(() => {});
+        release();
+      });
+    } else if (ownsWorkDir && effectiveWorkDir) {
+      await cleanup(effectiveWorkDir, { recursive: true, force: true }).catch(() => {});
+    }
     throw error;
   } finally {
-    release();
+    if (!releaseAfterClose) release();
   }
 }
