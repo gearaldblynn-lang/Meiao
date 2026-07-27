@@ -7,6 +7,7 @@ import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 import { isRecoverableError } from '../utils/errorClassification.mjs';
 import { isMaxForAiImageModel } from '../utils/maxforaiImageModels.mjs';
+import { snapshotVirtualModelFromJobPayload } from '../utils/virtualModelSnapshot.mjs';
 
 const logKieEvent = (action: string, message: string, status: 'started' | 'success' | 'failed' | 'interrupted', detail = '', meta: Record<string, unknown> | null = null) => {
   const module = getActiveModuleContext() || 'unknown';
@@ -149,6 +150,11 @@ const waitForJobResult = async (
   onProviderTaskId?: (providerTaskId: string) => void
 ): Promise<KieAiResult> => {
   let notifiedProviderTaskId = '';
+  let virtualModelSnapshot: Record<string, unknown> | undefined;
+  const withVirtualModelSnapshot = <T extends KieAiResult>(result: T): T => ({
+    ...result,
+    ...(virtualModelSnapshot ? { virtualModelSnapshot } : {}),
+  });
   const notifyProviderTaskId = (providerTaskId: unknown) => {
     const value = String(providerTaskId || '').trim();
     if (!value || value === notifiedProviderTaskId) return;
@@ -162,11 +168,12 @@ const waitForJobResult = async (
     if (!finalJob || typeof finalJob !== 'object') {
       throw Object.assign(new Error('任务状态同步失败'), { code: 'job_state_missing' });
     }
+    virtualModelSnapshot = snapshotVirtualModelFromJobPayload(finalJob.payload);
     notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
     const finalProviderTaskId = getUserVisibleTaskId(finalJob) || undefined;
     const finalBackendJobId = String(finalJob.id || jobId || '').trim() || undefined;
     if (finalJob.status === 'succeeded') {
-      return {
+      return withVirtualModelSnapshot({
         imageUrl: String(finalJob.result?.imageUrl || ''),
         videoUrl: finalJob.result?.videoUrl ? String(finalJob.result.videoUrl) : undefined,
         taskId: finalProviderTaskId,
@@ -174,37 +181,37 @@ const waitForJobResult = async (
         status: 'success',
         message: '',
         creditsConsumed: Number.isFinite(Number(finalJob.result?.creditsConsumed)) ? Number(finalJob.result?.creditsConsumed) : undefined,
-      };
+      });
     }
 
     if (finalJob.status === 'cancelled') {
-      return {
+      return withVirtualModelSnapshot({
         imageUrl: '',
         taskId: finalProviderTaskId,
         backendJobId: finalBackendJobId,
         status: 'interrupted',
         message: finalJob.errorMessage || '任务已取消',
         errorCode: String(finalJob.errorCode || '').trim(),
-      };
+      });
     }
 
     if (finalJob.errorCode === 'task_not_found') {
-      return {
+      return withVirtualModelSnapshot({
         imageUrl: '',
         taskId: finalProviderTaskId,
         backendJobId: finalBackendJobId,
         status: 'task_not_found',
         message: finalJob.errorMessage || '任务不存在或已过期',
         errorCode: String(finalJob.errorCode || '').trim(),
-      };
+      });
     }
 
     if (allowAutoRecover && shouldAutoRecoverKieJob(finalJob)) {
-      return recoverKieProviderTask(finalJob.providerTaskId, signal, finalJob.taskType === 'kie_video', kieClientConfigPresent);
+      return withVirtualModelSnapshot(await recoverKieProviderTask(finalJob.providerTaskId, signal, finalJob.taskType === 'kie_video', kieClientConfigPresent));
     }
 
     const errorCode = String(finalJob.errorCode || '').trim();
-    return {
+    return withVirtualModelSnapshot({
       imageUrl: '',
       taskId: finalProviderTaskId,
       backendJobId: finalBackendJobId,
@@ -216,29 +223,30 @@ const waitForJobResult = async (
         errorCode,
       }),
       errorCode,
-    };
+    });
   } catch (error: any) {
     if (error.message === 'INTERRUPTED') {
       void cancelInternalJob(jobId).catch(() => null);
-      return { imageUrl: '', status: 'interrupted', message: '任务已取消', backendJobId: jobId };
+      return withVirtualModelSnapshot({ imageUrl: '', status: 'interrupted', message: '任务已取消', backendJobId: jobId });
     }
     if (error.code === 'job_timeout') {
       const timeoutJob = await fetchInternalJob(jobId).catch(() => null);
+      virtualModelSnapshot = snapshotVirtualModelFromJobPayload(timeoutJob?.job?.payload) || virtualModelSnapshot;
       if (allowAutoRecover && shouldAutoRecoverKieJob(timeoutJob?.job)) {
-        return recoverKieProviderTask(timeoutJob.job.providerTaskId, signal, timeoutJob.job.taskType === 'kie_video', kieClientConfigPresent);
+        return withVirtualModelSnapshot(await recoverKieProviderTask(timeoutJob.job.providerTaskId, signal, timeoutJob.job.taskType === 'kie_video', kieClientConfigPresent));
       }
       const fallbackTaskId = notifiedProviderTaskId || getUserVisibleTaskId(timeoutJob?.job);
       if (fallbackTaskId) {
-        return {
+        return withVirtualModelSnapshot({
           imageUrl: '',
           taskId: fallbackTaskId,
           backendJobId: jobId,
           status: 'generating',
           message: '任务已提交云端，结果待同步',
           errorCode: String(timeoutJob?.job?.errorCode || error?.code || '').trim(),
-        };
+        });
       }
-      return {
+      return withVirtualModelSnapshot({
         imageUrl: '',
         taskId: fallbackTaskId,
         backendJobId: jobId,
@@ -250,19 +258,19 @@ const waitForJobResult = async (
           errorCode: String(timeoutJob?.job?.errorCode || error?.code || '').trim(),
         }),
         errorCode: String(timeoutJob?.job?.errorCode || error?.code || '').trim(),
-      };
+      });
     }
     if (notifiedProviderTaskId) {
-      return {
+      return withVirtualModelSnapshot({
         imageUrl: '',
         taskId: notifiedProviderTaskId,
         backendJobId: jobId,
         status: 'generating',
         message: '任务已提交云端，结果待同步',
         errorCode: String(error?.code || '').trim(),
-      };
+      });
     }
-    return {
+    return withVirtualModelSnapshot({
       imageUrl: '',
       taskId: notifiedProviderTaskId,
       backendJobId: jobId,
@@ -274,7 +282,7 @@ const waitForJobResult = async (
         errorCode: String(error?.code || '').trim(),
       }),
       errorCode: String(error?.code || '').trim(),
-    };
+    });
   }
 };
 

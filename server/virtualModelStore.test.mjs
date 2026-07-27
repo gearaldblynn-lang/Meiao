@@ -236,6 +236,31 @@ test('admin all-model listings exclude deleted models in local and MySQL storage
   assert.deepEqual(calls[0].params, []);
 });
 
+test('admin listings prefer the newest editable draft over the currently published version', async () => {
+  const models = await listAdminVirtualModels({
+    store: {
+      virtualModels: [{
+        id: 'model-1',
+        code: 'VM-1',
+        name: 'Model',
+        tags: [],
+        status: 'published',
+        currentVersionId: 'version-1',
+        createdAt: 1,
+        updatedAt: 3,
+      }],
+      virtualModelVersions: [
+        { id: 'version-1', virtualModelId: 'model-1', versionNumber: 1, identityProfile: { description: 'published' }, status: 'published', publishedAt: 2, createdAt: 1 },
+        { id: 'version-2', virtualModelId: 'model-1', versionNumber: 2, identityProfile: { description: 'draft' }, status: 'draft', publishedAt: null, createdAt: 3 },
+      ],
+      virtualModelAssets: [],
+    },
+  });
+
+  assert.equal(models[0].version.id, 'version-2');
+  assert.equal(models[0].version.status, 'draft');
+});
+
 test('all local lifecycle writes reject a deleted model without mutation', async () => {
   const store = normalizeVirtualModelLocalStore({
     virtualModels: [{ id: 'model-1', code: 'VM-1', name: 'Deleted', tags: [], status: 'deleted', currentVersionId: null, updatedAt: 1 }],
@@ -696,4 +721,3 @@ test('mysql publishing rejects a version owned by another model without updates'
   );
   assert.deepEqual(events, ['begin', 'rollback', 'release']);
 });
-

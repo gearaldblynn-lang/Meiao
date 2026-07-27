@@ -4,6 +4,10 @@ import test from 'node:test';
 import { buildModelReplacePrompt, normalizeModelReplacementScope } from '../utils/modelReplacePrompt.mjs';
 import { normalizeModelReplaceRawUserPrompt } from '../utils/modelReplacePromptInput.mjs';
 import { selectVirtualModelIdentityAssets } from '../utils/virtualModelSelection.mjs';
+import {
+  buildLibraryModelReplaceJobMetadata,
+  getLibraryModelReplaceIdentityCount,
+} from '../utils/virtualModelSnapshot.mjs';
 
 const workflowSource = readFileSync(new URL('./shellWorkflow.ts', import.meta.url), 'utf8');
 const shellAppSource = readFileSync(new URL('../ShellMigratedApp.tsx', import.meta.url), 'utf8');
@@ -31,7 +35,12 @@ const evaluateModelReplaceWorkflowFactory = () => {
       'const createModelReplaceWorkflow =',
     )
     .replace(/\(error as any\)/g, 'error');
-  return Function(`${executable}\nreturn createModelReplaceWorkflow;`)();
+  return Function(
+    'buildLibraryModelReplaceJobMetadata',
+    'getLibraryModelReplaceIdentityCount',
+    'normalizeModelReplacementScope',
+    `${executable}\nreturn createModelReplaceWorkflow;`,
+  )(buildLibraryModelReplaceJobMetadata, getLibraryModelReplaceIdentityCount, normalizeModelReplacementScope);
 };
 
 const material = (type, index, dimensions = {}) => ({
@@ -251,7 +260,7 @@ test('model replacement creates one ordered job per reference with exact inputs,
       shellProjectName: 'Model project',
       subFeature: 'model_replace',
       batchIndex: 1,
-      replacementScope: 'identity_only',
+      replacementScope: 'full_person',
       identityImageCount: 2,
       modelReplaceRawUserPrompt: '保留参考图中的手提包',
       preserveInputImageOrder: true,
@@ -265,7 +274,7 @@ test('model replacement creates one ordered job per reference with exact inputs,
       shellProjectName: 'Model project',
       subFeature: 'model_replace',
       batchIndex: 2,
-      replacementScope: 'identity_only',
+      replacementScope: 'full_person',
       identityImageCount: 2,
       modelReplaceRawUserPrompt: '保留参考图中的手提包',
       preserveInputImageOrder: true,
@@ -516,7 +525,7 @@ test('model replacement route and source contracts stay separate from preflight 
   )?.[0] || '';
   const dispatcher = workflowSource.match(/export const runShellRetouchWorkflow = async \([\s\S]*?^};/m)?.[0] || '';
 
-  assert.match(workflowSource, /import \{ buildModelReplacePrompt \} from '\.\.\/utils\/modelReplacePrompt\.mjs'/);
+  assert.match(workflowSource, /import \{ buildModelReplacePrompt, normalizeModelReplacementScope \} from '\.\.\/utils\/modelReplacePrompt\.mjs'/);
   assert.match(workflowSource, /type ShellRetouchMode = .*'model_replace'/);
   assert.match(workflowSource, /input\.module === AppModule\.EVERYTHING_REPLACE && \(value === 'model_replace' \|\| value\.includes\('模特'\)\)/);
   assert.match(dispatcher, /if \(mode === 'model_replace'\) \{\s*return runModelReplaceWorkflow\(/);
@@ -530,8 +539,7 @@ test('model replacement route and source contracts stay separate from preflight 
   assert.doesNotMatch(factoryBlock, /expressionSource/);
   assert.doesNotMatch(factoryBlock, /必须重绘为不同人物/);
   assert.match(shellAppSource, /targetSubFeature === 'model_replace' \? ''/);
-  assert.doesNotMatch(factoryBlock, /normalizeModelReplacementScope|input\.params\.replacementScope/);
-  assert.match(factoryBlock, /const replacementScope = 'identity_only'/);
+  assert.match(factoryBlock, /normalizeModelReplacementScope\(input\.params\.replacementScope\)/);
 });
 
 test('model replacement preflight keeps copy policy out of lightweight reference analysis', () => {
@@ -541,8 +549,7 @@ test('model replacement preflight keeps copy policy out of lightweight reference
 
   assert.doesNotMatch(preflightFacade, /const textPolicy =/);
   assert.doesNotMatch(preflightFacade, /textPolicy,/);
-  assert.doesNotMatch(preflightFacade, /normalizeModelReplacementScope|input\.params\.replacementScope/);
-  assert.match(preflightFacade, /replacementScope: 'identity_only'/);
+  assert.match(preflightFacade, /normalizeModelReplacementScope\(input\.params\.replacementScope\)/);
   assert.match(preflightFacade, /analyzeModelReplaceMaterials\(\{[\s\S]*?skipIdentityValidation: isLibraryIdentity/);
   assert.equal((preflightFacade.match(/analyzeModelReplaceMaterials\(\{/g) || []).length, 1);
 });

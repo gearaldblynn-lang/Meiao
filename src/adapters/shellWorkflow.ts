@@ -54,8 +54,12 @@ import { createMultiLogoReplacePreviewBlob } from '../utils/logoReplacePreview.m
 import { createGuardedMultiLogoReplaceResultBlob } from '../utils/logoReplaceGuard.mjs';
 import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
 import { assertModelReplaceMaterialCounts } from '../utils/modelReplacePreflight.mjs';
-import { buildModelReplacePrompt } from '../utils/modelReplacePrompt.mjs';
+import { buildModelReplacePrompt, normalizeModelReplacementScope } from '../utils/modelReplacePrompt.mjs';
 import { normalizeModelReplaceRawUserPrompt } from '../utils/modelReplacePromptInput.mjs';
+import {
+  buildLibraryModelReplaceJobMetadata,
+  getLibraryModelReplaceIdentityCount,
+} from '../utils/virtualModelSnapshot.mjs';
 import { planBuyerShowSetsConcurrently } from '../utils/buyerShowPlanning';
 import {
   runShellProductRestoreWorkflow,
@@ -878,9 +882,7 @@ export const preflightShellModelReplace = async (input: ShellModelReplacePreflig
     },
   });
   const maxInputImages = getImageModelCapabilities(config.model).maxInputImages;
-  const libraryIdentityCount = [3, 4, 5].includes(input.virtualModelSnapshot?.selectedAssetIds?.length || 0)
-    ? input.virtualModelSnapshot.selectedAssetIds.length
-    : 3;
+  const libraryIdentityCount = getLibraryModelReplaceIdentityCount(input.virtualModelSnapshot);
   const requiredInputImages = (isLibraryIdentity ? libraryIdentityCount : identityUrls.length) + 1;
   if (requiredInputImages > maxInputImages) {
     throw new Error(`当前模型最多支持 ${maxInputImages} 张输入图片；本次每个任务需要 ${requiredInputImages} 张。请减少身份补充图或更换模型。`);
@@ -896,7 +898,7 @@ export const preflightShellModelReplace = async (input: ShellModelReplacePreflig
   const result = await analyzeModelReplaceMaterials({
     identityUrls,
     referenceUrls,
-    replacementScope: 'identity_only',
+    replacementScope: normalizeModelReplacementScope(input.params.replacementScope),
     apiConfig,
     signal: input.signal,
     jobMetadata: { subFeature: 'model_replace' },
@@ -2774,6 +2776,7 @@ type ModelReplaceWorkflowDependencies = {
   assertModelReplaceMaterialCounts: typeof assertModelReplaceMaterialCounts;
   getImageModelCapabilities: typeof getImageModelCapabilities;
   normalizeModelReplaceRawUserPrompt: typeof normalizeModelReplaceRawUserPrompt;
+  normalizeModelReplacementScope: typeof normalizeModelReplacementScope;
   resolveProductReplaceReferenceAspectRatio: typeof resolveProductReplaceReferenceAspectRatio;
   buildModelReplacePrompt: (options: {
     identityCount: number;
@@ -2796,6 +2799,7 @@ const createModelReplaceWorkflow: ModelReplaceWorkflowFactory = ({
   assertModelReplaceMaterialCounts,
   getImageModelCapabilities,
   normalizeModelReplaceRawUserPrompt,
+  normalizeModelReplacementScope,
   resolveProductReplaceReferenceAspectRatio,
   buildModelReplacePrompt,
   processWithKieAi,
@@ -2824,15 +2828,13 @@ const createModelReplaceWorkflow: ModelReplaceWorkflowFactory = ({
   }
 
   const maxInputImages = getImageModelCapabilities(config.model).maxInputImages;
-  const libraryIdentityCount = [3, 4, 5].includes(virtualModelSnapshot?.selectedAssetIds?.length || 0)
-    ? virtualModelSnapshot.selectedAssetIds.length
-    : 3;
+  const libraryIdentityCount = getLibraryModelReplaceIdentityCount(virtualModelSnapshot);
   const requiredInputImages = (isLibraryIdentity ? libraryIdentityCount : identityUrls.length) + 1;
   if (requiredInputImages > maxInputImages) {
     throw new Error(`当前模型最多支持 ${maxInputImages} 张输入图片；本次每个任务需要 ${requiredInputImages} 张。请减少身份补充图或更换模型。`);
   }
 
-  const replacementScope = 'identity_only';
+  const replacementScope = normalizeModelReplacementScope(input.params.replacementScope);
   const rawUserPrompt = normalizeModelReplaceRawUserPrompt(input.prompt);
   const total = referenceUrls.length;
   const results = await Promise.all(referenceUrls.map(async (referenceUrl, referenceIndex) => {
@@ -2885,18 +2887,10 @@ const createModelReplaceWorkflow: ModelReplaceWorkflowFactory = ({
           replacementScope,
           identityImageCount: isLibraryIdentity ? libraryIdentityCount : generationIdentityUrls.length,
           modelReplaceRawUserPrompt: rawUserPrompt,
-          ...(isLibraryIdentity ? {
-            identitySource: 'library',
-            virtualModelId: virtualModelSnapshot?.virtualModelId,
-            virtualModelVersionId: virtualModelSnapshot?.virtualModelVersionId,
-            modelName: virtualModelSnapshot?.modelName,
-            modelCode: virtualModelSnapshot?.modelCode,
-            versionNumber: virtualModelSnapshot?.versionNumber,
-            allowHistoricalPublishedVersion: virtualModelSnapshot?.allowHistoricalPublishedVersion === true,
-            publishedAt: virtualModelSnapshot?.publishedAt,
-            selectedAssetIds: virtualModelSnapshot?.selectedAssetIds,
-            referenceAnalysis: referenceAnalysis || null,
-          } : {}),
+          ...(isLibraryIdentity ? buildLibraryModelReplaceJobMetadata({
+            snapshot: virtualModelSnapshot,
+            referenceAnalysis,
+          }) : {}),
           preserveInputImageOrder: true,
           skipPromptCleanupSuffix: true,
           batchIndex: currentBatchIndex,
@@ -2959,6 +2953,7 @@ const runModelReplaceWorkflow: ModelReplaceWorkflow = createModelReplaceWorkflow
   assertModelReplaceMaterialCounts,
   getImageModelCapabilities,
   normalizeModelReplaceRawUserPrompt,
+  normalizeModelReplacementScope,
   resolveProductReplaceReferenceAspectRatio,
   buildModelReplacePrompt,
   processWithKieAi,

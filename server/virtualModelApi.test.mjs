@@ -13,6 +13,7 @@ import {
   toVirtualModelPublicSummary,
   updateVirtualModelDraft,
 } from './virtualModelStore.mjs';
+import { insertModelReplaceLibraryMetadata } from './virtualModelProviderPayload.mjs';
 
 const slots = ['front_close', 'left_45_close', 'right_45_close', 'profile_close', 'front_half', 'three_quarter_half', 'front_full', 'three_quarter_full'];
 
@@ -268,18 +269,7 @@ test('worker resolves library assets only immediately before provider execution'
   const source = await readFile(new URL('./index.mjs', import.meta.url), 'utf8');
   const worker = source.slice(source.indexOf('const injectLibraryModelAssetsForProvider'), source.indexOf('const executeProviderJobWithManagedAssetScrub'));
   assert.match(worker, /resolveHistoricalVirtualModelSelectedAssets/);
-  assert.match(worker, /imageUrls: \[\.\.\.assets\.map\(\(asset\) => asset\.url\)/);
-  assert.match(worker, /图A实际素材角度/);
-  assert.match(worker, /图A-\$\{index \+ 1\}（输入图\$\{index \+ 1\}）/);
-  assert.doesNotMatch(worker, /图B（输入图\$\{assets\.length \+ 1\}）/);
-  assert.doesNotMatch(worker, /唯一主身份锚点|不得继承该图中的穿搭/);
-  assert.match(worker, /front_close/);
-  assert.match(worker, /左侧45度近景/);
-  assert.match(worker, /identityDescription/);
-  assert.match(worker, /身份档案补充（次于图A-1）/);
-  assert.match(worker, /与图A-1冲突时一律以图A-1为准/);
-  assert.doesNotMatch(worker, /高优先级/);
-  assert.match(worker, /insertModelReplaceLibraryMetadata/);
+  assert.match(worker, /return buildVirtualModelProviderPayload\(payload, assets\)/);
   const intake = source.slice(source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'POST')"), source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'GET')"));
   assert.match(intake, /createLibraryModelJobPayload/);
   assert.doesNotMatch(intake, /selectedIdentityAssetIds/);
@@ -295,14 +285,11 @@ test('worker grants provider reads only to the server-validated virtual-model as
   const allowlistIndex = worker.indexOf('authorizedSharedAssetIds: authorizedLibraryManagedAssetIds');
   assert.ok(injectionIndex >= 0, 'library assets must be resolved from the trusted server snapshot');
   assert.ok(allowlistIndex > injectionIndex, 'the trusted library ids must be passed only after server resolution');
-  assert.match(worker, /new Set\([\s\S]*providerPayload\.selectedAssetIds/);
+  assert.match(worker, /authorizedManagedAssetIds: authorizedLibraryManagedAssetIds/);
+  assert.doesNotMatch(worker, /providerPayload\.selectedAssetIds/);
 });
 
 test('library prompt metadata is inserted before format and example sections', async () => {
-  const source = await readFile(new URL('./index.mjs', import.meta.url), 'utf8');
-  const helperBlock = source.match(/const insertModelReplaceLibraryMetadata = \(prompt, metadataBlock\) => \{[\s\S]*?^};/m)?.[0] || '';
-  assert.ok(helperBlock, 'missing library prompt metadata insertion helper');
-  const insertModelReplaceLibraryMetadata = Function(`${helperBlock}\nreturn insertModelReplaceLibraryMetadata;`)();
   const result = insertModelReplaceLibraryMetadata(
     'R Role 角色\n\nC Constraint 约束\n\nF Format 格式\noutput\n\nE Example 示例\nexample',
     '【图A实际素材角度】\n图A-1：正面近景。',

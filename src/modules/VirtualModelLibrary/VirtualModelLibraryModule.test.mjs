@@ -72,6 +72,15 @@ test('virtual model library list contains only the operational fields in scope',
   assert.doesNotMatch(content, /质量检测/);
 });
 
+test('published models require an explicit next draft version before asset editing', () => {
+  const content = source();
+  assert.match(content, /const createNextVersion = async \(\) =>/);
+  assert.match(content, /createVirtualModelVersion\(selected\.id, \{ identityProfile: selected\.version\?\.identityProfile \|\| \{\} \}\)/);
+  assert.match(content, />新建版本<\/button>/);
+  assert.match(content, /selected\.version\?\.status !== 'draft'/);
+  assert.match(content, /selected\.version\?\.status === 'draft'[\s\S]*publishVirtualModel/);
+});
+
 test('virtual model deletion requires an explicit guarded confirmation and preserves history wording', () => {
   const content = source();
   assert.match(content, /import \{[^}]*Trash2[^}]*\} from 'lucide-react'/);

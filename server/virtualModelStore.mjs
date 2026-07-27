@@ -143,7 +143,11 @@ export const listAdminVirtualModels = async ({ pool = null, store = null, status
     versions = normalized.virtualModelVersions.map(versionFromRow); assets = normalized.virtualModelAssets.map(assetFromRow);
   }
   return models.map((model) => {
-    const version = versions.find((item) => item.id === model.currentVersionId) || versions.filter((item) => item.virtualModelId === model.id).sort((a, b) => b.versionNumber - a.versionNumber)[0] || null;
+    const modelVersions = versions.filter((item) => item.virtualModelId === model.id).sort((a, b) => b.versionNumber - a.versionNumber);
+    const version = modelVersions.find((item) => item.status === 'draft')
+      || modelVersions.find((item) => item.id === model.currentVersionId)
+      || modelVersions[0]
+      || null;
     const versionAssets = version ? assets.filter((item) => item.virtualModelVersionId === version.id) : [];
     return { ...model, coverUrl: versionAssets.find((item) => item.isPrimary)?.publicUrl || '', version: version ? { ...version, assets: versionAssets } : null };
   });
@@ -377,4 +381,3 @@ export const resolveHistoricalVirtualModelSelectedAssets = async ({ pool = null,
   if (selected.some((asset) => !asset) || new Set(selectedAssetIds).size !== selectedAssetIds.length) throw Object.assign(new Error('Virtual model snapshot is unavailable'), { code: 'MODEL_SNAPSHOT_UNAVAILABLE' });
   return selected.map((asset) => ({ assetId: asset.assetId, url: asset.publicUrl, slot: asset.slot }));
 };
-

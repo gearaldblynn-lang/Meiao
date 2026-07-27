@@ -213,7 +213,10 @@ import {
   buildModelReplaceRetryContext,
   runModelReplaceRetryLifecycle,
 } from './utils/modelReplaceRetry.mjs';
-import { sanitizeModelReplaceGenerationContext } from './utils/virtualModelSnapshot.mjs';
+import {
+  buildLibraryModelReplaceContext,
+  sanitizeModelReplaceGenerationContext,
+} from './utils/virtualModelSnapshot.mjs';
 import { formatModelReplacePreflightError } from './utils/modelReplacePreflight.mjs';
 
 type TranslationRegionCompositeInput = {
@@ -6313,21 +6316,9 @@ const AppContent: React.FC<{
     const isModelReplaceSubmit = targetModule === AppModuleObj.EVERYTHING_REPLACE
       && targetSubFeature === 'model_replace';
     const modelReplaceIdentitySource: 'upload' | 'library' = identityDraft.identitySource;
-    const modelReplaceVirtualModelId = String(identityDraft.librarySelection?.virtualModelId || '').trim();
-    const modelReplaceVirtualModelVersionId = String(identityDraft.librarySelection?.virtualModelVersionId || '').trim();
     const modelReplaceLibraryContext = isModelReplaceSubmit
       && modelReplaceIdentitySource === 'library'
-      && modelReplaceVirtualModelId
-      && modelReplaceVirtualModelVersionId
-      ? {
-          identitySource: 'library' as const,
-          virtualModelSnapshot: {
-            identitySource: 'library' as const,
-            ...(identityDraft.librarySelection || {}),
-            virtualModelId: modelReplaceVirtualModelId,
-            virtualModelVersionId: modelReplaceVirtualModelVersionId,
-          },
-        }
+      ? buildLibraryModelReplaceContext(identityDraft)
       : undefined;
     if (isModelReplaceSubmit && modelReplaceIdentitySource === 'library' && !modelReplaceLibraryContext) {
       addToast('请选择公共模特后再生成', 'warning');
