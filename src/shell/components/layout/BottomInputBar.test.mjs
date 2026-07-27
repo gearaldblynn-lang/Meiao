@@ -56,6 +56,16 @@ test('shell image quality options follow the selected model and downgrade legacy
   assert.match(bottomInputBar, /onParamChange\('quality',\s*nextQuality\)/);
 });
 
+test('model replacement exposes both supported replacement scopes', () => {
+  const bottomInputBar = source();
+  const params = bottomInputBar.match(/const getModelReplaceQuickParams[\s\S]*?const getLogoReplaceModeLabel/)?.[0] || '';
+
+  assert.match(params, /key: 'replacementScope'/);
+  assert.match(params, /value: 'identity_only', label: '身份替换'/);
+  assert.match(params, /value: 'full_person', label: '整体人物'/);
+  assert.match(params, /defaultValue: 'identity_only'/);
+});
+
 test('shell select params support old frontend custom platform and language input flow', () => {
   const bottomInputBar = source();
 

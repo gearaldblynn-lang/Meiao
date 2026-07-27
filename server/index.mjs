@@ -182,6 +182,7 @@ import {
   respondVirtualModelApiError,
 } from './virtualModelHttpApi.mjs';
 import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
+import { buildVirtualModelProviderPayload } from './virtualModelProviderPayload.mjs';
 import {
   getManagedAssetAccessKeyFromUrl,
   stripManagedAssetAccessKey,
@@ -4303,18 +4304,10 @@ const createLibraryModelJobPayload = async ({
   return { ...safePayload, ...snapshot };
 };
 
-const insertModelReplaceLibraryMetadata = (prompt, metadataBlock) => {
-  const normalizedPrompt = String(prompt || '').trim();
-  const normalizedMetadata = String(metadataBlock || '').trim();
-  if (!normalizedMetadata) return normalizedPrompt;
-  const formatMarker = '\n\nF Format 格式';
-  const formatIndex = normalizedPrompt.indexOf(formatMarker);
-  if (formatIndex < 0) return `${normalizedPrompt}\n\n${normalizedMetadata}`.trim();
-  return `${normalizedPrompt.slice(0, formatIndex)}\n\n${normalizedMetadata}${normalizedPrompt.slice(formatIndex)}`;
-};
-
 const injectLibraryModelAssetsForProvider = async (payload) => {
-  if (payload?.identitySource !== 'library') return payload;
+  if (payload?.identitySource !== 'library') {
+    return buildVirtualModelProviderPayload(payload);
+  }
   const source = shouldUseMysql
     ? { pool: await getMysqlPool() }
     : { store: readLocalStore() };
@@ -4324,38 +4317,7 @@ const injectLibraryModelAssetsForProvider = async (payload) => {
     virtualModelVersionId: payload.virtualModelVersionId,
     selectedAssetIds: payload.selectedAssetIds,
   });
-  const identityAssetSlotLabels = {
-    front_close: '正面近景',
-    left_45_close: '左侧45度近景',
-    right_45_close: '右侧45度近景',
-    profile_close: '侧面近景',
-    three_quarter_half: '四分之三侧向半身',
-    front_half: '正面半身',
-    front_full: '正面全身',
-    three_quarter_full: '四分之三全身',
-  };
-  const identityAnchorConstraint = assets.length > 0
-    ? `【图A实际素材角度】\n${assets
-      .map((asset, index) => `图A-${index + 1}（输入图${index + 1}）：${identityAssetSlotLabels[asset.slot] || asset.slot}。`)
-      .join('\n')}`
-    : '';
-  const identityDescription = String(payload.identityDescription || '').trim();
-  const identityDescriptionConstraint = identityDescription
-    ? `身份档案补充（次于图A-1）：${JSON.stringify(identityDescription)}\n该档案只补充图A-1未清楚展示的身份特征；与图A-1冲突时一律以图A-1为准。`
-    : '';
-  const libraryMetadata = [
-    identityAnchorConstraint,
-    identityDescriptionConstraint,
-  ].filter(Boolean).join('\n\n');
-  return {
-    ...payload,
-    ...(libraryMetadata
-      ? { prompt: insertModelReplaceLibraryMetadata(payload.prompt, libraryMetadata) }
-      : {}),
-    imageUrls: [...assets.map((asset) => asset.url),
-      ...(Array.isArray(payload.imageUrls) ? payload.imageUrls : []),
-    ],
-  };
+  return buildVirtualModelProviderPayload(payload, assets);
 };
 
 const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options) => {
@@ -4375,13 +4337,11 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
     originalPayload: job?.payload,
     scrubbedPayload,
   });
-  const providerPayload = await injectLibraryModelAssetsForProvider(
+  const {
+    payload: providerPayload,
+    authorizedManagedAssetIds: authorizedLibraryManagedAssetIds,
+  } = await injectLibraryModelAssetsForProvider(
     stripCreditReservationFromPayload(scrubbedPayload),
-  );
-  const authorizedLibraryManagedAssetIds = new Set(
-    providerPayload?.identitySource === 'library' && Array.isArray(providerPayload.selectedAssetIds)
-      ? providerPayload.selectedAssetIds
-      : [],
   );
   const assetPool = shouldUseMysql ? await getMysqlPool() : null;
   const inheritedAssetTransferDeps = options?.assetTransferDeps || {};

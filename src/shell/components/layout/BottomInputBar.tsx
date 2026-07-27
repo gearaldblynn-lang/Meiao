@@ -300,6 +300,19 @@ const getBackgroundReplaceQuickParams = (currentParams: Record<string, string>):
 };
 
 const getModelReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => [
+  {
+    key: 'replacementScope',
+    label: currentParams.replacementScope === 'full_person' ? '整体人物' : '身份替换',
+    title: '替换范围',
+    icon: <Users size={12} />,
+    options: [
+      { value: 'identity_only', label: '身份替换' },
+      { value: 'full_person', label: '整体人物' },
+    ],
+    defaultValue: 'identity_only',
+    recommendedValue: 'identity_only',
+    recommendedLabel: '推荐',
+  },
   ...getBackgroundReplaceQuickParams(currentParams),
 ];
 

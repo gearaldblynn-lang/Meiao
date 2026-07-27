@@ -34,6 +34,15 @@ test('kieAiService keeps internal backend ids out of visible task ids before ups
   assert.doesNotMatch(kieAiSource, /\|\|\s*job\?\.id/);
 });
 
+test('kieAiService returns the authoritative URL-free virtual-model snapshot for every job outcome', () => {
+  assert.match(kieAiSource, /snapshotVirtualModelFromJobPayload\(finalJob\.payload\)/);
+  assert.match(kieAiSource, /const withVirtualModelSnapshot = <T extends KieAiResult>/);
+  assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'success'/);
+  assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'interrupted'/);
+  assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'task_not_found'/);
+  assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'error'/);
+});
+
 test('kieAiService can resume waiting on an internal job id before falling back to provider recovery', () => {
   assert.match(
     kieAiSource,
@@ -58,7 +67,7 @@ test('kieAiService auto-recovers recoverable kie polling failures when provider 
   );
   assert.match(
     kieAiSource,
-    /if \(allowAutoRecover && shouldAutoRecoverKieJob\(finalJob\)\) \{\s*return recoverKieProviderTask\(finalJob\.providerTaskId, signal, finalJob\.taskType === 'kie_video', kieClientConfigPresent\);/s,
+    /if \(allowAutoRecover && shouldAutoRecoverKieJob\(finalJob\)\) \{\s*return withVirtualModelSnapshot\(await recoverKieProviderTask\(finalJob\.providerTaskId, signal, finalJob\.taskType === 'kie_video', kieClientConfigPresent\)\);/s,
   );
 });
 
