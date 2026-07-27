@@ -45,6 +45,7 @@ export type VoiceoverTranslationWorkspaceProps = {
   composerSlotId: string;
   initialSource?: VoiceoverTranslationSource | null;
   publicConfig: SystemPublicConfig['voiceoverTranslation'];
+  creationDisabledReason?: string;
   onSubmit: (draft: VoiceoverTranslationDraft) => Promise<void>;
   onClearInitialSource: () => void;
 };
@@ -107,6 +108,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
   composerSlotId,
   initialSource = null,
   publicConfig,
+  creationDisabledReason = '',
   onSubmit,
   onClearInitialSource,
 }) => {
@@ -146,6 +148,12 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
   );
   const voices = publicConfig ? publicConfig.voices : EMPTY_VOICEOVER_VOICES;
   const featureAvailable = Boolean(publicConfig?.enabled && publicConfig?.ready);
+  const canCreate = featureAvailable && !creationDisabledReason;
+  const creationBlockMessage = creationDisabledReason || (
+    featureAvailable
+      ? ''
+      : '口播翻译当前未就绪，暂时不能创建新任务；历史项目仍可查看和下载。'
+  );
 
   useLayoutEffect(() => {
     const nextTarget = active && typeof document !== 'undefined'
@@ -170,6 +178,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       mountedRef.current = false;
       controllerRef.current?.abort();
       const sessionId = sessionIdRef.current;
+      sessionIdRef.current = '';
       if (sessionId) {
         void cancelMediaTranscodeSession({ sessionId }).catch(() => undefined);
       }
@@ -180,6 +189,10 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     file: File,
     origin?: VoiceoverTranslationSource,
   ) => {
+    if (!canCreate) {
+      setErrorMessage(creationBlockMessage);
+      return;
+    }
     if (!isSupportedVideo(file)) {
       setErrorMessage('仅支持 MP4 或 MOV 视频');
       return;
@@ -195,6 +208,8 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     setPreparing(true);
     setUploadProgress(0);
     setErrorMessage('');
+    let createdSessionId = '';
+    let conversionCompleted = false;
     try {
       const probe = await createMediaTranscodeSession({
         file,
@@ -207,16 +222,16 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
         },
       });
       if (!probe.sessionId) throw new Error('服务端未返回媒体处理会话');
+      createdSessionId = probe.sessionId;
+      sessionIdRef.current = createdSessionId;
       if (probe.hasAudio !== true) throw new Error('视频没有可用音轨，无法进行口播翻译');
-      sessionIdRef.current = probe.sessionId;
       const result = await convertMediaTranscodeSession({
-        sessionId: probe.sessionId,
+        sessionId: createdSessionId,
         startSeconds: 0,
         endSeconds: probe.durationSeconds,
         module: 'video',
         signal: controller.signal,
       });
-      sessionIdRef.current = '';
       if (!result.fileUrl || !result.assetId) {
         throw new Error('视频已处理，但未返回可用的托管素材身份');
       }
@@ -239,6 +254,8 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
         throw new Error('无法读取处理后视频的权威时长或分辨率');
       }
       if (!mountedRef.current || controller.signal.aborted) return;
+      conversionCompleted = true;
+      if (sessionIdRef.current === createdSessionId) sessionIdRef.current = '';
       setSource(prepared);
       setUploadProgress(100);
       if (origin) onClearInitialSource();
@@ -246,12 +263,21 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       if (!mountedRef.current || controller.signal.aborted) return;
       setErrorMessage(error instanceof Error ? error.message : '视频处理失败，请重试');
     } finally {
+      if (
+        createdSessionId
+        && !conversionCompleted
+        && sessionIdRef.current === createdSessionId
+      ) {
+        sessionIdRef.current = '';
+        await cancelMediaTranscodeSession({ sessionId: createdSessionId }).catch(() => undefined);
+      }
       if (controllerRef.current === controller) controllerRef.current = null;
       if (mountedRef.current) setPreparing(false);
     }
-  }, [onClearInitialSource]);
+  }, [canCreate, creationBlockMessage, onClearInitialSource]);
 
   useEffect(() => {
+    if (!canCreate) return undefined;
     const identity = sourceIdentity(initialSource);
     if (!identity || consumedInitialSourceRef.current === identity) return;
     consumedInitialSourceRef.current = identity;
@@ -277,10 +303,14 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       }
     })();
     return () => controller.abort();
-  }, [initialSource, prepareFile]);
+  }, [canCreate, initialSource, prepareFile]);
 
   const chooseFile = useCallback((file?: File | null) => {
     if (!file) return;
+    if (!canCreate) {
+      setErrorMessage(creationBlockMessage);
+      return;
+    }
     if (!isSupportedVideo(file)) {
       setErrorMessage('仅支持 MP4 或 MOV 视频');
       return;
@@ -290,7 +320,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       return;
     }
     void prepareFile(file);
-  }, [prepareFile, source]);
+  }, [canCreate, creationBlockMessage, prepareFile, source]);
 
   const clearSource = useCallback(() => {
     controllerRef.current?.abort();
@@ -357,7 +387,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
   ]);
 
   const handleSubmit = useCallback(async () => {
-    if (submitLockRef.current || !featureAvailable) return;
+    if (submitLockRef.current || !canCreate) return;
     submitLockRef.current = true;
     setSubmitting(true);
     setConfirmOpen(false);
@@ -371,9 +401,9 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       submitLockRef.current = false;
       setSubmitting(false);
     }
-  }, [buildDraft, featureAvailable, onSubmit]);
+  }, [buildDraft, canCreate, onSubmit]);
 
-  const canOpenConfirmation = featureAvailable
+  const canOpenConfirmation = canCreate
     && Boolean(source)
     && Boolean(targetLanguage)
     && (voiceMode === 'auto' || Boolean(voiceName))
@@ -397,7 +427,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       aria-label="口播翻译工作区"
       className="mx-auto w-full max-w-[1180px] px-5 py-6 sm:px-8 sm:py-8"
     >
-      {!featureAvailable ? (
+      {creationBlockMessage ? (
         <div
           className="mb-5 rounded-3xl border px-5 py-4 text-[13px] leading-6"
           style={{
@@ -406,7 +436,8 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
             color: 'var(--text-secondary)',
           }}
         >
-          口播翻译当前未就绪，暂时不能创建新任务；历史项目仍可查看和下载。
+          {creationBlockMessage}
+          {creationDisabledReason ? '；历史项目仍可查看和下载。' : ''}
         </div>
       ) : null}
 
@@ -629,7 +660,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
               >
                 <button
                   type="button"
-                  disabled={!featureAvailable || preparing || submitting}
+                  disabled={!canCreate || preparing || submitting}
                   onClick={() => inputRef.current?.click()}
                   className="flex min-h-[78px] w-full items-center gap-3 px-5 text-left disabled:cursor-not-allowed disabled:opacity-45"
                 >

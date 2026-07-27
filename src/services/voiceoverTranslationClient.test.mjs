@@ -102,6 +102,11 @@ test('arbitrary external URLs, provider signatures, local paths, and mismatched 
   for (const sourceUrl of [
     'https://tempfile.redpandaai.co/provider-output.mp4?signature=secret',
     'https://evil.example/api/assets/file/asset-video-99/source.mp4?accessKey=forged',
+    '\\\\evil.example\\api\\assets\\file\\asset-video-99\\source.mp4',
+    '//evil.example/api/assets/file/asset-video-99/source.mp4',
+    'api/assets/file/asset-video-99/source.mp4',
+    './api/assets/file/asset-video-99/source.mp4',
+    '../api/assets/file/asset-video-99/source.mp4',
     'file:///Users/example/private.mp4',
     '/Users/example/private.mp4',
     '../private.mp4',
@@ -234,7 +239,8 @@ test('shell preflights the stable key and reconciles a deduped parent before kee
   const end = shellSource.indexOf('const handleClearVoiceoverInitialSource', start);
   const submitBlock = shellSource.slice(start, end);
   const preflightIndex = submitBlock.indexOf('findActiveVoiceoverSubmissionIdentity(');
-  const initialPersistIndex = submitBlock.indexOf('persistSyncedProjectsToSharedState([checkpointProject])');
+  const initialPersistMatch = /persistSyncedProjectsToSharedState\(\s*\[checkpointProject\],\s*isSubmissionCurrent,\s*\)/.exec(submitBlock);
+  const initialPersistIndex = initialPersistMatch?.index ?? -1;
   const createIndex = submitBlock.indexOf('createInternalJob(request)');
 
   assert.ok(preflightIndex >= 0);

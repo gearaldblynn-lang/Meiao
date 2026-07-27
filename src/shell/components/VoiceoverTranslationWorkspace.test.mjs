@@ -76,6 +76,49 @@ test('feature readiness blocks only new submission and keeps the workspace visib
   assert.doesNotMatch(videoModuleSource, /publicConfig\?\.enabled\s*&&\s*<VoiceoverTranslationWorkspace/);
 });
 
+test('video-generation permission blocks upload and transcode without hiding the workspace', () => {
+  assert.match(source, /creationDisabledReason\?: string/);
+  assert.match(source, /creationDisabledReason \|\|/);
+  const prepareStart = source.indexOf('const prepareFile = useCallback');
+  const prepareEnd = source.indexOf('const chooseFile = useCallback', prepareStart);
+  const prepareBlock = source.slice(prepareStart, prepareEnd);
+  assert.match(prepareBlock, /if \(!canCreate\)/);
+  assert.ok(
+    prepareBlock.indexOf('if (!canCreate)') < prepareBlock.indexOf('createMediaTranscodeSession({'),
+  );
+  assert.match(source, /useEffect\(\(\) => \{\s*if \(!canCreate\) return undefined;\s*const identity = sourceIdentity\(initialSource\)/);
+  assert.match(source, /disabled=\{!canCreate \|\| preparing \|\| submitting\}/);
+  assert.match(videoModuleSource, /creationDisabledReason=\{voiceoverCreationDisabledReason\}/);
+});
+
+test('media sessions are cancelled promptly on convert failure, validation failure, abort, clear, and unmount', () => {
+  assert.match(source, /let createdSessionId = ''/);
+  assert.match(source, /let conversionCompleted = false/);
+  assert.match(source, /createdSessionId = probe\.sessionId/);
+  assert.match(source, /conversionCompleted = true/);
+  assert.match(source, /createdSessionId\s*&& !conversionCompleted/);
+  assert.match(source, /await cancelMediaTranscodeSession\(\{ sessionId: createdSessionId \}\)/);
+  assert.match(source, /const clearSource = useCallback[\s\S]*cancelMediaTranscodeSession\(\{ sessionId \}\)/);
+  assert.match(source, /return \(\) => \{[\s\S]*sessionIdRef\.current = ''[\s\S]*cancelMediaTranscodeSession/);
+});
+
+test('account changes remount only the voiceover workspace so source and media session state cannot cross users', () => {
+  const shellSource = readFileSync(new URL('../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
+  assert.match(videoModuleSource, /voiceoverAccountScopeKey: string/);
+  assert.match(videoModuleSource, /<VoiceoverTranslationWorkspace\s+key=\{voiceoverAccountScopeKey\}/);
+  assert.match(shellSource, /voiceoverAccountScopeKey=\{shellLocalScopeUserId \|\| 'anonymous'\}/);
+});
+
+test('voiceover draft validates a removal region only once', () => {
+  const buildDraftStart = source.indexOf('const buildDraft = useCallback');
+  const buildDraftEnd = source.indexOf('const handleSubmit = useCallback', buildDraftStart);
+  const buildDraftBody = source.slice(buildDraftStart, buildDraftEnd);
+  assert.equal(
+    buildDraftBody.match(/subtitleRegionToPixels\(subtitleRegion, source\.width, source\.height\)/g)?.length,
+    1,
+  );
+});
+
 test('voiceover composer portals into its dedicated slot while content stays in natural flow', () => {
   assert.match(source, /createPortal/);
   assert.match(source, /document\.getElementById\(composerSlotId\)/);

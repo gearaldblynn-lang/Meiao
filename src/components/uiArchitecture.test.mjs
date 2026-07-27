@@ -681,7 +681,7 @@ test('shell hydration restores data without auto navigating away from landing', 
   assert.doesNotMatch(applyShellSnapshotBody, /setPageMode\('module'\)/);
 });
 
-test('video generation permission is gated only on the generation subfeature', () => {
+test('video generation permission keeps history tabs visible and gates new generation and voiceover creation', () => {
   const app = read('../ShellMigratedApp.tsx');
   const types = read('../types.ts');
   const internalApi = read('../services/internalApi.ts');
@@ -698,6 +698,10 @@ test('video generation permission is gated only on the generation subfeature', (
   assert.match(app, /getModuleSubFeatures\(AppModuleObj\.VIDEO, currentUser\)/);
   assert.match(app, /targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'generation'/);
   assert.doesNotMatch(app, /targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'storyboard' && !canUseVideoGenerationFeature/);
+  assert.match(app, /if \(!canUseVideoGenerationFeature\(currentUser\)\) \{\s*throw new Error\('当前账号未开通短视频生成权限，不能创建口播翻译任务'\)/);
+  assert.match(app, /voiceoverCreationDisabledReason=\{voiceoverCreationDisabledReason\}/);
+  assert.match(app, /const voiceoverCreationDisabledReason = !canUseVideoGenerationFeature\(currentUser\)/);
+  assert.doesNotMatch(app, /item\.id === 'voiceover_translation'\s*\?\s*\{ \.\.\.item, description: '未授权', disabled: true \}/);
   assert.match(bottomInputBar, /generationDisabledReason/);
   assert.match(subFeatureTabs, /item\.description \|\| '待制作'/);
 });

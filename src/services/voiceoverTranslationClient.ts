@@ -102,15 +102,23 @@ const assetIdFromSourceUrl = (sourceUrl: unknown) => {
   const raw = String(sourceUrl || '').trim();
   const schemeMatch = raw.match(MANAGED_SCHEME_PATTERN);
   if (schemeMatch) return schemeMatch[1];
-  if (!raw || raw.startsWith('/') && !raw.startsWith('/api/')) return '';
+  if (!raw || raw.includes('\\') || raw.startsWith('//')) return '';
+  const routeAssetId = (path: string) => path.match(MANAGED_ROUTE_PATTERN)?.[1] || '';
+  const pathBeforeQuery = (value: string) => value.split(/[?#]/u, 1)[0];
+  if (raw.startsWith('/api/')) {
+    return routeAssetId(pathBeforeQuery(raw));
+  }
+  if (!/^[a-z][a-z\d+.-]*:\/\//iu.test(raw)) return '';
   try {
-    const parsed = new URL(raw, 'https://meiao.invalid');
+    const parsed = new URL(raw);
     if (parsed.username || parsed.password) return '';
-    if (/^[a-z][a-z\d+.-]*:/iu.test(raw)) {
-      if (typeof window === 'undefined' || parsed.origin !== window.location.origin) return '';
-    }
-    const routeMatch = parsed.pathname.match(MANAGED_ROUTE_PATTERN);
-    return routeMatch?.[1] || '';
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    if (typeof window === 'undefined' || parsed.origin !== window.location.origin) return '';
+    const authorityEnd = raw.indexOf('://') + 3;
+    const pathStart = raw.indexOf('/', authorityEnd);
+    const rawPath = pathBeforeQuery(pathStart >= 0 ? raw.slice(pathStart) : '/');
+    if (rawPath !== parsed.pathname) return '';
+    return routeAssetId(rawPath);
   } catch {
     return '';
   }

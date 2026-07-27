@@ -47,6 +47,8 @@ interface Props {
   voiceoverInitialSource: VoiceoverTranslationSource | null;
   onClearVoiceoverInitialSource: () => void;
   voiceoverTranslationConfig: SystemPublicConfig['voiceoverTranslation'];
+  voiceoverCreationDisabledReason?: string;
+  voiceoverAccountScopeKey: string;
   onSubmitVoiceoverTranslation: (draft: VoiceoverTranslationDraft) => Promise<void>;
 }
 
@@ -186,6 +188,8 @@ const VideoModule: React.FC<Props> = ({
   voiceoverInitialSource,
   onClearVoiceoverInitialSource,
   voiceoverTranslationConfig,
+  voiceoverCreationDisabledReason,
+  voiceoverAccountScopeKey,
   onSubmitVoiceoverTranslation,
 }) => {
   const storyboardCards = useMemo(() => toStoryboardCards(persistentState.storyboard?.projects || []), [persistentState.storyboard?.projects]);
@@ -198,10 +202,12 @@ const VideoModule: React.FC<Props> = ({
   const voiceoverTranslationWorkspace = (
     <div hidden={activeSubFeature !== 'voiceover_translation'}>
       <VoiceoverTranslationWorkspace
+        key={voiceoverAccountScopeKey}
         active={activeSubFeature === 'voiceover_translation'}
         composerSlotId="voiceover-translation-composer-slot"
         initialSource={voiceoverInitialSource}
         publicConfig={voiceoverTranslationConfig}
+        creationDisabledReason={voiceoverCreationDisabledReason}
         onSubmit={onSubmitVoiceoverTranslation}
         onClearInitialSource={onClearVoiceoverInitialSource}
       />
