@@ -29,7 +29,7 @@ export const assertGenericJobResultPatchAllowed = (job) => {
     && String(job?.provider || '') === 'internal'
   ) {
     throw Object.assign(new Error('口播翻译任务结果只能由受信任的后台执行器更新。'), {
-      code: 'voiceover_generic_result_patch_forbidden',
+      code: 'job_voiceover_result_patch_forbidden',
       statusCode: 409,
     });
   }

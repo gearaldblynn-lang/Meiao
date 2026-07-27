@@ -123,7 +123,7 @@ export const isParentOwnedChildJob = (job) => {
 export const assertGenericJobMutationAllowed = (job) => {
   if (isParentOwnedChildJob(job)) {
     throw createStoreError(
-      'parent_owned_child_immutable',
+      'job_parent_owned_child_immutable',
       '父任务持有的子任务只能由口播翻译账本更新。',
       409,
     );

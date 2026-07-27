@@ -2120,7 +2120,7 @@ test('mysql generic cancel, retry, and delete cannot mutate a parent-owned child
       operation === 'cancel'
         ? requestCancelJob(pool, child, {})
         : deleteJobById(pool, child.id, { userId: child.userId }),
-      (error) => error.code === 'parent_owned_child_immutable',
+      (error) => error.code === 'job_parent_owned_child_immutable',
       operation,
     );
     assert.equal(mutations, 0, operation);
@@ -2139,7 +2139,7 @@ test('mysql generic cancel, retry, and delete cannot mutate a parent-owned child
         return [{ affectedRows: 1 }];
       },
     }, failedChild, {}),
-    (error) => error.code === 'parent_owned_child_immutable',
+    (error) => error.code === 'job_parent_owned_child_immutable',
   );
   assert.equal(retryMutations, 0);
 });

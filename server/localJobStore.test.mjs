@@ -966,7 +966,7 @@ test('local generic cancel, retry, and delete cannot mutate a parent-owned child
     const before = structuredClone(store.jobs);
     assert.throws(
       () => operation.run(store, operation.child),
-      (error) => error.code === 'parent_owned_child_immutable',
+      (error) => error.code === 'job_parent_owned_child_immutable',
       operation.name,
     );
     assert.deepEqual(store.jobs, before, operation.name);
