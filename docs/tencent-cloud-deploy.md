@@ -135,6 +135,10 @@ MEIAO_KIE_TTS_REQUEST_TIMEOUT_MS=60000
 MEIAO_KIE_TTS_POLL_INTERVAL_MS=4000
 MEIAO_KIE_TTS_POLL_MAX_ATTEMPTS=180
 MEIAO_KIE_TTS_NOT_FOUND_GRACE_MS=45000
+# 只持久化非敏感探针配置；会话 token 和单次付费确认禁止写入服务器 env 文件。
+MEIAO_VOICEOVER_PROBE_BASE_URL=https://meiaoyuntai.com
+MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS=4000
+MEIAO_VOICEOVER_PROBE_TIMEOUT_MS=2400000
 MEIAO_CHAT_SSE_HEARTBEAT_MS=15000
 AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES=1
 AGENT_IMAGE_TOOL_CONCURRENCY=2
@@ -344,20 +348,25 @@ test -n "$MEIAO_VOICEOVER_FIXTURE_PATH"
 npm run probe:voiceover-translation -- --fixture-path "$MEIAO_VOICEOVER_FIXTURE_PATH"
 ```
 
-它只验证本机 H.264/AAC、Demucs 输出、人声分析媒体、对齐、ducking、最终 MP4、时长、`ftyp` 与本地字节区间读取，不调用 Gemini、KIE 或 Golden。远程 query-only 模式使用临时 shell 环境中的 `MEIAO_VOICEOVER_PROBE_BASE_URL` 和 `MEIAO_VOICEOVER_PROBE_SESSION_TOKEN`；会话 token 不得写入 `.env.server`、命令历史、日志或交接文档。
+它只验证本机 H.264/AAC、Demucs 输出、人声分析媒体、对齐、ducking、最终 MP4、时长、`ftyp` 与本地字节区间读取，不调用 Gemini、KIE 或 Golden。远程模式用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 指向梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 必须通过当前 shell 隐式输入并在执行后清除，不得写入 `.env.server` / `.env.local`、命令历史、日志或交接文档。`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 只接受启动脚本前的单次命令环境；即使误写入 env 文件也会被探针忽略。
 
 真实 canary 只允许用户明确确认的当前账号 managed asset ID，并要求一次性确认：
 
 ```bash
 test -n "$MEIAO_VOICEOVER_CANARY_ASSET_ID"
+export MEIAO_VOICEOVER_PROBE_BASE_URL=https://meiaoyuntai.com
+read -r -s -p '当前账号临时会话 token: ' MEIAO_VOICEOVER_PROBE_SESSION_TOKEN
+echo
+export MEIAO_VOICEOVER_PROBE_SESSION_TOKEN
 MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1 \
 npm run probe:voiceover-translation -- \
   --live \
   --source-asset-id "$MEIAO_VOICEOVER_CANARY_ASSET_ID" \
   --target-language en
+unset MEIAO_VOICEOVER_PROBE_SESSION_TOKEN
 ```
 
-`--remove-text` 还会触发 Golden，必须再次取得费用确认。恢复仅使用 `--resume-parent-job-id` 或 `--resume-child-task-id` 查询已有任务，不得重新 create。回滚把 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=0` 并走正常 PM2 ready-gated reload；这只阻止新提交，历史卡片和托管结果继续可读。
+`--remove-text` 还会触发 Golden，必须再次取得费用确认。成功或 post-create 失败证据会输出安全的内部 `parentJobId`、`childJobId` 与检查点状态，不输出 provider task ID、转录或 URL。`--resume-parent-job-id` 使用内部父 ID；`--resume-child-task-id` 只接受 live 证据中的内部 `childJobId`，直接只读 GET `/api/jobs/:id` 并核对父持有 child 合同，不支持 `providerTaskId`、不扫描父任务列表，也不重新 create。回滚把 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=0` 并走正常 PM2 ready-gated reload；这只阻止新提交，历史卡片和托管结果继续可读。
 
 发布后分别记录两类验收：
 

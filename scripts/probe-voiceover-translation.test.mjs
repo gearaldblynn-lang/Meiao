@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,6 +49,36 @@ test('direct CLI loads server env files without overriding or leaking their valu
   assert.equal(result.stderr, '');
 });
 
+test('direct CLI never accepts persisted live confirmation', async (t) => {
+  const workingDirectory = await mkdtemp(path.join(tmpdir(), 'meiao-voiceover-probe-confirm-'));
+  t.after(() => rm(workingDirectory, { recursive: true, force: true }));
+  await writeFile(path.join(workingDirectory, '.env.server'), [
+    'MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1',
+  ].join('\n'));
+  const childEnv = { ...process.env };
+  delete childEnv.MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED;
+  delete childEnv.MEIAO_VOICEOVER_PROBE_BASE_URL;
+  delete childEnv.MEIAO_VOICEOVER_PROBE_SESSION_TOKEN;
+  const scriptPath = fileURLToPath(new URL('./probe-voiceover-translation.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [
+    scriptPath,
+    '--live',
+    '--source-asset-id', 'owned-managed-asset',
+    '--target-language', 'en',
+    '--remove-text',
+  ], {
+    cwd: workingDirectory,
+    env: childEnv,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /Golden/);
+  assert.match(result.stderr, /MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1/);
+  assert.doesNotMatch(result.stderr, /SESSION_TOKEN|BASE_URL/);
+  assert.equal(result.stdout, '');
+});
+
 const probeDeps = ({
   env = {},
   readiness = readyLocal,
@@ -91,9 +121,17 @@ const probeDeps = ({
       calls.parentQuery += 1;
       return parentResult || { found: true, status: 'running' };
     },
-    queryChildTask: async () => {
+    queryChildTask: async (childJobId) => {
       calls.childQuery += 1;
-      return childResult || { found: true, status: 'submitted' };
+      return childResult || {
+        found: true,
+        childJobId,
+        parentJobId: 'parent-job-1',
+        childKey: 'tts:0:attempt:0',
+        taskType: 'kie_tts',
+        provider: 'kie',
+        status: 'submitted',
+      };
     },
     fetchHealth: async () => {
       calls.health += 1;
@@ -117,7 +155,16 @@ const probeDeps = ({
           id: 'parent-job-safe',
           status: 'succeeded',
           result: {
-            checkpoint: { stage: 'result_persisted' },
+            voiceoverCheckpoint: {
+              stage: 'result_persisted',
+              analysisAttempt: 1,
+              ttsGroups: [{
+                childJobId: 'voiceover-child-tts-safe',
+                providerTaskId: 'provider-task-never-print',
+                status: 'succeeded',
+              }],
+              finalAssetId: 'managed-final',
+            },
             finalAssetId: 'managed-final',
             videoUrl: '/api/assets/file/managed-final?accessKey=never-print',
           },
@@ -219,90 +266,136 @@ test('fixture mode is absolute-path local-only and cannot create provider tasks'
   assert.doesNotMatch(result.stdout, /owned-fixture|\/tmp\//);
 });
 
-test('parent and child resume modes are query-only and never submit or create', async () => {
-  for (const args of [
-    ['--resume-parent-job-id', 'parent-job-1'],
-    ['--resume-child-task-id', 'provider-child-task-1'],
-  ]) {
-    const deps = probeDeps({
-      env: {
-        MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
-        MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
-      },
-    });
-    const result = await runVoiceoverProbe(args, deps);
-    assert.equal(result.exitCode, 0);
-    assert.equal(deps.calls.providerCreate, 0);
-    assert.equal(deps.calls.parentQuery + deps.calls.childQuery, 1);
-    assert.doesNotMatch(result.stdout, /parent-job-1|provider-child-task-1|session-secret/);
-  }
-});
-
-test('child resume resolves only nested durable checkpoint identities without printing them', async () => {
-  for (const childTaskId of ['tts-child-1', 'tts-provider-1', 'golden-child-1', 'golden-provider-1']) {
-    const deps = probeDeps({
-      env: {
-        MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
-        MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
-      },
-    });
-    delete deps.queryChildTask;
-    deps.fetchImpl = async (url, init = {}) => {
-      assert.equal(String(url), 'https://meiao.test/api/jobs?limit=100');
-      assert.equal(init.method || 'GET', 'GET');
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          jobs: [{
-            id: 'parent-job-1',
-            taskType: 'voiceover_translate_video',
-            provider: 'internal',
-            status: 'running',
-            result: {
-              voiceoverCheckpoint: {
-                subtitleRemoval: {
-                  childJobId: 'golden-child-1',
-                  providerTaskId: 'golden-provider-1',
-                  status: 'submitted',
-                },
-                ttsGroups: [{
-                  childJobId: 'tts-child-1',
-                  providerTaskId: 'tts-provider-1',
-                  status: 'submitted',
-                }],
-              },
-            },
-          }],
-        }),
-      };
-    };
-
-    const result = await runVoiceoverProbe(['--resume-child-task-id', childTaskId], deps);
-    assert.equal(result.exitCode, 0, childTaskId);
-    assert.equal(JSON.parse(result.stdout).found, true);
-    assert.equal(deps.calls.providerCreate, 0);
-    assert.equal(result.stdout.includes(childTaskId), false);
-  }
-
-  const missing = probeDeps({
+test('parent and authoritative child resume modes are query-only and never submit or create', async () => {
+  const parentDeps = probeDeps({
     env: {
       MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
       MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
     },
   });
-  delete missing.queryChildTask;
-  missing.fetchImpl = async () => ({
+  const parent = await runVoiceoverProbe(
+    ['--resume-parent-job-id', 'parent-job-1'],
+    parentDeps,
+  );
+  assert.equal(parent.exitCode, 0);
+  assert.equal(parentDeps.calls.providerCreate, 0);
+  assert.equal(parentDeps.calls.parentQuery, 1);
+  assert.doesNotMatch(parent.stdout, /session-secret/);
+
+  const childDeps = probeDeps({
+    env: {
+      MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
+      MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+    },
+  });
+  const child = await runVoiceoverProbe(
+    ['--resume-child-task-id', 'voiceover-child-safe'],
+    childDeps,
+  );
+  assert.equal(child.exitCode, 0);
+  assert.equal(childDeps.calls.providerCreate, 0);
+  assert.equal(childDeps.calls.childQuery, 1);
+  assert.equal(JSON.parse(child.stdout).childJobId, 'voiceover-child-safe');
+  assert.doesNotMatch(child.stdout, /providerTaskId|session-secret/);
+});
+
+test('child resume reads the authoritative child by internal ID and ignores stale parent evidence', async () => {
+  const childJobId = 'voiceover-child-authoritative';
+  const deps = probeDeps({
+    env: {
+      MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
+      MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+    },
+    parentResult: {
+      found: true,
+      status: 'running',
+      job: {
+        id: 'parent-job-1',
+        result: {
+          voiceoverCheckpoint: {
+            ttsGroups: [{ childJobId, status: 'submitted' }],
+          },
+        },
+      },
+    },
+  });
+  delete deps.queryChildTask;
+  deps.fetchImpl = async (url, init = {}) => {
+    assert.equal(String(url), `https://meiao.test/api/jobs/${childJobId}`);
+    assert.equal(init.method || 'GET', 'GET');
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        job: {
+          id: childJobId,
+          module: 'video',
+          taskType: 'kie_tts',
+          provider: 'kie',
+          status: 'succeeded',
+          providerTaskId: 'provider-task-never-print',
+          payload: {
+            executionOwner: 'parent',
+            parentJobId: 'parent-job-1',
+            childKey: 'tts:0:attempt:1',
+            clientSubmissionKey: 'voiceover-child:parent-job-1:tts:0:attempt:1',
+          },
+          result: {
+            transcript: 'never print child provider output',
+          },
+        },
+      }),
+    };
+  };
+
+  const result = await runVoiceoverProbe(['--resume-child-task-id', childJobId], deps);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    mode: 'resume-child',
+    found: true,
+    childJobId,
+    parentJobId: 'parent-job-1',
+    childKey: 'tts:0:attempt:1',
+    taskType: 'kie_tts',
+    provider: 'kie',
+    status: 'succeeded',
+    providerCreateCalls: 0,
+  });
+  assert.equal(deps.calls.parentQuery, 0);
+  assert.equal(deps.calls.providerCreate, 0);
+  assert.doesNotMatch(result.stdout, /provider-task-never-print|transcript|never print/);
+});
+
+test('child resume rejects an authenticated job that is not a valid parent-owned child', async () => {
+  const deps = probeDeps({
+    env: {
+      MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
+      MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+    },
+  });
+  delete deps.queryChildTask;
+  deps.fetchImpl = async () => ({
     ok: true,
     status: 200,
-    json: async () => ({ jobs: [] }),
+    json: async () => ({
+      job: {
+        id: 'not-a-child-job',
+        module: 'video',
+        taskType: 'voiceover_translate_video',
+        provider: 'internal',
+        status: 'succeeded',
+        payload: { executionOwner: 'browser' },
+      },
+    }),
   });
-  const missingResult = await runVoiceoverProbe(
-    ['--resume-child-task-id', 'unknown-child-task'],
-    missing,
+
+  const result = await runVoiceoverProbe(
+    ['--resume-child-task-id', 'not-a-child-job'],
+    deps,
   );
-  assert.equal(missingResult.exitCode, 1);
-  assert.equal(missing.calls.providerCreate, 0);
+  assert.equal(result.exitCode, 1);
+  assert.equal(deps.calls.providerCreate, 0);
+  assert.equal(result.stdout, '');
 });
 
 test('live mode requires explicit confirmation and reports the extra Golden charge first', async () => {
@@ -317,6 +410,7 @@ test('live mode requires explicit confirmation and reports the extra Golden char
   assert.equal(result.exitCode, 2);
   assert.match(result.stderr, /Golden/);
   assert.match(result.stderr, /MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1/);
+  assert.doesNotMatch(result.stderr, /parentJobId|childJobIds/);
   assert.equal(deps.calls.health, 0);
   assert.equal(deps.calls.providerCreate, 0);
 });
@@ -353,7 +447,157 @@ test('confirmed live mode creates exactly once with only the explicitly supplied
   assert.equal(JSON.parse(result.stdout).finalH264, true);
   assert.equal(JSON.parse(result.stdout).finalAac, true);
   assert.equal(JSON.parse(result.stdout).rangeReadable, true);
-  assert.doesNotMatch(result.stdout, /accessKey|never-print|kie-secret|session-secret/);
+  assert.equal(JSON.parse(result.stdout).parentJobId, 'parent-job-safe');
+  assert.equal(JSON.parse(result.stdout).finalCheckpointStage, 'result_persisted');
+  assert.deepEqual(JSON.parse(result.stdout).childJobIds, ['voiceover-child-tts-safe']);
+  assert.doesNotMatch(result.stdout, /provider-task-never-print|providerTaskId|accessKey|never-print|kie-secret|session-secret/);
+});
+
+test('successful live evidence contains only bounded internal checkpoint identities and status counts', async () => {
+  const deps = probeDeps({
+    env: {
+      MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED: '1',
+      MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
+      MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+    },
+    liveResult: {
+      job: {
+        id: 'parent-job-evidence',
+        status: 'succeeded',
+        result: {
+          voiceoverCheckpoint: {
+            stage: 'result_persisted',
+            analysisAttempt: 3,
+            subtitleRemoval: {
+              childJobId: 'voiceover-child-golden',
+              providerTaskId: 'golden-provider-never-print',
+              status: 'succeeded',
+            },
+            ttsGroups: [{
+              childJobId: 'voiceover-child-tts-0',
+              providerTaskId: 'tts-provider-zero-never-print',
+              status: 'succeeded',
+            }, {
+              childJobId: 'voiceover-child-tts-1',
+              providerTaskId: 'tts-provider-one-never-print',
+              status: 'submitted',
+            }],
+            finalAssetId: 'managed-final',
+          },
+          videoUrl: '/api/assets/file/managed-final?accessKey=never-print',
+          transcript: 'translated words never print',
+          providerResponse: { raw: 'never print provider body' },
+        },
+      },
+    },
+  });
+  const result = await runVoiceoverProbe([
+    '--live',
+    '--source-asset-id', 'owned-managed-asset',
+    '--target-language', 'en',
+    '--remove-text',
+  ], deps);
+
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(deps.calls.providerCreate, 1);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.parentJobId, 'parent-job-evidence');
+  assert.equal(output.finalCheckpointStage, 'result_persisted');
+  assert.equal(output.analysisAttempt, 3);
+  assert.deepEqual(output.childJobIds, [
+    'voiceover-child-golden',
+    'voiceover-child-tts-0',
+    'voiceover-child-tts-1',
+  ]);
+  assert.deepEqual(output.ttsSummary, {
+    total: 2,
+    queued: 0,
+    submitted: 1,
+    succeeded: 1,
+    failed: 0,
+    unknown: 0,
+  });
+  assert.deepEqual(output.goldenSummary, { present: true, status: 'succeeded' });
+  assert.doesNotMatch(
+    result.stdout,
+    /providerTaskId|golden-provider|tts-provider|translated words|provider body|accessKey|session-secret/,
+  );
+});
+
+test('post-create timeout and terminal failure preserve safe parent recovery evidence without recreating', async () => {
+  const liveEnv = {
+    MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED: '1',
+    MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
+    MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+    MEIAO_VOICEOVER_PROBE_TIMEOUT_MS: '60000',
+  };
+  const runningJob = {
+    id: 'parent-job-timeout',
+    status: 'running',
+    result: {
+      voiceoverCheckpoint: {
+        stage: 'tts_generating',
+        analysisAttempt: 2,
+        ttsGroups: [{
+          childJobId: 'voiceover-child-running',
+          providerTaskId: 'provider-task-never-print',
+          status: 'submitted',
+        }],
+      },
+    },
+  };
+  const timeoutDeps = probeDeps({ env: liveEnv, liveResult: { job: runningJob } });
+  const nowValues = [0, 60001];
+  timeoutDeps.now = () => nowValues.shift() ?? 60001;
+  const timeout = await runVoiceoverProbe([
+    '--live',
+    '--source-asset-id', 'owned-managed-asset',
+    '--target-language', 'en',
+  ], timeoutDeps);
+
+  assert.equal(timeout.exitCode, 1);
+  assert.equal(timeoutDeps.calls.providerCreate, 1);
+  const timeoutEvidence = JSON.parse(timeout.stderr);
+  assert.equal(timeoutEvidence.parentJobId, 'parent-job-timeout');
+  assert.equal(timeoutEvidence.finalCheckpointStage, 'tts_generating');
+  assert.deepEqual(timeoutEvidence.childJobIds, ['voiceover-child-running']);
+  assert.equal(timeoutEvidence.ttsSummary.submitted, 1);
+  assert.match(timeoutEvidence.message, /超时/);
+  assert.doesNotMatch(timeout.stderr, /provider-task-never-print|providerTaskId|session-secret/);
+
+  const failedDeps = probeDeps({
+    env: liveEnv,
+    liveResult: {
+      job: {
+        id: 'parent-job-failed',
+        status: 'failed',
+        result: {
+          voiceoverCheckpoint: {
+            stage: 'subtitle_removal',
+            analysisAttempt: 0,
+            subtitleRemoval: {
+              childJobId: 'voiceover-child-golden-failed',
+              providerTaskId: 'golden-provider-never-print',
+              status: 'failed',
+            },
+          },
+        },
+      },
+    },
+  });
+  const failed = await runVoiceoverProbe([
+    '--live',
+    '--source-asset-id', 'owned-managed-asset',
+    '--target-language', 'en',
+    '--remove-text',
+  ], failedDeps);
+  assert.equal(failed.exitCode, 1);
+  assert.equal(failedDeps.calls.providerCreate, 1);
+  const failedEvidence = JSON.parse(failed.stderr);
+  assert.equal(failedEvidence.parentJobId, 'parent-job-failed');
+  assert.equal(failedEvidence.finalCheckpointStage, 'subtitle_removal');
+  assert.deepEqual(failedEvidence.goldenSummary, { present: true, status: 'failed' });
+  assert.doesNotMatch(failed.stderr, /golden-provider-never-print|providerTaskId|session-secret/);
 });
 
 test('live success fails closed without a canonical final asset or verified H.264 AAC Range evidence', async () => {
@@ -380,6 +624,7 @@ test('live success fails closed without a canonical final asset or verified H.26
   assert.equal(missingAssetResult.exitCode, 1);
   assert.equal(missingAsset.calls.providerCreate, 1);
   assert.equal(missingAsset.calls.finalVerify, 0);
+  assert.equal(JSON.parse(missingAssetResult.stderr).parentJobId, 'parent-job-safe');
 
   const invalidMedia = probeDeps({ env: liveEnv });
   invalidMedia.verifyFinalResult = async () => {
@@ -400,6 +645,8 @@ test('live success fails closed without a canonical final asset or verified H.26
   assert.equal(invalidMediaResult.exitCode, 1);
   assert.equal(invalidMedia.calls.providerCreate, 1);
   assert.equal(invalidMedia.calls.finalVerify, 1);
+  assert.equal(JSON.parse(invalidMediaResult.stderr).parentJobId, 'parent-job-safe');
+  assert.equal(JSON.parse(invalidMediaResult.stderr).finalCheckpointStage, 'result_persisted');
 });
 
 test('ambiguous modes, missing values, and unknown arguments fail closed before side effects', async () => {
@@ -424,11 +671,36 @@ test('ambiguous modes, missing values, and unknown arguments fail closed before 
 
 test('stdout and stderr redaction removes secrets, Bearer values, URL query/hash, transcripts, provider bodies, task IDs, and local paths', async () => {
   const secret = 'super-secret-session';
+  for (const rawSensitiveSection of [
+    [
+      'transcript:',
+      '{',
+      '  "segments": ["confidential multiline words"]',
+      '}',
+      'arbitrary continuation must also disappear',
+    ].join('\n'),
+    [
+      'provider response:',
+      '{',
+      '  "taskId": "provider-multiline-secret"',
+      '}',
+      'arbitrary next-line provider text',
+    ].join('\n'),
+    [
+      'provider body:',
+      'first continuation line',
+      'second continuation line',
+    ].join('\n'),
+  ]) {
+    assert.equal(
+      redactVoiceoverProbeText(rawSensitiveSection, [secret]),
+      '[redacted-sensitive-output]',
+    );
+  }
+
   const raw = [
     `Bearer ${secret}`,
     `https://example.test/result.mp4?signature=${secret}#fragment`,
-    `transcript: confidential spoken words`,
-    `provider body: {"taskId":"provider-task-secret","token":"${secret}"}`,
     `providerTaskId=provider-task-secret`,
     `/Users/private/models/mdx`,
     `/opt/meiao/voiceover/models/mdx`,
@@ -439,7 +711,6 @@ test('stdout and stderr redaction removes secrets, Bearer values, URL query/hash
     secret,
     'signature=',
     '#fragment',
-    'confidential spoken words',
     'provider-task-secret',
     '/Users/private',
     '/opt/meiao',
@@ -453,11 +724,39 @@ test('stdout and stderr redaction removes secrets, Bearer values, URL query/hash
     },
   });
   deps.queryParentJob = async () => {
-    throw new Error(raw);
+    throw new Error(`provider response:\n${raw}\narbitrary continuation`);
   };
   const result = await runVoiceoverProbe(['--resume-parent-job-id', 'parent-sensitive'], deps);
   assert.equal(result.exitCode, 1);
-  for (const forbidden of [secret, 'signature=', 'confidential spoken words', 'provider-task-secret', '/Users/private']) {
+  for (const forbidden of [secret, 'signature=', 'arbitrary continuation', 'provider-task-secret', '/Users/private']) {
     assert.equal(result.stderr.includes(forbidden), false, forbidden);
+  }
+});
+
+test('every voiceover runbook records probe bounds and ephemeral live credentials', async () => {
+  const projectRoot = fileURLToPath(new URL('../', import.meta.url));
+  for (const relativePath of [
+    '.env.server.example',
+    'docs/project-overview.md',
+    'docs/tencent-cloud-deploy.md',
+    'docs/release-and-handoff.md',
+    '项目交接上下文.md',
+  ]) {
+    const source = await readFile(path.join(projectRoot, relativePath), 'utf8');
+    for (const requiredText of [
+      'MEIAO_VOICEOVER_PROBE_BASE_URL',
+      'MEIAO_VOICEOVER_PROBE_SESSION_TOKEN',
+      'MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS',
+      'MEIAO_VOICEOVER_PROBE_TIMEOUT_MS',
+      'MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED',
+      '4000',
+      '500',
+      '30000',
+      '2400000',
+      '60000',
+      '7200000',
+    ]) {
+      assert.equal(source.includes(requiredText), true, `${relativePath}: ${requiredText}`);
+    }
   }
 });

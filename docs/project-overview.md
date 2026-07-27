@@ -264,6 +264,8 @@ npm run probe:voiceover-translation -- --fixture-path "$MEIAO_VOICEOVER_FIXTURE_
 
 fixture 只运行本机 FFmpeg/Demucs，验证 H.264/AAC 输入、人声/背景输出、人声分析媒体、对齐、ducking、H.264/AAC 最终视频、时长容差、`ftyp` 和本地字节区间读取；不会调用 Gemini、KIE 或 Golden。`--resume-parent-job-id` / `--resume-child-task-id` 只查询已有任务。只有 `--live --source-asset-id <明确托管ID> --target-language <code>` 可以创建任务，且还必须配置受认证 base URL、会话和一次性 `MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1`；`--remove-text` 会先提示额外 Golden 费用。
 
+远程探针使用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 作为梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 只能在当前 shell/命令临时注入并在执行后清除，不能写入任何 env 文件；`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 也只接受探针启动前的单次命令环境，持久化在 `.env.server` / `.env.local` 中会被忽略。live 和失败证据会输出安全的内部 `parentJobId` / `childJobId`；`--resume-child-task-id` 只接受该内部 `childJobId` 并直查 `/api/jobs/:id`，不会按 `providerTaskId` 搜索或扫描父任务列表。
+
 计费边界：本机 Demucs 只消耗腾讯云计算资源，没有第三方按次费用；Gemini 分析/翻译、KIE TTS，以及可选 Golden 都可能计费。技术验收（任务/检查点/托管素材、H.264/AAC、Range、重启恢复）与感知验收（原口播不可辨、背景保留、目标语言和节奏正确、画面不变）必须分别记录，自动化通过不能代替真人试听/观看。
 
 ## 6. 验证入口

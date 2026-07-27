@@ -29,7 +29,22 @@ import {
 import { getVoiceoverLanguage } from '../src/utils/voiceoverCatalog.mjs';
 
 const MANAGED_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/u;
+const INTERNAL_JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u;
+const CHILD_KEY_TTS_PATTERN = /^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d{0,2})$/u;
+const CHILD_KEY_GOLDEN_PATTERN = /^golden:attempt:(0|[1-9]\d{0,2})$/u;
 const TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+const VOICEOVER_CHECKPOINT_STAGES = new Set([
+  'input_prepared',
+  'subtitle_removal',
+  'audio_extracted',
+  'voice_separated',
+  'speech_analysis_submitting',
+  'speech_analyzed',
+  'translated',
+  'tts_generating',
+  'audio_aligned',
+  'result_persisted',
+]);
 const DEFAULT_POLL_INTERVAL_MS = 4_000;
 const DEFAULT_TIMEOUT_MS = 40 * 60_000;
 
@@ -123,11 +138,12 @@ export function parseVoiceoverProbeArgs(argv = []) {
 
 const URL_WITH_SUFFIX = /\bhttps?:\/\/[^\s"'<>]+/giu;
 const LOCAL_PATH = /(?:\/(?:Users|home|tmp|private|opt|www|usr\/local|var\/folders)\/[^\s"',)}\]]+|[A-Za-z]:\\[^\s"',)}\]]+)/gu;
-const SENSITIVE_LINE = /^.*(?:transcript|provider\s+(?:body|response)).*$/gimu;
+const SENSITIVE_OUTPUT_MARKER = /\b(?:transcript|provider\s+(?:body|response))\b/iu;
 const PROVIDER_ID = /((?:providerTaskId|provider_task_id|taskId|task_id)\s*[:=]\s*["']?)[A-Za-z0-9._-]+/giu;
 
 export function redactVoiceoverProbeText(value, secrets = []) {
   let output = String(value || '');
+  if (SENSITIVE_OUTPUT_MARKER.test(output)) return '[redacted-sensitive-output]';
   output = output.replace(URL_WITH_SUFFIX, (raw) => {
     try {
       const url = new URL(raw);
@@ -140,7 +156,6 @@ export function redactVoiceoverProbeText(value, secrets = []) {
   });
   output = output
     .replace(/Bearer\s+[^\s"',)}\]]+/giu, 'Bearer [redacted]')
-    .replace(SENSITIVE_LINE, '[redacted-sensitive-output]')
     .replace(PROVIDER_ID, '$1[redacted]')
     .replace(LOCAL_PATH, '[redacted-local-path]');
   for (const secret of secrets.map(clean).filter(Boolean)) {
@@ -229,40 +244,52 @@ const defaultQueryParentJob = async (jobId, remote, deps) => {
   return {
     found: Boolean(body?.job),
     status: clean(body?.job?.status) || 'unknown',
+    job: body?.job || null,
   };
 };
 
-const defaultQueryChildTask = async (taskId, remote, deps) => {
+const defaultQueryChildTask = async (childJobId, remote, deps) => {
   const body = await requestJson(
     deps.fetchImpl || globalThis.fetch,
-    `${remote.baseUrl}/api/jobs?limit=100`,
+    `${remote.baseUrl}/api/jobs/${encodeURIComponent(childJobId)}`,
     { headers: authHeaders(remote.sessionToken) },
   );
-  let matchingAttempt = null;
-  for (const job of Array.isArray(body?.jobs) ? body.jobs : []) {
-    if (job?.taskType !== 'voiceover_translate_video' || job?.provider !== 'internal') continue;
-    const result = job?.result && typeof job.result === 'object' ? job.result : {};
-    const checkpoint = (
-      result.voiceoverCheckpoint
-      || result.voiceover_checkpoint
-      || result.checkpoint
-    );
-    if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) continue;
-    const attempts = [
-      ...(checkpoint.subtitleRemoval && typeof checkpoint.subtitleRemoval === 'object'
-        ? [checkpoint.subtitleRemoval]
-        : []),
-      ...(Array.isArray(checkpoint.ttsGroups) ? checkpoint.ttsGroups : []),
-    ];
-    matchingAttempt = attempts.find((attempt) => (
-      clean(attempt?.childJobId) === taskId
-      || clean(attempt?.providerTaskId) === taskId
-    )) || null;
-    if (matchingAttempt) break;
-  }
+  const job = body?.job && typeof body.job === 'object' && !Array.isArray(body.job)
+    ? body.job
+    : null;
+  const payload = job?.payload && typeof job.payload === 'object' && !Array.isArray(job.payload)
+    ? job.payload
+    : null;
+  const parentJobId = clean(payload?.parentJobId);
+  const childKey = clean(payload?.childKey);
+  const taskType = clean(job?.taskType);
+  const provider = clean(job?.provider);
+  const isTts = CHILD_KEY_TTS_PATTERN.test(childKey);
+  const isGolden = CHILD_KEY_GOLDEN_PATTERN.test(childKey);
+  const validProviderContract = (
+    (isTts && taskType === 'kie_tts' && provider === 'kie')
+    || (isGolden && taskType === 'subtitle_remove_video' && provider === 'golden_subtitle')
+  );
+  const valid = Boolean(
+    job
+    && clean(job.id) === childJobId
+    && INTERNAL_JOB_ID_PATTERN.test(childJobId)
+    && clean(job.module) === 'video'
+    && payload?.executionOwner === 'parent'
+    && INTERNAL_JOB_ID_PATTERN.test(parentJobId)
+    && validProviderContract
+    && clean(payload.clientSubmissionKey) === `voiceover-child:${parentJobId}:${childKey}`,
+  );
   return {
-    found: Boolean(matchingAttempt),
-    status: clean(matchingAttempt?.status) || 'unknown',
+    found: valid,
+    ...(valid ? {
+      childJobId,
+      parentJobId,
+      childKey,
+      taskType,
+      provider,
+      status: safeStatus(job.status),
+    } : {}),
   };
 };
 
@@ -285,13 +312,91 @@ const defaultQueryLiveJob = async (jobId, remote, deps) => {
   return body?.job || null;
 };
 
+const resolveVoiceoverCheckpoint = (job) => {
+  const result = job?.result && typeof job.result === 'object' && !Array.isArray(job.result)
+    ? job.result
+    : {};
+  for (const candidate of [
+    result.voiceoverCheckpoint,
+    result.voiceover_checkpoint,
+    result.checkpoint,
+  ]) {
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const safeCheckpointStage = (value) => {
+  const stage = clean(value);
+  return VOICEOVER_CHECKPOINT_STAGES.has(stage) ? stage : 'unknown';
+};
+
+const safeAttemptStatus = (value) => {
+  const status = clean(value);
+  return ['queued', 'submitted', 'succeeded', 'failed'].includes(status)
+    ? status
+    : 'unknown';
+};
+
+const summarizeTtsStatuses = (groups) => {
+  const boundedGroups = (Array.isArray(groups) ? groups : []).slice(0, 100);
+  const summary = {
+    total: boundedGroups.length,
+    queued: 0,
+    submitted: 0,
+    succeeded: 0,
+    failed: 0,
+    unknown: 0,
+  };
+  for (const group of boundedGroups) summary[safeAttemptStatus(group?.status)] += 1;
+  return summary;
+};
+
+const buildSafeCheckpointEvidence = (job) => {
+  const checkpoint = resolveVoiceoverCheckpoint(job);
+  const subtitleRemoval = checkpoint?.subtitleRemoval
+    && typeof checkpoint.subtitleRemoval === 'object'
+    && !Array.isArray(checkpoint.subtitleRemoval)
+    ? checkpoint.subtitleRemoval
+    : null;
+  const ttsGroups = (Array.isArray(checkpoint?.ttsGroups) ? checkpoint.ttsGroups : [])
+    .slice(0, 100);
+  const childJobIds = [];
+  const addChildJobId = (value) => {
+    const childJobId = clean(value);
+    if (
+      INTERNAL_JOB_ID_PATTERN.test(childJobId)
+      && !childJobIds.includes(childJobId)
+      && childJobIds.length < 101
+    ) childJobIds.push(childJobId);
+  };
+  addChildJobId(subtitleRemoval?.childJobId);
+  for (const group of ttsGroups) addChildJobId(group?.childJobId);
+  return {
+    finalCheckpointStage: safeCheckpointStage(checkpoint?.stage),
+    analysisAttempt: boundedInteger(checkpoint?.analysisAttempt, 0, 0, 100),
+    childJobIds,
+    ttsSummary: summarizeTtsStatuses(ttsGroups),
+    goldenSummary: {
+      present: Boolean(subtitleRemoval),
+      status: subtitleRemoval ? safeAttemptStatus(subtitleRemoval.status) : 'unknown',
+    },
+  };
+};
+
+const buildSafeLiveEvidence = (job) => {
+  const parentJobId = clean(job?.id);
+  return {
+    ...(INTERNAL_JOB_ID_PATTERN.test(parentJobId) ? { parentJobId } : {}),
+    ...buildSafeCheckpointEvidence(job),
+  };
+};
+
 const resolveFinalManagedIdentity = (job, baseUrl) => {
   const result = job?.result && typeof job.result === 'object' ? job.result : {};
-  const checkpoint = (
-    result.voiceoverCheckpoint
-    || result.voiceover_checkpoint
-    || result.checkpoint
-  );
+  const checkpoint = resolveVoiceoverCheckpoint(job);
   const finalAssetId = clean(
     result.finalAssetId
     || result.final_asset_id
@@ -522,6 +627,7 @@ const buildLiveRequest = (args, deps) => {
 const liveSummary = (job, args, verification) => {
   return {
     mode: 'live',
+    ...buildSafeLiveEvidence(job),
     parentJobCreated: true,
     parentJobCompleted: job?.status === 'succeeded',
     finalManagedAssetPresent: verification.managedAsset === true,
@@ -544,6 +650,8 @@ const secretValues = (env) => [
 export async function runVoiceoverProbe(argv = [], deps = {}) {
   const env = deps.env || process.env;
   let args;
+  let latestLiveJob = null;
+  let liveParentJobId = '';
   try {
     args = parseVoiceoverProbeArgs(argv);
     if (args.mode === 'readiness') {
@@ -579,32 +687,66 @@ export async function runVoiceoverProbe(argv = [], deps = {}) {
     }
 
     if (args.mode === 'resume-parent') {
+      if (!INTERNAL_JOB_ID_PATTERN.test(args.resumeParentJobId)) {
+        throw usageError('--resume-parent-job-id 必须是合法的梅奥内部父任务 ID。');
+      }
       const remote = resolveRemoteOptions(env);
       const query = deps.queryParentJob || ((id) => defaultQueryParentJob(id, remote, deps));
       const result = await query(args.resumeParentJobId, remote);
+      const parentJob = result?.job && typeof result.job === 'object'
+        ? result.job
+        : { id: args.resumeParentJobId, status: result?.status };
       return {
         exitCode: 0,
         stdout: `${JSON.stringify({
           mode: 'resume-parent',
           found: result?.found === true,
           status: safeStatus(result?.status),
+          ...buildSafeLiveEvidence(parentJob),
           providerCreateCalls: 0,
         })}\n`,
         stderr: '',
       };
     }
     if (args.mode === 'resume-child') {
+      if (!INTERNAL_JOB_ID_PATTERN.test(args.resumeChildTaskId)) {
+        throw usageError('--resume-child-task-id 必须是 live 证据输出的合法内部 childJobId。');
+      }
       const remote = resolveRemoteOptions(env);
       const query = deps.queryChildTask || ((id) => defaultQueryChildTask(id, remote, deps));
       const result = await query(args.resumeChildTaskId, remote);
-      if (result?.found !== true) {
-        throw new Error('未在耐久父任务检查点中找到该子任务；不会创建恢复任务。');
+      const childJobId = clean(result?.childJobId);
+      const parentJobId = clean(result?.parentJobId);
+      const childKey = clean(result?.childKey);
+      const taskType = clean(result?.taskType);
+      const provider = clean(result?.provider);
+      const validKind = (
+        (CHILD_KEY_TTS_PATTERN.test(childKey) && taskType === 'kie_tts' && provider === 'kie')
+        || (
+          CHILD_KEY_GOLDEN_PATTERN.test(childKey)
+          && taskType === 'subtitle_remove_video'
+          && provider === 'golden_subtitle'
+        )
+      );
+      if (
+        result?.found !== true
+        || childJobId !== args.resumeChildTaskId
+        || !INTERNAL_JOB_ID_PATTERN.test(childJobId)
+        || !INTERNAL_JOB_ID_PATTERN.test(parentJobId)
+        || !validKind
+      ) {
+        throw new Error('该 ID 不是当前账号可读的父持有口播子任务；不会扫描父任务或创建恢复任务。');
       }
       return {
         exitCode: 0,
         stdout: `${JSON.stringify({
           mode: 'resume-child',
-          found: result?.found === true,
+          found: true,
+          childJobId,
+          parentJobId,
+          childKey,
+          taskType,
+          provider,
           status: safeStatus(result?.status),
           providerCreateCalls: 0,
         })}\n`,
@@ -650,7 +792,11 @@ export async function runVoiceoverProbe(argv = [], deps = {}) {
     const created = await create(buildLiveRequest(args, deps), remote);
     let job = created?.job || null;
     const jobId = clean(job?.id);
-    if (!jobId) throw new Error('梅奥未返回口播翻译父任务。');
+    if (!INTERNAL_JOB_ID_PATTERN.test(jobId)) {
+      throw new Error('梅奥未返回合法的口播翻译父任务 ID。');
+    }
+    liveParentJobId = jobId;
+    latestLiveJob = job;
     const query = deps.queryLiveJob || ((id) => defaultQueryLiveJob(id, remote, deps));
     const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     const now = deps.now || Date.now;
@@ -660,8 +806,12 @@ export async function runVoiceoverProbe(argv = [], deps = {}) {
         throw new Error('口播翻译 canary 轮询超时；不会自动重新提交。');
       }
       await sleep(remote.pollIntervalMs);
-      job = await query(jobId, remote);
-      if (!job) throw new Error('口播翻译父任务查询失败。');
+      const queriedJob = await query(jobId, remote);
+      if (!queriedJob || clean(queriedJob.id) !== jobId) {
+        throw new Error('口播翻译父任务查询失败。');
+      }
+      job = queriedJob;
+      latestLiveJob = job;
     }
     if (job.status !== 'succeeded') {
       throw new Error(`口播翻译 canary 未成功，终态为 ${safeStatus(job.status)}。`);
@@ -690,6 +840,18 @@ export async function runVoiceoverProbe(argv = [], deps = {}) {
       error instanceof Error ? error.message : String(error),
       secretValues(env),
     );
+    if (liveParentJobId) {
+      return {
+        exitCode,
+        stdout: '',
+        stderr: `${JSON.stringify({
+          mode: 'live',
+          ok: false,
+          message: message || '口播翻译探针执行失败。',
+          ...buildSafeLiveEvidence(latestLiveJob || { id: liveParentJobId }),
+        })}\n`,
+      };
+    }
     return {
       exitCode,
       stdout: '',
@@ -702,8 +864,14 @@ const isDirectExecution = process.argv[1]
   && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 
 if (isDirectExecution) {
+  const invocationLiveConfirmation = process.env.MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED;
   loadServerEnvFile({ envPath: path.resolve('.env.server') });
   loadServerEnvFile({ envPath: path.resolve('.env.local') });
+  if (invocationLiveConfirmation === undefined) {
+    delete process.env.MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED;
+  } else {
+    process.env.MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED = invocationLiveConfirmation;
+  }
   const result = await runVoiceoverProbe(process.argv.slice(2));
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
