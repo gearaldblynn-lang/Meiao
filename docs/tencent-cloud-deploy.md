@@ -112,6 +112,29 @@ MEIAO_SUBTITLE_REMOVAL_BATCH_MAX_ITEMS=10
 MEIAO_SUBTITLE_REMOVAL_BATCH_PREP_CONCURRENCY=2
 MEIAO_SUBTITLE_REMOVAL_BATCH_SUBMIT_CONCURRENCY=2
 MEIAO_SUBTITLE_REMOVAL_PROBE_INSPECTION_MS=0
+# 口播翻译首发必须保持 disabled；完成独立 sizing、模型安装、readiness 和用户发布确认后才可改 1。
+MEIAO_VOICEOVER_TRANSLATION_ENABLED=0
+MEIAO_VOICEOVER_SEPARATION_PYTHON=/opt/meiao/voiceover/venv/bin/python
+MEIAO_VOICEOVER_DEMUCS_MODEL=mdx
+MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=/opt/meiao/voiceover/models
+MEIAO_VOICEOVER_SEPARATION_CONCURRENCY=1
+MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS=3600000
+MEIAO_VOICEOVER_MIN_ATEMPO=0.75
+MEIAO_VOICEOVER_MAX_ATEMPO=1.35
+MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS=8192
+MEIAO_VOICEOVER_GROUP_GAP_MS=800
+MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS=150
+MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND=96
+MEIAO_VOICEOVER_DUCKING_DB=4
+MEIAO_VOICEOVER_FADE_MS=40
+MEIAO_VOICEOVER_DURATION_TOLERANCE_MS=100
+MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS=259200000
+MEIAO_KIE_TTS_BASE_URL=https://api.kie.ai
+MEIAO_KIE_TTS_MODEL=google/gemini-3-1-flash-tts
+MEIAO_KIE_TTS_REQUEST_TIMEOUT_MS=60000
+MEIAO_KIE_TTS_POLL_INTERVAL_MS=4000
+MEIAO_KIE_TTS_POLL_MAX_ATTEMPTS=180
+MEIAO_KIE_TTS_NOT_FOUND_GRACE_MS=45000
 MEIAO_CHAT_SSE_HEARTBEAT_MS=15000
 AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES=1
 AGENT_IMAGE_TOOL_CONCURRENCY=2
@@ -267,6 +290,79 @@ namei -l /www/wwwroot/meiao-internal/server/data/assets
 ```
 
 预期应用根目录为可穿越的 `0755`，`.env.server` 仍为 `0600`。再从一个当前账号真实、有效的本地托管结果素材取得授权 URL，分别请求 Node 直连地址和正式域名；两端都必须返回 `200`、正确 `Content-Type` 和相同字节数/哈希。公网任一 `403` 都视为发布失败，即使任务状态、文件落盘和 Node 直连已经成功。
+
+### 口播翻译 disabled-first 部署
+
+本节不构成发布授权。生产 CPU、内存、磁盘容量、模型存放、分离并发、真实 Gemini/KIE/Golden 费用和部署窗口必须由用户另行确认。首次启用保持 `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY=1`；Demucs 是腾讯云本地算力，不收第三方按次费用，但 Gemini 分析/翻译、KIE TTS 和可选 Golden 都可能计费。
+
+venv 和非量化 `mdx` 权重必须安装在 Git 仓库与 `/www/wwwroot/meiao-internal` release 目录之外。安装是显式运维步骤，readiness 不会自动下载或修改服务器：
+
+```bash
+export MEIAO_VOICEOVER_SERVICE_USER=CHANGE_ME_TO_PM2_OS_USER
+test "$MEIAO_VOICEOVER_SERVICE_USER" != CHANGE_ME_TO_PM2_OS_USER
+id "$MEIAO_VOICEOVER_SERVICE_USER"
+export MEIAO_VOICEOVER_SERVICE_GROUP="$(id -gn "$MEIAO_VOICEOVER_SERVICE_USER")"
+sudo install -d \
+  -o "$MEIAO_VOICEOVER_SERVICE_USER" \
+  -g "$MEIAO_VOICEOVER_SERVICE_GROUP" \
+  -m 0750 \
+  /opt/meiao/voiceover
+sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -w /opt/meiao/voiceover
+export MEIAO_VOICEOVER_VENV_DIR=/opt/meiao/voiceover/venv
+export MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=/opt/meiao/voiceover/models
+sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
+  "PATH=$PATH" \
+  "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
+  "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
+  node scripts/install-voiceover-demucs.mjs --install
+sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
+  "PATH=$PATH" \
+  "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
+  "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
+  node scripts/install-voiceover-demucs.mjs --download-models
+sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
+  "PATH=$PATH" \
+  "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
+  "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
+  node scripts/install-voiceover-demucs.mjs --check
+```
+
+`MEIAO_VOICEOVER_SERVICE_USER` 必须替换为实际启动 PM2/Node 口播服务的系统用户；不要照抄一个假定用户名。若 PM2 由 root 运行，也要显式填 `root` 并记录本次确认。安装前后分别用 `id`、`stat -c '%U:%G %a %n' /opt/meiao/voiceover` 和以上 `sudo -u ... test -w` 验证归属、`0750` 权限与服务用户可写性；任一步失败都停止启用。
+
+`deploy/voiceover/requirements.lock`、`build-requirements.lock`、`demucs-models.json` 和 `mdx.yaml` 是受版本控制的安装合同；venv、`.th` 权重和运行时临时媒体不得进入 Git、release 包或 `git status`。安装后仍先保持功能关闭，写好候选环境路径和 KIE 凭证，再执行：
+
+```bash
+npm run probe:voiceover-translation -- --readiness
+```
+
+当 `enabled=false` 时总 `ready` 可以是 `false`，但 `pythonReady/modelReady/ffmpegReady` 必须分别为 `true`；经用户批准后在候选环境临时把开关设为 `1`，重新启动并确认 `/api/health.voiceoverTranslation` 的全部布尔值以及 `ready=true`。readiness 输出只能包含布尔值和 `separationConcurrency`，不得出现 Python/模型目录、KIE 根地址、token 或签名 URL。
+
+本地非付费 fixture 仅在用户显式提供安全绝对路径时运行：
+
+```bash
+test -n "$MEIAO_VOICEOVER_FIXTURE_PATH"
+npm run probe:voiceover-translation -- --fixture-path "$MEIAO_VOICEOVER_FIXTURE_PATH"
+```
+
+它只验证本机 H.264/AAC、Demucs 输出、人声分析媒体、对齐、ducking、最终 MP4、时长、`ftyp` 与本地字节区间读取，不调用 Gemini、KIE 或 Golden。远程 query-only 模式使用临时 shell 环境中的 `MEIAO_VOICEOVER_PROBE_BASE_URL` 和 `MEIAO_VOICEOVER_PROBE_SESSION_TOKEN`；会话 token 不得写入 `.env.server`、命令历史、日志或交接文档。
+
+真实 canary 只允许用户明确确认的当前账号 managed asset ID，并要求一次性确认：
+
+```bash
+test -n "$MEIAO_VOICEOVER_CANARY_ASSET_ID"
+MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1 \
+npm run probe:voiceover-translation -- \
+  --live \
+  --source-asset-id "$MEIAO_VOICEOVER_CANARY_ASSET_ID" \
+  --target-language en
+```
+
+`--remove-text` 还会触发 Golden，必须再次取得费用确认。恢复仅使用 `--resume-parent-job-id` 或 `--resume-child-task-id` 查询已有任务，不得重新 create。回滚把 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=0` 并走正常 PM2 ready-gated reload；这只阻止新提交，历史卡片和托管结果继续可读。
+
+发布后分别记录两类验收：
+
+- 技术：parent/child 检查点、每组一次 TTS create、托管最终素材、H.264/AAC、HTTP Range、刷新与本地服务重启恢复。
+- 感知：原口播不再可辨、背景音乐/环境声保留、目标语言正确、语速时序可接受、画面未改变。技术通过不能代替真人试听/观看。
 
 ## 启动
 ```bash
