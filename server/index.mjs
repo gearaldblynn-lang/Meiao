@@ -222,14 +222,15 @@ import {
   retryVirtualModelGenerationPose,
 } from './virtualModelGenerationService.mjs';
 import {
+  advanceVirtualModelGenerationPoseAttempt,
   bindVirtualModelGenerationPoseJob,
   claimVirtualModelGenerationPoseSubmission,
-  createVirtualModelGenerationBatchRecord,
   ensureVirtualModelGenerationSchema,
   failVirtualModelGenerationPoseSubmission,
+  findOrCreateVirtualModelGenerationBatchRecord,
   findLatestVirtualModelGenerationBatch,
   getVirtualModelGenerationBatch,
-  listActiveVirtualModelGenerationSourceAssetIds,
+  listActiveVirtualModelGenerationProtectedAssetReferences,
   normalizeVirtualModelGenerationStore,
   updateVirtualModelGenerationBatchRecord,
 } from './virtualModelGenerationStore.mjs';
@@ -4934,16 +4935,12 @@ const collectProtectedManagedAssetUrls = async ({ pool = null, store = null, own
     });
   };
   const addActiveVirtualModelGenerationReferences = async () => {
-    const assetIds = await listActiveVirtualModelGenerationSourceAssetIds({ pool, store });
-    assetIds.forEach((assetId) => {
-      const asset = assetsById.get(String(assetId));
-      if (
-        asset
-        && (!normalizedOwnerUserId || String(asset.userId || '') === normalizedOwnerUserId)
-      ) {
-        protectOwnedAsset(asset, asset.userId);
-      }
+    const references = await listActiveVirtualModelGenerationProtectedAssetReferences({
+      pool,
+      store,
+      assets: allAssets,
     });
+    references.forEach((reference) => protectedUrls.add(reference));
   };
   if (pool) {
     const ownerClause = normalizedOwnerUserId ? ' AND id = ?' : '';
@@ -11979,13 +11976,13 @@ const createVirtualModelGenerationApiService = ({
         await persistGenerationStore();
       }
     },
-    createBatchRecord: async (batch) => {
-      const created = await createVirtualModelGenerationBatchRecord({
+    createOrFindBatchRecord: async (batch) => {
+      const result = await findOrCreateVirtualModelGenerationBatchRecord({
         ...dataSource,
         batch,
       });
       await persistGenerationStore();
-      return created;
+      return result;
     },
     getBatchRecord: (batchId, userId) => getVirtualModelGenerationBatch({
       ...dataSource,
@@ -12033,6 +12030,14 @@ const createVirtualModelGenerationApiService = ({
       });
       await persistGenerationStore();
       return failed;
+    },
+    advancePoseAttempt: async (input) => {
+      const advanced = await advanceVirtualModelGenerationPoseAttempt({
+        ...dataSource,
+        ...input,
+      });
+      await persistGenerationStore();
+      return advanced;
     },
     fetchGeneratedAsset,
     persistGeneratedAsset: async ({
@@ -12094,18 +12099,23 @@ const createVirtualModelGenerationApiService = ({
           { code: 'MODEL_GENERATION_RESULT_INVALID' },
         );
       }
-      const persistedAsset = await deps.persistGeneratedAsset({
-        batch,
-        task,
-        fileBuffer,
-        mimeType,
-        width: metadata.width,
-        height: metadata.height,
-      });
-      const managedAsset = {
-        assetId: persistedAsset.id,
-        publicUrl: persistedAsset.publicUrl,
-      };
+      const managedAsset = task.managedReferenceAsset?.assetId
+        && task.managedReferenceAsset?.publicUrl
+        ? {
+          assetId: String(task.managedReferenceAsset.assetId),
+          publicUrl: String(task.managedReferenceAsset.publicUrl),
+        }
+        : await deps.persistGeneratedAsset({
+          batch,
+          task,
+          fileBuffer,
+          mimeType,
+          width: metadata.width,
+          height: metadata.height,
+        }).then((persistedAsset) => ({
+          assetId: persistedAsset.id,
+          publicUrl: persistedAsset.publicUrl,
+        }));
       let uploaded;
       try {
         uploaded = await uploadAssetViaKieStream({
@@ -12122,7 +12132,10 @@ const createVirtualModelGenerationApiService = ({
       if (!stableReferenceUrl) {
         throw Object.assign(
           new Error('Stable baseline upload returned no URL'),
-          { code: 'MODEL_GENERATION_REFERENCE_INVALID' },
+          {
+            code: 'MODEL_GENERATION_REFERENCE_INVALID',
+            managedReferenceAsset: managedAsset,
+          },
         );
       }
       return { managedAsset, stableReferenceUrl };

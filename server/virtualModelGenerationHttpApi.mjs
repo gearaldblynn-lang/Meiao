@@ -15,6 +15,25 @@ const REQUEST_ERROR_CODES = new Set([
   'MODEL_ASSET_UNAVAILABLE',
 ]);
 
+const SAFE_ADAPTER_ERRORS = new Map([
+  ['account_credit_insufficient', {
+    statusCode: 402,
+    message: 'Insufficient account credits.',
+  }],
+  ['managed_asset_forbidden', {
+    statusCode: 403,
+    message: 'Managed asset is unavailable.',
+  }],
+  ['job_submission_lock_timeout', {
+    statusCode: 409,
+    message: 'Matching job submission is already in progress.',
+  }],
+  ['MODEL_GENERATION_SUBMISSION_KEY_CONFLICT', {
+    statusCode: 409,
+    message: 'Submission key is already used for another target.',
+  }],
+]);
+
 const writeJsonResponse = (res, statusCode, payload) => {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -39,6 +58,14 @@ const decodePathPart = (value) => {
 
 const respondError = (res, error, writeJson) => {
   const code = String(error?.code || '');
+  const safeAdapterError = SAFE_ADAPTER_ERRORS.get(code);
+  if (safeAdapterError) {
+    writeJson(res, safeAdapterError.statusCode, {
+      code,
+      message: safeAdapterError.message,
+    });
+    return;
+  }
   if (NOT_FOUND_CODES.has(code)) {
     writeJson(res, 404, {
       code,
@@ -134,6 +161,12 @@ export const handleVirtualModelGenerationApiRequest = async ({
 
     if (createMatch) {
       const body = await readJson(req);
+      if (!String(body?.clientSubmissionKey || '').trim()) {
+        throw Object.assign(
+          new Error('Virtual model generation submission key is required'),
+          { code: 'MODEL_GENERATION_BATCH_INVALID' },
+        );
+      }
       const batch = await service.create({
         ...(body && typeof body === 'object' ? body : {}),
         userId: user.id,

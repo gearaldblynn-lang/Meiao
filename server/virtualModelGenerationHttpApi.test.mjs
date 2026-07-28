@@ -29,6 +29,7 @@ test('generation API dispatches all seven admin routes with the authenticated ow
     ['POST', '/api/admin/virtual-model-generation-batches', 'create', 201, {
       userId: 'forged-user',
       virtualModelId: 'model-1',
+      clientSubmissionKey: 'client-submit-1',
     }],
     ['GET', '/api/admin/virtual-model-generation-batches?virtualModelId=model%201&virtualModelVersionId=version%201', 'find', 200, null],
     ['GET', '/api/admin/virtual-model-generation-batches/batch%201', 'get', 200, null],
@@ -90,6 +91,18 @@ test('generation API rejects unauthenticated and non-admin requests before readi
 });
 
 test('generation API validates lookup input and sanitizes known and unknown failures', async () => {
+  const missingSubmissionKey = createResponse();
+  await handleVirtualModelGenerationApiRequest({
+    req: { method: 'POST' },
+    res: missingSubmissionKey,
+    url: new URL('http://localhost/api/admin/virtual-model-generation-batches'),
+    user: { id: 'admin-1', role: 'admin' },
+    readJson: async () => ({ virtualModelId: 'model-1' }),
+    service: createService([]),
+  });
+  assert.equal(missingSubmissionKey.statusCode, 400);
+  assert.equal(missingSubmissionKey.body.code, 'MODEL_GENERATION_BATCH_INVALID');
+
   const missingVersion = createResponse();
   await handleVirtualModelGenerationApiRequest({
     req: { method: 'GET' },
@@ -152,6 +165,37 @@ test('generation API validates lookup input and sanitizes known and unknown fail
   });
 });
 
+test('generation API preserves only allowlisted adapter 4xx failures with sanitized messages', async () => {
+  for (const [code, status, message] of [
+    ['account_credit_insufficient', 402, 'Insufficient account credits.'],
+    ['managed_asset_forbidden', 403, 'Managed asset is unavailable.'],
+    ['job_submission_lock_timeout', 409, 'Matching job submission is already in progress.'],
+  ]) {
+    const res = createResponse();
+    await handleVirtualModelGenerationApiRequest({
+      req: { method: 'POST' },
+      res,
+      url: new URL('http://localhost/api/admin/virtual-model-generation-batches'),
+      user: { id: 'admin-1', role: 'admin' },
+      readJson: async () => ({
+        virtualModelId: 'model-1',
+        clientSubmissionKey: 'client-submit-1',
+      }),
+      service: {
+        ...createService([]),
+        create: async () => {
+          throw Object.assign(new Error('secret upstream response'), {
+            code,
+            statusCode: status,
+          });
+        },
+      },
+    });
+    assert.equal(res.statusCode, status);
+    assert.deepEqual(res.body, { code, message });
+  }
+});
+
 test('generation API rejects malformed encoded path components without leaking URI errors', async () => {
   const res = createResponse();
   await handleVirtualModelGenerationApiRequest({
@@ -175,13 +219,14 @@ test('current server wires both data sources through durable generation and paid
   assert.match(source, /createVirtualModelGenerationApiService/);
 
   for (const dependency of [
-    'createBatchRecord',
+    'createOrFindBatchRecord',
     'getBatchRecord',
     'findLatestBatchRecord',
     'updateBatchRecord',
     'claimPoseSubmission',
     'bindPoseJob',
     'failPoseSubmission',
+    'advancePoseAttempt',
     'findJobByIdempotencyKey',
   ]) {
     assert.match(source, new RegExp(`${dependency}:`));
@@ -191,7 +236,7 @@ test('current server wires both data sources through durable generation and paid
   assert.match(source, /findReusableLocalJobRecord\(/);
   assert.match(source, /clientSubmissionKey/);
   assert.match(source, /maxRetries:\s*request\.maxRetries/);
-  assert.match(source, /listActiveVirtualModelGenerationSourceAssetIds\(\{\s*pool,\s*store\s*\}\)/);
+  assert.match(source, /listActiveVirtualModelGenerationProtectedAssetReferences\(\{/);
 });
 
 test('baseline stabilization fully downloads, decodes, persists, and creates a stable provider reference', () => {
