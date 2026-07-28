@@ -180,7 +180,7 @@ test('agent chat source validates model ability before accepting attachments or 
 });
 
 test('managed chat profile and agent references are owner-validated before persistence', () => {
-  assert.match(source, /import \{ assertOwnedActiveManagedAssetReferences \} from '\.\/managedAssetReferencePolicy\.mjs'/);
+  assert.match(source, /import \{[\s\S]{0,160}assertOwnedActiveManagedAssetReferences[\s\S]{0,160}\} from '\.\/managedAssetReferencePolicy\.mjs'/);
   const validationCalls = Array.from(source.matchAll(/await assertOwnedActiveManagedAssetReferences\(\{/g));
   assert.ok(validationCalls.length >= 10, 'MySQL+local chat, studio, profile and agent writes must validate managed references');
   assert.match(source, /const attachments = Array\.isArray\(payload\?\.attachments\)[\s\S]{0,700}assertOwnedActiveManagedAssetReferences\(\{[\s\S]{0,200}userId: user\.id/);

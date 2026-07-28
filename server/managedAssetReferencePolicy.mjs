@@ -58,3 +58,20 @@ export const assertOwnedActiveManagedAssetReferences = async ({
     throw createForbiddenReferenceError();
   }
 };
+
+export const prepareAuthorizedManagedAssetJobPayload = async ({
+  value,
+  userId,
+  pool = null,
+  scrubPayload,
+  assertReferences = assertOwnedActiveManagedAssetReferences,
+  appendTrustedMetadata,
+} = {}) => {
+  const callerOwnedPayload = await scrubPayload(value, userId);
+  await assertReferences({
+    value: callerOwnedPayload,
+    userId,
+    pool,
+  });
+  return appendTrustedMetadata(callerOwnedPayload);
+};
