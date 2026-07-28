@@ -1,15 +1,21 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
+  chmod,
   mkdtemp,
   mkdir,
   readFile,
   readdir,
+  stat,
+  symlink,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   atomicWriteJson,
@@ -266,11 +272,54 @@ const listFiles = async (directory) => {
 };
 
 const readJson = async (filePath) => JSON.parse(await readFile(filePath, 'utf8'));
+const importerUrl = new URL('./import-virtual-model-library-data.mjs', import.meta.url).href;
+
+const runImporterChild = (method, options) => {
+  const source = `
+    import { ${method} } from ${JSON.stringify(importerUrl)};
+    const options = JSON.parse(process.argv[1]);
+    if (${JSON.stringify(method)} === 'importMysqlLibrary') {
+      class Connection {
+        async beginTransaction() {}
+        async commit() {}
+        async rollback() {}
+        async query(sql) {
+          if (/^\\s*SELECT\\b/i.test(sql)) return [[]];
+          if (/^\\s*INSERT\\b/i.test(sql)) return [{ affectedRows: 1 }];
+          throw new Error('unexpected SQL');
+        }
+      }
+      options.connection = new Connection();
+    }
+    await ${method}(options);
+  `;
+  return spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', source, JSON.stringify(options)],
+    { encoding: 'utf8' },
+  );
+};
 
 test('CLI defaults to dry-run when no mode flag is supplied', () => {
   const args = parseCliArgs(['--package', '/tmp/library']);
   assert.equal(args.mode, 'dry-run');
   assert.equal(args.dryRun, true);
+});
+
+test('CLI local write refuses to run without explicit offline confirmation', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture);
+  const result = spawnSync(process.execPath, [
+    fileURLToPath(new URL('./import-virtual-model-library-data.mjs', import.meta.url)),
+    '--package', fixture.packageRoot,
+    '--local',
+    '--store-path', target.storePath,
+    '--registry-path', target.registryPath,
+    '--assets-dir', target.assetsDir,
+  ], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /local_offline_confirmation_required/);
+  assert.deepEqual(await listFiles(target.assetsDir), []);
 });
 
 test('package validation checks all 80 files against both checksum manifests', async () => {
@@ -481,6 +530,108 @@ test('local JSON failure restores both JSON files and removes copied files', asy
   assert.deepEqual(await listFiles(target.assetsDir), []);
 });
 
+test('local commit CAS refuses to overwrite an external store update', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture);
+  const concurrent = { ...(await readJson(target.storePath)), concurrentWrite: 'preserve-me' };
+
+  await assert.rejects(
+    importLocalLibrary({
+      packagePath: fixture.packageRoot,
+      ...target,
+      publicBaseUrl: 'https://meiao.example',
+      beforeLocalCommit: async () => atomicWriteJson(target.storePath, concurrent),
+    }),
+    (error) => error.code === 'local_target_changed',
+  );
+  assert.deepEqual(await readJson(target.storePath), concurrent);
+  assert.deepEqual(await listFiles(target.assetsDir), []);
+});
+
+test('local crash after first JSON rename is recovered before the next import plan', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture);
+  const originalRegistry = await readFile(target.registryPath, 'utf8');
+  const child = runImporterChild('importLocalLibrary', {
+    packagePath: fixture.packageRoot,
+    ...target,
+    publicBaseUrl: 'https://meiao.example',
+    faultInjection: 'after_local_store_rename',
+  });
+  assert.equal(child.status, 86, child.stderr);
+  assert.equal(await readFile(target.registryPath, 'utf8'), originalRegistry);
+
+  const recovered = await importLocalLibrary({
+    packagePath: fixture.packageRoot,
+    ...target,
+    publicBaseUrl: 'https://meiao.example',
+  });
+  assert.deepEqual(recovered.added, {
+    models: 2,
+    versions: 2,
+    relations: 16,
+    registry: 32,
+    files: 32,
+  });
+  assert.equal((await listFiles(target.assetsDir)).length, 32);
+  const controlDir = path.join(path.dirname(target.storePath), '.virtual-model-library-import');
+  assert.deepEqual(await listFiles(controlDir), []);
+});
+
+test('package source symlink is rejected before target writes', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture);
+  const storageKey = fixture.manifest[0].storageKey;
+  const sourcePath = path.join(fixture.dataRoot, 'assets', storageKey);
+  const outside = path.join(path.dirname(fixture.packageRoot), 'outside-source');
+  await writeFile(outside, await readFile(sourcePath));
+  await unlink(sourcePath);
+  await symlink(outside, sourcePath);
+
+  await assert.rejects(
+    importLocalLibrary({ packagePath: fixture.packageRoot, ...target }),
+    (error) => error.code === 'symlink_not_allowed',
+  );
+  assert.deepEqual(await listFiles(target.assetsDir), []);
+});
+
+test('target parent symlink is rejected and creates zero files outside assetsDir', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture);
+  const outside = path.join(target.directory, 'outside-assets');
+  await mkdir(outside);
+  const firstSegment = fixture.manifest[0].storageKey.split('/')[0];
+  await symlink(outside, path.join(target.assetsDir, firstSegment));
+
+  await assert.rejects(
+    importLocalLibrary({ packagePath: fixture.packageRoot, ...target }),
+    (error) => error.code === 'symlink_not_allowed',
+  );
+  assert.deepEqual(await listFiles(outside), []);
+});
+
+test('local lock, journal, backup directory and backup files use private permissions', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture);
+  await chmod(target.storePath, 0o600);
+  await chmod(target.registryPath, 0o600);
+  const child = runImporterChild('importLocalLibrary', {
+    packagePath: fixture.packageRoot,
+    ...target,
+    faultInjection: 'after_local_store_rename',
+  });
+  assert.equal(child.status, 86, child.stderr);
+  const controlDir = path.join(path.dirname(target.storePath), '.virtual-model-library-import');
+  const journalPath = path.join(controlDir, 'local-journal.json');
+  const journal = await readJson(journalPath);
+  assert.equal((await stat(controlDir)).mode & 0o777, 0o700);
+  assert.equal((await stat(journalPath)).mode & 0o777, 0o600);
+  assert.equal((await stat(journal.backupDirectory)).mode & 0o777, 0o700);
+  for (const backupPath of [journal.store.backupPath, journal.registry.backupPath]) {
+    assert.equal((await stat(backupPath)).mode & 0o777, 0o600);
+  }
+});
+
 test('URL rewriting replaces package loopback URLs for relations and registry records', () => {
   const libraryData = {
     virtualModelAssets: [{
@@ -508,8 +659,9 @@ test('URL rewriting replaces package loopback URLs for relations and registry re
 });
 
 class FakeMysqlConnection {
-  constructor({ failOn = '' } = {}) {
+  constructor({ failOn = '', failCommit = false } = {}) {
     this.failOn = failOn;
+    this.failCommit = failCommit;
     this.begun = 0;
     this.committed = 0;
     this.rolledBack = 0;
@@ -521,6 +673,9 @@ class FakeMysqlConnection {
   }
 
   async commit() {
+    if (this.failCommit) {
+      throw Object.assign(new Error('injected commit failure'), { code: 'ER_COMMIT_INJECTED' });
+    }
     this.committed += 1;
   }
 
@@ -586,4 +741,47 @@ test('MySQL failure rolls back and leaves no readable asset files', async () => 
   assert.equal(connection.committed, 0);
   assert.equal(connection.rolledBack, 1);
   assert.deepEqual(await listFiles(target.assetsDir), []);
+});
+
+test('MySQL commit failure rolls back and removes journal-planned files', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture, { baseline: false });
+  const connection = new FakeMysqlConnection({ failCommit: true });
+  await assert.rejects(
+    importMysqlLibrary({
+      packagePath: fixture.packageRoot,
+      connection,
+      assetsDir: target.assetsDir,
+    }),
+    (error) => error.code === 'ER_COMMIT_INJECTED',
+  );
+  assert.equal(connection.rolledBack, 1);
+  assert.deepEqual(await listFiles(target.assetsDir), []);
+});
+
+test('MySQL materialize crash journal removes rolled-back files before next import', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture, { baseline: false });
+  const child = runImporterChild('importMysqlLibrary', {
+    packagePath: fixture.packageRoot,
+    assetsDir: target.assetsDir,
+    faultInjection: 'after_mysql_materialize',
+  });
+  assert.equal(child.status, 87, child.stderr);
+  assert.equal((await listFiles(target.assetsDir)).length > 0, true);
+
+  const connection = new FakeMysqlConnection();
+  const summary = await importMysqlLibrary({
+    packagePath: fixture.packageRoot,
+    connection,
+    assetsDir: target.assetsDir,
+  });
+  assert.deepEqual(summary.added, {
+    models: 2,
+    versions: 2,
+    relations: 16,
+    registry: 32,
+    files: 32,
+  });
+  assert.equal((await listFiles(target.assetsDir)).length, 32);
 });

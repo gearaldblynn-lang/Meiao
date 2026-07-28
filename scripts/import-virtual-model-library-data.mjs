@@ -2,11 +2,14 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import {
+  chmod,
   constants as fsConstants,
   copyFile,
+  lstat,
   mkdir,
   open,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -48,6 +51,59 @@ const pathExists = async (filePath) => {
   } catch (error) {
     if (error?.code === 'ENOENT') return false;
     throw error;
+  }
+};
+
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
+
+const ensurePrivateDir = async (directory) => {
+  await mkdir(directory, { recursive: true, mode: PRIVATE_DIR_MODE });
+  await chmod(directory, PRIVATE_DIR_MODE);
+};
+
+const assertNoSymlinkPath = async (root, candidate) => {
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  if (
+    resolvedCandidate !== resolvedRoot
+    && !resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`)
+  ) {
+    throw createImporterError('path_outside_trusted_root', '路径越出可信根目录');
+  }
+  let rootInfo;
+  try {
+    rootInfo = await lstat(resolvedRoot);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  if (rootInfo.isSymbolicLink()) {
+    throw createImporterError('symlink_not_allowed', '可信根目录不能是 symlink');
+  }
+  const trustedRealRoot = await realpath(resolvedRoot);
+  const relative = path.relative(resolvedRoot, resolvedCandidate);
+  let current = resolvedRoot;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) {
+        throw createImporterError('symlink_not_allowed', '素材路径不能包含 symlink', {
+          relativePath: path.relative(resolvedRoot, current),
+        });
+      }
+      const currentReal = await realpath(current);
+      if (
+        currentReal !== trustedRealRoot
+        && !currentReal.startsWith(`${trustedRealRoot}${path.sep}`)
+      ) {
+        throw createImporterError('path_outside_trusted_root', '素材路径 realpath 越出可信根目录');
+      }
+    } catch (error) {
+      if (error?.code === 'ENOENT') break;
+      throw error;
+    }
   }
 };
 
@@ -293,6 +349,7 @@ export const loadAndValidatePackage = async (packagePath) => {
       });
     }
     const sourcePath = resolveInside(assetsRoot, storageKey);
+    await assertNoSymlinkPath(assetsRoot, sourcePath);
     let actual;
     try {
       actual = await sha256File(sourcePath);
@@ -724,11 +781,11 @@ const createTempPath = (targetPath) => path.join(
 );
 
 const atomicWriteText = async (filePath, text) => {
-  await mkdir(path.dirname(filePath), { recursive: true });
+  await mkdir(path.dirname(filePath), { recursive: true, mode: PRIVATE_DIR_MODE });
   const tempPath = createTempPath(filePath);
   let handle;
   try {
-    handle = await open(tempPath, 'wx');
+    handle = await open(tempPath, 'wx', PRIVATE_FILE_MODE);
     await handle.writeFile(text, 'utf8');
     await handle.sync();
     await handle.close();
@@ -768,12 +825,15 @@ const readTargetJson = async (filePath, fallback, invalidCode) => {
 };
 
 const checkDestinationFiles = async ({ assetsDir, fileRecords, manifest }) => {
+  await mkdir(assetsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  await assertNoSymlinkPath(assetsDir, assetsDir);
   const manifestMap = manifestByStorageKey(manifest);
   const missing = [];
   const skipped = [];
   for (const record of fileRecords) {
     const expected = manifestMap.get(record.storageKey);
     const destinationPath = resolveInside(assetsDir, record.storageKey);
+    await assertNoSymlinkPath(assetsDir, destinationPath);
     if (!await pathExists(destinationPath)) {
       missing.push({ record, expected, destinationPath });
       continue;
@@ -794,10 +854,15 @@ const checkDestinationFiles = async ({ assetsDir, fileRecords, manifest }) => {
 const timestampKey = (value) => new Date(value).toISOString().replace(/[:.]/g, '-');
 
 const stageFiles = async ({ missing, stageRoot }) => {
+  await ensurePrivateDir(stageRoot);
   for (const item of missing) {
     const stagePath = resolveInside(stageRoot, item.record.storageKey);
-    await mkdir(path.dirname(stagePath), { recursive: true });
+    await assertNoSymlinkPath(stageRoot, stagePath);
+    await mkdir(path.dirname(stagePath), { recursive: true, mode: PRIVATE_DIR_MODE });
+    await assertNoSymlinkPath(stageRoot, stagePath);
+    await assertNoSymlinkPath(path.dirname(item.expected.sourcePath), item.expected.sourcePath);
     await copyFile(item.expected.sourcePath, stagePath, fsConstants.COPYFILE_EXCL);
+    await chmod(stagePath, PRIVATE_FILE_MODE);
     const staged = await sha256File(stagePath);
     if (staged.size !== item.expected.size || staged.sha256 !== item.expected.sha256) {
       throw createImporterError('staged_file_checksum_mismatch', '素材 staging 后 checksum 不一致', {
@@ -808,11 +873,14 @@ const stageFiles = async ({ missing, stageRoot }) => {
   }
 };
 
-const materializeStagedFiles = async (missing, createdFiles) => {
+const materializeStagedFiles = async (missing, createdFiles, assetsDir) => {
   for (const item of missing) {
-    await mkdir(path.dirname(item.destinationPath), { recursive: true });
+    await assertNoSymlinkPath(assetsDir, item.destinationPath);
+    await mkdir(path.dirname(item.destinationPath), { recursive: true, mode: PRIVATE_DIR_MODE });
+    await assertNoSymlinkPath(assetsDir, item.destinationPath);
     try {
       await copyFile(item.stagePath, item.destinationPath, fsConstants.COPYFILE_EXCL);
+      await chmod(item.destinationPath, PRIVATE_FILE_MODE);
       createdFiles.push(item.destinationPath);
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
@@ -831,6 +899,170 @@ const materializeStagedFiles = async (missing, createdFiles) => {
 const cleanupFiles = async (files) => {
   for (const filePath of [...files].reverse()) {
     await unlink(filePath).catch(() => null);
+  }
+};
+
+const readFileState = async (filePath) => {
+  try {
+    const raw = await readFile(filePath);
+    return { existed: true, sha256: sha256Buffer(raw), raw };
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { existed: false, sha256: '', raw: null };
+    throw error;
+  }
+};
+
+const sameFileState = (actual, expected) => (
+  actual.existed === expected.existed
+  && actual.sha256 === expected.sha256
+);
+
+const acquireImportLock = async (controlDir, name) => {
+  await ensurePrivateDir(controlDir);
+  const lockPath = path.join(controlDir, `${name}.lock`);
+  const token = randomBytes(16).toString('hex');
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const handle = await open(lockPath, 'wx', PRIVATE_FILE_MODE);
+      await handle.writeFile(JSON.stringify({ pid: process.pid, token }), 'utf8');
+      await handle.sync();
+      await handle.close();
+      return async () => {
+        try {
+          const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+          if (lock.token === token) await unlink(lockPath);
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
+      };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      let lock;
+      try {
+        lock = JSON.parse(await readFile(lockPath, 'utf8'));
+      } catch {
+        throw createImporterError('import_lock_invalid', '导入锁损坏，已拒绝继续');
+      }
+      const pid = Number(lock?.pid);
+      let alive = Number.isInteger(pid) && pid > 0;
+      if (alive) {
+        try {
+          process.kill(pid, 0);
+        } catch (pidError) {
+          alive = pidError?.code !== 'ESRCH';
+        }
+      }
+      if (alive) throw createImporterError('import_lock_held', '已有导入进程持有独占锁');
+      await unlink(lockPath);
+    }
+  }
+  throw createImporterError('import_lock_held', '无法取得导入独占锁');
+};
+
+const writeJournal = async (journalPath, journal) => {
+  await atomicWriteJson(journalPath, journal);
+  await chmod(journalPath, PRIVATE_FILE_MODE);
+};
+
+const readJournal = async (journalPath) => {
+  try {
+    return JSON.parse(await readFile(journalPath, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw createImporterError('import_journal_invalid', '导入 journal 损坏，已拒绝继续');
+  }
+};
+
+const cleanupJournalFiles = async ({ assetsDir, files = [] }) => {
+  for (const entry of files) {
+    const destinationPath = resolveInside(assetsDir, entry.storageKey);
+    await assertNoSymlinkPath(assetsDir, destinationPath);
+    if (!await pathExists(destinationPath)) continue;
+    const actual = await sha256File(destinationPath);
+    if (actual.sha256 !== entry.sha256 || actual.size !== entry.size) {
+      throw createImporterError(
+        'recovery_file_conflict',
+        '恢复时发现 journal 文件内容不匹配，已拒绝删除',
+        { storageKey: entry.storageKey },
+      );
+    }
+    await unlink(destinationPath);
+  }
+};
+
+const cleanupJournalStage = async ({ assetsDir, stageRoot }) => {
+  if (!stageRoot) return;
+  const resolved = path.resolve(stageRoot);
+  if (
+    !path.basename(resolved).startsWith('.virtual-model-library-stage-')
+    || (resolved !== path.resolve(assetsDir) && !resolved.startsWith(`${path.resolve(assetsDir)}${path.sep}`))
+  ) {
+    throw createImporterError('import_journal_invalid', 'journal stageRoot 非法');
+  }
+  await assertNoSymlinkPath(assetsDir, resolved);
+  await rm(resolved, { recursive: true, force: true });
+};
+
+const restoreJournalTarget = async (target) => {
+  if (!target.existed) {
+    await unlink(target.path).catch((error) => {
+      if (error?.code !== 'ENOENT') throw error;
+    });
+    return;
+  }
+  const backup = await readFile(target.backupPath, 'utf8');
+  if (sha256Buffer(Buffer.from(backup)) !== target.originalSha256) {
+    throw createImporterError('import_backup_mismatch', '导入备份 hash 不匹配');
+  }
+  await atomicWriteText(target.path, backup);
+};
+
+const recoverLocalJournal = async ({ journalPath, assetsDir }) => {
+  const journal = await readJournal(journalPath);
+  if (!journal) return { recovered: false };
+  if (journal.mode !== 'local' || journal.schemaVersion !== 1) {
+    throw createImporterError('import_journal_invalid', 'local journal 合同不匹配');
+  }
+  const [storeState, registryState] = await Promise.all([
+    readFileState(journal.store.path),
+    readFileState(journal.registry.path),
+  ]);
+  const storeOriginal = sameFileState(storeState, {
+    existed: journal.store.existed,
+    sha256: journal.store.originalSha256,
+  });
+  const registryOriginal = sameFileState(registryState, {
+    existed: journal.registry.existed,
+    sha256: journal.registry.originalSha256,
+  });
+  const storeNext = storeState.existed && storeState.sha256 === journal.store.nextSha256;
+  const registryNext = registryState.existed && registryState.sha256 === journal.registry.nextSha256;
+  if (storeNext && registryNext) {
+    await cleanupJournalStage({ assetsDir, stageRoot: journal.stageRoot });
+    await unlink(journalPath);
+    return { recovered: true, action: 'completed' };
+  }
+  if (!(storeOriginal || storeNext) || !(registryOriginal || registryNext)) {
+    throw createImporterError('local_recovery_conflict', 'local journal 恢复遇到外部变化，已拒绝覆盖');
+  }
+  await restoreJournalTarget(journal.store);
+  await restoreJournalTarget(journal.registry);
+  await cleanupJournalFiles({ assetsDir, files: journal.files });
+  await cleanupJournalStage({ assetsDir, stageRoot: journal.stageRoot });
+  await unlink(journalPath);
+  return { recovered: true, action: 'rolled_back' };
+};
+
+const assertLocalCas = async (storeTarget, registryTarget) => {
+  const [storeState, registryState] = await Promise.all([
+    readFileState(storeTarget.path),
+    readFileState(registryTarget.path),
+  ]);
+  if (
+    !sameFileState(storeState, storeTarget)
+    || !sameFileState(registryState, registryTarget)
+  ) {
+    throw createImporterError('local_target_changed', '目标 JSON 在导入期间发生外部变化，已拒绝覆盖');
   }
 };
 
@@ -869,129 +1101,165 @@ export const importLocalLibrary = async ({
   dryRun = false,
   now = Date.now,
   writeJson = atomicWriteJson,
+  beforeLocalCommit = null,
+  faultInjection = '',
 } = {}) => {
   for (const [name, value] of Object.entries({ storePath, registryPath, assetsDir })) {
     if (!String(value || '').trim()) {
       throw createImporterError('local_target_path_required', `local 模式必须显式提供 ${name}`);
     }
   }
-  const loaded = await loadAndValidatePackage(packagePath);
-  const [storeTarget, registryTarget] = await Promise.all([
-    readTargetJson(storePath, {
-      virtualModels: [],
-      virtualModelVersions: [],
-      virtualModelAssets: [],
-    }, 'target_store_invalid'),
-    readTargetJson(registryPath, { assets: [] }, 'target_registry_invalid'),
-  ]);
-  if (!Array.isArray(registryTarget.value?.assets)) {
-    throw createImporterError('target_registry_invalid', '目标 asset registry 的 assets 必须是数组');
-  }
-  const plan = buildImportPlan({
-    libraryData: loaded.libraryData,
-    manifest: loaded.manifest,
-    existingStore: storeTarget.value,
-    existingRegistry: registryTarget.value,
-    publicBaseUrl,
-  });
-  const filePlan = await checkDestinationFiles({
-    assetsDir,
-    fileRecords: plan.fileRecords,
-    manifest: loaded.manifest,
-  });
-  const preview = summaryFromPlan({
-    mode: 'local',
-    dryRun,
-    loaded,
-    plan,
-    filePlan,
-  });
-  if (dryRun) return preview;
-
-  const jsonChanges = Object.values(plan.additions).some((items) => items.length > 0);
-  if (!jsonChanges && filePlan.missing.length === 0) return preview;
-
-  const runKey = `${timestampKey(now())}-${randomBytes(4).toString('hex')}`;
-  const backupDirectory = path.join(
-    path.dirname(path.resolve(storePath)),
-    '.virtual-model-library-backups',
-    runKey,
-  );
-  const stageRoot = path.join(path.resolve(assetsDir), `.virtual-model-library-stage-${runKey}`);
-  const createdFiles = [];
-  let jsonMutationStarted = false;
+  const resolvedAssetsDir = path.resolve(assetsDir);
+  const controlDir = path.join(path.dirname(path.resolve(storePath)), '.virtual-model-library-import');
+  const journalPath = path.join(controlDir, 'local-journal.json');
+  const releaseLock = await acquireImportLock(controlDir, 'local');
   try {
-    await mkdir(backupDirectory, { recursive: true });
-    await Promise.all([
-      atomicWriteText(path.join(backupDirectory, path.basename(storePath)), storeTarget.raw),
-      atomicWriteText(path.join(backupDirectory, path.basename(registryPath)), registryTarget.raw),
+    await recoverLocalJournal({ journalPath, assetsDir: resolvedAssetsDir });
+    const loaded = await loadAndValidatePackage(packagePath);
+    const [storeTarget, registryTarget] = await Promise.all([
+      readTargetJson(storePath, {
+        virtualModels: [],
+        virtualModelVersions: [],
+        virtualModelAssets: [],
+      }, 'target_store_invalid'),
+      readTargetJson(registryPath, { assets: [] }, 'target_registry_invalid'),
     ]);
-    if (filePlan.missing.length > 0) {
-      await mkdir(stageRoot, { recursive: true });
-      await stageFiles({ missing: filePlan.missing, stageRoot });
-      await materializeStagedFiles(filePlan.missing, createdFiles);
+    Object.assign(storeTarget, {
+      path: path.resolve(storePath),
+      sha256: sha256Buffer(Buffer.from(storeTarget.raw)),
+    });
+    Object.assign(registryTarget, {
+      path: path.resolve(registryPath),
+      sha256: sha256Buffer(Buffer.from(registryTarget.raw)),
+    });
+    if (!Array.isArray(registryTarget.value?.assets)) {
+      throw createImporterError('target_registry_invalid', '目标 asset registry 的 assets 必须是数组');
     }
-    if (jsonChanges) {
-      const nextStore = {
-        ...storeTarget.value,
-        virtualModels: [
-          ...(Array.isArray(storeTarget.value.virtualModels) ? storeTarget.value.virtualModels : []),
-          ...plan.additions.models,
-        ],
-        virtualModelVersions: [
-          ...(Array.isArray(storeTarget.value.virtualModelVersions)
-            ? storeTarget.value.virtualModelVersions
-            : []),
-          ...plan.additions.versions,
-        ],
-        virtualModelAssets: [
-          ...(Array.isArray(storeTarget.value.virtualModelAssets)
-            ? storeTarget.value.virtualModelAssets
-            : []),
-          ...plan.additions.relations,
-        ],
-      };
-      const nextRegistry = {
-        ...registryTarget.value,
-        assets: [...registryTarget.value.assets, ...plan.additions.registry],
-      };
-      jsonMutationStarted = true;
-      await writeJson(storePath, nextStore);
-      await writeJson(registryPath, nextRegistry);
-    }
-    return summaryFromPlan({
+    const plan = buildImportPlan({
+      libraryData: loaded.libraryData,
+      manifest: loaded.manifest,
+      existingStore: storeTarget.value,
+      existingRegistry: registryTarget.value,
+      publicBaseUrl,
+    });
+    const filePlan = await checkDestinationFiles({
+      assetsDir: resolvedAssetsDir,
+      fileRecords: plan.fileRecords,
+      manifest: loaded.manifest,
+    });
+    const preview = summaryFromPlan({
       mode: 'local',
-      dryRun: false,
+      dryRun,
       loaded,
       plan,
       filePlan,
-      backupDirectory,
     });
-  } catch (error) {
-    const rollbackErrors = [];
-    if (jsonMutationStarted) {
-      const restoreStore = storeTarget.existed
-        ? atomicWriteText(storePath, storeTarget.raw)
-        : unlink(storePath).catch((rollbackError) => {
-            if (rollbackError?.code !== 'ENOENT') throw rollbackError;
-          });
-      const restoreRegistry = registryTarget.existed
-        ? atomicWriteText(registryPath, registryTarget.raw)
-        : unlink(registryPath).catch((rollbackError) => {
-            if (rollbackError?.code !== 'ENOENT') throw rollbackError;
-          });
-      await restoreStore.catch((rollbackError) => {
-        rollbackErrors.push({ target: 'store', code: String(rollbackError?.code || '') });
-      });
-      await restoreRegistry.catch((rollbackError) => {
-        rollbackErrors.push({ target: 'registry', code: String(rollbackError?.code || '') });
-      });
+    if (dryRun) return preview;
+    const jsonChanges = Object.values(plan.additions).some((items) => items.length > 0);
+    if (!jsonChanges && filePlan.missing.length === 0) return preview;
+
+    const nextStore = {
+      ...storeTarget.value,
+      virtualModels: [
+        ...(Array.isArray(storeTarget.value.virtualModels) ? storeTarget.value.virtualModels : []),
+        ...plan.additions.models,
+      ],
+      virtualModelVersions: [
+        ...(Array.isArray(storeTarget.value.virtualModelVersions)
+          ? storeTarget.value.virtualModelVersions
+          : []),
+        ...plan.additions.versions,
+      ],
+      virtualModelAssets: [
+        ...(Array.isArray(storeTarget.value.virtualModelAssets)
+          ? storeTarget.value.virtualModelAssets
+          : []),
+        ...plan.additions.relations,
+      ],
+    };
+    const nextRegistry = {
+      ...registryTarget.value,
+      assets: [...registryTarget.value.assets, ...plan.additions.registry],
+    };
+    const nextStoreText = JSON.stringify(nextStore, null, 2);
+    const nextRegistryText = JSON.stringify(nextRegistry, null, 2);
+    const runKey = `${timestampKey(now())}-${randomBytes(4).toString('hex')}`;
+    const backupDirectory = path.join(
+      path.dirname(path.resolve(storePath)),
+      '.virtual-model-library-backups',
+      runKey,
+    );
+    const stageRoot = path.join(resolvedAssetsDir, `.virtual-model-library-stage-${runKey}`);
+    await ensurePrivateDir(backupDirectory);
+    const storeBackupPath = path.join(backupDirectory, path.basename(storePath));
+    const registryBackupPath = path.join(backupDirectory, path.basename(registryPath));
+    await Promise.all([
+      atomicWriteText(storeBackupPath, storeTarget.raw),
+      atomicWriteText(registryBackupPath, registryTarget.raw),
+    ]);
+    if (filePlan.missing.length > 0) {
+      await stageFiles({ missing: filePlan.missing, stageRoot });
     }
-    await cleanupFiles(createdFiles);
-    if (rollbackErrors.length > 0) error.rollbackErrors = rollbackErrors;
-    throw error;
+    const journal = {
+      schemaVersion: 1,
+      mode: 'local',
+      runKey,
+      backupDirectory,
+      stageRoot,
+      store: {
+        path: storeTarget.path,
+        existed: storeTarget.existed,
+        originalSha256: storeTarget.sha256,
+        nextSha256: sha256Buffer(Buffer.from(nextStoreText)),
+        backupPath: storeBackupPath,
+      },
+      registry: {
+        path: registryTarget.path,
+        existed: registryTarget.existed,
+        originalSha256: registryTarget.sha256,
+        nextSha256: sha256Buffer(Buffer.from(nextRegistryText)),
+        backupPath: registryBackupPath,
+      },
+      files: filePlan.missing.map((item) => ({
+        storageKey: item.record.storageKey,
+        sha256: item.expected.sha256,
+        size: item.expected.size,
+      })),
+    };
+    await writeJournal(journalPath, journal);
+    let jsonWriteStarted = false;
+    try {
+      await materializeStagedFiles(filePlan.missing, [], resolvedAssetsDir);
+      if (typeof beforeLocalCommit === 'function') await beforeLocalCommit();
+      await assertLocalCas(storeTarget, registryTarget);
+      if (jsonChanges) {
+        jsonWriteStarted = true;
+        await writeJson(storePath, nextStore);
+        if (faultInjection === 'after_local_store_rename') process.exit(86);
+        await writeJson(registryPath, nextRegistry);
+      }
+      await cleanupJournalStage({ assetsDir: resolvedAssetsDir, stageRoot });
+      await unlink(journalPath);
+      return summaryFromPlan({
+        mode: 'local',
+        dryRun: false,
+        loaded,
+        plan,
+        filePlan,
+        backupDirectory,
+      });
+    } catch (error) {
+      if (!jsonWriteStarted) {
+        await cleanupJournalFiles({ assetsDir: resolvedAssetsDir, files: journal.files });
+        await cleanupJournalStage({ assetsDir: resolvedAssetsDir, stageRoot });
+        await unlink(journalPath).catch(() => null);
+      } else {
+        await recoverLocalJournal({ journalPath, assetsDir: resolvedAssetsDir });
+      }
+      throw error;
+    }
   } finally {
-    await rm(stageRoot, { recursive: true, force: true }).catch(() => null);
+    await releaseLock();
   }
 };
 
@@ -1136,6 +1404,53 @@ const insertMysqlPlan = async (connection, additions) => {
   }
 };
 
+const queryPresentIds = async (connection, table, ids) => {
+  if (!Array.isArray(ids) || ids.length === 0) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await mysqlRows(
+    connection,
+    `SELECT id FROM ${table} WHERE id IN (${placeholders})`,
+    ids,
+  );
+  return rows.map((row) => String(row.id || ''));
+};
+
+const recoverMysqlJournal = async ({ connection, journalPath, assetsDir }) => {
+  const journal = await readJournal(journalPath);
+  if (!journal) return { recovered: false };
+  if (journal.mode !== 'mysql' || journal.schemaVersion !== 1) {
+    throw createImporterError('import_journal_invalid', 'mysql journal 合同不匹配');
+  }
+  const groups = [
+    ['virtual_models', journal.ids.models],
+    ['virtual_model_versions', journal.ids.versions],
+    ['virtual_model_assets', journal.ids.relations],
+    ['stored_assets', journal.ids.registry],
+  ];
+  let present = 0;
+  let expected = 0;
+  for (const [table, ids] of groups) {
+    expected += ids.length;
+    present += (await queryPresentIds(connection, table, ids)).length;
+  }
+  if (present === expected) {
+    await cleanupJournalStage({ assetsDir, stageRoot: journal.stageRoot });
+    await unlink(journalPath);
+    return { recovered: true, action: 'committed' };
+  }
+  if (present !== 0) {
+    throw createImporterError(
+      'mysql_recovery_conflict',
+      'MySQL journal 对应稳定 ID 只存在一部分，已拒绝自动处理',
+      { present, expected },
+    );
+  }
+  await cleanupJournalFiles({ assetsDir, files: journal.files });
+  await cleanupJournalStage({ assetsDir, stageRoot: journal.stageRoot });
+  await unlink(journalPath);
+  return { recovered: true, action: 'rolled_back' };
+};
+
 export const importMysqlLibrary = async ({
   packagePath,
   connection,
@@ -1143,6 +1458,7 @@ export const importMysqlLibrary = async ({
   publicBaseUrl = '',
   dryRun = false,
   now = Date.now,
+  faultInjection = '',
 } = {}) => {
   if (!connection || typeof connection.query !== 'function') {
     throw createImporterError('mysql_connection_required', 'mysql 模式必须提供 mysql2 connection');
@@ -1150,6 +1466,13 @@ export const importMysqlLibrary = async ({
   if (!String(assetsDir || '').trim()) {
     throw createImporterError('mysql_assets_dir_required', 'mysql 模式必须显式提供 assetsDir');
   }
+  const resolvedAssetsDir = path.resolve(assetsDir);
+  await mkdir(resolvedAssetsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  const controlDir = path.join(resolvedAssetsDir, '.virtual-model-library-import');
+  const journalPath = path.join(controlDir, 'mysql-journal.json');
+  const releaseLock = await acquireImportLock(controlDir, 'mysql');
+  try {
+    await recoverMysqlJournal({ connection, journalPath, assetsDir: resolvedAssetsDir });
   const loaded = await loadAndValidatePackage(packagePath);
   const rewritten = rewriteLibraryPublicUrls(loaded.libraryData, { publicBaseUrl });
   const targetModelIds = new Set(
@@ -1175,17 +1498,16 @@ export const importMysqlLibrary = async ({
       contentHash: manifestMap.get(record.storageKey)?.sha256 || '',
     }));
   const preflightFiles = await checkDestinationFiles({
-    assetsDir,
+    assetsDir: resolvedAssetsDir,
     fileRecords: preflightFileRecords,
     manifest: loaded.manifest,
   });
   const runKey = `${timestampKey(now())}-${randomBytes(4).toString('hex')}`;
-  const stageRoot = path.join(path.resolve(assetsDir), `.virtual-model-library-stage-${runKey}`);
+  const stageRoot = path.join(resolvedAssetsDir, `.virtual-model-library-stage-${runKey}`);
   const createdFiles = [];
   let transactionStarted = false;
   try {
     if (!dryRun && preflightFiles.missing.length > 0) {
-      await mkdir(stageRoot, { recursive: true });
       await stageFiles({ missing: preflightFiles.missing, stageRoot });
     }
     await connection.beginTransaction();
@@ -1199,7 +1521,7 @@ export const importMysqlLibrary = async ({
       publicBaseUrl,
     });
     const filePlan = await checkDestinationFiles({
-      assetsDir,
+      assetsDir: resolvedAssetsDir,
       fileRecords: plan.fileRecords,
       manifest: loaded.manifest,
     });
@@ -1225,10 +1547,31 @@ export const importMysqlLibrary = async ({
         filePlan,
       });
     }
+    const journal = {
+      schemaVersion: 1,
+      mode: 'mysql',
+      runKey,
+      stageRoot,
+      ids: {
+        models: plan.additions.models.map((item) => item.id),
+        versions: plan.additions.versions.map((item) => item.id),
+        relations: plan.additions.relations.map((item) => item.id),
+        registry: plan.additions.registry.map((item) => item.id),
+      },
+      files: filePlan.missing.map((item) => ({
+        storageKey: item.record.storageKey,
+        sha256: item.expected.sha256,
+        size: item.expected.size,
+      })),
+    };
+    await writeJournal(journalPath, journal);
     await insertMysqlPlan(connection, plan.additions);
-    await materializeStagedFiles(filePlan.missing, createdFiles);
+    await materializeStagedFiles(filePlan.missing, createdFiles, resolvedAssetsDir);
+    if (faultInjection === 'after_mysql_materialize') process.exit(87);
     await connection.commit();
     transactionStarted = false;
+    await cleanupJournalStage({ assetsDir: resolvedAssetsDir, stageRoot });
+    await unlink(journalPath);
     return summaryFromPlan({
       mode: 'mysql',
       dryRun: false,
@@ -1245,10 +1588,21 @@ export const importMysqlLibrary = async ({
         };
       });
     }
-    await cleanupFiles(createdFiles);
+    if (await pathExists(journalPath)) {
+      await recoverMysqlJournal({
+        connection,
+        journalPath,
+        assetsDir: resolvedAssetsDir,
+      });
+    } else {
+      await cleanupFiles(createdFiles);
+    }
     throw error;
   } finally {
     await rm(stageRoot, { recursive: true, force: true }).catch(() => null);
+  }
+  } finally {
+    await releaseLock();
   }
 };
 
@@ -1261,7 +1615,12 @@ const CLI_VALUE_OPTIONS = new Set([
   '--public-base-url',
   '--mysql-config-file',
 ]);
-const CLI_FLAG_OPTIONS = new Set(['--dry-run', '--local', '--mysql']);
+const CLI_FLAG_OPTIONS = new Set([
+  '--dry-run',
+  '--local',
+  '--mysql',
+  '--offline-confirmed',
+]);
 
 export const parseCliArgs = (argv = []) => {
   const values = {};
@@ -1295,6 +1654,7 @@ export const parseCliArgs = (argv = []) => {
     ...values,
     mode,
     dryRun: flags.has('--dry-run') || mode === 'dry-run',
+    offlineConfirmed: flags.has('--offline-confirmed'),
   };
 };
 
@@ -1356,6 +1716,12 @@ const main = async () => {
   }
   let summary;
   if (args.mode === 'local') {
+    if (!args.dryRun && !args.offlineConfirmed) {
+      throw createImporterError(
+        'local_offline_confirmation_required',
+        'local 写入只允许离线维护；停止本地服务后显式传入 --offline-confirmed',
+      );
+    }
     summary = await importLocalLibrary({
       packagePath: args.package,
       ...resolveLocalCliPaths(args),
