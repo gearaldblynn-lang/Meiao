@@ -15,7 +15,7 @@ import {
   getVoiceoverVoice,
 } from '../src/utils/voiceoverCatalog.mjs';
 
-const DEFAULT_CACHE_TTL_MS = 48 * 60 * 60 * 1000;
+const DEFAULT_CACHE_TTL_MS = 0;
 const MAX_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MIN_CACHE_TTL_MS = 60 * 60 * 1000;
 const SPEAKER = 'Speaker 1';
@@ -34,7 +34,9 @@ const PREVIEW_TEXT = Object.freeze({
 });
 
 const parseCacheTtlMs = (value) => {
-  const parsed = Number.parseInt(String(value || '').trim(), 10);
+  const normalized = String(value ?? '').trim();
+  if (!normalized || normalized === '0') return DEFAULT_CACHE_TTL_MS;
+  const parsed = Number.parseInt(normalized, 10);
   return Number.isSafeInteger(parsed) && parsed >= MIN_CACHE_TTL_MS && parsed <= MAX_CACHE_TTL_MS
     ? parsed
     : DEFAULT_CACHE_TTL_MS;
@@ -117,6 +119,7 @@ export const createVoiceoverPreviewService = ({
   env = process.env,
   executeProviderJob,
   persistAudio,
+  ensureAudioPersistent = async () => {},
   now = Date.now,
   log = () => {},
 } = {}) => {
@@ -148,6 +151,17 @@ export const createVoiceoverPreviewService = ({
     const run = mutationTail.then(operation, operation);
     mutationTail = run.then(() => undefined, () => undefined);
     return run;
+  };
+
+  const pinReadyRecord = async (record) => {
+    if (record?.status !== 'ready' || !record.audioUrl) return;
+    await ensureAudioPersistent({
+      userId: record.userId,
+      previewId: record.previewId,
+      voiceName: record.voiceName,
+      targetLanguage: record.targetLanguage,
+      audioUrl: record.audioUrl,
+    });
   };
 
   const schedule = (previewId) => {
@@ -229,7 +243,7 @@ export const createVoiceoverPreviewService = ({
       const existing = registry.records.find((item) => item.previewId === previewId);
       const cacheFresh = existing?.status === 'ready'
         && existing.audioUrl
-        && now() - Number(existing.readyAt || 0) < cacheTtlMs;
+        && (cacheTtlMs === 0 || now() - Number(existing.readyAt || 0) < cacheTtlMs);
       if (cacheFresh || existing?.status === 'processing' || existing?.status === 'unknown') {
         return toPublicRecord(existing);
       }
@@ -266,6 +280,13 @@ export const createVoiceoverPreviewService = ({
       return toPublicRecord(existing || nextRecord);
     });
     if (shouldSchedule) schedule(previewId);
+    if (result.status === 'ready') {
+      await ensureAudioPersistent({
+        ...normalized,
+        previewId: result.previewId,
+        audioUrl: result.audioUrl,
+      });
+    }
     return result;
   };
 
@@ -278,14 +299,26 @@ export const createVoiceoverPreviewService = ({
     if (!record) {
       throw createPreviewError('voiceover_preview_not_found', '试听任务不存在', 404);
     }
+    await pinReadyRecord(record);
     return toPublicRecord(record);
   };
 
   for (const record of registry.records) {
-    if (record.status !== 'processing') continue;
-    if (record.providerTaskId) {
+    if (record.status === 'ready' && record.audioUrl) {
+      queueMicrotask(() => {
+        void pinReadyRecord(record).catch((error) => {
+          log({
+            level: 'warn',
+            action: 'voice_preview_pin_failed',
+            previewId: record.previewId,
+            code: String(error?.code || ''),
+            message: String(error?.message || '试听音频永久化失败').slice(0, 240),
+          });
+        });
+      });
+    } else if (record.status === 'processing' && record.providerTaskId) {
       queueMicrotask(() => schedule(record.previewId));
-    } else {
+    } else if (record.status === 'processing') {
       record.status = 'unknown';
       record.message = '上次试听提交状态未知，为避免重复扣费，本次不会自动重提';
     }
