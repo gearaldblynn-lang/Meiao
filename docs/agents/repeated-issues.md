@@ -1395,3 +1395,59 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/voiceoverAnalysis.test.mjs server/voiceoverAudio.test.mjs server/providerKieTts.test.mjs server/voiceoverChildJobStore.test.mjs server/voiceoverTranslationRunner.test.mjs scripts/probe-voiceover-translation.test.mjs`；真实 fixture 频谱证明原音乐和旧人声频率消失、新口播频率存在；真实 canary 逐组核对时间窗、`actualDurationMs`、`atempo>=1`、最终时长/编码/fast-start 和鉴权 Range。
 - Avoid next time: 技术验收与听感验收分开记录；“任务成功、两个 stem 都存在”不能证明最终音轨干净。产品明确要纯口播时，不做任何声源分离背景恢复。
 - Cloud release follow-up: 腾讯云 7.5 GiB 主机的常驻可用内存约 1.8 GiB，而一次 `mdx get_model` 峰值约 1.68 GiB。零停机 reload 同时保留新旧 Node 时，在新进程 bootstrap 再真实加载模型会触发全机换页抖动，SSH/health 都可能超时；延长超时或后台重试只会放大故障。服务启动和任务前置检查改为固定 Python 版本、模型字节/哈希、YAML 与 FFmpeg filters，发布前独立探针仍真实 `get_model`；实际分离只加载一次模型。发布必须等待公网 `voiceoverTranslation.ready=true`，不能只看 PM2 online 或独立探针成功。
+
+## 2026-07-28 - 持久音色试听的身份是账号加音色，不是账号加语言加音色
+
+- Symptom: 已经生成并永久保存 Zephyr 英文试听后，在中文目标语言下再次点击仍长时间显示旋转图标，并创建了新的 KIE TTS task；用户感知仍是“每次点击都生成”。
+- Evidence: 同一账号 registry 同时出现 Zephyr/en 和 Zephyr/cmn 两条 ready 记录及两个不同 provider task ID；Puck 只有既有英文 ready 记录。修复后在中文页面点击 Puck 直接进入播放，registry 仍为原 3 条，Puck task ID 未变。
+- Root cause / fix: 架构级根因与修复合同见 `CLAUDE.md` #82。服务端新 key 使用账号与音色，并向后复用旧语言维度 ready/processing/unknown 记录，未知提交状态不能借跨语言 key 绕过后重提；前端内存缓存按音色复用，持久查询只显示“正在加载”。
+- Regression check: `node --test server/voiceoverPreviewService.test.mjs`；`node --experimental-strip-types --test src/shell/components/VoiceoverTranslationWorkspace.test.mjs`；真实浏览器点击已有跨语言试听后核对播放状态、registry 数量和 provider task ID 均未新增。
+- Avoid next time: 设计付费缓存时先写清“什么参数真的改变产物”，再定义 key。必须回归跨语言 ready 复用、跨语言 processing 去重、旧 key 兼容、账号隔离和 UI 真实播放，不能只验证同参数的第二次点击。
+
+## 2026-07-28 - 公共模特素材不能按调用者私有资产鉴权，空草稿不能遮住当前已发布版本
+
+- Symptom: 同事使用已发布公共模特执行模特替换时提示“没有权限执行此操作”；管理员点击“新建版本”后，原来的 8 张固定参考素材看起来全部消失，界面没有提示。
+- Evidence: 目标同事账号仍为 active admin，公共模特及已发布版本的 8 张素材全部存在；失败项目没有创建 `internal_jobs`、没有 provider task id、没有扣费。管理库数据同时存在一个已发布 current version 和一个 0/1 张素材的废弃 draft，旧列表接口优先返回了任意 draft。
+- Root cause: 通用 job 素材鉴权在服务端补入可信公共模特快照之后才执行，因而把公共模特的服务端资产 ID 错当成调用者私有上传资产并返回 403。管理列表又以“有 draft 就优先展示”为规则，`新建版本` 创建的空草稿会遮住 `currentVersionId` 指向的已发布版本，形成数据被清空的假象。
+- Fix: 先清洗并鉴权调用者原始 payload，再附加服务端验证的公共模特快照；显式跨账号私有 asset ID 继续 403。管理列表始终优先 `currentVersionId`，删除右侧“新建版本”，只保留左侧“新建模特”；空描述不再隐式创建 v1，草稿身份资料改为原版本 merge patch，已发布版本的身份描述和固定素材保持不可变。
+- Browser-read hardening: `/api/assets/file` 的授权必须先统一判定 access key、owner 或“当前 published version 关联的 source/preview asset”，再进入 internal/COS 存储分支；不得让 published COS 跨账号 403，也不得让 private internal 绕过 owner 直接 200。
+- Browser-render hardening: 普通 `<img>` 请求无法携带保存在 localStorage 的 Bearer token；即使路由已允许登录同事读取 published 模特素材，直接使用 `127.0.0.1:3100` 或同源受保护 URL 仍会在真实页面破图。虚拟模特管理库、公共选择器、参考图和生成结果统一先把 loopback 托管 URL 归一为页面同源路径，再用已认证 fetch 取 Blob 并以受控 object URL 渲染；卸载或换图必须 abort 请求并释放 object URL，不能以放宽匿名读取解决 UI 问题。
+- Regression check: `node --test server/managedAssetReferencePolicy.test.mjs server/assetReferenceCleanup.test.mjs server/virtualModelApi.test.mjs server/virtualModelStore.test.mjs src/modules/VirtualModelLibrary/VirtualModelLibraryModule.test.mjs src/services/internalApi.test.mjs`；`npm run verify`；用真实存储回放必须显示 001 当前 v2、002/003 当前 v1 且均为 published 8/8。生产验收同时核对用户角色、目标项目 job 数、数据库 current version/素材数、正式域名 UI chunk 和本地/云端关键文件哈希；不为验证权限修复创建新的付费 provider 任务。
+- Avoid next time: 权威服务端补充的公共资产与用户提交的私有资产必须在鉴权边界前分层，不能混入同一个 ownership assertion。后台列表的“当前可见版本”必须由显式 `currentVersionId` 决定；草稿只能作为从未发布模型的 fallback，任何能改变当前可见版本的动作都必须说明影响并保留旧素材可见性。
+
+## 2026-07-28 - 虚拟模特迁移包不能整树覆盖，代码与稳定数据必须分开集成
+
+- Symptom: 完整迁移包同时包含旧源码、五套模特数据和 80 个素材文件；若直接执行包内一键覆盖工具，会把当前权限、全身替换、任务恢复和“左侧新建、无新建版本”等已上线修复回退。同一迁移过程中还需要把 004/005 加入本地与 MySQL，但不能改变 001–003。
+- Evidence: 包源码与当前发布基线比较只有 9 个文件相同、81 个文件内容不同、46 个当前文件在包中缺失。真实本地导入前后，001–003 的 3 个模型、3 个版本、24 个槽位、48 条 registry 和 48 个素材文件 SHA-256 全部一致；总量只从 5/5/25/232 增加到 7/7/41/264，其中 published 模特从 3 增加到 5。第二次 dry-run 的 models/versions/relations/registry/files 新增量均为 0。
+- Root cause: 迁移包把“参考实现源码”和“可幂等导入的数据”混成一个覆盖动作，并携带导出环境的 loopback URL 与素材 owner。源码目录不是补丁，包内 userId 也不是公共读取授权；本地双 JSON、MySQL 与文件系统又没有天然的跨介质原子事务。
+- Fix: 以当前发布分支为唯一代码基线，窄接入八视角生成 store/service/API/UI；C01/P01 稳定化后才提交六张派生图，付费生成零自动重试，只允许用户显式 retry。数据导入器默认纯 dry-run，交叉校验三份 manifest 和 80 个文件，只添加稳定 ID 缺失的 004/005；同 ID 内容漂移只告警不覆盖，活动 code 异 ID fail closed，URL 按目标环境重建。本地写要求停服并显式 `--offline-confirmed`，使用 CAS、私有 journal 和崩溃恢复；MySQL 用 transaction、canonical digest 与文件 inode ownership 恢复。控制文件保持 0700/0600，最终 X-Accel 素材保持目录 0755、文件 0644。
+- Finalization hardening: 八槽素材替换与 generation batch 的 `completed/finalizedAt/finalizationResult` 必须在同一 MySQL transaction 或同一次 local-store 持久化中提交；模拟事务提交后响应丢失时，重试只读取完成 checkpoint，不能再次替换槽位。
+- Regression check: `node --test scripts/import-virtual-model-library-data.test.mjs` 必须覆盖 dry-run 零写、local crash recovery、外部同 hash 不同 inode 保留、MySQL 全 ID 异内容 fail closed、symlink 越界拒绝和最终素材权限；生成链必须通过 `server/virtualModelGeneration*.test.mjs` 与 `src/modules/VirtualModelLibrary/*.test.mjs`。真实导入必须先 dry-run，再核对 001–003 实体/文件 hash，写后再次 dry-run 为零新增；生产还必须验证 Node 与正式域名素材均为 200、媒体类型和字节/哈希一致。
+- Avoid next time: 集成包先拆成“行为差异”和“数据差异”，禁止把供应方整树当成当前程序升级补丁。跨环境数据只按稳定 ID 合并；导出 owner 不能代替公开业务授权。任何标为 dry-run 的路径都必须在 lock、recovery、mkdir、transaction 之前保持零写；任何最终媒体权限调整都要纳入真实 Nginx/X-Accel 验收。
+
+## 2026-07-29 - 所有运行时图片必须通过统一鉴权渲染边界
+
+- Symptom: 多桑项目结果先在项目卡、查看和下载中破图；局部修复发布后，董丹丹的一键主详上传栏两张风格参考图以及点击后的全屏预览仍显示破图图标。故障不是单个项目或单个组件，而是所有直接读取受保护素材 URL 的浏览器图片入口。
+- Evidence: 董丹丹的精确 styleRef assets `77a7a06782b0dd8758fdd430`（JPEG 176361 bytes）和 `f13dc381de149b0041200ed2`（PNG 401274 bytes）均 owner 匹配、active、未删除；owner 鉴权 GET 为 200，响应 MIME、字节数和 SHA-256 与数据库/文件一致，匿名 GET 保持 403。静态审计首次发现除统一组件外 33 个运行时 TSX 文件仍有 78 处原生 `<img>`，截图对应漏点是 `MaterialPreviewBar` 和 `ImageLightbox`。
+- Root cause: 素材 owner 校验收紧后，localStorage Bearer 只能由 JavaScript fetch 携带；原生 `<img>` 不会自动携带。前两轮按截图逐个修 `ProjectCard` / `PlanEditor`，没有建立仓库级图片消费清单和结构门禁，因此 Agent Center、OneClick、BuyerShow、Retouch、Video、上传缩略图与大图预览继续绕过鉴权。人工 Cookie/签名请求 200 只能证明服务端资源链，不能证明每个真实 UI 消费者正确带凭证。
+- Fix: 除 `AuthenticatedAssetImage` 自身外，全部 `src/**/*.tsx` 图片改用统一组件；managed asset 以当前 Bearer fetch Blob，非 managed URL 保持普通图片语义，换图/卸载时中止请求并释放 object URL。下载继续复用 `fetchImageBlobWithProxy`。原生 `<video>/<audio>` 为保留 Range 流式播放不改成整文件 Blob；`requireDbUser` 与 `localRequireUser` 在任意 Bearer API 成功时补发作用域为 `/api/assets/file/` 的 HttpOnly、SameSite=Strict 媒体 Cookie，服务端 owner 校验、匿名 403 和无签名持久化合同不变。
+- Regression check: `src/components/managedAssetRenderBoundary.test.mjs` 递归扫描全部运行时 TSX，除统一基础组件外任何 `<img>` 都会失败；`server/managedAssetSessionCookie.test.mjs` 同时锁定 MySQL/本地认证边界。提交 `faa81f3` 的 `npm run verify` 已覆盖 TypeScript/ESLint、144 个服务端测试文件、189 个前端测试文件、23 个脚本测试文件及生产构建；另跑 Agent Center、OneClick、provider/RTCFE 159 项定向回归。代码搜索只允许基础组件保留一个 `<img>`。
+- Cloud validation: release `meiao-20260729145631-d64f591090f0` 在多次活动任务门禁安全退出后，等 running=0 并通过标准 drain/mutex 发布；公网与 host-local health 均命中精确 release，Temporal worker/COS ready，应用根目录 0755、`.env.server` 0600、关键源文件哈希匹配，marker/mutex 已清除。董丹丹账号用 Bearer 请求 `/api/state` 返回 200 并自动补发 Path=`/api/assets/file/`、HttpOnly、Secure、SameSite=Strict Cookie；两张精确 styleRef 以 Bearer 和原生 Cookie 访问均最终 200，MIME、176361/401274 bytes 与 SHA-256 全部匹配，匿名仍 403。受控浏览器当前是另一个登录态且当前子功能无项目，因此未把该页面冒充董丹丹真实 DOM；用户侧刷新后仍应单列观察缩略图和全屏预览是否 `complete=true`、`naturalWidth>0`。
+- Avoid next time: 安全策略变化必须建立“数据库归属、服务端授权、浏览器传凭证、全局 UI 消费、Nginx/对象存储交付”五层合同和仓库级结构门禁，禁止继续按截图逐组件打补丁。图片统一走 Bearer→Blob；必须 Range 的原生媒体统一走最小作用域 HttpOnly Cookie；Curl 200、provider 成功、DB 正常和真实 DOM 各自独立验收。
+
+## 2026-07-30 - 控制任务语义漏登记会在恢复时制造模特替换幽灵卡
+
+- Symptom: 多桑账号一次模特替换操作在项目列表出现两张任务卡，一张正常完成，另一张长期显示生成中。
+- Cloud evidence: 每次操作只有一个 `kie_image` job 和一个 provider task id；同次还存在一个无 `shellProjectId` 的 `kie_chat` job，payload 固定携带 `subFeature=model_replace`、`taskPurpose=model_replace_preflight`、`preflightPart=reference`。持久状态同时出现真实 `proj-*` 卡和合成的 `job-<analysisJobId>` 空卡。
+- Root cause: 预分析是内部控制任务，但共享 `isShellControlJob` 的 purpose 集合漏掉了 `model_replace_preflight`。恢复适配器因此把分析 job 当普通结果映射成卡片；同一个漏判又让历史幽灵卡过滤器失效。这是展示/水合重复，不是第二次生图提交或重复计费。
+- Fix: 在共享控制任务 purpose 集合登记 `model_replace_preflight`；新映射直接跳过，现有 `filterLegacyShellControlJobGhosts` 同时移除已持久化的 `job-<analysisJobId>` 空卡，不删除生产任务审计记录、不改付费链路。
+- Regression check: 以生产形状构造“真实项目 + 持久化幽灵卡 + 预分析 job + 生图 job”，`buildShellDataSnapshot` 最终必须只保留真实项目和真实生图结果；`isShellControlJob` 必须按稳定 purpose 判定，不能按模块名或卡片顺序猜测。
+- Avoid next time: 任何新增 planning/preflight/analysis job 都必须在创建时声明稳定 `taskPurpose`，并同步进入共享控制任务可见性合同。任务创建、付费身份、项目卡恢复必须分别验收；看到两张卡不能直接推断为重复 provider 提交。
+
+## 2026-07-30 - 虚拟模特原图体积必须在服务端入库边界统一治理
+
+- Symptom: AI 生成的虚拟模特图片偶尔体积很大；只在某个浏览器上传组件压缩会漏掉生成结果、重试和其他客户端入口，且现有 canvas 压缩会缩分辨率并丢失 DPI。
+- Root cause: 虚拟模特的手动上传、生成参考和八姿态结果经过不同调用链，过去没有统一的领域入库策略。通用前端 `prepareImageForUpload` 以降分辨率换体积，不符合虚拟模特固定参考素材的几何合同。
+- Fix: 新增服务端虚拟模特专用压缩器，覆盖 `virtual_model`、`virtual_model_generation` 上传和 AI 结果持久化；默认 3MiB env 目标，小图原样保留，大图只在 JPEG/PNG/WebP 编码层做最低质量 82 的保守优化。每个候选必须保持像素宽高、已有 DPI 和 alpha；候选不更小就保留原图，绝不 resize 强行命中体积。
+- Regression check: 自动化必须锁定小图字节完全一致、大 JPEG 与透明 PNG 输出更小、宽高/DPI 不变、alpha 不丢，并锁住手动上传与 AI 自动入库都调用同一压缩器。云上日志保留原始/落盘字节、压缩状态、宽高和 DPI，便于抽样核查。
+- Avoid next time: “下载时压缩”和“领域原图入库”不是同一合同。所有多入口数据治理都应在服务端权威持久化边界收敛；质量、体积、容量阈值必须 env 化，分辨率、DPI、透明度等不变量必须用真实编码库回归，不能只看文件扩展名或肉眼。

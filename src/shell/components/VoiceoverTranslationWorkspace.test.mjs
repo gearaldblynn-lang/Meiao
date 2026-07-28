@@ -90,6 +90,11 @@ test('preset voice rows expose real provider preview without previewing automati
   assert.match(composerSource, /optionAction=/);
   assert.match(composerSource, /首次生成后永久保存到当前账号/);
   assert.match(composerSource, /以后点击直接播放/);
+  assert.match(source, /const cacheKey = requestedVoiceName/);
+  assert.doesNotMatch(source, /const cacheKey = `\$\{targetLanguage\}:\$\{requestedVoiceName\}`/);
+  assert.match(composerSource, /正在加载 \$\{label\} 试听/);
+  assert.match(composerSource, /正在加载音色试听/);
+  assert.doesNotMatch(composerSource, /正在生成真实音色试听/);
   assert.match(composerSource, /onVoicePreview/);
   assert.doesNotMatch(source, /speechSynthesis|SpeechSynthesisUtterance/);
   assert.doesNotMatch(source, /useEffect\([\s\S]{0,300}requestVoiceoverPreview/);
