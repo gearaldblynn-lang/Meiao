@@ -402,7 +402,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       return;
     }
     if (voicePreviewingName) return;
-    const cacheKey = `${targetLanguage}:${requestedVoiceName}`;
+    const cacheKey = requestedVoiceName;
     const play = async (audioUrl: string) => {
       audio.pause();
       audio.src = audioUrl;

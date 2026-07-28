@@ -60,9 +60,9 @@ const normalizeInput = ({ userId, targetLanguage, voiceName } = {}) => {
   };
 };
 
-const buildPreviewId = ({ userId, targetLanguage, voiceName }) => (
+const buildPreviewId = ({ userId, voiceName }) => (
   `voice-preview-${createHash('sha256')
-    .update(`${userId}\0${targetLanguage}\0${voiceName}`)
+    .update(`${userId}\0${voiceName}`)
     .digest('hex')
     .slice(0, 24)}`
 );
@@ -241,11 +241,41 @@ export const createVoiceoverPreviewService = ({
     let shouldSchedule = false;
     const result = await mutate(async () => {
       const existing = registry.records.find((item) => item.previewId === previewId);
-      const cacheFresh = existing?.status === 'ready'
-        && existing.audioUrl
-        && (cacheTtlMs === 0 || now() - Number(existing.readyAt || 0) < cacheTtlMs);
-      if (cacheFresh || existing?.status === 'processing' || existing?.status === 'unknown') {
+      const cacheFresh = (record) => (
+        record?.status === 'ready'
+        && record.audioUrl
+        && (cacheTtlMs === 0 || now() - Number(record.readyAt || 0) < cacheTtlMs)
+      );
+      if (cacheFresh(existing) || existing?.status === 'processing' || existing?.status === 'unknown') {
         return toPublicRecord(existing);
+      }
+      const reusable = registry.records
+        .filter((item) => (
+          item.previewId !== previewId
+          && item.userId === normalized.userId
+          && item.voiceName === normalized.voiceName
+          && cacheFresh(item)
+        ))
+        .sort((left, right) => (
+          Number(right.readyAt || right.updatedAt || 0)
+          - Number(left.readyAt || left.updatedAt || 0)
+        ))[0];
+      if (reusable) {
+        return toPublicRecord(reusable);
+      }
+      const reusableActive = registry.records
+        .filter((item) => (
+          item.previewId !== previewId
+          && item.userId === normalized.userId
+          && item.voiceName === normalized.voiceName
+          && (item.status === 'processing' || item.status === 'unknown')
+        ))
+        .sort((left, right) => (
+          Number(right.updatedAt || right.createdAt || 0)
+          - Number(left.updatedAt || left.createdAt || 0)
+        ))[0];
+      if (reusableActive) {
+        return toPublicRecord(reusableActive);
       }
       const otherActive = registry.records.find((item) => (
         item.userId === normalized.userId
@@ -281,11 +311,10 @@ export const createVoiceoverPreviewService = ({
     });
     if (shouldSchedule) schedule(previewId);
     if (result.status === 'ready') {
-      await ensureAudioPersistent({
-        ...normalized,
-        previewId: result.previewId,
-        audioUrl: result.audioUrl,
-      });
+      const readyRecord = registry.records.find((item) => (
+        item.previewId === result.previewId && item.userId === normalized.userId
+      ));
+      await pinReadyRecord(readyRecord);
     }
     return result;
   };
