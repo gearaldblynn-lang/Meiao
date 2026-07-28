@@ -75,7 +75,7 @@ release_remote_deploy_mutex() {
     "${SERVER_USER}@${SERVER_HOST}" \
     "MEIAO_DEPLOY_OWNERSHIP_RUN=1 node --input-type=module - release-mutex --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN' --mutation-started '$REMOTE_MUTATION_STARTED'" \
     < "$ROOT_DIR/scripts/deploy-ownership.mjs"; then
-    echo "远端部署互斥锁未自动释放：$REMOTE_DEPLOY_MUTEX_DIR。请人工核验 owner 后处理。" >&2
+    echo "远端部署互斥锁未自动释放：${REMOTE_DEPLOY_MUTEX_DIR}。请人工核验 owner 后处理。" >&2
     return 1
   fi
   REMOTE_DEPLOY_MUTEX_HELD=0

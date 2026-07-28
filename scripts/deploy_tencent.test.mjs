@@ -193,6 +193,11 @@ test('deploy_tencent holds an owner-checked remote mutex across readiness and up
 
   assert.match(release, /release-mutex/);
   assert.match(release, /--mutation-started '\$REMOTE_MUTATION_STARTED'/);
+  assert.match(
+    release,
+    /\$\{REMOTE_DEPLOY_MUTEX_DIR\}。/,
+    'non-ASCII punctuation after a shell variable must use braces under nounset',
+  );
   assert.match(ownershipSource, /mkdtempSync\(join\(/);
   assert.match(ownershipSource, /renameSync\(livePath, claimPath\)/);
   assert.match(ownershipSource, /mkdirSync\(mutexDir, \{ mode: 0o700 \}\)/);
