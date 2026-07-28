@@ -199,7 +199,7 @@ const probeDeps = ({
         separationReady: true,
         vocalOnlyAnalysisMedia: true,
         alignmentReady: true,
-        duckingReady: true,
+        narrationOnlyMixReady: true,
         outputH264Aac: true,
         durationWithinTolerance: true,
         ftypPresent: true,

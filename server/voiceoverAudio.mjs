@@ -634,60 +634,31 @@ export async function alignVoiceoverGroups({
   };
 }
 
-export function calculateDuckingRatio(duckingDb) {
-  const value = Number(duckingDb);
-  if (!Number.isFinite(value) || value < 0 || value > 12) throw fail('背景压低配置无效');
-  return value === 0 ? 1 : 1 + (value * 19 / 12);
-}
-
 export function buildFinalMixArgs({
   baseVideoPath,
-  sourceAudioPath,
-  backgroundPath,
   narrationPath,
   outputPath,
   durationMs,
-  duckingDb,
 }) {
   for (const [value, label] of [
     [baseVideoPath, '底片视频'],
-    [sourceAudioPath, '原始音轨'],
-    [backgroundPath, '背景音轨'],
     [narrationPath, '口播音轨'],
     [outputPath, '最终视频'],
   ]) assertAbsoluteFilePath(value, label);
   assertDistinctOutput(outputPath, [
     baseVideoPath,
-    sourceAudioPath,
-    backgroundPath,
     narrationPath,
   ]);
   const duration = Number(durationMs);
   if (!Number.isFinite(duration) || duration <= 0) throw fail('最终视频时长无效');
-  const ratio = calculateDuckingRatio(duckingDb);
   const seconds = formatNumber(duration / 1000);
-  const filterGraph = [
-    // Product voiceovers often arrive as a nearly mono master. Music separators
-    // can classify that entire master as "vocals", leaving only a very quiet,
-    // noisy no_vocals stem. The L-R side signal cancels the centered original
-    // speaker while retaining stereo music/ambience; mixing it under the Demucs
-    // stem is a deterministic local recovery bed, not the old narration track.
-    '[1:a]aresample=48000,pan=stereo|c0=FL-FR|c1=FL-FR[side]',
-    '[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[stem]',
-    '[stem][side]amix=inputs=2:duration=longest:normalize=0[bg]',
-    '[3:a]aresample=48000,pan=stereo|c0=c0|c1=c0[narr]',
-    '[narr]asplit=2[narr_sc][narr_mix]',
-    `[bg][narr_sc]sidechaincompress=threshold=0.02:ratio=${formatNumber(ratio)}:attack=20:release=250:makeup=1[ducked]`,
-    '[ducked][narr_mix]amix=inputs=2:duration=longest:normalize=0,'
-      + `alimiter=limit=0.8912509381:level=0,atrim=duration=${seconds}[mixed]`,
-  ].join(';');
+  const filterGraph = '[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0,'
+    + `alimiter=limit=0.8912509381:level=0,atrim=duration=${seconds}[mixed]`;
   return {
     filterGraph,
     args: [
       '-hide_banner', '-loglevel', 'error', '-y',
       '-i', baseVideoPath,
-      '-i', sourceAudioPath,
-      '-i', backgroundPath,
       '-i', narrationPath,
       '-filter_complex', filterGraph,
       '-map', '0:v:0',
@@ -704,8 +675,6 @@ export function buildFinalMixArgs({
 
 export async function mixVoiceoverResult({
   baseVideoPath,
-  sourceAudioPath,
-  backgroundPath,
   narrationPath,
   outputPath,
   config = {},
@@ -716,20 +685,13 @@ export async function mixVoiceoverResult({
   if (base.videoCodec !== 'h264' || base.width <= 0 || base.height <= 0) {
     throw fail('最终底片必须是有效 H.264 视频');
   }
-  const sourceAudio = await probeMedia(sourceAudioPath, deps, { requireAudio: true, signal });
-  const background = await probeMedia(backgroundPath, deps, { requireAudio: true, signal });
   const narration = await probeMedia(narrationPath, deps, { requireAudio: true, signal });
-  assertPcmWorkTrack(sourceAudio, 2);
-  assertPcmWorkTrack(background, 2);
   assertPcmWorkTrack(narration, 1);
   const { args } = buildFinalMixArgs({
     baseVideoPath,
-    sourceAudioPath,
-    backgroundPath,
     narrationPath,
     outputPath,
     durationMs: base.durationMs,
-    duckingDb: Number(config.duckingDb ?? 4),
   });
   const tools = runtime(deps);
   await runCheckedFfmpeg(tools, args, signal);
