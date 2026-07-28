@@ -141,6 +141,7 @@ async function getManifestAndYaml(deps = {}) {
 export async function checkVoiceoverSeparationReadiness({
   env = process.env,
   config: providedConfig,
+  verifyModelLoad = true,
   deps = {},
 } = {}) {
   const config = providedConfig || getVoiceoverConfig(env);
@@ -159,14 +160,14 @@ export async function checkVoiceoverSeparationReadiness({
     const manifest = await getManifestAndYaml(deps);
     const result = await verifyModels({ manifest, modelDir: config.demucsModelDir, deps });
     const runtimeYaml = await (deps.readFile || readFile)(path.join(config.demucsModelDir, 'mdx.yaml'), 'utf8');
-    if (result?.ready === true && runtimeYaml === EXPECTED_MDX_YAML && config.separationPython) {
+    const modelFilesReady = result?.ready === true && runtimeYaml === EXPECTED_MDX_YAML;
+    if (modelFilesReady && !verifyModelLoad) {
+      modelReady = true;
+    } else if (modelFilesReady && config.separationPython) {
       const loadResult = await runProcess(
         config.separationPython,
         ['-c', 'import sys; from pathlib import Path; from demucs.pretrained import get_model; get_model("mdx", Path(sys.argv[1])); print("mdx-load-ok")', config.demucsModelDir],
-        {
-          env: buildDemucsProcessEnv(env, config.separationPython),
-          timeoutMs: config.readinessModelTimeoutMs,
-        },
+        { env: buildDemucsProcessEnv(env, config.separationPython) },
       );
       modelReady = (loadResult?.exitCode ?? 1) === 0 && String(loadResult?.stdout || '').trim() === 'mdx-load-ok';
     }
@@ -379,6 +380,7 @@ export async function separateVoiceover({
     const readiness = await (deps.checkReadiness || checkVoiceoverSeparationReadiness)({
       env,
       config,
+      verifyModelLoad: false,
       deps,
     });
     if (!readiness?.ready) throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离不可用');

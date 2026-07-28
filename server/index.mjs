@@ -180,7 +180,6 @@ import {
   checkVoiceoverSeparationReadiness,
   separateVoiceover,
 } from './voiceoverSeparation.mjs';
-import { scheduleVoiceoverReadinessRetry } from './voiceoverReadinessRetry.mjs';
 import {
   alignVoiceoverGroups,
   buildVocalOnlyAnalysisVideo,
@@ -445,7 +444,6 @@ let assetCleanupTimer = null;
 let assetCleanupRunning = false;
 let managedImageProbeTimer = null;
 let managedImageProbeRunning = false;
-let voiceoverReadinessRetryTimer = null;
 let tombstonedJobReconcilerTimer = null;
 let tombstonedJobReconcilerRunning = false;
 let lastManagedCosReconciliationAt = 0;
@@ -18623,13 +18621,11 @@ const clearRuntimeTimers = () => {
   if (tombstonedJobReconcilerTimer) clearInterval(tombstonedJobReconcilerTimer);
   if (logCleanupTimer) clearInterval(logCleanupTimer);
   if (staleRunningJobReconcilerTimer) clearTimeout(staleRunningJobReconcilerTimer);
-  if (voiceoverReadinessRetryTimer) clearTimeout(voiceoverReadinessRetryTimer);
   assetCleanupTimer = null;
   managedImageProbeTimer = null;
   tombstonedJobReconcilerTimer = null;
   logCleanupTimer = null;
   staleRunningJobReconcilerTimer = null;
-  voiceoverReadinessRetryTimer = null;
 };
 
 const shutdownTemporalWorker = async () => {
@@ -18664,28 +18660,13 @@ const bootstrap = async () => {
   if (getVoiceoverConfig(process.env).enabled) {
     voiceoverTranslationReadiness = await checkVoiceoverSeparationReadiness({
       env: process.env,
+      verifyModelLoad: false,
     });
     if (!voiceoverTranslationReadiness.ready) {
       console.warn('[voiceover] runtime is enabled but local separation readiness failed', {
         pythonReady: voiceoverTranslationReadiness.pythonReady,
         modelReady: voiceoverTranslationReadiness.modelReady,
         ffmpegReady: voiceoverTranslationReadiness.ffmpegReady,
-      });
-      voiceoverReadinessRetryTimer = scheduleVoiceoverReadinessRetry({
-        env: process.env,
-        initialReadiness: voiceoverTranslationReadiness,
-        checkReadiness: checkVoiceoverSeparationReadiness,
-        onUpdate: (readiness) => {
-          voiceoverTranslationReadiness = readiness;
-          voiceoverReadinessRetryTimer = null;
-          const details = {
-            pythonReady: readiness.pythonReady,
-            modelReady: readiness.modelReady,
-            ffmpegReady: readiness.ffmpegReady,
-          };
-          if (readiness.ready) console.log('[voiceover] local separation readiness recovered', details);
-          else console.warn('[voiceover] local separation readiness retry failed', details);
-        },
       });
     }
   }
