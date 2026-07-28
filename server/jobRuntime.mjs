@@ -651,7 +651,11 @@ export const buildJobRuntimeLogMeta = ({
 
 export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) => {
   const subtitleRemovalConfig = getSubtitleRemovalConfig(env);
-  const voiceoverPublicConfig = getVoiceoverPublicConfig(env, overrides?.voiceoverReadiness || {});
+  const voiceoverPublicConfig = getVoiceoverPublicConfig(
+    env,
+    overrides?.voiceoverReadiness || {},
+    overrides?.voiceoverPreviewUrls || {},
+  );
   const voiceoverTranslationConfig = Object.freeze({
     ...voiceoverPublicConfig,
     ready: voiceoverPublicConfig.ready

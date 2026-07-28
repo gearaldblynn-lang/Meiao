@@ -177,6 +177,7 @@ import {
 import {
   getVoiceoverConfig,
 } from './voiceoverContract.mjs';
+import { loadVoiceoverPreviewLibrary } from './voiceoverPreviewLibrary.mjs';
 import { createVoiceoverPreviewService } from './voiceoverPreviewService.mjs';
 import { probeVoiceoverManagedMedia } from './voiceoverMediaProbe.mjs';
 import {
@@ -532,6 +533,23 @@ let voiceoverTranslationReadiness = {
   modelReady: false,
   ffmpegReady: false,
 };
+const voiceoverPreviewLibrary = loadVoiceoverPreviewLibrary({
+  publicDir: path.join(__dirname, '..', 'public'),
+});
+const withVoiceoverPublicConfig = (overrides = {}) => ({
+  ...overrides,
+  voiceoverReadiness: voiceoverTranslationReadiness,
+  voiceoverPreviewUrls: voiceoverPreviewLibrary.previewUrlsByVoice,
+});
+if (!voiceoverPreviewLibrary.valid) {
+  const errorCodes = [...new Set(
+    voiceoverPreviewLibrary.errors.map((error) => String(error?.code || '')).filter(Boolean),
+  )].join(',');
+  console.warn(
+    `[voiceover-preview-library] ready ${voiceoverPreviewLibrary.ready}/${voiceoverPreviewLibrary.total}`
+    + `${errorCodes ? `; ${errorCodes}` : ''}`,
+  );
+}
 const mediaTranscodeApi = createMediaTranscodeApi({
   store: mediaTranscodeSessionStore,
   service: mediaTranscodeService,
@@ -14801,13 +14819,12 @@ const handleMysqlRequest = async (req, res, url) => {
     const queueStats = await getJobQueueStats(pool);
     const systemSettings = await getDbSystemSettings();
     json(res, 200, {
-      config: buildPublicSystemConfig(process.env, queueStats, {
+      config: buildPublicSystemConfig(process.env, queueStats, withVoiceoverPublicConfig({
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings,
         userSettings: { analysisModel: user.analysisModel },
-        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
-      }),
+      })),
     });
     return;
   }
@@ -14830,13 +14847,12 @@ const handleMysqlRequest = async (req, res, url) => {
     const pool = await getMysqlPool();
     const queueStats = await getJobQueueStats(pool);
     json(res, 200, {
-      config: buildPublicSystemConfig(process.env, queueStats, {
+      config: buildPublicSystemConfig(process.env, queueStats, withVoiceoverPublicConfig({
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings: nextSettings,
         userSettings: { analysisModel: admin.analysisModel },
-        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
-      }),
+      })),
     });
     return;
   }
@@ -14900,13 +14916,12 @@ const handleMysqlRequest = async (req, res, url) => {
     json(res, 200, {
       ok: true,
       analysisModel,
-      config: buildPublicSystemConfig(process.env, queueStats, {
+      config: buildPublicSystemConfig(process.env, queueStats, withVoiceoverPublicConfig({
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings: currentSettings,
         userSettings: { analysisModel },
-        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
-      }),
+      })),
     });
     return;
   }
@@ -18610,13 +18625,12 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     if (!user) return;
     const systemSettings = getLocalSystemSettings(store);
     json(res, 200, {
-      config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), {
+      config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), withVoiceoverPublicConfig({
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings,
         userSettings: { analysisModel: user.analysisModel },
-        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
-      }),
+      })),
     });
     return;
   }
@@ -18638,13 +18652,12 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     });
     writeLocalStore(store);
     json(res, 200, {
-      config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), {
+      config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), withVoiceoverPublicConfig({
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings: nextSettings,
         userSettings: { analysisModel: admin.analysisModel },
-        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
-      }),
+      })),
     });
     return;
   }
@@ -18709,13 +18722,12 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     json(res, 200, {
       ok: true,
       analysisModel,
-      config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), {
+      config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), withVoiceoverPublicConfig({
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings: currentSettings,
         userSettings: { analysisModel },
-        voiceoverReadiness: voiceoverTranslationReadiness,
         publicBaseUrl: getPersistentAssetBaseUrl(req),
-      }),
+      })),
     });
     return;
   }

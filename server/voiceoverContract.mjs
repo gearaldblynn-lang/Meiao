@@ -130,7 +130,9 @@ export function getVoiceoverConfig(env = {}) {
   };
 }
 
-export function getVoiceoverPublicConfig(env = {}, readiness = {}) {
+const PUBLIC_PREVIEW_URL_PATTERN = /^\/voiceover-previews\/[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/u;
+
+export function getVoiceoverPublicConfig(env = {}, readiness = {}, previewUrlsByVoice = {}) {
   const config = getVoiceoverConfig(env);
   const publicReadiness = Object.freeze({
     pythonReady: Boolean(readiness.pythonReady),
@@ -143,7 +145,13 @@ export function getVoiceoverPublicConfig(env = {}, readiness = {}) {
     ready: config.enabled && publicReadiness.pythonReady && publicReadiness.modelReady && publicReadiness.ffmpegReady,
     model: Object.freeze({ id: VOICEOVER_TTS_MODEL, inputLimit: VOICEOVER_MODEL_MAX_INPUT_TOKENS }),
     languages: VOICEOVER_LANGUAGES,
-    voices: VOICEOVER_VOICES,
+    voices: Object.freeze(VOICEOVER_VOICES.map((voice) => {
+      const previewUrl = String(previewUrlsByVoice?.[voice.name] || '').trim();
+      return Object.freeze({
+        ...voice,
+        ...(PUBLIC_PREVIEW_URL_PATTERN.test(previewUrl) ? { previewUrl } : {}),
+      });
+    })),
     limits: Object.freeze({
       ttsInputLimit: config.ttsMaxInputTokens,
       groupGapMs: config.groupGapMs,

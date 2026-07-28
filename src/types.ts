@@ -483,7 +483,7 @@ export interface SystemPublicConfig {
     ready: boolean;
     model: { id: string; inputLimit: number };
     languages: Array<{ code: string; englishName: string; chineseName: string; common: boolean }>;
-    voices: Array<{ name: string; trait: string; tags: readonly number[] }>;
+    voices: Array<{ name: string; trait: string; tags: readonly number[]; previewUrl?: string }>;
     limits: { ttsInputLimit: number; groupGapMs: number; minAtempo: number; maxAtempo: number; overlapToleranceMs: number; durationToleranceMs: number };
     readiness: { pythonReady: boolean; modelReady: boolean; ffmpegReady: boolean; separationConcurrency: number };
   };
