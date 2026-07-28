@@ -246,6 +246,7 @@ npm run dev
 | `MEIAO_VOICEOVER_FADE_MS` | `40` | 整数 `0-200` |
 | `MEIAO_VOICEOVER_DURATION_TOLERANCE_MS` | `100` | 整数 `20-500` |
 | `MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS` | `259200000` | 整数 `3600000-2592000000` |
+| `MEIAO_VOICEOVER_PREVIEW_CACHE_TTL_MS` | `172800000` | 整数 `3600000-604800000`；真实音色试听按账号、语言和音色缓存，避免重复付费提交 |
 | `MEIAO_KIE_TTS_BASE_URL` | `https://api.kie.ai` | 服务端 HTTP(S) 根地址 |
 | `MEIAO_KIE_TTS_MODEL` | `google/gemini-3-1-flash-tts` | 固定模型名 |
 | `MEIAO_KIE_TTS_REQUEST_TIMEOUT_MS` | `60000` | 整数 `5000-300000` |
