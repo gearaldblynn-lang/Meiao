@@ -197,12 +197,34 @@ test('readiness validates Python imports, the exact Demucs version, and required
     ['-hide_banner', '-filters'],
   ]);
   assert.equal(calls[1].options.env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '1');
+  assert.equal(calls[1].options.timeoutMs, 120_000);
   assert.equal('TORCH_FORCE_WEIGHTS_ONLY_LOAD' in calls[1].options.env, false);
   assert.equal('KIE_API_KEY' in calls[1].options.env, false);
   assert.equal('MEIAO_DB_PASSWORD' in calls[1].options.env, false);
   assert.equal(env.TORCH_FORCE_WEIGHTS_ONLY_LOAD, '1');
   assert.equal(env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '0');
   assert.doesNotMatch(JSON.stringify(readiness), /\/configured\/|secret|token|https?:/i);
+});
+
+test('readiness model load timeout is configurable without changing task separation timeout', async () => {
+  const calls = [];
+  await checkVoiceoverSeparationReadiness({
+    env: completeEnv({
+      MEIAO_VOICEOVER_READINESS_TIMEOUT_MS: '90000',
+      MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS: '7200000',
+    }),
+    deps: readyDeps({
+      runProcess: async (command, args, options) => {
+        calls.push({ command, args, options });
+        return args.includes('-filters')
+          ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
+          : args[1].includes('demucs.pretrained') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
+          : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' };
+      },
+    }),
+  });
+
+  assert.equal(calls[1].options.timeoutMs, 90_000);
 });
 
 test('readiness load gate uses the Demucs v4.0.1 public get_model API with modelDir argv', async () => {

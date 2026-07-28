@@ -15,6 +15,7 @@ export const VOICEOVER_DEFAULTS = Object.freeze({
   demucsModel: 'mdx',
   separationConcurrency: 1,
   separationTimeoutMs: 3_600_000,
+  readinessTimeoutMs: 120_000,
   minAtempo: 0.75,
   maxAtempo: 1.35,
   ttsMaxInputTokens: 8192,
@@ -32,6 +33,7 @@ export const VOICEOVER_DEFAULTS = Object.freeze({
 export const VOICEOVER_BOUNDS = Object.freeze({
   separationConcurrency: Object.freeze([1, 2]),
   separationTimeoutMs: Object.freeze([300_000, 7_200_000]),
+  readinessTimeoutMs: Object.freeze([30_000, 300_000]),
   minAtempo: Object.freeze([0.5, 1]),
   maxAtempo: Object.freeze([1, 2]),
   ttsMaxInputTokens: Object.freeze([1, 8192]),
@@ -103,6 +105,7 @@ export function getVoiceoverConfig(env = {}) {
     demucsModel: String(env.MEIAO_VOICEOVER_DEMUCS_MODEL || '').trim() === 'mdx' ? 'mdx' : VOICEOVER_DEFAULTS.demucsModel,
     separationConcurrency: boundedNumber(env.MEIAO_VOICEOVER_SEPARATION_CONCURRENCY, VOICEOVER_DEFAULTS.separationConcurrency, VOICEOVER_BOUNDS.separationConcurrency, true),
     separationTimeoutMs: boundedNumber(env.MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS, VOICEOVER_DEFAULTS.separationTimeoutMs, VOICEOVER_BOUNDS.separationTimeoutMs, true),
+    readinessTimeoutMs: boundedNumber(env.MEIAO_VOICEOVER_READINESS_TIMEOUT_MS, VOICEOVER_DEFAULTS.readinessTimeoutMs, VOICEOVER_BOUNDS.readinessTimeoutMs, true),
     minAtempo: boundedNumber(env.MEIAO_VOICEOVER_MIN_ATEMPO, VOICEOVER_DEFAULTS.minAtempo, VOICEOVER_BOUNDS.minAtempo),
     maxAtempo: boundedNumber(env.MEIAO_VOICEOVER_MAX_ATEMPO, VOICEOVER_DEFAULTS.maxAtempo, VOICEOVER_BOUNDS.maxAtempo),
     ttsMaxInputTokens: boundedNumber(env.MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS, VOICEOVER_DEFAULTS.ttsMaxInputTokens, VOICEOVER_BOUNDS.ttsMaxInputTokens, true),

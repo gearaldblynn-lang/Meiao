@@ -163,7 +163,10 @@ export async function checkVoiceoverSeparationReadiness({
       const loadResult = await runProcess(
         config.separationPython,
         ['-c', 'import sys; from pathlib import Path; from demucs.pretrained import get_model; get_model("mdx", Path(sys.argv[1])); print("mdx-load-ok")', config.demucsModelDir],
-        { env: buildDemucsProcessEnv(env, config.separationPython) },
+        {
+          env: buildDemucsProcessEnv(env, config.separationPython),
+          timeoutMs: config.readinessTimeoutMs,
+        },
       );
       modelReady = (loadResult?.exitCode ?? 1) === 0 && String(loadResult?.stdout || '').trim() === 'mdx-load-ok';
     }

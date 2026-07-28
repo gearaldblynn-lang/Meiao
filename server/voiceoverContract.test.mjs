@@ -64,10 +64,26 @@ test('invalid capacity values fall back to conservative defaults', () => {
   assert.equal(config.maxTargetTextBytesPerSecond, 96);
   assert.equal(VOICEOVER_DEFAULTS.maxTargetTextBytesPerSecond, 96);
   assert.deepEqual(VOICEOVER_BOUNDS.maxTargetTextBytesPerSecond, [16, 512]);
+  assert.equal(VOICEOVER_DEFAULTS.readinessTimeoutMs, 120_000);
+  assert.deepEqual(VOICEOVER_BOUNDS.readinessTimeoutMs, [30_000, 300_000]);
   assert.equal(VOICEOVER_MAX_TTS_GROUPS, 100);
   assert.equal(getVoiceoverConfig({
     MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND: '128',
   }).maxTargetTextBytesPerSecond, 128);
+});
+
+test('voiceover readiness timeout is bounded independently from separation execution', () => {
+  const configured = getVoiceoverConfig({
+    MEIAO_VOICEOVER_READINESS_TIMEOUT_MS: '90000',
+    MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS: '7200000',
+  });
+  assert.equal(configured.readinessTimeoutMs, 90_000);
+  assert.equal(configured.separationTimeoutMs, 7_200_000);
+
+  const invalid = getVoiceoverConfig({
+    MEIAO_VOICEOVER_READINESS_TIMEOUT_MS: '29999',
+  });
+  assert.equal(invalid.readinessTimeoutMs, 120_000);
 });
 
 test('payload only accepts catalog members and a managed source identity', () => {
