@@ -10,6 +10,8 @@ import {
   Languages,
   Loader2,
   Mic2,
+  Pause,
+  Play,
   Replace,
   Upload,
   Volume2,
@@ -62,6 +64,8 @@ type VoiceoverTranslationComposerProps = {
   translationMode: VoiceoverTranslationMode;
   voiceSelection: string;
   voiceOptions: ComposerSelectOption[];
+  voicePreviewingName: string;
+  voicePlayingName: string;
   removeText: boolean;
   subtitleRegion: SubtitleRemovalRegion;
   onChooseFile: (file?: File | null) => void;
@@ -69,6 +73,7 @@ type VoiceoverTranslationComposerProps = {
   onTargetLanguageChange: (value: string) => void;
   onTranslationModeChange: (value: VoiceoverTranslationMode) => void;
   onVoiceSelectionChange: (value: string) => void;
+  onVoicePreview: (value: string) => void;
   onRemoveTextChange: (enabled: boolean) => void;
   onSubtitleRegionChange: (region: SubtitleRemovalRegion) => void;
   onOpenConfirmation: () => void;
@@ -100,6 +105,8 @@ const VoiceoverTranslationComposer: React.FC<VoiceoverTranslationComposerProps> 
   translationMode,
   voiceSelection,
   voiceOptions,
+  voicePreviewingName,
+  voicePlayingName,
   removeText,
   subtitleRegion,
   onChooseFile,
@@ -107,6 +114,7 @@ const VoiceoverTranslationComposer: React.FC<VoiceoverTranslationComposerProps> 
   onTargetLanguageChange,
   onTranslationModeChange,
   onVoiceSelectionChange,
+  onVoicePreview,
   onRemoveTextChange,
   onSubtitleRegionChange,
   onOpenConfirmation,
@@ -286,6 +294,33 @@ const VoiceoverTranslationComposer: React.FC<VoiceoverTranslationComposerProps> 
                 onChange={onVoiceSelectionChange}
                 icon={<Volume2 size={12} />}
                 title="口播音色"
+                description="点击播放可试听真实 Gemini 音色；首次试听可能产生少量 KIE 费用。"
+                optionAction={{
+                  isVisible: (value) => value !== '__auto__',
+                  isDisabled: (value) => Boolean(
+                    voicePreviewingName && voicePreviewingName !== value,
+                  ),
+                  ariaLabel: (value, label) => {
+                    if (voicePreviewingName === value) return `正在生成 ${label} 试听`;
+                    if (voicePlayingName === value) return `暂停 ${label} 试听`;
+                    return `试听 ${label}`;
+                  },
+                  title: (value) => (
+                    voicePreviewingName === value
+                      ? '正在生成真实音色试听'
+                      : voicePlayingName === value
+                        ? '暂停试听'
+                        : '试听真实音色'
+                  ),
+                  onAction: onVoicePreview,
+                  renderIcon: (value) => (
+                    voicePreviewingName === value
+                      ? <Loader2 size={13} className="animate-spin" />
+                      : voicePlayingName === value
+                        ? <Pause size={13} fill="currentColor" />
+                        : <Play size={13} fill="currentColor" />
+                  ),
+                }}
                 disabled={!canCreate || voiceOptions.length === 0}
               />
 

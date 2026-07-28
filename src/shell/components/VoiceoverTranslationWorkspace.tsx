@@ -20,6 +20,10 @@ import {
   type VoiceoverVoiceMode,
 } from '../../services/voiceoverTranslationClient';
 import {
+  requestVoiceoverPreview,
+  waitForVoiceoverPreview,
+} from '../../services/voiceoverPreviewClient';
+import {
   cancelMediaTranscodeSession,
   convertMediaTranscodeSession,
   createMediaTranscodeSession,
@@ -100,6 +104,9 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
   const consumedInitialSourceRef = useRef('');
   const submitLockRef = useRef(false);
   const mountedRef = useRef(true);
+  const previewControllerRef = useRef<AbortController | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewUrlsRef = useRef(new Map<string, string>());
 
   const [composerTarget, setComposerTarget] = useState<HTMLElement | null>(null);
   const [source, setSource] = useState<PreparedVoiceoverSource | null>(null);
@@ -111,6 +118,8 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
   const [translationMode, setTranslationMode] = useState<VoiceoverTranslationMode>('natural');
   const [voiceMode, setVoiceMode] = useState<VoiceoverVoiceMode>('auto');
   const [voiceName, setVoiceName] = useState('');
+  const [voicePreviewingName, setVoicePreviewingName] = useState('');
+  const [voicePlayingName, setVoicePlayingName] = useState('');
   const [removeText, setRemoveText] = useState(false);
   const [subtitleRegion, setSubtitleRegion] = useState<SubtitleRemovalRegion>({
     ...DEFAULT_SUBTITLE_REGION,
@@ -184,9 +193,19 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
 
   useEffect(() => {
     mountedRef.current = true;
+    const audio = new Audio();
+    audio.preload = 'none';
+    audio.onended = () => {
+      if (mountedRef.current) setVoicePlayingName('');
+    };
+    previewAudioRef.current = audio;
     return () => {
       mountedRef.current = false;
       controllerRef.current?.abort();
+      previewControllerRef.current?.abort();
+      audio.pause();
+      audio.removeAttribute('src');
+      previewAudioRef.current = null;
       const sessionId = sessionIdRef.current;
       sessionIdRef.current = '';
       if (sessionId) {
@@ -194,6 +213,14 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       }
     };
   }, [cancelMediaSessionOnce]);
+
+  useEffect(() => {
+    previewControllerRef.current?.abort();
+    previewControllerRef.current = null;
+    previewAudioRef.current?.pause();
+    setVoicePreviewingName('');
+    setVoicePlayingName('');
+  }, [targetLanguage]);
 
   const prepareFile = useCallback(async (
     file: File,
@@ -365,6 +392,71 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     setVoiceName(value);
   }, [voices]);
 
+  const handleVoicePreview = useCallback(async (requestedVoiceName: string) => {
+    if (!canCreate || !voices.some((voice) => voice.name === requestedVoiceName)) return;
+    const audio = previewAudioRef.current;
+    if (!audio) return;
+    if (voicePlayingName === requestedVoiceName && !audio.paused) {
+      audio.pause();
+      setVoicePlayingName('');
+      return;
+    }
+    if (voicePreviewingName) return;
+    const cacheKey = `${targetLanguage}:${requestedVoiceName}`;
+    const play = async (audioUrl: string) => {
+      audio.pause();
+      audio.src = audioUrl;
+      audio.load();
+      try {
+        await audio.play();
+        if (mountedRef.current) setVoicePlayingName(requestedVoiceName);
+      } catch {
+        if (mountedRef.current) setVoicePlayingName('');
+      }
+    };
+    const cachedUrl = previewUrlsRef.current.get(cacheKey);
+    if (cachedUrl) {
+      await play(cachedUrl);
+      return;
+    }
+
+    previewControllerRef.current?.abort();
+    const controller = new AbortController();
+    previewControllerRef.current = controller;
+    setVoicePreviewingName(requestedVoiceName);
+    setVoicePlayingName('');
+    setErrorMessage('');
+    try {
+      const requested = await requestVoiceoverPreview({
+        targetLanguage,
+        voiceName: requestedVoiceName,
+      }, { signal: controller.signal });
+      const ready = requested.status === 'ready'
+        ? requested
+        : await waitForVoiceoverPreview(requested.previewId, { signal: controller.signal });
+      if (!ready.audioUrl) throw new Error('试听音频地址缺失');
+      previewUrlsRef.current.set(cacheKey, ready.audioUrl);
+      if (!controller.signal.aborted && mountedRef.current) {
+        await play(ready.audioUrl);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && mountedRef.current) {
+        setErrorMessage(error instanceof Error ? error.message : '音色试听生成失败');
+      }
+    } finally {
+      if (previewControllerRef.current === controller) {
+        previewControllerRef.current = null;
+      }
+      if (mountedRef.current) setVoicePreviewingName('');
+    }
+  }, [
+    canCreate,
+    targetLanguage,
+    voicePlayingName,
+    voicePreviewingName,
+    voices,
+  ]);
+
   const handleRemoveTextChange = useCallback((enabled: boolean) => {
     setRemoveText(enabled);
     if (enabled) setSubtitleRegion({ ...DEFAULT_SUBTITLE_REGION });
@@ -477,6 +569,8 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
               translationMode={translationMode}
               voiceSelection={voiceMode === 'auto' ? '__auto__' : voiceName}
               voiceOptions={voiceOptions}
+              voicePreviewingName={voicePreviewingName}
+              voicePlayingName={voicePlayingName}
               removeText={removeText}
               subtitleRegion={subtitleRegion}
               onChooseFile={chooseFile}
@@ -484,6 +578,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
               onTargetLanguageChange={setTargetLanguage}
               onTranslationModeChange={setTranslationMode}
               onVoiceSelectionChange={handleVoiceSelectionChange}
+              onVoicePreview={(value) => void handleVoicePreview(value)}
               onRemoveTextChange={handleRemoveTextChange}
               onSubtitleRegionChange={setSubtitleRegion}
               onOpenConfirmation={() => setConfirmOpen(true)}
