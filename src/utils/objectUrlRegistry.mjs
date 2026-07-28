@@ -1,4 +1,5 @@
 const trackedUrlMap = new WeakMap();
+const trackedValueByUrl = new Map();
 const trackedEntries = new Set();
 
 const isBlobLike = (value) => value instanceof Blob || value instanceof File;
@@ -11,21 +12,26 @@ export const createTrackedObjectUrl = (value) => {
 
   const nextUrl = URL.createObjectURL(value);
   trackedUrlMap.set(value, nextUrl);
+  trackedValueByUrl.set(nextUrl, value);
   trackedEntries.add({ value, url: nextUrl });
   return nextUrl;
 };
 
 export const revokeTrackedObjectUrl = (value) => {
-  if (!isBlobLike(value)) return;
+  const trackedValue = typeof value === 'string'
+    ? trackedValueByUrl.get(value)
+    : value;
+  if (!isBlobLike(trackedValue)) return;
 
-  const trackedUrl = trackedUrlMap.get(value);
+  const trackedUrl = trackedUrlMap.get(trackedValue);
   if (!trackedUrl) return;
 
   URL.revokeObjectURL(trackedUrl);
-  trackedUrlMap.delete(value);
+  trackedUrlMap.delete(trackedValue);
+  trackedValueByUrl.delete(trackedUrl);
 
   for (const entry of trackedEntries) {
-    if (entry.value === value) {
+    if (entry.value === trackedValue) {
       trackedEntries.delete(entry);
     }
   }
@@ -39,6 +45,7 @@ export const revokeAllTrackedObjectUrls = () => {
   for (const entry of trackedEntries) {
     URL.revokeObjectURL(entry.url);
     trackedUrlMap.delete(entry.value);
+    trackedValueByUrl.delete(entry.url);
     trackedEntries.delete(entry);
   }
 };

@@ -72,3 +72,26 @@ test('revokeTrackedObjectUrls and revokeAllTrackedObjectUrls release tracked url
     revokeAllTrackedObjectUrls();
   }
 });
+
+test('revokeTrackedObjectUrl accepts the generated url returned to image components', () => {
+  const revoked = [];
+  const originalCreate = URL.createObjectURL;
+  const originalRevoke = URL.revokeObjectURL;
+
+  URL.createObjectURL = () => 'blob:component-preview';
+  URL.revokeObjectURL = (url) => {
+    revoked.push(url);
+  };
+
+  try {
+    const sourceBlob = new Blob(['preview']);
+    const objectUrl = createTrackedObjectUrl(sourceBlob);
+
+    revokeTrackedObjectUrl(objectUrl);
+    assert.deepEqual(revoked, ['blob:component-preview']);
+  } finally {
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+    revokeAllTrackedObjectUrls();
+  }
+});
