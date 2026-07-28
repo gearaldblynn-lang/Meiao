@@ -678,7 +678,6 @@ test('uses one normalized config snapshot and rejects dense target text before c
           minAtempo: 0.75,
           maxAtempo: 1.35,
           fadeMs: 40,
-          duckingDb: 4,
           durationToleranceMs: 100,
         };
       },

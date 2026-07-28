@@ -127,7 +127,6 @@ MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS=8192
 MEIAO_VOICEOVER_GROUP_GAP_MS=800
 MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS=150
 MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND=24
-MEIAO_VOICEOVER_DUCKING_DB=4
 MEIAO_VOICEOVER_FADE_MS=40
 MEIAO_VOICEOVER_DURATION_TOLERANCE_MS=100
 MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS=259200000
@@ -374,7 +373,7 @@ test -n "$MEIAO_VOICEOVER_FIXTURE_PATH"
 npm run probe:voiceover-translation -- --fixture-path "$MEIAO_VOICEOVER_FIXTURE_PATH"
 ```
 
-它只验证本机 H.264/AAC、Demucs 输出、人声分析媒体、对齐、ducking、最终 MP4、时长、`ftyp` 与本地字节区间读取，不调用 Gemini、KIE 或 Golden。远程模式用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 指向梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 必须通过当前 shell 隐式输入并在执行后清除，不得写入 `.env.server` / `.env.local`、命令历史、日志或交接文档。`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 只接受启动脚本前的单次命令环境；即使误写入 env 文件也会被探针忽略。
+它只验证本机 H.264/AAC、Demucs 输出、人声分析媒体、对齐、成品仅含新口播、最终 MP4、时长、`ftyp` 与本地字节区间读取，不调用 Gemini、KIE 或 Golden。远程模式用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 指向梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 必须通过当前 shell 隐式输入并在执行后清除，不得写入 `.env.server` / `.env.local`、命令历史、日志或交接文档。`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 只接受启动脚本前的单次命令环境；即使误写入 env 文件也会被探针忽略。
 
 真实 canary 只允许用户明确确认的当前账号 managed asset ID，并要求一次性确认：
 

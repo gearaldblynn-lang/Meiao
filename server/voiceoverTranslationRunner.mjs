@@ -1139,13 +1139,9 @@ export async function runVoiceoverTranslationJob({
     const mixAudio = requireDependency(deps, 'mixAudio');
     const finalPath = await prepareOutputPath('result', 'voiceover-translated.mp4');
     await assertVoiceoverWorkPath(canonicalRoot, baseVideo.path, { mustExist: true });
-    await assertVoiceoverWorkPath(canonicalRoot, originalAudio.path, { mustExist: true });
-    await assertVoiceoverWorkPath(canonicalRoot, background.path, { mustExist: true });
     await assertVoiceoverWorkPath(canonicalRoot, alignedAudio.path, { mustExist: true });
     await mixAudio({
       baseVideoPath: baseVideo.path,
-      sourceAudioPath: originalAudio.path,
-      backgroundPath: background.path,
       narrationPath: alignedAudio.path,
       outputPath: finalPath,
       config,

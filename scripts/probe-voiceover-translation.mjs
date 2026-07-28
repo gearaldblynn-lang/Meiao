@@ -660,8 +660,6 @@ async function defaultRunFixtureProbe(fixturePath, { env, deps }) {
     });
     const final = await mixVoiceoverResult({
       baseVideoPath: fixturePath,
-      sourceAudioPath: originalAudioPath,
-      backgroundPath: separated.backgroundPath,
       narrationPath: alignedAudioPath,
       outputPath: finalVideoPath,
       config,
@@ -673,7 +671,7 @@ async function defaultRunFixtureProbe(fixturePath, { env, deps }) {
       separationReady: true,
       vocalOnlyAnalysisMedia: true,
       alignmentReady: true,
-      duckingReady: true,
+      narrationOnlyMixReady: true,
       outputH264Aac: final.videoCodec === 'h264' && final.audioCodec === 'aac',
       durationWithinTolerance: Math.abs(final.durationMs - durationMs) <= config.durationToleranceMs,
       ftypPresent: Boolean(container.containerBrand),
@@ -794,7 +792,7 @@ export async function runVoiceoverProbe(argv = [], deps = {}) {
           separationReady: result?.separationReady === true,
           vocalOnlyAnalysisMedia: result?.vocalOnlyAnalysisMedia === true,
           alignmentReady: result?.alignmentReady === true,
-          duckingReady: result?.duckingReady === true,
+          narrationOnlyMixReady: result?.narrationOnlyMixReady === true,
           outputH264Aac: result?.outputH264Aac === true,
           durationWithinTolerance: result?.durationWithinTolerance === true,
           ftypPresent: result?.ftypPresent === true,
