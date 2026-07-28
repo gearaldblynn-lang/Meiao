@@ -565,6 +565,48 @@ export const createJobRecord = async (pool, user, payload) => {
   return job;
 };
 
+export const findJobByClientSubmissionKey = async (
+  pool,
+  userId,
+  clientSubmissionKey,
+  {
+    module = '',
+    taskType = '',
+    provider = '',
+  } = {},
+) => {
+  const normalizedUserId = String(userId || '').trim();
+  const normalizedKey = String(clientSubmissionKey || '').trim();
+  if (!normalizedUserId || !normalizedKey) return null;
+  const normalizedModule = String(module || '').trim();
+  const normalizedTaskType = String(taskType || '').trim();
+  const normalizedProvider = String(provider || '').trim();
+  const identityClauses = [];
+  const identityValues = [];
+  if (normalizedModule) {
+    identityClauses.push('module = ?');
+    identityValues.push(normalizedModule);
+  }
+  if (normalizedTaskType) {
+    identityClauses.push('task_type = ?');
+    identityValues.push(normalizedTaskType);
+  }
+  if (normalizedProvider) {
+    identityClauses.push('provider = ?');
+    identityValues.push(normalizedProvider);
+  }
+  const [rows] = await pool.query(
+    `SELECT * FROM internal_jobs
+     WHERE user_id = ?
+       ${identityClauses.map((clause) => `AND ${clause}`).join('\n       ')}
+       AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.clientSubmissionKey')) = ?
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [normalizedUserId, ...identityValues, normalizedKey],
+  );
+  return rows[0] ? mapJobRow(rows[0]) : null;
+};
+
 export const findReusableJobRecord = async (pool, user, payload, dedupeWindowMs = 8000) => {
   const clientSubmissionKey = getClientSubmissionKey(payload?.payload);
   const createdAfter = clientSubmissionKey

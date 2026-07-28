@@ -8,6 +8,7 @@ import {
   createLocalJobWorker,
   findLocalJobByProviderTaskIdForUser,
   deleteLocalJobRecord,
+  findLocalJobByClientSubmissionKey,
   findReusableLocalJobRecord,
   getLocalJobById,
   getLocalJobQueueStats,
@@ -35,6 +36,52 @@ const createStore = () => ({
   logs: [],
   appStates: {},
   jobs: [],
+});
+
+test('local generation recovery finds terminal jobs by client submission key and owner', () => {
+  const store = createStore();
+  store.jobs = [
+    {
+      id: 'same-owner-wrong-module',
+      userId: 'admin-1',
+      module: 'agent_center',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'queued',
+      payload: { clientSubmissionKey: 'generation-key' },
+      createdAt: 400,
+    },
+    {
+      id: 'other-owner',
+      userId: 'admin-2',
+      module: 'virtual_model_library',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'queued',
+      payload: { clientSubmissionKey: 'generation-key' },
+      createdAt: 300,
+    },
+    {
+      id: 'terminal-owner-job',
+      userId: 'admin-1',
+      module: 'virtual_model_library',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'failed',
+      payload: { clientSubmissionKey: 'generation-key' },
+      createdAt: 200,
+    },
+  ];
+
+  assert.equal(
+    findLocalJobByClientSubmissionKey(store, 'admin-1', 'generation-key', {
+      module: 'virtual_model_library',
+      taskType: 'kie_image',
+      provider: 'kie',
+    })?.id,
+    'terminal-owner-job',
+  );
+  assert.equal(findLocalJobByClientSubmissionKey(store, 'admin-3', 'generation-key'), null);
 });
 
 const createUser = (id = 'user-1') => ({

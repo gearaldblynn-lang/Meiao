@@ -193,6 +193,31 @@ export const createLocalJobRecord = (store, user, payload) => {
   return job;
 };
 
+export const findLocalJobByClientSubmissionKey = (
+  store,
+  userId,
+  clientSubmissionKey,
+  {
+    module = '',
+    taskType = '',
+    provider = '',
+  } = {},
+) => {
+  const normalizedUserId = String(userId || '').trim();
+  const normalizedKey = String(clientSubmissionKey || '').trim();
+  const normalizedModule = String(module || '').trim();
+  const normalizedTaskType = String(taskType || '').trim();
+  const normalizedProvider = String(provider || '').trim();
+  if (!normalizedUserId || !normalizedKey) return null;
+  return ensureStoreJobs(store).find((job) => (
+    String(job?.userId || '') === normalizedUserId
+    && (!normalizedModule || String(job?.module || '') === normalizedModule)
+    && (!normalizedTaskType || String(job?.taskType || '') === normalizedTaskType)
+    && (!normalizedProvider || String(job?.provider || '') === normalizedProvider)
+    && String(job?.payload?.clientSubmissionKey || '').trim() === normalizedKey
+  )) || null;
+};
+
 export const findReusableLocalJobRecord = (store, user, payload, dedupeWindowMs = 8000) => {
   const clientSubmissionKey = String(payload?.payload?.clientSubmissionKey || '').trim();
   const createdAfter = clientSubmissionKey

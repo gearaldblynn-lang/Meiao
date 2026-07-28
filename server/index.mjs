@@ -71,7 +71,7 @@ import { embedTexts } from './embeddingProvider.mjs';
 import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
-import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, createSerializedJobSubmissionOnConnection, deleteJobById, findJobByProviderTaskIdForUser, findReusableJobRecord, getJobById, getJobByIdForUpdate, getSubtitleRemovalSubmissionGuardState, listJobsByIdsForUser, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, requestTombstonedJobRecovery, resolveJobDeletionAction, resolveSubmissionUnknownJob, updateJobFields, createJobWorker, withMysqlSubmissionLock, withMysqlTransaction } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, createSerializedJobSubmissionOnConnection, deleteJobById, findJobByClientSubmissionKey, findJobByProviderTaskIdForUser, findReusableJobRecord, getJobById, getJobByIdForUpdate, getSubtitleRemovalSubmissionGuardState, listJobsByIdsForUser, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, requestTombstonedJobRecovery, resolveJobDeletionAction, resolveSubmissionUnknownJob, updateJobFields, createJobWorker, withMysqlSubmissionLock, withMysqlTransaction } from './jobManager.mjs';
 import { assertSubtitleRemovalBatchSubmissionAllowed, assertSubtitleRemovalRetryAllowed, assertSubmissionKnownBeforeRetry, buildSubtitleRemovalUserGuardSubmission } from './subtitleRemovalBatchGuard.mjs';
 import {
   CREDIT_LIMIT_MODES,
@@ -95,6 +95,7 @@ import {
   createLocalJobRecord,
   createLocalJobWorker,
   deleteLocalJobRecord,
+  findLocalJobByClientSubmissionKey,
   findLocalJobByProviderTaskIdForUser,
   findReusableLocalJobRecord,
   getLocalJobById,
@@ -212,9 +213,31 @@ import {
   updateVirtualModelDraft,
 } from './virtualModelStore.mjs';
 import {
+  cancelVirtualModelGenerationBatch,
+  createVirtualModelGenerationBatch,
+  finalizeVirtualModelGenerationBatch,
+  findVirtualModelGenerationBatchForTarget,
+  reconcileVirtualModelGenerationBatch,
+  regenerateVirtualModelDerivedPoses,
+  retryVirtualModelGenerationPose,
+} from './virtualModelGenerationService.mjs';
+import {
+  bindVirtualModelGenerationPoseJob,
+  claimVirtualModelGenerationPoseSubmission,
+  createVirtualModelGenerationBatchRecord,
+  ensureVirtualModelGenerationSchema,
+  failVirtualModelGenerationPoseSubmission,
+  findLatestVirtualModelGenerationBatch,
+  getVirtualModelGenerationBatch,
+  listActiveVirtualModelGenerationSourceAssetIds,
+  normalizeVirtualModelGenerationStore,
+  updateVirtualModelGenerationBatchRecord,
+} from './virtualModelGenerationStore.mjs';
+import {
   handleVirtualModelDeleteApiRequest,
   respondVirtualModelApiError,
 } from './virtualModelHttpApi.mjs';
+import { handleVirtualModelGenerationApiRequest } from './virtualModelGenerationHttpApi.mjs';
 import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
 import { resolveVirtualModelProviderPayload } from './virtualModelProviderPayload.mjs';
 import {
@@ -2469,6 +2492,7 @@ const normalizeLocalStoreShape = (store, options = {}) => {
   store.chatMessages = Array.isArray(store.chatMessages) ? store.chatMessages : [];
   store.agentUsageLogs = Array.isArray(store.agentUsageLogs) ? store.agentUsageLogs : [];
   store = normalizeVirtualModelLocalStore(store);
+  store = normalizeVirtualModelGenerationStore(store);
   store.agentVersions = store.agentVersions.map((item) => {
     const allowedChatModels = sanitizeAllowedChatModels(item?.allowedChatModels, [
       item?.defaultChatModel,
@@ -3992,6 +4016,7 @@ const ensureMysqlSchema = async () => {
   await ensureTaskPlatformSchema(pool);
   await ensureAssetSchema(pool);
   await ensureVirtualModelSchema(pool);
+  await ensureVirtualModelGenerationSchema(pool);
 
   const [rows] = await pool.query('SELECT id FROM users LIMIT 1');
   if (Array.isArray(rows) && rows.length === 0) {
@@ -4908,6 +4933,18 @@ const collectProtectedManagedAssetUrls = async ({ pool = null, store = null, own
       (assetsByJobId.get(jobId) || []).forEach((asset) => protectOwnedAsset(asset, ownerUserId));
     });
   };
+  const addActiveVirtualModelGenerationReferences = async () => {
+    const assetIds = await listActiveVirtualModelGenerationSourceAssetIds({ pool, store });
+    assetIds.forEach((assetId) => {
+      const asset = assetsById.get(String(assetId));
+      if (
+        asset
+        && (!normalizedOwnerUserId || String(asset.userId || '') === normalizedOwnerUserId)
+      ) {
+        protectOwnedAsset(asset, asset.userId);
+      }
+    });
+  };
   if (pool) {
     const ownerClause = normalizedOwnerUserId ? ' AND id = ?' : '';
     const resourceOwnerClause = normalizedOwnerUserId ? ' AND owner_user_id = ?' : '';
@@ -4942,6 +4979,7 @@ const collectProtectedManagedAssetUrls = async ({ pool = null, store = null, own
       addOwnedReferences(metadata, row.user_id);
       addActiveRunReferences(metadata, row.user_id);
     });
+    await addActiveVirtualModelGenerationReferences();
     return protectedUrls;
   }
 
@@ -4969,6 +5007,7 @@ const collectProtectedManagedAssetUrls = async ({ pool = null, store = null, own
     addOwnedReferences(message?.metadata, message?.userId);
     addActiveRunReferences(message?.metadata, message?.userId);
   });
+  await addActiveVirtualModelGenerationReferences();
   return protectedUrls;
 };
 
@@ -11674,6 +11713,470 @@ const isOwnedVirtualModelPreviewAsset = async ({
   );
 };
 
+const createVirtualModelGenerationApiService = ({
+  req,
+  user,
+  pool = null,
+  store = null,
+  persist = () => {},
+}) => {
+  const dataSource = { pool, store };
+  const persistGenerationStore = async () => {
+    await persist();
+  };
+  const withGenerationAssetOwnerLock = async (operation) => {
+    if (pool) {
+      return withManagedAssetUserLock(user.id, async (lockedPool) => {
+        await assertActiveDbUserUnderManagedAssetLock(
+          lockedPool,
+          user.id,
+          '账号已删除，未保存虚拟模特素材',
+        );
+        return operation(lockedPool);
+      });
+    }
+    return withLocalManagedAssetUserLock(user.id, async () => {
+      const owner = (store.users || []).find((item) => item.id === user.id);
+      if (!owner || owner.status !== 'active') {
+        throw Object.assign(
+          new Error('账号已删除，未保存虚拟模特素材'),
+          { code: 'managed_asset_owner_unavailable', statusCode: 409 },
+        );
+      }
+      return operation(null);
+    });
+  };
+  const getOwnedGenerationJob = async (jobId) => {
+    const job = pool ? await getJobById(pool, jobId) : getLocalJobById(store, jobId);
+    return job && String(job.userId || '') === String(user.id) ? job : null;
+  };
+  const fetchGeneratedAsset = async ({ url }) => {
+    const managedAssetId = extractStoredAssetIdFromPublicUrl(url);
+    if (managedAssetId) {
+      const managedAsset = await getStoredAssetById(pool, managedAssetId);
+      if (
+        !managedAsset
+        || managedAsset.deletedAt
+        || String(managedAsset.userId || '') !== String(user.id)
+        || !String(managedAsset.mimeType || '').toLowerCase().startsWith('image/')
+      ) {
+        throw Object.assign(
+          new Error('Generated image is unavailable'),
+          { code: 'MODEL_GENERATION_RESULT_UNAVAILABLE' },
+        );
+      }
+      const localPath = resolveStoredAssetPath(managedAsset);
+      if (localPath && existsSync(localPath)) {
+        return {
+          fileBuffer: readFileSync(localPath),
+          mimeType: String(managedAsset.mimeType || '').toLowerCase(),
+        };
+      }
+      const readUrl = await resolveManagedAssetReadUrl(managedAsset.publicUrl, {
+        pool,
+        userId: user.id,
+        purpose: 'provider',
+        env: process.env,
+      });
+      const downloaded = await fetchRemoteAssetBufferWithRetry(readUrl);
+      return {
+        fileBuffer: downloaded.fileBuffer,
+        mimeType: String(managedAsset.mimeType || downloaded.contentType || '')
+          .split(';')[0]
+          .trim()
+          .toLowerCase(),
+      };
+    }
+    const downloaded = await fetchRemoteAssetBufferWithRetry(url);
+    return {
+      fileBuffer: downloaded.fileBuffer,
+      mimeType: String(downloaded.contentType || '')
+        .split(';')[0]
+        .trim()
+        .toLowerCase(),
+    };
+  };
+  const createGenerationJob = async (request) => {
+    const clientSubmissionKey = String(request?.payload?.clientSubmissionKey || '').trim();
+    const createRuntimeId = String(request?.createRuntimeId || '').trim();
+    if (
+      !clientSubmissionKey
+      || clientSubmissionKey !== createRuntimeId
+      || String(request?.payload?.idempotencyKey || '').trim() !== clientSubmissionKey
+    ) {
+      throw Object.assign(
+        new Error('Virtual model generation submission identity is invalid'),
+        { code: 'MODEL_GENERATION_BATCH_INVALID' },
+      );
+    }
+
+    const buildJobPayload = (payload) => ({
+      module: request.module,
+      taskType: request.taskType,
+      provider: request.provider,
+      payload,
+      priority: request.priority,
+      maxRetries: request.maxRetries,
+    });
+
+    if (pool) {
+      const submission = await withManagedAssetUserLock(user.id, async (lockedPool) => {
+        await assertActiveDbUserUnderManagedAssetLock(
+          lockedPool,
+          user.id,
+          '账号已删除，未创建虚拟模特生成任务',
+        );
+        const payload = await prepareAuthorizedManagedAssetJobPayload({
+          value: request.payload,
+          userId: user.id,
+          pool: lockedPool,
+          scrubPayload: scrubDbJobPayloadBeforeSubmission,
+          appendTrustedMetadata: (callerOwnedPayload) => callerOwnedPayload,
+        });
+        return createSerializedJobSubmission({
+          pool: lockedPool,
+          lockTimeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env),
+          user,
+          jobPayload: buildJobPayload(payload),
+          dedupeWindowMs: 0,
+          findReusableJob: findReusableJobRecord,
+          reserveCredits: reserveDbJobCreditsForSubmission,
+          createJob: createDbJobRecordWithReservation,
+        });
+      });
+      if (submission.deduped) return submission.job;
+      const { job } = submission;
+      await createDbLog({
+        user,
+        level: 'info',
+        module: job.module,
+        action: 'job_created',
+        message: `创建任务：${job.taskType}`,
+        status: 'started',
+        meta: buildJobRuntimeLogMeta({ job }),
+      });
+      await recordDbTaskPlatformEvent(pool, job, {
+        stage: 'created',
+        eventName: 'job_created',
+        status: 'started',
+        providerSubmitted: false,
+        meta: buildJobRuntimeLogMeta({ job }),
+      });
+      await mirrorDbJobToTemporalIfEnabled(pool, job);
+      jobWorker?.trigger?.();
+      return job;
+    }
+
+    const owner = (store.users || []).find((item) => item.id === user.id);
+    if (!owner || owner.status !== 'active') {
+      throw Object.assign(
+        new Error('账号已删除，未创建虚拟模特生成任务'),
+        { code: 'managed_asset_owner_unavailable', statusCode: 409 },
+      );
+    }
+    const payload = await prepareAuthorizedManagedAssetJobPayload({
+      value: request.payload,
+      userId: user.id,
+      scrubPayload: scrubLocalJobPayloadBeforeSubmission,
+      appendTrustedMetadata: (callerOwnedPayload) => callerOwnedPayload,
+    });
+    const jobPayload = buildJobPayload(payload);
+    const reusableJob = findReusableLocalJobRecord(store, user, jobPayload, 0);
+    if (reusableJob) return reusableJob;
+    const creditReservation = reserveLocalJobCredits(store, user, jobPayload);
+    const job = createLocalJobRecord(
+      store,
+      user,
+      attachCreditReservationToJobPayload(jobPayload, creditReservation),
+    );
+    appendLocalLog(store, {
+      user,
+      level: 'info',
+      module: job.module,
+      action: 'job_created',
+      message: `创建任务：${job.taskType}`,
+      status: 'started',
+      meta: buildJobRuntimeLogMeta({ job }),
+    });
+    await startLocalJobWorkflowIfEnabled(store, job);
+    await persistGenerationStore();
+    if (!shouldUseTemporalForLocalExecution()) localJobWorker?.trigger?.();
+    return getLocalJobById(store, job.id) || job;
+  };
+
+  const deps = {
+    getModelVersion: async ({ virtualModelId, virtualModelVersionId }) => {
+      if (pool) {
+        const [modelRows] = await pool.query(
+          'SELECT id, status FROM virtual_models WHERE id = ? LIMIT 1',
+          [virtualModelId],
+        );
+        const [versionRows] = await pool.query(
+          'SELECT id, virtual_model_id, status FROM virtual_model_versions WHERE id = ? AND virtual_model_id = ? LIMIT 1',
+          [virtualModelVersionId, virtualModelId],
+        );
+        const model = modelRows[0];
+        const version = versionRows[0];
+        return {
+          model: model ? { id: model.id, status: model.status } : null,
+          version: version ? {
+            id: version.id,
+            virtualModelId: version.virtual_model_id,
+            status: version.status,
+          } : null,
+        };
+      }
+      const normalized = normalizeVirtualModelLocalStore(store);
+      const model = normalized.virtualModels.find((item) => (
+        item.id === virtualModelId && item.status !== 'deleted'
+      ));
+      const version = normalized.virtualModelVersions.find((item) => (
+        item.id === virtualModelVersionId
+        && String(item.virtualModelId || item.virtual_model_id || '') === String(virtualModelId)
+      ));
+      return {
+        model: model ? { id: model.id, status: model.status } : null,
+        version: version ? {
+          id: version.id,
+          virtualModelId,
+          status: version.status,
+        } : null,
+      };
+    },
+    getSourceAssets: async ({ assetIds }) => {
+      const assets = await Promise.all(
+        assetIds.map((assetId) => getStoredAssetById(pool, assetId)),
+      );
+      return assets.filter((asset) => (
+        asset
+        && !asset.deletedAt
+        && String(asset.storageStatus || 'active') === 'active'
+        && String(asset.mimeType || '').toLowerCase().startsWith('image/')
+      ));
+    },
+    createJob: createGenerationJob,
+    findJobByIdempotencyKey: ({ userId, idempotencyKey }) => (
+      pool
+        ? findJobByClientSubmissionKey(pool, userId, idempotencyKey, {
+          module: 'virtual_model_library',
+          taskType: 'kie_image',
+          provider: 'kie',
+        })
+        : findLocalJobByClientSubmissionKey(store, userId, idempotencyKey, {
+          module: 'virtual_model_library',
+          taskType: 'kie_image',
+          provider: 'kie',
+        })
+    ),
+    getJob: getOwnedGenerationJob,
+    cancelJob: async (jobId) => {
+      const job = await getOwnedGenerationJob(jobId);
+      if (!job) return;
+      if (pool) {
+        await requestCancelJob(pool, job, { user });
+      } else {
+        requestLocalCancelJob(store, job.id);
+        await persistGenerationStore();
+      }
+    },
+    createBatchRecord: async (batch) => {
+      const created = await createVirtualModelGenerationBatchRecord({
+        ...dataSource,
+        batch,
+      });
+      await persistGenerationStore();
+      return created;
+    },
+    getBatchRecord: (batchId, userId) => getVirtualModelGenerationBatch({
+      ...dataSource,
+      batchId,
+      userId,
+    }),
+    findLatestBatchRecord: (userId, virtualModelId, virtualModelVersionId) => (
+      findLatestVirtualModelGenerationBatch({
+        ...dataSource,
+        userId,
+        virtualModelId,
+        virtualModelVersionId,
+      })
+    ),
+    updateBatchRecord: async (batchId, userId, patch) => {
+      const updated = await updateVirtualModelGenerationBatchRecord({
+        ...dataSource,
+        batchId,
+        userId,
+        patch,
+      });
+      await persistGenerationStore();
+      return updated;
+    },
+    claimPoseSubmission: async (input) => {
+      const claimed = await claimVirtualModelGenerationPoseSubmission({
+        ...dataSource,
+        ...input,
+      });
+      await persistGenerationStore();
+      return claimed;
+    },
+    bindPoseJob: async (input) => {
+      const bound = await bindVirtualModelGenerationPoseJob({
+        ...dataSource,
+        ...input,
+      });
+      await persistGenerationStore();
+      return bound;
+    },
+    failPoseSubmission: async (input) => {
+      const failed = await failVirtualModelGenerationPoseSubmission({
+        ...dataSource,
+        ...input,
+      });
+      await persistGenerationStore();
+      return failed;
+    },
+    fetchGeneratedAsset,
+    persistGeneratedAsset: async ({
+      batch,
+      task,
+      fileBuffer,
+      mimeType,
+      width = 0,
+      height = 0,
+    }) => {
+      const extension = mimeType === 'image/jpeg'
+        ? 'jpg'
+        : mimeType === 'image/webp'
+          ? 'webp'
+          : 'png';
+      return withGenerationAssetOwnerLock((assetPool) => persistAssetBuffer({
+          pool: assetPool,
+          publicBaseUrl: getPersistentAssetBaseUrl(req),
+          userId: user.id,
+          module: 'virtual_model',
+          assetType: 'result',
+          originalName: `${batch.id}_${task.poseId}.${extension}`,
+          mimeType,
+          fileBuffer,
+          width,
+          height,
+          provider: 'internal',
+        }));
+    },
+    stabilizeGeneratedReference: async ({ batch, task, url }) => {
+      const { fileBuffer } = await fetchGeneratedAsset({ url });
+      const sharp = (await import('sharp')).default;
+      let metadata;
+      try {
+        metadata = await sharp(fileBuffer, { failOn: 'error' }).metadata();
+        await sharp(fileBuffer, { failOn: 'error' }).toBuffer();
+      } catch {
+        throw Object.assign(
+          new Error('Generated baseline image cannot be decoded'),
+          { code: 'MODEL_GENERATION_RESULT_INVALID' },
+        );
+      }
+      const mimeType = metadata.format === 'jpeg'
+        ? 'image/jpeg'
+        : metadata.format === 'png'
+          ? 'image/png'
+          : metadata.format === 'webp'
+            ? 'image/webp'
+            : '';
+      if (
+        !mimeType
+        || !Number.isInteger(metadata.width)
+        || metadata.width <= 0
+        || !Number.isInteger(metadata.height)
+        || metadata.height <= 0
+      ) {
+        throw Object.assign(
+          new Error('Generated baseline image is invalid'),
+          { code: 'MODEL_GENERATION_RESULT_INVALID' },
+        );
+      }
+      const persistedAsset = await deps.persistGeneratedAsset({
+        batch,
+        task,
+        fileBuffer,
+        mimeType,
+        width: metadata.width,
+        height: metadata.height,
+      });
+      const managedAsset = {
+        assetId: persistedAsset.id,
+        publicUrl: persistedAsset.publicUrl,
+      };
+      let uploaded;
+      try {
+        uploaded = await uploadAssetViaKieStream({
+          fileBuffer,
+          fileName: `${batch.id}_${task.poseId}.${mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'}`,
+          mimeType,
+          uploadPath: `mayo-storage/virtual-model-baselines/${batch.id}`,
+        }, process.env);
+      } catch (error) {
+        error.managedReferenceAsset = managedAsset;
+        throw error;
+      }
+      const stableReferenceUrl = String(uploaded?.result?.fileUrl || '').trim();
+      if (!stableReferenceUrl) {
+        throw Object.assign(
+          new Error('Stable baseline upload returned no URL'),
+          { code: 'MODEL_GENERATION_REFERENCE_INVALID' },
+        );
+      }
+      return { managedAsset, stableReferenceUrl };
+    },
+    createPreviewAsset: async ({ assetId }) => {
+      return withGenerationAssetOwnerLock(async (assetPool) => {
+        const source = await getStoredAssetById(assetPool, assetId);
+        if (
+          !source
+          || source.deletedAt
+          || String(source.userId || '') !== String(user.id)
+        ) {
+          throw Object.assign(
+            new Error('Virtual model source asset is unavailable'),
+            { code: 'MODEL_ASSET_UNAVAILABLE' },
+          );
+        }
+        return createVirtualModelPreviewAsset({
+          req,
+          user,
+          pool: assetPool,
+          source,
+        });
+      });
+    },
+    replaceDraftVersionAssets: async ({
+      virtualModelId,
+      virtualModelVersionId,
+      assets,
+    }) => {
+      const replaced = await replaceDraftVersionAssets({
+        ...dataSource,
+        virtualModelId,
+        virtualModelVersionId,
+        assets,
+      });
+      await persistGenerationStore();
+      return replaced;
+    },
+    now: () => Date.now(),
+    createId: createEntityId,
+  };
+
+  return {
+    create: (input) => createVirtualModelGenerationBatch({ ...input, deps }),
+    find: (input) => findVirtualModelGenerationBatchForTarget({ ...input, deps }),
+    get: (input) => reconcileVirtualModelGenerationBatch({ ...input, deps }),
+    retry: (input) => retryVirtualModelGenerationPose({ ...input, deps }),
+    regenerateDerived: (input) => regenerateVirtualModelDerivedPoses({ ...input, deps }),
+    cancel: (input) => cancelVirtualModelGenerationBatch({ ...input, deps }),
+    finalize: (input) => finalizeVirtualModelGenerationBatch({ ...input, deps }),
+  };
+};
+
 const handleVirtualModelApiRequest = async ({
   req,
   res,
@@ -11941,6 +12444,21 @@ const handleMysqlRequest = async (req, res, url) => {
       resolveRequestUserId: async () => String((await getDbSessionUser(req))?.id || ''),
     });
     return;
+  }
+
+  if (url.pathname.startsWith('/api/admin/virtual-model-generation-batches')) {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const pool = await getMysqlPool();
+    const service = createVirtualModelGenerationApiService({ req, user, pool });
+    if (await handleVirtualModelGenerationApiRequest({
+      req,
+      res,
+      url,
+      user,
+      readJson: readBody,
+      service,
+    })) return;
   }
 
   if (
@@ -14801,6 +15319,12 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     return withLocalStoreMutationLock(() => handleLocalRequest(req, res, url, { mutationLockHeld: true }));
   }
   let store = readLocalStore();
+  const generationRoute = url.pathname.startsWith('/api/admin/virtual-model-generation-batches');
+  if (!mutationLockHeld && generationRoute) {
+    return withLocalStoreMutationLock(
+      () => handleLocalRequest(req, res, url, { mutationLockHeld: true }),
+    );
+  }
   const userDetailMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
   const agentDetailMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
   const agentDraftMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/draft$/);
@@ -14835,6 +15359,26 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       resolveRequestUserId: async () => String(localGetSessionUser(req, store)?.id || ''),
     });
     return;
+  }
+
+  if (generationRoute) {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const persist = () => writeLocalStore(store);
+    const service = createVirtualModelGenerationApiService({
+      req,
+      user,
+      store,
+      persist,
+    });
+    if (await handleVirtualModelGenerationApiRequest({
+      req,
+      res,
+      url,
+      user,
+      readJson: readBody,
+      service,
+    })) return;
   }
 
   if (

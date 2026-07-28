@@ -8,6 +8,7 @@ import {
   createSerializedJobSubmission,
   getSubtitleRemovalSubmissionGuardState,
   deleteJobById,
+  findJobByClientSubmissionKey,
   findJobByProviderTaskIdForUser,
   findReusableJobRecord,
   findReusableJobSubmission,
@@ -552,6 +553,67 @@ test('explicit subtitle submission key discovers a terminal job after the create
   });
 
   assert.equal(matched?.id, 'subtitle-completed');
+});
+
+test('generation recovery finds the newest active or terminal job by client submission key', async () => {
+  const terminalRow = {
+    id: 'generation-completed',
+    user_id: 'admin-1',
+    module: 'virtual_model_library',
+    task_type: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    priority: 0,
+    payload_json: JSON.stringify({
+      clientSubmissionKey: 'virtual-model-generation:batch-1:C01:1',
+    }),
+    provider_task_id: 'provider-1',
+    result_json: JSON.stringify({ imageUrl: 'https://example.com/result.png' }),
+    error_code: null,
+    error_message: null,
+    error_detail: null,
+    retry_count: 0,
+    max_retries: 0,
+    created_at: 100,
+    updated_at: 200,
+    started_at: 110,
+    finished_at: 200,
+    cancel_requested_at: null,
+  };
+  const calls = [];
+  const pool = {
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      return [[terminalRow]];
+    },
+  };
+
+  const matched = await findJobByClientSubmissionKey(
+    pool,
+    'admin-1',
+    'virtual-model-generation:batch-1:C01:1',
+    {
+      module: 'virtual_model_library',
+      taskType: 'kie_image',
+      provider: 'kie',
+    },
+  );
+
+  assert.equal(matched?.id, 'generation-completed');
+  assert.equal(matched?.status, 'succeeded');
+  assert.equal(matched?.maxRetries, 0);
+  assert.match(calls[0].sql, /JSON_UNQUOTE\(JSON_EXTRACT\(payload_json, '\$\.clientSubmissionKey'\)\) = \?/);
+  assert.match(calls[0].sql, /module = \?/);
+  assert.match(calls[0].sql, /task_type = \?/);
+  assert.match(calls[0].sql, /provider = \?/);
+  assert.doesNotMatch(calls[0].sql, /status IN/);
+  assert.deepEqual(calls[0].values, [
+    'admin-1',
+    'virtual_model_library',
+    'kie_image',
+    'kie',
+    'virtual-model-generation:batch-1:C01:1',
+  ]);
 });
 
 test('explicit subtitle submission key also discovers a cancelled terminal job', () => {
