@@ -24,6 +24,7 @@
     "probe:subtitle-removal": "node scripts/probe-subtitle-removal.mjs",
     "probe:voiceover-translation": "node scripts/probe-voiceover-translation.mjs",
     "probe:managed-image-cos": "node scripts/probe-managed-image-cos.mjs",
+    "import:virtual-model-library": "node scripts/import-virtual-model-library-data.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
