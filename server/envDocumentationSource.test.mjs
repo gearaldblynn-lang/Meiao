@@ -6,6 +6,12 @@ const envExample = readFileSync(new URL('../.env.server.example', import.meta.ur
 const projectOverview = readFileSync(new URL('../docs/project-overview.md', import.meta.url), 'utf8');
 const deployDoc = readFileSync(new URL('../docs/tencent-cloud-deploy.md', import.meta.url), 'utf8');
 
+test('口播独立模型加载门禁超时同步到模板、项目总览和部署文档', () => {
+  for (const source of [envExample, projectOverview, deployDoc]) {
+    assert.match(source, /MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS/);
+  }
+});
+
 test('第4期多工具 env 旋钮同步到模板、项目总览和部署文档', () => {
   assert.match(envExample, /AGENT_TOOL_MAX_ROUNDS/);
   assert.match(envExample, /OPENAI_COMPATIBLE_RESPONSES_PATH/);
