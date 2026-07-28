@@ -353,6 +353,8 @@ sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -r /opt/meiao/voiceover/models/mdx.
 
 `MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS` 是单次 socket 读取超时，`MEIAO_VOICEOVER_PIP_RETRIES` 是单连接重试次数，都不是整次安装的总时限；非法值会在创建 venv 前 fail-closed。两者只用于一次性安装命令，不需要写入 `.env.server`。维护窗口若需要总时限，应由运维在命令外层另加受控 timeout。
 
+模型冷启动 load gate 使用 `MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS`，默认 `60000ms`、范围 `30000-90000ms`；它与最长一小时的实际分离任务超时是两个独立合同。首次启动检查失败后，进程会按 `MEIAO_VOICEOVER_READINESS_RETRY_DELAY_MS`（默认 `15000ms`、范围 `5000-300000ms`）只做一次后台复检并原子刷新 health，避免云机冷缓存或短时内存压力把一次超时固化到整个进程生命周期。复检仍失败时继续 fail-closed，禁止提交新口播任务。
+
 `deploy/voiceover/requirements.lock`、`build-requirements.lock`、`demucs-models.json` 和 `mdx.yaml` 是受版本控制的安装合同；venv、`.th` 权重和运行时临时媒体不得进入 Git、release 包或 `git status`。安装后仍先保持功能关闭，写好候选环境路径和 KIE 凭证，再执行：
 
 Torch 2.6+ 默认使用受限的 `weights_only` 加载，而 Demucs 4.0.1 的官方 `mdx` 文件是完整的旧式 pickled model。应用拿到单并发许可后会再次拒绝符号链接、核对 manifest 字节数与 SHA-256，再只在紧邻执行的 Demucs readiness/分离子进程中设置 `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`；子进程使用最小环境白名单，不继承数据库、provider、COS 或签名密钥，并主动移除冲突的 `TORCH_FORCE_WEIGHTS_ONLY_LOAD`。禁止把用户上传文件、任意第三方 checkpoint 或未校验权重放入模型目录；该兼容边界不得扩展到主 Node 进程或其他 Python/provider 任务。

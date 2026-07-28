@@ -6,6 +6,17 @@ const envExample = readFileSync(new URL('../.env.server.example', import.meta.ur
 const projectOverview = readFileSync(new URL('../docs/project-overview.md', import.meta.url), 'utf8');
 const deployDoc = readFileSync(new URL('../docs/tencent-cloud-deploy.md', import.meta.url), 'utf8');
 
+test('口播冷启动 readiness 超时和一次复检旋钮同步到模板、项目总览和部署文档', () => {
+  for (const key of [
+    'MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS',
+    'MEIAO_VOICEOVER_READINESS_RETRY_DELAY_MS',
+  ]) {
+    assert.match(envExample, new RegExp(key));
+    assert.match(projectOverview, new RegExp(key));
+    assert.match(deployDoc, new RegExp(key));
+  }
+});
+
 test('第4期多工具 env 旋钮同步到模板、项目总览和部署文档', () => {
   assert.match(envExample, /AGENT_TOOL_MAX_ROUNDS/);
   assert.match(envExample, /OPENAI_COMPATIBLE_RESPONSES_PATH/);
