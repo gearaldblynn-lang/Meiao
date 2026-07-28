@@ -258,12 +258,20 @@ npm run dev
 | `MEIAO_VOICEOVER_DURATION_TOLERANCE_MS` | `100` | 整数 `20-500` |
 | `MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS` | `259200000` | 整数 `3600000-2592000000` |
 | `MEIAO_VOICEOVER_PREVIEW_CACHE_TTL_MS` | `0` | `0` 表示真实音色试听按账号、语言和音色永久复用；也可配置整数 `3600000-604800000` 强制周期刷新 |
+| `MEIAO_VOICE_PREVIEW_LIBRARY_CONCURRENCY` | `1` | 系统预置试听一次性生成并发，整数 `1-2`；默认串行避免突发付费提交 |
+| `MEIAO_VOICE_PREVIEW_LIBRARY_DOWNLOAD_TIMEOUT_MS` | `60000` | 系统预置试听单文件下载超时，整数 `5000-300000` |
+| `MEIAO_VOICE_PREVIEW_LIBRARY_MAX_BYTES` | `20971520` | 系统预置试听单文件字节上限，整数 `1024-104857600` |
 | `MEIAO_KIE_TTS_BASE_URL` | `https://api.kie.ai` | 服务端 HTTP(S) 根地址 |
 | `MEIAO_KIE_TTS_MODEL` | `google/gemini-3-1-flash-tts` | 固定模型名 |
 | `MEIAO_KIE_TTS_REQUEST_TIMEOUT_MS` | `60000` | 整数 `5000-300000` |
 | `MEIAO_KIE_TTS_POLL_INTERVAL_MS` | `4000` | 整数 `500-30000` |
 | `MEIAO_KIE_TTS_POLL_MAX_ATTEMPTS` | `180` | 整数 `1-720` |
 | `MEIAO_KIE_TTS_NOT_FOUND_GRACE_MS` | `45000` | 整数 `0-300000` |
+
+系统预置试听库通过
+`MEIAO_VOICE_PREVIEW_LIBRARY_CONFIRM=1 npm run generate:voiceover-previews`
+一次性生成。确认值禁止写入 `.env.server`；生成器会把 provider task id 只写入被 Git 忽略的
+`server/data/voiceover-preview-library-ledger.json`，中断后只恢复原任务，不重复创建。
 
 本地只读 readiness：
 
