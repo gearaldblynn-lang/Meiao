@@ -198,6 +198,7 @@ test('readiness validates Python imports, the exact Demucs version, and required
     ['-hide_banner', '-filters'],
   ]);
   assert.equal(calls[1].options.env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '1');
+  assert.equal(calls[1].options.timeoutMs, 120_000);
   assert.equal('TORCH_FORCE_WEIGHTS_ONLY_LOAD' in calls[1].options.env, false);
   assert.equal('KIE_API_KEY' in calls[1].options.env, false);
   assert.equal('MEIAO_DB_PASSWORD' in calls[1].options.env, false);
