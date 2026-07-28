@@ -1203,3 +1203,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/voiceoverAnalysis.test.mjs server/voiceoverAudio.test.mjs server/providerKieTts.test.mjs server/voiceoverChildJobStore.test.mjs server/voiceoverTranslationRunner.test.mjs scripts/probe-voiceover-translation.test.mjs`；真实 fixture 频谱证明原音乐和旧人声频率消失、新口播频率存在；真实 canary 逐组核对时间窗、`actualDurationMs`、`atempo>=1`、最终时长/编码/fast-start 和鉴权 Range。
 - Avoid next time: 技术验收与听感验收分开记录；“任务成功、两个 stem 都存在”不能证明最终音轨干净。产品明确要纯口播时，不做任何声源分离背景恢复。
 - Cloud release follow-up: 腾讯云 7.5 GiB 主机的常驻可用内存约 1.8 GiB，而一次 `mdx get_model` 峰值约 1.68 GiB。零停机 reload 同时保留新旧 Node 时，在新进程 bootstrap 再真实加载模型会触发全机换页抖动，SSH/health 都可能超时；延长超时或后台重试只会放大故障。服务启动和任务前置检查改为固定 Python 版本、模型字节/哈希、YAML 与 FFmpeg filters，发布前独立探针仍真实 `get_model`；实际分离只加载一次模型。发布必须等待公网 `voiceoverTranslation.ready=true`，不能只看 PM2 online 或独立探针成功。
+
+## 2026-07-28 - 公共模特素材不能按调用者私有资产鉴权，空草稿不能遮住当前已发布版本
+
+- Symptom: 同事使用已发布公共模特执行模特替换时提示“没有权限执行此操作”；管理员点击“新建版本”后，原来的 8 张固定参考素材看起来全部消失，界面没有提示。
+- Evidence: 目标同事账号仍为 active admin，公共模特及已发布版本的 8 张素材全部存在；失败项目没有创建 `internal_jobs`、没有 provider task id、没有扣费。管理库数据同时存在一个已发布 current version 和一个 0/1 张素材的废弃 draft，旧列表接口优先返回了任意 draft。
+- Root cause: 通用 job 素材鉴权在服务端补入可信公共模特快照之后才执行，因而把公共模特的服务端资产 ID 错当成调用者私有上传资产并返回 403。管理列表又以“有 draft 就优先展示”为规则，`新建版本` 创建的空草稿会遮住 `currentVersionId` 指向的已发布版本，形成数据被清空的假象。
+- Fix: 先清洗并鉴权调用者原始 payload，再附加服务端验证的公共模特快照；显式跨账号私有 asset ID 继续 403。管理列表始终优先 `currentVersionId`，删除右侧“新建版本”，只保留左侧“新建模特”；空描述不再隐式创建 v1，草稿身份资料改为原版本 merge patch，已发布版本的身份描述和固定素材保持不可变。
+- Regression check: `node --test server/managedAssetReferencePolicy.test.mjs server/assetReferenceCleanup.test.mjs server/virtualModelApi.test.mjs server/virtualModelStore.test.mjs src/modules/VirtualModelLibrary/VirtualModelLibraryModule.test.mjs src/services/internalApi.test.mjs`；`npm run verify`；用真实存储回放必须显示 001 当前 v2、002/003 当前 v1 且均为 published 8/8。生产验收同时核对用户角色、目标项目 job 数、数据库 current version/素材数、正式域名 UI chunk 和本地/云端关键文件哈希；不为验证权限修复创建新的付费 provider 任务。
+- Avoid next time: 权威服务端补充的公共资产与用户提交的私有资产必须在鉴权边界前分层，不能混入同一个 ownership assertion。后台列表的“当前可见版本”必须由显式 `currentVersionId` 决定；草稿只能作为从未发布模型的 fallback，任何能改变当前可见版本的动作都必须说明影响并保留旧素材可见性。
