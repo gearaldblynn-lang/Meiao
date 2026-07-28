@@ -30,6 +30,12 @@ interface RetouchComparisonViewerProps {
   onIndexChange: (index: number) => void;
   onClose: () => void;
   onDownloadCurrent?: () => void;
+  heading?: string;
+  dialogLabel?: string;
+  originalLabel?: string;
+  resultLabel?: string;
+  headerActions?: React.ReactNode;
+  overlayZIndex?: number;
 }
 
 interface ImageDimensions {
@@ -54,6 +60,12 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
   onIndexChange,
   onClose,
   onDownloadCurrent,
+  heading = '滑动查看升级效果',
+  dialogLabel = '图片升级前后对比',
+  originalLabel = '原图',
+  resultLabel = '升级后',
+  headerActions,
+  overlayZIndex = 560,
 }) => {
   const item = items[currentIndex];
   const [dividerPercent, setDividerPercent] = useState(50);
@@ -128,7 +140,15 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
         : undefined,
     );
     setResultDimensions(undefined);
-  }, [item?.id, item?.originalHeight, item?.originalWidth, open, resetComparisonView]);
+  }, [
+    item?.id,
+    item?.originalHeight,
+    item?.originalUrl,
+    item?.originalWidth,
+    item?.resultUrl,
+    open,
+    resetComparisonView,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -234,14 +254,14 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[560] flex items-center justify-center p-4 sm:p-7"
-      style={{ background: 'rgba(2,6,23,0.82)', backdropFilter: 'blur(12px)' }}
+      className="fixed inset-0 flex items-center justify-center p-4 sm:p-7"
+      style={{ zIndex: overlayZIndex, background: 'rgba(2,6,23,0.82)', backdropFilter: 'blur(12px)' }}
       onClick={onClose}
     >
       <section
         role="dialog"
         aria-modal="true"
-        aria-label="图片升级前后对比"
+        aria-label={dialogLabel}
         className="flex h-[92vh] w-full max-w-[1320px] flex-col overflow-hidden rounded-[28px] border"
         style={{
           background: 'var(--bg-surface)',
@@ -257,7 +277,7 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="truncate text-[17px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                滑动查看升级效果
+                {heading}
               </h3>
               <span
                 className="rounded-full px-2.5 py-1 text-[10px] font-semibold"
@@ -277,7 +297,8 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {headerActions}
             <div
               role="group"
               aria-label="对比图缩放控制"
@@ -381,7 +402,7 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
                   data-comparison-layer="original"
                   key={`original-${item.id}-${item.originalUrl}`}
                   src={item.originalUrl}
-                  alt={`${item.title} 原图`}
+                  alt={`${item.title} ${originalLabel}`}
                   className="pointer-events-none h-full w-full object-contain"
                   style={{ transform: imageTransform, transformOrigin: 'center center', willChange: 'transform' }}
                   draggable={false}
@@ -408,7 +429,7 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
                   data-comparison-layer="result"
                   key={`result-${item.id}-${item.resultUrl}`}
                   src={item.resultUrl}
-                  alt={`${item.title} 升级后`}
+                  alt={`${item.title} ${resultLabel}`}
                   className="pointer-events-none h-full w-full object-contain"
                   style={{ transform: imageTransform, transformOrigin: 'center center', willChange: 'transform' }}
                   draggable={false}
@@ -423,8 +444,8 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
               )}
             </div>
 
-            <span className="pointer-events-none absolute left-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-[10px] font-semibold text-white">原图</span>
-            <span className="pointer-events-none absolute right-3 top-3 rounded-full bg-blue-600/85 px-2.5 py-1 text-[10px] font-semibold text-white">升级后</span>
+            <span className="pointer-events-none absolute left-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-[10px] font-semibold text-white">{originalLabel}</span>
+            <span className="pointer-events-none absolute right-3 top-3 rounded-full bg-blue-600/85 px-2.5 py-1 text-[10px] font-semibold text-white">{resultLabel}</span>
 
             <div
               className="pointer-events-none absolute bottom-0 top-0 w-px bg-white/90 shadow-[0_0_0_1px_rgba(15,23,42,0.18),0_0_18px_rgba(0,0,0,0.4)]"

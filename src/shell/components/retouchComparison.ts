@@ -8,6 +8,19 @@ const RETOUCH_COMPARISON_LABELS = {
 
 type RetouchComparisonSubFeature = keyof typeof RETOUCH_COMPARISON_LABELS;
 
+const getComparisonScopeLabel = (module?: string, subFeature?: string) => {
+  if (
+    module === 'retouch'
+    && Object.hasOwn(RETOUCH_COMPARISON_LABELS, String(subFeature || ''))
+  ) {
+    return RETOUCH_COMPARISON_LABELS[subFeature as RetouchComparisonSubFeature];
+  }
+  if (module === 'everything_replace' && subFeature === 'model_replace') {
+    return '模特替换';
+  }
+  return '';
+};
+
 export interface RetouchComparisonItem {
   id: string;
   originalUrl?: string;
@@ -102,8 +115,7 @@ export const getComparisonZoomPan = ({
 };
 
 export const isRetouchComparisonScope = (module?: string, subFeature?: string) => (
-  module === 'retouch'
-  && Object.hasOwn(RETOUCH_COMPARISON_LABELS, String(subFeature || ''))
+  Boolean(getComparisonScopeLabel(module, subFeature))
 );
 
 export const buildRetouchComparisonItems = ({
@@ -112,11 +124,8 @@ export const buildRetouchComparisonItems = ({
   projectName,
   results,
 }: BuildRetouchComparisonItemsInput): RetouchComparisonItem[] => {
-  if (!isRetouchComparisonScope(module, subFeature)) return [];
-
-  const subFeatureLabel = RETOUCH_COMPARISON_LABELS[
-    subFeature as RetouchComparisonSubFeature
-  ];
+  const subFeatureLabel = getComparisonScopeLabel(module, subFeature);
+  if (!subFeatureLabel) return [];
 
   return results
     .filter((result) => result.status === 'completed' && Boolean(result.imageUrl))

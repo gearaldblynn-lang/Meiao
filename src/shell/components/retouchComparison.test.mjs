@@ -14,12 +14,14 @@ import {
   isRetouchComparisonScope,
 } from './retouchComparison.ts';
 
-test('comparison scope includes only the three image-upgrade subfeatures', () => {
+test('comparison scope includes image-upgrade and model-replacement result viewers', () => {
   for (const subFeature of ['original', 'white_bg', 'product_restore']) {
     assert.equal(isRetouchComparisonScope('retouch', subFeature), true);
   }
+  assert.equal(isRetouchComparisonScope('everything_replace', 'model_replace'), true);
 
   assert.equal(isRetouchComparisonScope('translation', 'original'), false);
+  assert.equal(isRetouchComparisonScope('everything_replace', 'product_replace'), false);
   assert.equal(isRetouchComparisonScope('retouch', 'enhance'), false);
   assert.equal(isRetouchComparisonScope('retouch', undefined), false);
 });
@@ -66,6 +68,25 @@ test('comparison items preserve completed results without original for graceful 
   assert.equal(items.length, 1);
   assert.equal(items[0].originalUrl, undefined);
   assert.equal(items[0].subFeatureLabel, '白底精修');
+});
+
+test('model replacement comparison uses the shared before-after viewer contract', () => {
+  const items = buildRetouchComparisonItems({
+    module: 'everything_replace',
+    subFeature: 'model_replace',
+    projectName: '模特替换项目',
+    results: [{
+      id: 'model-result',
+      status: 'completed',
+      imageUrl: '/model-result.png',
+      sourcePreviewUrl: '/model-source.png',
+    }],
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0].originalUrl, '/model-source.png');
+  assert.equal(items[0].resultUrl, '/model-result.png');
+  assert.equal(items[0].subFeatureLabel, '模特替换');
 });
 
 test('unsupported projects never expose comparison items', () => {

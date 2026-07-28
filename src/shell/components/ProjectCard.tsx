@@ -34,6 +34,7 @@ import RetouchComparisonViewer from './RetouchComparisonViewer';
 import {
   buildRetouchComparisonItems,
   isRetouchComparisonScope,
+  type RetouchComparisonItem,
 } from './retouchComparison';
 import PlanEditor, { type PlanItem } from './PlanEditor';
 import { useToast } from './ToastSystem';
@@ -1214,7 +1215,7 @@ const ProjectCard: React.FC<Props> = ({
   }, [isTranslationProject, project.results]);
 
   useEffect(() => {
-    if (!detailOpen || lightboxOpen || retouchComparisonOpen) return;
+    if (!detailOpen || lightboxOpen || retouchComparisonOpen || translationCompareOpen) return;
     const handler = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setDetailOpen(false);
@@ -1223,7 +1224,7 @@ const ProjectCard: React.FC<Props> = ({
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [detailOpen, lightboxOpen, retouchComparisonOpen]);
+  }, [detailOpen, lightboxOpen, retouchComparisonOpen, translationCompareOpen]);
 
   const handleCopyPrompt = async (prompt: string) => {
     const value = String(prompt || '');
@@ -2955,6 +2956,9 @@ const ProjectCard: React.FC<Props> = ({
         currentIndex={retouchComparisonIndex}
         onIndexChange={setRetouchComparisonIndex}
         onClose={() => setRetouchComparisonOpen(false)}
+        heading={project.subFeature === 'model_replace' ? '滑动查看替换效果' : undefined}
+        dialogLabel={project.subFeature === 'model_replace' ? '模特替换前后对比' : undefined}
+        resultLabel={project.subFeature === 'model_replace' ? '替换后' : undefined}
         onDownloadCurrent={() => {
           const currentItem = retouchComparisonItems[retouchComparisonIndex];
           const resultIndex = project.results.findIndex((result) => result.id === currentItem?.id);
@@ -2984,6 +2988,138 @@ const ProjectCard: React.FC<Props> = ({
         const pendingTranslationEditVersion = getPendingTranslationEditVersion(result);
         const translationEditPending = Boolean(pendingTranslationEditVersion) || isTranslationRegionEditSubmitting(result.id);
         const translationEditEligible = canEditTranslationRegion(result);
+        const translationComparisonItems = translationResults.flatMap<RetouchComparisonItem>((candidate, index) => {
+          const candidateSourceUrl = candidate.sourcePreviewUrl || candidate.sourceUrl || '';
+          const candidateSelectedResult = getSelectedTranslationResult(candidate);
+          if (!candidateSourceUrl || !candidateSelectedResult.imageUrl) return [];
+          return [{
+            id: candidate.id,
+            originalUrl: candidateSourceUrl,
+            resultUrl: candidateSelectedResult.imageUrl,
+            title: getTranslationPathLabel(candidate) || `${project.name || '出海翻译'} #${index + 1}`,
+            subFeatureLabel: '出海翻译',
+            originalWidth: candidate.originalWidth,
+            originalHeight: candidate.originalHeight,
+          }];
+        });
+        const translationSliderIndex = translationComparisonItems.findIndex((item) => item.id === result.id);
+        const canUseTranslationSlider = Boolean(
+          sourceUrl
+          && selectedResult.imageUrl
+          && selectedVersion?.status !== 'error'
+          && translationSliderIndex >= 0
+        );
+        if (canUseTranslationSlider) {
+          return (
+            <RetouchComparisonViewer
+              open
+              items={translationComparisonItems}
+              currentIndex={translationSliderIndex}
+              onIndexChange={(nextIndex) => {
+                const nextItem = translationComparisonItems[nextIndex];
+                const nextResultIndex = translationResults.findIndex((candidate) => candidate.id === nextItem?.id);
+                if (nextResultIndex >= 0) setTranslationCompareIndex(nextResultIndex);
+              }}
+              onClose={() => setTranslationCompareOpen(false)}
+              onDownloadCurrent={() => {
+                void handleDownloadSingle(selectedResult, translationCompareIndex, selectedVersion);
+              }}
+              heading="滑动查看翻译效果"
+              dialogLabel="出海翻译前后对比"
+              originalLabel="原图"
+              resultLabel="翻译后"
+              overlayZIndex={520}
+              headerActions={(
+                <>
+                  {visibleVersions.length > 0 ? (
+                    <div
+                      className="flex h-9 items-center gap-1 rounded-[18px] px-1"
+                      style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+                    >
+                      <button
+                        type="button"
+                        aria-label="上一版"
+                        disabled={selectedVersionIndex <= 0}
+                        onClick={() => setTranslationVersionIndexes((current) => ({
+                          ...current,
+                          [result.id]: selectedVersionIndex - 1,
+                        }))}
+                        className="flex h-7 w-7 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-35"
+                      >
+                        <ChevronLeft size={14} />
+                      </button>
+                      <span className="min-w-[88px] text-center text-[11px]">
+                        V{selectedVersionIndex + 1} / {visibleVersions.length}
+                        {selectedVersionStatusLabel ? ` · ${selectedVersionStatusLabel}` : ''}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label="下一版"
+                        disabled={selectedVersionIndex >= visibleVersions.length - 1}
+                        onClick={() => setTranslationVersionIndexes((current) => ({
+                          ...current,
+                          [result.id]: selectedVersionIndex + 1,
+                        }))}
+                        className="flex h-7 w-7 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-35"
+                      >
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
+                  ) : null}
+                  {translationEditEligible ? (
+                    <button
+                      type="button"
+                      disabled={translationEditPending}
+                      onClick={() => {
+                        setTranslationCompareOpen(false);
+                        openTranslationRegionEdit(result, pathLabel);
+                      }}
+                      className="flex h-9 items-center gap-2 rounded-[18px] px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+                    >
+                      {translationEditPending ? <Loader2 size={16} className="animate-spin" /> : <Pencil size={16} />}
+                      {translationEditPending ? '修改中' : '修改'}
+                    </button>
+                  ) : null}
+                  {pendingTranslationEditVersion && onCancelTranslationRegionEdit ? (
+                    <button
+                      type="button"
+                      disabled={Boolean(cancellingTranslationEditVersionIds[pendingTranslationEditVersion.id])}
+                      onClick={() => {
+                        void handleCancelTranslationRegionEdit(result, pendingTranslationEditVersion);
+                      }}
+                      className="flex h-9 items-center gap-2 rounded-[18px] px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{ background: 'rgba(239,68,68,0.08)', color: 'var(--error)' }}
+                    >
+                      {cancellingTranslationEditVersionIds[pendingTranslationEditVersion.id]
+                        ? <Loader2 size={16} className="animate-spin" />
+                        : <X size={16} />}
+                      {cancellingTranslationEditVersionIds[pendingTranslationEditVersion.id] ? '取消中' : '取消修改'}
+                    </button>
+                  ) : null}
+                  {retryEligible && onRegenerate ? (
+                    <button
+                      type="button"
+                      disabled={retryDisabled}
+                      onClick={() => {
+                        if (retryDisabled) return;
+                        onRegenerate(project.id, result.id);
+                        setTranslationCompareOpen(false);
+                      }}
+                      className="flex h-9 items-center gap-2 rounded-[18px] px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                      style={result.status === 'error'
+                        ? { background: 'rgba(239,68,68,0.08)', color: 'var(--error)' }
+                        : { background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                    >
+                      <RefreshCw size={16} />
+                      {regeneratePending ? '提交中' : regenerationLockedByActiveProject ? '生成中' : '重试'}
+                    </button>
+                  ) : null}
+                </>
+              )}
+            />
+          );
+        }
         return (
           <div
             className="fixed inset-0 z-[520] flex items-center justify-center p-0 md:px-6 md:py-8"

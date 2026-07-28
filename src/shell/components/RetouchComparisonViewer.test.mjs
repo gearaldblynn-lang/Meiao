@@ -18,8 +18,8 @@ test('viewer exposes pointer mask, slider keyboard and image labels', () => {
   assert.match(viewerSource, /role="slider"/);
   assert.match(viewerSource, /aria-label="调整前后对比遮罩"/);
   assert.match(viewerSource, /aria-valuenow=/);
-  assert.match(viewerSource, />原图</);
-  assert.match(viewerSource, />升级后</);
+  assert.match(viewerSource, />\{originalLabel\}</);
+  assert.match(viewerSource, />\{resultLabel\}</);
 });
 
 test('viewer supports close, navigation, download and mismatch feedback', () => {
@@ -65,4 +65,23 @@ test('viewer exposes compact zoom controls, wheel zoom, panning and reset', () =
   assert.match(viewerSource, /interactionModeRef/);
   assert.match(viewerSource, /event\.code === 'Space'/);
   assert.match(viewerSource, /滚轮缩放/);
+});
+
+test('viewer accepts feature-specific copy and preserves feature actions', () => {
+  const viewerSource = source();
+
+  assert.match(viewerSource, /heading\?: string/);
+  assert.match(viewerSource, /dialogLabel\?: string/);
+  assert.match(viewerSource, /originalLabel\?: string/);
+  assert.match(viewerSource, /resultLabel\?: string/);
+  assert.match(viewerSource, /headerActions\?: React\.ReactNode/);
+  assert.match(viewerSource, /\{headerActions\}/);
+});
+
+test('viewer accepts an explicit overlay layer so nested editors can remain interactive', () => {
+  const viewerSource = source();
+
+  assert.match(viewerSource, /overlayZIndex\?: number/);
+  assert.match(viewerSource, /overlayZIndex = 560/);
+  assert.match(viewerSource, /style=\{\{[\s\S]*zIndex: overlayZIndex/);
 });
