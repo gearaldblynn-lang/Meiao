@@ -135,7 +135,19 @@ const makeHarness = () => {
     fetchGeneratedAsset: async () => ({ fileBuffer: Buffer.from('image'), mimeType: 'image/png' }),
     persistGeneratedAsset: async ({ task }) => ({ id: `persisted-${task.poseId}`, publicUrl: `https://persisted.test/${task.poseId}.png` }),
     createPreviewAsset: async ({ assetId }) => ({ id: `preview-${assetId}`, publicUrl: `https://preview.test/${assetId}.png` }),
-    replaceDraftVersionAssets: async (input) => input.assets,
+    completeFinalization: async (input) => {
+      const result = {
+        virtualModelId: input.virtualModelId,
+        virtualModelVersionId: input.virtualModelVersionId,
+        assets: input.assets,
+      };
+      await deps.updateBatchRecord(input.batchId, input.userId, {
+        status: 'completed',
+        finalizedAt: input.finalizedAt,
+        finalizationResult: result,
+      });
+      return result;
+    },
   };
   return { deps, batches, jobs, createCalls };
 };
@@ -413,7 +425,20 @@ test('finalization writes all eight durable slots to the draft in one replacemen
   await createBatch(harness);
   const stored = harness.batches.get('batch-1');
   const replacements = [];
-  harness.deps.replaceDraftVersionAssets = async (input) => { replacements.push(input); return input.assets; };
+  harness.deps.completeFinalization = async (input) => {
+    replacements.push(input);
+    const result = {
+      virtualModelId: input.virtualModelId,
+      virtualModelVersionId: input.virtualModelVersionId,
+      assets: input.assets,
+    };
+    await harness.deps.updateBatchRecord(input.batchId, input.userId, {
+      status: 'completed',
+      finalizedAt: input.finalizedAt,
+      finalizationResult: result,
+    });
+    return result;
+  };
   stored.status = 'ready_to_finalize';
   stored.poseTasks = stored.poseTasks.map((task) => ({
     ...task,
@@ -432,6 +457,67 @@ test('finalization writes all eight durable slots to the draft in one replacemen
   assert.equal(replacements.length, 1);
   assert.equal(replacements[0].assets.length, 8);
   assert.equal(harness.batches.get('batch-1').status, 'completed');
+});
+
+test('a lost response after atomic finalization does not replace the eight slots twice', async () => {
+  const harness = makeHarness();
+  await createBatch(harness);
+  const stored = harness.batches.get('batch-1');
+  stored.status = 'ready_to_finalize';
+  stored.poseTasks = stored.poseTasks.map((task) => ({
+    ...task,
+    status: 'succeeded',
+    jobId: `done-${task.poseId}`,
+    resultUrl: `https://provider.test/${task.poseId}.png`,
+    ...(DERIVED.has(task.poseId) ? { baselineRevision: 1 } : {
+      referenceStatus: 'baseline_ready',
+      managedReferenceAsset: {
+        assetId: `managed-${task.poseId}`,
+        publicUrl: `https://managed.test/${task.poseId}.png`,
+      },
+      stableReferenceUrl: `https://stable.test/${task.poseId}.png`,
+    }),
+  }));
+  stored.poseTasks.forEach((task) => harness.jobs.set(task.jobId, {
+    id: task.jobId,
+    userId: 'admin-1',
+    status: 'succeeded',
+    payload: { generationBatchId: 'batch-1', poseId: task.poseId },
+    result: { imageUrl: task.resultUrl },
+  }));
+  let finalizationCalls = 0;
+  harness.deps.completeFinalization = async (input) => {
+    finalizationCalls += 1;
+    const result = {
+      virtualModelId: input.virtualModelId,
+      virtualModelVersionId: input.virtualModelVersionId,
+      assets: input.assets,
+    };
+    await harness.deps.updateBatchRecord(input.batchId, input.userId, {
+      status: 'completed',
+      finalizedAt: input.finalizedAt,
+      finalizationResult: result,
+    });
+    if (finalizationCalls === 1) throw new Error('response_lost_after_commit');
+    return result;
+  };
+
+  await assert.rejects(
+    () => finalizeVirtualModelGenerationBatch({
+      batchId: 'batch-1',
+      userId: 'admin-1',
+      deps: harness.deps,
+    }),
+    /response_lost_after_commit/,
+  );
+  const recovered = await finalizeVirtualModelGenerationBatch({
+    batchId: 'batch-1',
+    userId: 'admin-1',
+    deps: harness.deps,
+  });
+
+  assert.equal(recovered.assets.length, 8);
+  assert.equal(finalizationCalls, 1);
 });
 
 test('real local generation store carries baseline revision through eight-pose generation and finalization', async () => {
@@ -534,9 +620,27 @@ test('real local generation store carries baseline revision through eight-pose g
       id: `preview-${++assetCounter}`,
       publicUrl: `https://preview.test/${assetId}.png`,
     }),
-    replaceDraftVersionAssets: async ({ assets }) => {
+    completeFinalization: async ({
+      batchId,
+      userId,
+      virtualModelId,
+      virtualModelVersionId,
+      assets,
+      finalizedAt,
+    }) => {
       replacements.push(structuredClone(assets));
-      return assets;
+      const result = { virtualModelId, virtualModelVersionId, assets };
+      await updateVirtualModelGenerationBatchRecord({
+        ...dataSource,
+        batchId,
+        userId,
+        patch: {
+          status: 'completed',
+          finalizedAt,
+          finalizationResult: result,
+        },
+      });
+      return result;
     },
   };
 

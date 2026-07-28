@@ -143,6 +143,53 @@ export const listPublishedVirtualModels = async ({ pool = null, store = null } =
 
 export const getPublishedVirtualModelDetail = async ({ pool = null, store = null, virtualModelId } = {}) => (await listPublishedVirtualModels({ pool, store })).find((model) => model.id === virtualModelId) || null;
 
+export const isPublishedVirtualModelAsset = async ({
+  pool = null,
+  store = null,
+  assetId,
+} = {}) => {
+  const normalizedAssetId = String(assetId || '').trim();
+  if (!normalizedAssetId) return false;
+  if (pool) {
+    const [rows] = await pool.query(
+      `SELECT 1
+       FROM virtual_model_assets a
+       INNER JOIN virtual_model_versions v
+         ON v.id = a.virtual_model_version_id
+        AND v.status = 'published'
+       INNER JOIN virtual_models m
+         ON m.current_version_id = v.id
+        AND m.status = 'published'
+       WHERE a.asset_id = ? OR a.preview_asset_id = ?
+       LIMIT 1`,
+      [normalizedAssetId, normalizedAssetId],
+    );
+    return rows.length > 0;
+  }
+  const normalized = normalizeVirtualModelLocalStore(store);
+  const publishedVersionIds = new Set(
+    normalized.virtualModels
+      .filter((model) => model.status === 'published' && model.currentVersionId)
+      .map((model) => String(model.currentVersionId)),
+  );
+  if (!publishedVersionIds.size) return false;
+  const versions = new Set(
+    normalized.virtualModelVersions
+      .filter((version) => (
+        publishedVersionIds.has(String(version.id))
+        && version.status === 'published'
+      ))
+      .map((version) => String(version.id)),
+  );
+  return normalized.virtualModelAssets.some((asset) => (
+    versions.has(String(asset.virtualModelVersionId))
+    && (
+      String(asset.assetId || '') === normalizedAssetId
+      || String(asset.previewAssetId || '') === normalizedAssetId
+    )
+  ));
+};
+
 export const listAdminVirtualModels = async ({ pool = null, store = null, status = 'all' } = {}) => {
   const allowedStatus = ['draft', 'published', 'unpublished', 'all'].includes(status) ? status : 'all';
   let models; let versions; let assets;
@@ -282,16 +329,61 @@ export const updateDraftVirtualModelVersion = async ({
   return versionFromRow(version);
 };
 
-export const replaceDraftVersionAssets = async ({ pool = null, store = null, virtualModelId = null, virtualModelVersionId, assets = [] } = {}) => {
-  const prepareAssets = () => {
-    const items = assets.map((asset, index) => ({ id: asset.id || createId(), virtualModelVersionId, slot: asset.slot, assetId: asset.assetId, publicUrl: asset.publicUrl || '', previewAssetId: asset.previewAssetId || '', previewUrl: asset.previewUrl || '', position: Number(asset.position || index + 1), isPrimary: Boolean(asset.isPrimary), validationStatus: asset.validationStatus || 'pending', createdAt: now() }));
-    const usedSlots = new Set();
-    if (items.some((asset) => !VIRTUAL_MODEL_ASSET_SLOTS.includes(asset.slot) || !asset.assetId || usedSlots.has(asset.slot) || (usedSlots.add(asset.slot), false))) {
-      throw Object.assign(new Error('Virtual model assets are invalid'), { code: 'MODEL_ASSET_INVALID' });
-    }
-    return items;
-  };
+const canonicalAssetBinding = (asset = {}) => ({
+  slot: String(asset.slot || ''),
+  assetId: String(asset.assetId || ''),
+  publicUrl: String(asset.publicUrl || ''),
+  previewAssetId: String(asset.previewAssetId || ''),
+  previewUrl: String(asset.previewUrl || ''),
+  position: Number(asset.position || 0),
+  isPrimary: Boolean(asset.isPrimary),
+  validationStatus: String(asset.validationStatus || ''),
+});
 
+const hasSameAssetBindings = (existing = [], incoming = []) => {
+  if (existing.length !== incoming.length) return false;
+  const sortBySlot = (left, right) => left.slot.localeCompare(right.slot);
+  const left = existing.map(canonicalAssetBinding).sort(sortBySlot);
+  const right = incoming.map(canonicalAssetBinding).sort(sortBySlot);
+  return left.every((asset, index) => (
+    JSON.stringify(asset) === JSON.stringify(right[index])
+  ));
+};
+
+const prepareVirtualModelAssets = ({ virtualModelVersionId, assets = [] }) => {
+  const items = assets.map((asset, index) => ({ id: asset.id || createId(), virtualModelVersionId, slot: asset.slot, assetId: asset.assetId, publicUrl: asset.publicUrl || '', previewAssetId: asset.previewAssetId || '', previewUrl: asset.previewUrl || '', position: Number(asset.position || index + 1), isPrimary: Boolean(asset.isPrimary), validationStatus: asset.validationStatus || 'pending', createdAt: now() }));
+  const usedSlots = new Set();
+  if (items.some((asset) => !VIRTUAL_MODEL_ASSET_SLOTS.includes(asset.slot) || !asset.assetId || usedSlots.has(asset.slot) || (usedSlots.add(asset.slot), false))) {
+    throw Object.assign(new Error('Virtual model assets are invalid'), { code: 'MODEL_ASSET_INVALID' });
+  }
+  return items;
+};
+
+const replaceDraftVersionAssetsOnConnection = async ({
+  connection,
+  virtualModelVersionId,
+  items,
+}) => {
+  const [currentRows] = await connection.query(
+    'SELECT * FROM virtual_model_assets WHERE virtual_model_version_id = ? FOR UPDATE',
+    [virtualModelVersionId],
+  );
+  const currentItems = currentRows.map(assetFromRow);
+  if (hasSameAssetBindings(currentItems, items)) return currentItems;
+  await connection.query(
+    'DELETE FROM virtual_model_assets WHERE virtual_model_version_id = ?',
+    [virtualModelVersionId],
+  );
+  for (const asset of items) {
+    await connection.query(
+      'INSERT INTO virtual_model_assets (id, virtual_model_version_id, slot, asset_id, public_url, preview_asset_id, preview_url, position, is_primary, validation_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [asset.id, asset.virtualModelVersionId, asset.slot, asset.assetId, asset.publicUrl, asset.previewAssetId || null, asset.previewUrl || null, asset.position, asset.isPrimary ? 1 : 0, asset.validationStatus, asset.createdAt],
+    );
+  }
+  return items;
+};
+
+export const replaceDraftVersionAssets = async ({ pool = null, store = null, virtualModelId = null, virtualModelVersionId, assets = [] } = {}) => {
   if (pool) {
     const connection = await pool.getConnection();
     try {
@@ -300,9 +392,11 @@ export const replaceDraftVersionAssets = async ({ pool = null, store = null, vir
       if (!rows[0]) throw Object.assign(new Error('Virtual model not found'), { code: 'MODEL_NOT_FOUND' });
       if (virtualModelId && rows[0].virtual_model_id && rows[0].virtual_model_id !== virtualModelId) throw Object.assign(new Error('Virtual model version not found'), { code: 'MODEL_NOT_FOUND' });
       if (rows[0].status === 'published' || (rows[0].published_at !== null && rows[0].published_at !== undefined)) throw Object.assign(new Error('Published virtual model versions are immutable'), { code: 'MODEL_VERSION_IMMUTABLE' });
-      const items = prepareAssets();
-      await connection.query('DELETE FROM virtual_model_assets WHERE virtual_model_version_id = ?', [virtualModelVersionId]);
-      for (const asset of items) await connection.query('INSERT INTO virtual_model_assets (id, virtual_model_version_id, slot, asset_id, public_url, preview_asset_id, preview_url, position, is_primary, validation_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [asset.id, asset.virtualModelVersionId, asset.slot, asset.assetId, asset.publicUrl, asset.previewAssetId || null, asset.previewUrl || null, asset.position, asset.isPrimary ? 1 : 0, asset.validationStatus, asset.createdAt]);
+      const items = await replaceDraftVersionAssetsOnConnection({
+        connection,
+        virtualModelVersionId,
+        items: prepareVirtualModelAssets({ virtualModelVersionId, assets }),
+      });
       await connection.commit();
       return items;
     } catch (error) {
@@ -319,10 +413,166 @@ export const replaceDraftVersionAssets = async ({ pool = null, store = null, vir
   const model = normalized.virtualModels.find((item) => item.id === version.virtualModelId && item.status !== 'deleted');
   if (!model) throw Object.assign(new Error('Virtual model not found'), { code: 'MODEL_NOT_FOUND' });
   if (version.status === 'published' || (version.publishedAt !== null && version.publishedAt !== undefined)) throw Object.assign(new Error('Published virtual model versions are immutable'), { code: 'MODEL_VERSION_IMMUTABLE' });
-  const items = prepareAssets();
+  const items = prepareVirtualModelAssets({ virtualModelVersionId, assets });
+  const currentItems = normalized.virtualModelAssets
+    .filter((item) => item.virtualModelVersionId === virtualModelVersionId)
+    .map(assetFromRow);
+  if (hasSameAssetBindings(currentItems, items)) return currentItems;
   const retained = normalized.virtualModelAssets.filter((item) => item.virtualModelVersionId !== virtualModelVersionId);
   normalized.virtualModelAssets.splice(0, normalized.virtualModelAssets.length, ...retained, ...items);
   return items;
+};
+
+export const completeVirtualModelGenerationFinalization = async ({
+  pool = null,
+  store = null,
+  batchId,
+  userId,
+  virtualModelId,
+  virtualModelVersionId,
+  assets = [],
+  finalizedAt = now(),
+} = {}) => {
+  const normalizedBatchId = String(batchId || '').trim();
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedBatchId || !normalizedUserId) {
+    throw Object.assign(new Error('Virtual model finalization target is invalid'), {
+      code: 'MODEL_GENERATION_BATCH_INVALID',
+    });
+  }
+
+  if (pool) {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [batchRows] = await connection.query(
+        'SELECT * FROM virtual_model_generation_batches WHERE id = ? AND user_id = ? FOR UPDATE',
+        [normalizedBatchId, normalizedUserId],
+      );
+      const batch = batchRows[0];
+      if (!batch) {
+        throw Object.assign(new Error('Virtual model generation batch not found'), {
+          code: 'MODEL_GENERATION_BATCH_NOT_FOUND',
+        });
+      }
+      const existingResult = parseJson(batch.finalization_result_json, null);
+      if (batch.finalized_at && existingResult) {
+        await connection.commit();
+        return existingResult;
+      }
+      if (
+        String(batch.virtual_model_id || '') !== String(virtualModelId || '')
+        || String(batch.virtual_model_version_id || '') !== String(virtualModelVersionId || '')
+      ) {
+        throw Object.assign(new Error('Virtual model finalization target is invalid'), {
+          code: 'MODEL_GENERATION_BATCH_INVALID',
+        });
+      }
+      const [versionRows] = await connection.query(
+        "SELECT v.status, v.virtual_model_id, v.published_at FROM virtual_model_versions v JOIN virtual_models m ON m.id = v.virtual_model_id AND m.status <> 'deleted' WHERE v.id = ? FOR UPDATE",
+        [virtualModelVersionId],
+      );
+      if (!versionRows[0] || versionRows[0].virtual_model_id !== virtualModelId) {
+        throw Object.assign(new Error('Virtual model version not found'), {
+          code: 'MODEL_NOT_FOUND',
+        });
+      }
+      if (
+        versionRows[0].status === 'published'
+        || (versionRows[0].published_at !== null && versionRows[0].published_at !== undefined)
+      ) {
+        throw Object.assign(new Error('Published virtual model versions are immutable'), {
+          code: 'MODEL_VERSION_IMMUTABLE',
+        });
+      }
+      const storedAssets = await replaceDraftVersionAssetsOnConnection({
+        connection,
+        virtualModelVersionId,
+        items: prepareVirtualModelAssets({ virtualModelVersionId, assets }),
+      });
+      const result = { virtualModelId, virtualModelVersionId, assets: storedAssets };
+      const [updateResult] = await connection.query(
+        `UPDATE virtual_model_generation_batches
+         SET status = 'completed', finalization_result_json = ?, updated_at = ?, finalized_at = ?
+         WHERE id = ? AND user_id = ?`,
+        [JSON.stringify(result), finalizedAt, finalizedAt, normalizedBatchId, normalizedUserId],
+      );
+      if (updateResult.affectedRows !== 1) {
+        throw Object.assign(new Error('Virtual model generation batch not found'), {
+          code: 'MODEL_GENERATION_BATCH_NOT_FOUND',
+        });
+      }
+      await connection.commit();
+      return result;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  const normalized = normalizeVirtualModelLocalStore(store);
+  store.virtualModelGenerationBatches = Array.isArray(store?.virtualModelGenerationBatches)
+    ? store.virtualModelGenerationBatches
+    : [];
+  const batch = store.virtualModelGenerationBatches.find((item) => (
+    String(item.id || '') === normalizedBatchId
+    && String(item.userId ?? item.user_id ?? '') === normalizedUserId
+  ));
+  if (!batch) {
+    throw Object.assign(new Error('Virtual model generation batch not found'), {
+      code: 'MODEL_GENERATION_BATCH_NOT_FOUND',
+    });
+  }
+  const existingResult = parseJson(
+    batch.finalizationResult ?? batch.finalization_result_json,
+    null,
+  );
+  if ((batch.finalizedAt ?? batch.finalized_at) && existingResult) return existingResult;
+  if (
+    String(batch.virtualModelId ?? batch.virtual_model_id ?? '') !== String(virtualModelId || '')
+    || String(batch.virtualModelVersionId ?? batch.virtual_model_version_id ?? '') !== String(virtualModelVersionId || '')
+  ) {
+    throw Object.assign(new Error('Virtual model finalization target is invalid'), {
+      code: 'MODEL_GENERATION_BATCH_INVALID',
+    });
+  }
+  const version = normalized.virtualModelVersions.find((item) => (
+    String(item.id) === String(virtualModelVersionId)
+    && String(item.virtualModelId) === String(virtualModelId)
+  ));
+  const model = normalized.virtualModels.find((item) => (
+    String(item.id) === String(virtualModelId)
+    && item.status !== 'deleted'
+  ));
+  if (!model || !version) {
+    throw Object.assign(new Error('Virtual model version not found'), {
+      code: 'MODEL_NOT_FOUND',
+    });
+  }
+  if (
+    version.status === 'published'
+    || (version.publishedAt !== null && version.publishedAt !== undefined)
+  ) {
+    throw Object.assign(new Error('Published virtual model versions are immutable'), {
+      code: 'MODEL_VERSION_IMMUTABLE',
+    });
+  }
+  const storedAssets = await replaceDraftVersionAssets({
+    store,
+    virtualModelId,
+    virtualModelVersionId,
+    assets,
+  });
+  const result = { virtualModelId, virtualModelVersionId, assets: storedAssets };
+  Object.assign(batch, {
+    status: 'completed',
+    finalizedAt,
+    updatedAt: finalizedAt,
+    finalizationResult: result,
+  });
+  return result;
 };
 
 export const publishVirtualModelVersion = async ({ pool = null, store = null, virtualModelId, virtualModelVersionId } = {}) => {

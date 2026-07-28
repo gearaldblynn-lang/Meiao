@@ -195,12 +195,14 @@ import {
   withVoiceoverProbeWorkspace,
 } from './voiceoverTranslationRunner.mjs';
 import {
+  completeVirtualModelGenerationFinalization,
   createVirtualModelDraft,
   createVirtualModelGenerationJobSnapshot,
   createVirtualModelVersion,
   ensureVirtualModelSchema,
   findOwnedHistoricalVirtualModelSnapshot,
   getPublishedVirtualModelDetail,
+  isPublishedVirtualModelAsset,
   listAdminVirtualModels,
   listPublishedVirtualModels,
   normalizeVirtualModelLocalStore,
@@ -5427,18 +5429,38 @@ const serveStoredAsset = async (req, res, assetId, options = {}) => {
     return;
   }
 
-  if (getStoredAssetStorageProvider(asset) === 'tencent_cos') {
-    const accessKeyValid = verifyManagedAssetAccessKey(options.accessKey, {
+  const accessKeyValid = verifyManagedAssetAccessKey(options.accessKey, {
+    assetId: asset.id,
+    userId: asset.userId,
+  }, process.env);
+  const requestUserId = accessKeyValid
+    ? ''
+    : String(options.userId || await options.resolveRequestUserId?.() || '').trim();
+  const assetOwnerId = String(asset.userId || '').trim();
+  const isOwner = Boolean(
+    requestUserId
+    && assetOwnerId
+    && requestUserId === assetOwnerId
+  );
+  const isSharedPublishedVirtualModelAsset = !accessKeyValid
+    && !isOwner
+    && Boolean(requestUserId)
+    && String(asset.module || '') === 'virtual_model'
+    && await isPublishedVirtualModelAsset({
+      pool,
+      store: options.store,
       assetId: asset.id,
-      userId: asset.userId,
-    }, process.env);
-    const requestUserId = accessKeyValid
-      ? ''
-      : String(options.userId || await options.resolveRequestUserId?.() || '').trim();
-    if (!accessKeyValid && (!requestUserId || requestUserId !== String(asset.userId || ''))) {
-      json(res, 403, { message: '没有权限读取该图片素材。' });
-      return;
-    }
+    });
+  if (
+    !accessKeyValid
+    && !isOwner
+    && !isSharedPublishedVirtualModelAsset
+  ) {
+    json(res, 403, { message: '没有权限读取该图片素材。' });
+    return;
+  }
+
+  if (getStoredAssetStorageProvider(asset) === 'tencent_cos') {
     const signedReadUrl = await resolveManagedAssetReadUrl(asset.publicUrl || buildAssetPublicPath(asset.id, asset.originalName), {
       pool,
       purpose: 'browser',
@@ -12175,6 +12197,14 @@ const createVirtualModelGenerationApiService = ({
       await persistGenerationStore();
       return replaced;
     },
+    completeFinalization: async (input) => {
+      const result = await completeVirtualModelGenerationFinalization({
+        ...dataSource,
+        ...input,
+      });
+      await persistGenerationStore();
+      return result;
+    },
     now: () => Date.now(),
     createId: createEntityId,
   };
@@ -15370,6 +15400,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     await serveStoredAsset(req, res, assetId, {
       accessKey: getManagedAssetAccessKeyFromUrl(url),
       resolveRequestUserId: async () => String(localGetSessionUser(req, store)?.id || ''),
+      store,
     });
     return;
   }

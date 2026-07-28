@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
+  completeVirtualModelGenerationFinalization,
   createVirtualModelDraft,
   createVirtualModelVersion,
+  isPublishedVirtualModelAsset,
   listAdminVirtualModels,
   listPublishedVirtualModels,
   publishVirtualModelVersion,
@@ -49,6 +51,125 @@ test('public list exposes published summaries only', async () => {
   assert.equal('assets' in models[0].version, false);
   assert.equal(JSON.stringify(models[0]).includes('https://managed/1.png'), false);
   assert.equal(JSON.stringify(models[0]).includes('asset-0'), false);
+});
+
+test('only assets and previews on the current published virtual-model version are shared', async () => {
+  const { store } = await createPublishedModel();
+
+  assert.equal(await isPublishedVirtualModelAsset({ store, assetId: 'asset-0' }), true);
+  assert.equal(await isPublishedVirtualModelAsset({ store, assetId: 'preview-0' }), true);
+  assert.equal(await isPublishedVirtualModelAsset({ store, assetId: 'asset-missing' }), false);
+
+  store.virtualModels[0].status = 'unpublished';
+  assert.equal(await isPublishedVirtualModelAsset({ store, assetId: 'asset-0' }), false);
+});
+
+test('replacing a draft with the same eight slot bindings is idempotent', async () => {
+  const store = {};
+  const model = await createVirtualModelDraft({
+    store,
+    code: 'VM-IDEMPOTENT',
+    name: 'Idempotent model',
+    tags: [],
+  });
+  const version = await createVirtualModelVersion({
+    store,
+    virtualModelId: model.id,
+    identityProfile: { description: 'Stable identity' },
+    createdBy: 'admin-1',
+  });
+  const bindings = slots.map((slot, index) => ({
+    slot,
+    assetId: `stable-asset-${index}`,
+    publicUrl: `https://managed/stable-${index}.png`,
+    previewAssetId: `stable-preview-${index}`,
+    previewUrl: `https://managed/stable-preview-${index}.jpg`,
+    position: index + 1,
+    isPrimary: index === 0,
+    validationStatus: 'passed',
+  }));
+
+  const first = await replaceDraftVersionAssets({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: version.id,
+    assets: bindings,
+  });
+  const firstIds = first.map((asset) => asset.id);
+  const second = await replaceDraftVersionAssets({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: version.id,
+    assets: bindings,
+  });
+
+  assert.deepEqual(second.map((asset) => asset.id), firstIds);
+  assert.deepEqual(
+    store.virtualModelAssets.map((asset) => asset.id),
+    firstIds,
+  );
+});
+
+test('local finalization checkpoints the eight slots and batch result together', async () => {
+  const store = { virtualModelGenerationBatches: [] };
+  const model = await createVirtualModelDraft({
+    store,
+    code: 'VM-ATOMIC',
+    name: 'Atomic model',
+    tags: [],
+  });
+  const version = await createVirtualModelVersion({
+    store,
+    virtualModelId: model.id,
+    identityProfile: { description: 'Atomic identity' },
+    createdBy: 'admin-1',
+  });
+  store.virtualModelGenerationBatches.push({
+    id: 'batch-atomic',
+    userId: 'admin-1',
+    virtualModelId: model.id,
+    virtualModelVersionId: version.id,
+    status: 'persisting',
+    finalizedAt: null,
+    finalizationResult: null,
+  });
+  const bindings = slots.map((slot, index) => ({
+    slot,
+    assetId: `atomic-asset-${index}`,
+    publicUrl: `https://managed/atomic-${index}.png`,
+    previewAssetId: `atomic-preview-${index}`,
+    previewUrl: `https://managed/atomic-preview-${index}.jpg`,
+    position: index + 1,
+    isPrimary: index === 0,
+    validationStatus: 'passed',
+  }));
+
+  const result = await completeVirtualModelGenerationFinalization({
+    store,
+    batchId: 'batch-atomic',
+    userId: 'admin-1',
+    virtualModelId: model.id,
+    virtualModelVersionId: version.id,
+    assets: bindings,
+    finalizedAt: 1234,
+  });
+
+  assert.equal(result.assets.length, 8);
+  assert.equal(store.virtualModelAssets.length, 8);
+  assert.equal(store.virtualModelGenerationBatches[0].status, 'completed');
+  assert.equal(store.virtualModelGenerationBatches[0].finalizedAt, 1234);
+  assert.deepEqual(
+    await completeVirtualModelGenerationFinalization({
+      store,
+      batchId: 'batch-atomic',
+      userId: 'admin-1',
+      virtualModelId: model.id,
+      virtualModelVersionId: version.id,
+      assets: [],
+      finalizedAt: 9999,
+    }),
+    result,
+  );
 });
 
 test('server intake creates a URL-free library snapshot with three selected asset IDs', async () => {

@@ -326,8 +326,13 @@ const finalizeUnlocked = async ({ batchId, userId, deps }) => {
   batch = await loadBatch(batchId, userId, deps); assertFinalizable(batch);
   const byPose = new Map(batch.poseTasks.map((task) => [task.poseId, task]));
   const assets = VIRTUAL_MODEL_GENERATION_POSES.map((pose, index) => { const task = byPose.get(pose.poseId); return { slot: pose.slot, assetId: task.managedAsset.assetId, publicUrl: task.managedAsset.publicUrl, previewAssetId: task.previewAsset.previewAssetId, previewUrl: task.previewAsset.previewUrl, position: index + 1, isPrimary: pose.isPrimary, validationStatus: 'passed' }; });
-  const result = { virtualModelId: batch.virtualModelId, virtualModelVersionId: batch.virtualModelVersionId, assets: await deps.replaceDraftVersionAssets({ virtualModelId: batch.virtualModelId, virtualModelVersionId: batch.virtualModelVersionId, assets }) };
-  await update(batch, userId, { status: 'completed', poseTasks: batch.poseTasks, finalizedAt: deps.now(), finalizationResult: result }, deps);
-  return result;
+  return deps.completeFinalization({
+    batchId: batch.id,
+    userId,
+    virtualModelId: batch.virtualModelId,
+    virtualModelVersionId: batch.virtualModelVersionId,
+    assets,
+    finalizedAt: deps.now(),
+  });
 };
 export const finalizeVirtualModelGenerationBatch = (input = {}) => withLock(input.batchId, input.userId, () => finalizeUnlocked(input));

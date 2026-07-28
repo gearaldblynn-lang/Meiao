@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  completeVirtualModelGenerationFinalization,
   createVirtualModelDraft,
   createVirtualModelGenerationJobSnapshot,
   createVirtualModelVersion,
@@ -679,6 +680,7 @@ test('mysql asset replacement rolls back when an insert fails', async () => {
     beginTransaction: async () => events.push('begin'),
     query: async (sql) => {
       if (sql.startsWith('SELECT v.status')) return [[{ virtual_model_id: 'model-1', status: 'draft' }]];
+      if (sql.startsWith('SELECT * FROM virtual_model_assets')) return [[]];
       if (sql.startsWith('DELETE')) {
         events.push('delete');
         return [{ affectedRows: 8 }];
@@ -700,6 +702,66 @@ test('mysql asset replacement rolls back when an insert fails', async () => {
     /insert failed/,
   );
   assert.deepEqual(events, ['begin', 'delete', 'insert', 'rollback', 'release']);
+});
+
+test('mysql finalization rolls back slot replacement when the batch checkpoint fails', async () => {
+  const events = [];
+  const connection = {
+    beginTransaction: async () => events.push('begin'),
+    query: async (sql) => {
+      if (sql.startsWith('SELECT * FROM virtual_model_generation_batches')) {
+        return [[{
+          id: 'batch-1',
+          user_id: 'admin-1',
+          virtual_model_id: 'model-1',
+          virtual_model_version_id: 'version-1',
+          finalized_at: null,
+          finalization_result_json: null,
+        }]];
+      }
+      if (sql.startsWith('SELECT v.status')) {
+        return [[{
+          virtual_model_id: 'model-1',
+          status: 'draft',
+          published_at: null,
+        }]];
+      }
+      if (sql.startsWith('SELECT * FROM virtual_model_assets')) return [[]];
+      if (sql.startsWith('DELETE')) {
+        events.push('delete');
+        return [{ affectedRows: 8 }];
+      }
+      if (sql.startsWith('INSERT')) {
+        events.push('insert');
+        return [{ affectedRows: 1 }];
+      }
+      if (sql.startsWith('UPDATE virtual_model_generation_batches')) {
+        events.push('checkpoint');
+        throw new Error('checkpoint failed');
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    commit: async () => events.push('commit'),
+    rollback: async () => events.push('rollback'),
+    release: () => events.push('release'),
+  };
+  const pool = { getConnection: async () => connection };
+
+  await assert.rejects(
+    completeVirtualModelGenerationFinalization({
+      pool,
+      batchId: 'batch-1',
+      userId: 'admin-1',
+      virtualModelId: 'model-1',
+      virtualModelVersionId: 'version-1',
+      assets,
+      finalizedAt: 1234,
+    }),
+    /checkpoint failed/,
+  );
+  assert.equal(events.filter((event) => event === 'insert').length, 8);
+  assert.deepEqual(events.slice(-3), ['checkpoint', 'rollback', 'release']);
+  assert.equal(events.includes('commit'), false);
 });
 
 test('asset replacement rejects a version owned by another MySQL model before deleting assets', async () => {
