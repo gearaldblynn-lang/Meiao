@@ -1212,3 +1212,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 先清洗并鉴权调用者原始 payload，再附加服务端验证的公共模特快照；显式跨账号私有 asset ID 继续 403。管理列表始终优先 `currentVersionId`，删除右侧“新建版本”，只保留左侧“新建模特”；空描述不再隐式创建 v1，草稿身份资料改为原版本 merge patch，已发布版本的身份描述和固定素材保持不可变。
 - Regression check: `node --test server/managedAssetReferencePolicy.test.mjs server/assetReferenceCleanup.test.mjs server/virtualModelApi.test.mjs server/virtualModelStore.test.mjs src/modules/VirtualModelLibrary/VirtualModelLibraryModule.test.mjs src/services/internalApi.test.mjs`；`npm run verify`；用真实存储回放必须显示 001 当前 v2、002/003 当前 v1 且均为 published 8/8。生产验收同时核对用户角色、目标项目 job 数、数据库 current version/素材数、正式域名 UI chunk 和本地/云端关键文件哈希；不为验证权限修复创建新的付费 provider 任务。
 - Avoid next time: 权威服务端补充的公共资产与用户提交的私有资产必须在鉴权边界前分层，不能混入同一个 ownership assertion。后台列表的“当前可见版本”必须由显式 `currentVersionId` 决定；草稿只能作为从未发布模型的 fallback，任何能改变当前可见版本的动作都必须说明影响并保留旧素材可见性。
+
+## 2026-07-28 - 虚拟模特迁移包不能整树覆盖，代码与稳定数据必须分开集成
+
+- Symptom: 完整迁移包同时包含旧源码、五套模特数据和 80 个素材文件；若直接执行包内一键覆盖工具，会把当前权限、全身替换、任务恢复和“左侧新建、无新建版本”等已上线修复回退。同一迁移过程中还需要把 004/005 加入本地与 MySQL，但不能改变 001–003。
+- Evidence: 包源码与当前发布基线比较只有 9 个文件相同、81 个文件内容不同、46 个当前文件在包中缺失。真实本地导入前后，001–003 的 3 个模型、3 个版本、24 个槽位、48 条 registry 和 48 个素材文件 SHA-256 全部一致；总量只从 5/5/25/232 增加到 7/7/41/264，其中 published 模特从 3 增加到 5。第二次 dry-run 的 models/versions/relations/registry/files 新增量均为 0。
+- Root cause: 迁移包把“参考实现源码”和“可幂等导入的数据”混成一个覆盖动作，并携带导出环境的 loopback URL 与素材 owner。源码目录不是补丁，包内 userId 也不是公共读取授权；本地双 JSON、MySQL 与文件系统又没有天然的跨介质原子事务。
+- Fix: 以当前发布分支为唯一代码基线，窄接入八视角生成 store/service/API/UI；C01/P01 稳定化后才提交六张派生图，付费生成零自动重试，只允许用户显式 retry。数据导入器默认纯 dry-run，交叉校验三份 manifest 和 80 个文件，只添加稳定 ID 缺失的 004/005；同 ID 内容漂移只告警不覆盖，活动 code 异 ID fail closed，URL 按目标环境重建。本地写要求停服并显式 `--offline-confirmed`，使用 CAS、私有 journal 和崩溃恢复；MySQL 用 transaction、canonical digest 与文件 inode ownership 恢复。控制文件保持 0700/0600，最终 X-Accel 素材保持目录 0755、文件 0644。
+- Regression check: `node --test scripts/import-virtual-model-library-data.test.mjs` 必须覆盖 dry-run 零写、local crash recovery、外部同 hash 不同 inode 保留、MySQL 全 ID 异内容 fail closed、symlink 越界拒绝和最终素材权限；生成链必须通过 `server/virtualModelGeneration*.test.mjs` 与 `src/modules/VirtualModelLibrary/*.test.mjs`。真实导入必须先 dry-run，再核对 001–003 实体/文件 hash，写后再次 dry-run 为零新增；生产还必须验证 Node 与正式域名素材均为 200、媒体类型和字节/哈希一致。
+- Avoid next time: 集成包先拆成“行为差异”和“数据差异”，禁止把供应方整树当成当前程序升级补丁。跨环境数据只按稳定 ID 合并；导出 owner 不能代替公开业务授权。任何标为 dry-run 的路径都必须在 lock、recovery、mkdir、transaction 之前保持零写；任何最终媒体权限调整都要纳入真实 Nginx/X-Accel 验收。

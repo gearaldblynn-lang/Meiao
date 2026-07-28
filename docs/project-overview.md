@@ -108,6 +108,16 @@ npm run dev
 - `POST /api/assets/upload-stream`
 - `DELETE /api/assets/by-url`
 
+虚拟模特库（管理接口均要求管理员）：
+- `GET /api/admin/virtual-model-generation-batches/:id`：读取当前管理员自己的八视角生成批次并对账任务状态。
+- `POST /api/admin/virtual-model-generation-batches`：为全新模特 v1 草稿创建八视角批次；先生成 C01/P01 基准图。
+- `POST /api/admin/virtual-model-generation-batches/:id/poses/:poseId/retry`：显式重试单张失败图；系统不会自动创建新的付费任务。
+- `POST /api/admin/virtual-model-generation-batches/:id/regenerate-derived`：基于已稳定化的 C01/P01 重新生成六张派生图。
+- `POST /api/admin/virtual-model-generation-batches/:id/cancel`：取消未完成批次。
+- `POST /api/admin/virtual-model-generation-batches/:id/finalize`：八张均成功后一次性写入草稿固定槽位。
+
+虚拟模特管理页只保留左侧“新建”入口，不提供已发布模特的“新建版本”。新建可选择手动上传八张或自动生成；自动生成允许关闭后恢复、逐张下载和显式重试。已发布模特的身份资料与固定参考素材保持不可修改，公开模特素材由服务端公共模特合同授权，不按调用者私有素材 owner 判断。
+
 任务队列与诊断：
 - `POST /api/jobs`
 - `GET /api/jobs`
