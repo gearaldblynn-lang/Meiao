@@ -487,6 +487,7 @@ test('001-003 content drift is warned but never added or overwritten', async () 
 test('first local import adds only 004/005 and second import makes zero changes', async () => {
   const fixture = await makePackageFixture();
   const target = await makeTarget(fixture);
+  await rm(target.assetsDir, { recursive: true, force: true });
   const options = {
     packagePath: fixture.packageRoot,
     ...target,
@@ -510,6 +511,7 @@ test('first local import adds only 004/005 and second import makes zero changes'
   assert.equal(store.virtualModelVersions.length, 5);
   assert.equal(store.virtualModelAssets.length, 40);
   assert.equal(registry.assets.length, 80);
+  assert.equal((await stat(target.assetsDir)).mode & 0o777, 0o755);
   assert.equal((await listFiles(target.assetsDir)).length, 32);
   for (const filePath of await listFiles(target.assetsDir)) {
     assert.equal((await stat(filePath)).mode & 0o777, 0o644);

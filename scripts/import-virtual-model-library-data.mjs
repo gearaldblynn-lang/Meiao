@@ -65,6 +65,11 @@ const ensurePrivateDir = async (directory) => {
   await chmod(directory, PRIVATE_DIR_MODE);
 };
 
+const ensurePublicAssetsRoot = async (directory) => {
+  const created = await mkdir(directory, { recursive: true, mode: PUBLIC_DIR_MODE });
+  if (created) await chmod(directory, PUBLIC_DIR_MODE);
+};
+
 const assertNoSymlinkPath = async (root, candidate) => {
   const resolvedRoot = path.resolve(root);
   const resolvedCandidate = path.resolve(candidate);
@@ -833,7 +838,7 @@ const checkDestinationFiles = async ({
   manifest,
   readOnly = false,
 }) => {
-  if (!readOnly) await mkdir(assetsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  if (!readOnly) await ensurePublicAssetsRoot(assetsDir);
   const assetsExist = await pathExists(assetsDir);
   if (assetsExist) await assertNoSymlinkPath(assetsDir, assetsDir);
   const manifestMap = manifestByStorageKey(manifest);
@@ -1594,7 +1599,7 @@ export const importMysqlLibrary = async ({
       filePlan,
     });
   }
-  await mkdir(resolvedAssetsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  await ensurePublicAssetsRoot(resolvedAssetsDir);
   const releaseLock = await acquireImportLock(controlDir, 'mysql');
   try {
     await recoverMysqlJournal({ connection, journalPath, assetsDir: resolvedAssetsDir });
