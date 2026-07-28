@@ -418,13 +418,14 @@ test('both authenticated route handlers provide public and admin virtual-model r
   const source = await readFile(new URL('./index.mjs', import.meta.url), 'utf8');
   const handler = source.slice(source.indexOf('const handleVirtualModelApiRequest'), source.indexOf('const handleMysqlRequest'));
   const deleteHandlerSource = await readFile(new URL('./virtualModelHttpApi.mjs', import.meta.url), 'utf8');
-  for (const routeName of ['publicDetailMatch', 'adminDetailMatch', 'adminDeleteMatch', 'adminVersionMatch', 'adminAssetsMatch', 'adminPublishMatch', 'adminUnpublishMatch']) {
+  for (const routeName of ['publicDetailMatch', 'adminDetailMatch', 'adminDeleteMatch', 'adminVersionMatch', 'adminVersionDetailMatch', 'adminAssetsMatch', 'adminPublishMatch', 'adminUnpublishMatch']) {
     assert.match(handler, new RegExp(`const ${routeName} = url\\.pathname\\.match`));
   }
   assert.match(handler, /url\.pathname === '\/api\/virtual-models'/);
   assert.match(handler, /url\.pathname === '\/api\/admin\/virtual-models'/);
   assert.match(handler, /url\.pathname === '\/api\/admin\/virtual-models' && req\.method === 'GET'/);
   assert.match(handler, /listAdminVirtualModels/);
+  assert.match(handler, /updateDraftVirtualModelVersion/);
   const isAdminWriteBlock = handler.slice(handler.indexOf('const isAdminWrite'), handler.indexOf('if (!('));
   assert.match(isAdminWriteBlock, /adminDeleteMatch && req\.method === 'DELETE'/);
   const adminWriteBlock = handler.slice(handler.indexOf('if (isAdminWrite'), handler.indexOf('if (isCreate)'));

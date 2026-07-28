@@ -158,8 +158,8 @@ export const listAdminVirtualModels = async ({ pool = null, store = null, status
   }
   const adminModels = models.map((model) => {
     const modelVersions = versions.filter((item) => item.virtualModelId === model.id).sort((a, b) => b.versionNumber - a.versionNumber);
-    const version = modelVersions.find((item) => item.status === 'draft')
-      || modelVersions.find((item) => item.id === model.currentVersionId)
+    const version = modelVersions.find((item) => item.id === model.currentVersionId)
+      || modelVersions.find((item) => item.status === 'draft')
       || modelVersions[0]
       || null;
     const versionAssets = version ? assets.filter((item) => item.virtualModelVersionId === version.id) : [];
@@ -221,6 +221,65 @@ export const createVirtualModelVersion = async ({ pool = null, store = null, vir
   const version = { id: createId(), virtualModelId, versionNumber: normalized.virtualModelVersions.filter((item) => item.virtualModelId === virtualModelId).length + 1, identityProfile, status: 'draft', publishedAt: null, createdBy, createdAt: now() };
   normalized.virtualModelVersions.push(version);
   return version;
+};
+
+export const updateDraftVirtualModelVersion = async ({
+  pool = null,
+  store = null,
+  virtualModelId,
+  virtualModelVersionId,
+  identityProfile = {},
+} = {}) => {
+  const identityProfilePatch = identityProfile && typeof identityProfile === 'object' && !Array.isArray(identityProfile)
+    ? identityProfile
+    : {};
+  if (pool) {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [rows] = await connection.query(
+        "SELECT v.* FROM virtual_model_versions v JOIN virtual_models m ON m.id = v.virtual_model_id AND m.status <> 'deleted' WHERE v.id = ? AND v.virtual_model_id = ? FOR UPDATE",
+        [virtualModelVersionId, virtualModelId],
+      );
+      const version = rows[0] && versionFromRow(rows[0]);
+      if (!version) throw Object.assign(new Error('Virtual model version not found'), { code: 'MODEL_NOT_FOUND' });
+      if (version.status !== 'draft' || version.publishedAt !== null) {
+        throw Object.assign(new Error('Published virtual model versions are immutable'), { code: 'MODEL_VERSION_IMMUTABLE' });
+      }
+      const nextIdentityProfile = {
+        ...(version.identityProfile || {}),
+        ...identityProfilePatch,
+      };
+      const [result] = await connection.query(
+        "UPDATE virtual_model_versions SET identity_profile_json = ? WHERE id = ? AND virtual_model_id = ? AND status = 'draft' AND published_at IS NULL",
+        [JSON.stringify(nextIdentityProfile), virtualModelVersionId, virtualModelId],
+      );
+      if (result.affectedRows !== 1) {
+        throw Object.assign(new Error('Published virtual model versions are immutable'), { code: 'MODEL_VERSION_IMMUTABLE' });
+      }
+      await connection.commit();
+      return { ...version, identityProfile: nextIdentityProfile };
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  const normalized = normalizeVirtualModelLocalStore(store);
+  const model = normalized.virtualModels.find((item) => item.id === virtualModelId && item.status !== 'deleted');
+  const version = normalized.virtualModelVersions.find((item) => item.id === virtualModelVersionId && item.virtualModelId === virtualModelId);
+  if (!model || !version) throw Object.assign(new Error('Virtual model version not found'), { code: 'MODEL_NOT_FOUND' });
+  if (version.status !== 'draft' || (version.publishedAt !== null && version.publishedAt !== undefined)) {
+    throw Object.assign(new Error('Published virtual model versions are immutable'), { code: 'MODEL_VERSION_IMMUTABLE' });
+  }
+  const nextIdentityProfile = {
+    ...(version.identityProfile || {}),
+    ...identityProfilePatch,
+  };
+  version.identityProfile = nextIdentityProfile;
+  return versionFromRow(version);
 };
 
 export const replaceDraftVersionAssets = async ({ pool = null, store = null, virtualModelId = null, virtualModelVersionId, assets = [] } = {}) => {

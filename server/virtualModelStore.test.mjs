@@ -12,6 +12,7 @@ import {
   publishVirtualModelVersion,
   replaceDraftVersionAssets,
   unpublishVirtualModel,
+  updateDraftVirtualModelVersion,
   updateVirtualModelDraft,
   validateVirtualModelVersionForPublish,
 } from './virtualModelStore.mjs';
@@ -236,7 +237,7 @@ test('admin all-model listings exclude deleted models in local and MySQL storage
   assert.deepEqual(calls[0].params, []);
 });
 
-test('admin listings prefer the newest editable draft over the currently published version', async () => {
+test('admin listings keep the current published version visible instead of an abandoned draft', async () => {
   const store = {
     virtualModels: [{
       id: 'model-1',
@@ -256,10 +257,99 @@ test('admin listings prefer the newest editable draft over the currently publish
   };
   const models = await listAdminVirtualModels({ store });
 
-  assert.equal(models[0].version.id, 'version-2');
-  assert.equal(models[0].version.status, 'draft');
-  assert.deepEqual((await listAdminVirtualModels({ store, status: 'draft' })).map((model) => model.id), ['model-1']);
-  assert.deepEqual(await listAdminVirtualModels({ store, status: 'published' }), []);
+  assert.equal(models[0].version.id, 'version-1');
+  assert.equal(models[0].version.status, 'published');
+  assert.deepEqual(await listAdminVirtualModels({ store, status: 'draft' }), []);
+  assert.deepEqual((await listAdminVirtualModels({ store, status: 'published' })).map((model) => model.id), ['model-1']);
+});
+
+test('draft identity profile updates in place and published versions remain immutable', async () => {
+  const store = {};
+  const model = await createVirtualModelDraft({ store, code: 'VM-EDIT', name: 'Editable' });
+  const draft = await createVirtualModelVersion({
+    store,
+    virtualModelId: model.id,
+    identityProfile: { description: 'before', gender: 'female', ageRange: '22-26' },
+  });
+
+  const updated = await updateDraftVirtualModelVersion({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: draft.id,
+    identityProfile: { description: 'after' },
+  });
+  assert.equal(updated.id, draft.id);
+  assert.deepEqual(updated.identityProfile, {
+    description: 'after',
+    gender: 'female',
+    ageRange: '22-26',
+  });
+  assert.equal(store.virtualModelVersions.length, 1);
+
+  const unchanged = await updateDraftVirtualModelVersion({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: draft.id,
+    identityProfile: null,
+  });
+  assert.deepEqual(unchanged.identityProfile, {
+    description: 'after',
+    gender: 'female',
+    ageRange: '22-26',
+  });
+
+  store.virtualModelVersions[0].status = 'published';
+  store.virtualModelVersions[0].publishedAt = 123;
+  await assert.rejects(
+    () => updateDraftVirtualModelVersion({
+      store,
+      virtualModelId: model.id,
+      virtualModelVersionId: draft.id,
+      identityProfile: { description: 'forbidden' },
+    }),
+    (error) => error?.code === 'MODEL_VERSION_IMMUTABLE',
+  );
+});
+
+test('MySQL draft identity profile update locks the owned version and commits one in-place write', async () => {
+  const events = [];
+  const connection = {
+    beginTransaction: async () => events.push('begin'),
+    commit: async () => events.push('commit'),
+    rollback: async () => events.push('rollback'),
+    release: () => events.push('release'),
+    query: async (sql, params) => {
+      events.push({ sql, params });
+      if (sql.startsWith('SELECT v.*')) {
+        return [[{
+          id: 'version-1',
+          virtual_model_id: 'model-1',
+          version_number: 1,
+          identity_profile_json: '{"description":"before","gender":"female"}',
+          status: 'draft',
+          published_at: null,
+          created_at: 1,
+        }]];
+      }
+      if (sql.startsWith('UPDATE virtual_model_versions SET identity_profile_json')) {
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+  };
+
+  const result = await updateDraftVirtualModelVersion({
+    pool: { getConnection: async () => connection },
+    virtualModelId: 'model-1',
+    virtualModelVersionId: 'version-1',
+    identityProfile: { description: 'after' },
+  });
+
+  assert.deepEqual(result.identityProfile, { description: 'after', gender: 'female' });
+  assert.deepEqual(events.filter((event) => typeof event === 'string'), ['begin', 'commit', 'release']);
+  const update = events.find((event) => typeof event === 'object' && event.sql.startsWith('UPDATE virtual_model_versions'));
+  assert.match(update.sql, /status = 'draft' AND published_at IS NULL/);
+  assert.deepEqual(update.params, ['{"description":"after","gender":"female"}', 'version-1', 'model-1']);
 });
 
 test('all local lifecycle writes reject a deleted model without mutation', async () => {

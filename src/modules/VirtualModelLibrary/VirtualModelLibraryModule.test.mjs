@@ -57,7 +57,7 @@ test('virtual model library uses the admin lifecycle and exactly eight fixed ima
   assert.match(content, /replaceVirtualModelVersionAssets/);
   assert.match(content, /updateVirtualModel/);
   assert.match(content, /身份特征描述/);
-  assert.match(content, /const identityProfile = \{ description: editorProfile\.trim\(\) \}/);
+  assert.match(content, /const identityProfile = \{ \.\.\.\(selected\.version\?\.identityProfile \|\| \{\}\), description: editorProfile\.trim\(\) \}/);
   assert.doesNotMatch(content, /JSON\.parse\(editorProfile\)/);
   assert.match(content, /publishVirtualModel/);
   assert.match(content, /unpublishVirtualModel/);
@@ -72,13 +72,16 @@ test('virtual model library list contains only the operational fields in scope',
   assert.doesNotMatch(content, /质量检测/);
 });
 
-test('published models require an explicit next draft version before asset editing', () => {
+test('published models stay immutable and the UI directs changes to a new model instead of a new version', () => {
   const content = source();
   assert.match(content, /const managementStatus = \(model: AdminVirtualModel\) => model\.version\?\.status === 'draft' \? 'draft' : model\.status/);
   assert.match(content, /managementStatus\(model\) === 'published'/);
-  assert.match(content, /const createNextVersion = async \(\) =>/);
-  assert.match(content, /createVirtualModelVersion\(selected\.id, \{ identityProfile: selected\.version\?\.identityProfile \|\| \{\} \}\)/);
-  assert.match(content, />新建版本<\/button>/);
+  assert.doesNotMatch(content, /const createNextVersion = async \(\) =>/);
+  assert.doesNotMatch(content, />新建版本<\/button>/);
+  assert.match(content, /已发布模特的固定参考素材不可修改，请在左侧新建模特/);
+  assert.match(content, /已发布模特的身份特征不可修改，请在左侧新建模特/);
+  assert.match(content, /updateVirtualModelVersion/);
+  assert.match(content, /else if \(editorProfile\.trim\(\)\) await createVirtualModelVersion/);
   assert.match(content, /selected\.version\?\.status !== 'draft'/);
   assert.match(content, /selected\.version\?\.status === 'draft'[\s\S]*publishVirtualModel/);
 });

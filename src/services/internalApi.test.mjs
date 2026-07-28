@@ -143,6 +143,7 @@ test('virtual model API functions use authenticated public and admin route contr
     await api.createVirtualModel({ code: 'VM-1', name: 'Model', tags: ['catalog'] });
     await api.updateVirtualModel('model 1', { name: 'Updated' });
     await api.createVirtualModelVersion('model 1', { identityProfile: { gender: 'female' } });
+    await api.updateVirtualModelVersion('model 1', 'version 1', { identityProfile: { gender: 'female' } });
     await api.replaceVirtualModelVersionAssets('model 1', 'version 1', { assets: [] });
     await api.publishVirtualModel('model 1', 'version 1');
     await api.unpublishVirtualModel('model 1');
@@ -156,6 +157,7 @@ test('virtual model API functions use authenticated public and admin route contr
       'POST /api/admin/virtual-models',
       'PATCH /api/admin/virtual-models/model%201',
       'POST /api/admin/virtual-models/model%201/versions',
+      'PATCH /api/admin/virtual-models/model%201/versions/version%201',
       'PUT /api/admin/virtual-models/model%201/versions/version%201/assets',
       'POST /api/admin/virtual-models/model%201/publish',
       'POST /api/admin/virtual-models/model%201/unpublish',

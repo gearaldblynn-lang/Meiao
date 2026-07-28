@@ -116,9 +116,11 @@ test('job creation scrubs stale managed assets from direct payload submissions',
   assert.match(source, /const recoveredPayload = await scrubDbJobPayloadBeforeSubmission\(\{/);
   assert.match(
     source,
-    /const callerOwnedPayload = await scrubLocalJobPayloadBeforeSubmission\(body\.payload, user\.id\);[\s\S]{0,300}payload: await createLibraryModelJobPayload\(\{ payload: callerOwnedPayload, store, user \}\)/,
+    /prepareAuthorizedManagedAssetJobPayload\(\{[\s\S]{0,300}scrubPayload: scrubLocalJobPayloadBeforeSubmission,[\s\S]{0,300}createLibraryModelJobPayload\(\{[\s\S]{0,100}store,[\s\S]{0,100}user/,
   );
   assert.match(source, /const recoveredPayload = await scrubLocalJobPayloadBeforeSubmission\(\{/);
+  const localJobIntake = source.slice(source.lastIndexOf("if (url.pathname === '/api/jobs' && req.method === 'POST')"));
+  assert.match(localJobIntake, /let submissionPolicy;\s+let authorizedPayload;\s+try \{/);
 });
 
 test('provider execution boundary also scrubs stale managed assets', () => {
