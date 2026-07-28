@@ -1202,7 +1202,7 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Root cause / fix: 架构级根因、修复和防复发合同见 `CLAUDE.md` #81。Demucs 只服务于旧口播识别；最终 FFmpeg 只允许底片画面和对齐后的新口播两个媒体输入，不再使用原音轨或背景 stem。补充供应商兼容：KIE 统一 task API 的 `queuing/generating` 都是正常非终态，必须继续查询原 task ID，不能抛错后诱导新建任务。
 - Regression check: `node --test server/voiceoverAnalysis.test.mjs server/voiceoverAudio.test.mjs server/providerKieTts.test.mjs server/voiceoverChildJobStore.test.mjs server/voiceoverTranslationRunner.test.mjs scripts/probe-voiceover-translation.test.mjs`；真实 fixture 频谱证明原音乐和旧人声频率消失、新口播频率存在；真实 canary 逐组核对时间窗、`actualDurationMs`、`atempo>=1`、最终时长/编码/fast-start 和鉴权 Range。
 - Avoid next time: 技术验收与听感验收分开记录；“任务成功、两个 stem 都存在”不能证明最终音轨干净。产品明确要纯口播时，不做任何声源分离背景恢复。
-- Cloud release follow-up: 腾讯云 7.5 GiB 主机的常驻可用内存约 1.8 GiB，而一次 `mdx get_model` 峰值约 1.68 GiB。零停机 reload 同时保留新旧 Node 时，在新进程 bootstrap 再真实加载模型会触发全机换页抖动，SSH/health 都可能超时；延长超时或后台重试只会放大故障。服务启动和任务前置检查改为固定 Python 版本、模型字节/哈希、YAML 与 FFmpeg filters，发布前独立探针仍真实 `get_model`；实际分离只加载一次模型。发布必须等待公网 `voiceoverTranslation.ready=true`，不能只看 PM2 online 或独立探针成功。
+- Cloud release follow-up: 腾讯云 7.5 GiB 主机的常驻可用内存约 1.8 GiB，而一次 `mdx get_model` 峰值约 1.68 GiB。零停机 reload 同时保留新旧 Node 时，在新进程 bootstrap 再真实加载模型会触发全机换页抖动，SSH/health 都可能超时；延长超时或后台重试只会放大故障。服务启动和任务前置检查改为固定 Python 版本、模型字节/哈希、YAML 与 FFmpeg filters，发布前独立探针仍真实 `get_model`；实际分离只加载一次模型。云机原 1 GiB swap 已满，新增独立 4 GiB、`0600` 且经 `fstab` 校验的口播 swap 后，真实模型门禁由 120 秒超时恢复为 12.57 秒通过。发布必须等待公网 `voiceoverTranslation.ready=true`，不能只看 PM2 online 或独立探针成功。
 
 ## 2026-07-28 - 公共模特素材不能按调用者私有资产鉴权，空草稿不能遮住当前已发布版本
 
