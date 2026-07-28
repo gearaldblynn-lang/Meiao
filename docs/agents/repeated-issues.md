@@ -1394,3 +1394,4 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Root cause / fix: 架构级根因、修复和防复发合同见 `CLAUDE.md` #81。补充供应商兼容：KIE 统一 task API 的 `queuing/generating` 都是正常非终态，必须继续查询原 task ID，不能抛错后诱导新建任务。
 - Regression check: `node --test server/voiceoverAnalysis.test.mjs server/voiceoverAudio.test.mjs server/providerKieTts.test.mjs server/voiceoverChildJobStore.test.mjs server/voiceoverTranslationRunner.test.mjs scripts/probe-voiceover-translation.test.mjs`；真实 canary 逐组核对时间窗、`actualDurationMs`、`atempo>=1`、背景床响度、最终时长/编码/fast-start 和鉴权 Range。
 - Avoid next time: 技术验收与听感验收分开记录；“任务成功、两个 stem 都存在”不能证明背景音乐保留，也不能证明口播节奏匹配。
+- Cloud release follow-up: 腾讯云 7.5 GiB 主机在零停机 reload 后独立模型探针可通过，但新进程首次 `mdx` load gate 偶发超过旧的 30 秒默认并把 `modelReady=false` 固化到进程生命周期。模型文件、manifest、Python 和路径均未漂移。load gate 改用独立的 `60000ms` 可配置超时，首次失败后延迟做一次后台复检并刷新 health；发布必须等待公网 `voiceoverTranslation.ready=true`，不能只看 PM2 online 或独立探针成功。
