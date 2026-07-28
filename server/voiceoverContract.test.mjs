@@ -57,12 +57,14 @@ test('invalid capacity values fall back to conservative defaults', () => {
     MEIAO_VOICEOVER_MIN_ATEMPO: 'oops',
     MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS: '9000',
     MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND: '513',
+    MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS: '1',
   });
   assert.equal(config.separationConcurrency, 1);
   assert.equal(config.minAtempo, 0.75);
   assert.equal(config.ttsMaxInputTokens, 8192);
   assert.equal(config.maxTargetTextBytesPerSecond, 24);
   assert.equal(config.maxAtempo, 1.75);
+  assert.equal(config.readinessModelTimeoutMs, 120_000);
   assert.equal(VOICEOVER_DEFAULTS.maxTargetTextBytesPerSecond, 24);
   assert.equal(VOICEOVER_DEFAULTS.maxAtempo, 1.75);
   assert.deepEqual(VOICEOVER_BOUNDS.maxTargetTextBytesPerSecond, [16, 512]);
@@ -70,6 +72,9 @@ test('invalid capacity values fall back to conservative defaults', () => {
   assert.equal(getVoiceoverConfig({
     MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND: '128',
   }).maxTargetTextBytesPerSecond, 128);
+  assert.equal(getVoiceoverConfig({
+    MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS: '90000',
+  }).readinessModelTimeoutMs, 90_000);
 });
 
 test('payload only accepts catalog members and a managed source identity', () => {
