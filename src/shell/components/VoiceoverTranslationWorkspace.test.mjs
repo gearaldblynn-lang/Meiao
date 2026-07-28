@@ -88,7 +88,8 @@ test('preset voice rows expose real provider preview without previewing automati
   assert.match(source, /handleVoicePreview/);
   assert.match(source, /new Audio\(\)/);
   assert.match(composerSource, /optionAction=/);
-  assert.match(composerSource, /首次试听可能产生少量 KIE 费用/);
+  assert.match(composerSource, /首次生成后永久保存到当前账号/);
+  assert.match(composerSource, /以后点击直接播放/);
   assert.match(composerSource, /onVoicePreview/);
   assert.doesNotMatch(source, /speechSynthesis|SpeechSynthesisUtterance/);
   assert.doesNotMatch(source, /useEffect\([\s\S]{0,300}requestVoiceoverPreview/);

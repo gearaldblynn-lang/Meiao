@@ -24,4 +24,7 @@ test('voice preview persists provider audio as an account-owned managed asset', 
   assert.match(source, /assetType: 'preview'/);
   assert.match(source, /originalName: `voice-preview-\$\{voiceName\}\.wav`/);
   assert.match(source, /provider: 'kie_tts'/);
+  assert.match(source, /expiresAt: 0/);
+  assert.match(source, /ensureVoiceoverPreviewAudioPersistent/);
+  assert.match(source, /markStoredAssetPermanent/);
 });

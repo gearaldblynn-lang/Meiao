@@ -42,7 +42,8 @@ const waitUntil = async (predicate, timeoutMs = 1_000) => {
 };
 
 test('one explicit preview request creates one provider task and reuses the persisted audio', async (t) => {
-  const fixture = await createFixture();
+  let nowMs = 1_000_000;
+  const fixture = await createFixture({ now: () => nowMs });
   t.after(fixture.cleanup);
 
   const first = await fixture.service.request({
@@ -62,12 +63,52 @@ test('one explicit preview request creates one provider task and reuses the pers
   assert.equal(ready.audioUrl, '/api/assets/file/cached-preview/preview.wav');
   assert.equal(fixture.calls.length, 1);
 
+  nowMs += 365 * 24 * 60 * 60 * 1_000;
   const cached = await fixture.service.request({
     userId: 'user-1',
     targetLanguage: 'cmn',
     voiceName: 'Kore',
   });
   assert.equal(cached.status, 'ready');
+  assert.equal(fixture.calls.length, 1);
+});
+
+test('a reused persisted preview is re-pinned before its URL is returned', async (t) => {
+  const pinned = [];
+  const fixture = await createFixture({
+    ensureAudioPersistent: async (record) => {
+      pinned.push(record);
+    },
+  });
+  t.after(fixture.cleanup);
+
+  const first = await fixture.service.request({
+    userId: 'user-persistent',
+    targetLanguage: 'en',
+    voiceName: 'Kore',
+  });
+  await waitUntil(async () => {
+    const current = await fixture.service.get({
+      userId: 'user-persistent',
+      previewId: first.previewId,
+    });
+    return current.status === 'ready';
+  });
+  pinned.length = 0;
+
+  const reused = await fixture.service.request({
+    userId: 'user-persistent',
+    targetLanguage: 'en',
+    voiceName: 'Kore',
+  });
+  assert.equal(reused.status, 'ready');
+  assert.deepEqual(pinned, [{
+    userId: 'user-persistent',
+    previewId: reused.previewId,
+    voiceName: 'Kore',
+    targetLanguage: 'en',
+    audioUrl: '/api/assets/file/cached-preview/preview.wav',
+  }]);
   assert.equal(fixture.calls.length, 1);
 });
 
