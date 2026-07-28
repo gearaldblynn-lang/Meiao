@@ -255,6 +255,19 @@ test('deploy_tencent proves managed image COS readiness before entering the drai
   assert.ok(markerIndex > finalReadinessIndex, 'COS probe and readiness must pass before the marker');
 });
 
+test('deploy_tencent fully loads the enabled voiceover model before zero-downtime reload', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const voiceoverProbeIndex = source.indexOf('npm run probe:voiceover-translation -- --readiness');
+  const enabledGuardIndex = source.indexOf('case \\"\\${MEIAO_VOICEOVER_TRANSLATION_ENABLED:-0}\\"');
+  const finalReadinessIndex = source.lastIndexOf(
+    "MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs",
+  );
+  const reloadIndex = source.indexOf('pm2 startOrReload ecosystem.config.cjs --update-env');
+  assert.ok(enabledGuardIndex >= 0 && enabledGuardIndex < voiceoverProbeIndex);
+  assert.ok(voiceoverProbeIndex < finalReadinessIndex);
+  assert.ok(finalReadinessIndex < reloadIndex);
+});
+
 test('deploy_tencent cleanup never stops the last process and restores static assets on failed release health', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const ownershipSource = readFileSync(new URL('./deploy-ownership.mjs', import.meta.url), 'utf8');
