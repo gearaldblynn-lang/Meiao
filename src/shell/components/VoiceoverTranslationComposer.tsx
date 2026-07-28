@@ -301,13 +301,13 @@ const VoiceoverTranslationComposer: React.FC<VoiceoverTranslationComposerProps> 
                     voicePreviewingName && voicePreviewingName !== value,
                   ),
                   ariaLabel: (value, label) => {
-                    if (voicePreviewingName === value) return `正在生成 ${label} 试听`;
+                    if (voicePreviewingName === value) return `正在加载 ${label} 试听`;
                     if (voicePlayingName === value) return `暂停 ${label} 试听`;
                     return `试听 ${label}`;
                   },
                   title: (value) => (
                     voicePreviewingName === value
-                      ? '正在生成真实音色试听'
+                      ? '正在加载音色试听'
                       : voicePlayingName === value
                         ? '暂停试听'
                         : '试听真实音色'

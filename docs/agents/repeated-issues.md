@@ -1222,6 +1222,14 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Avoid next time: 技术验收与听感验收分开记录；“任务成功、两个 stem 都存在”不能证明最终音轨干净。产品明确要纯口播时，不做任何声源分离背景恢复。
 - Cloud release follow-up: 腾讯云 7.5 GiB 主机的常驻可用内存约 1.8 GiB，而一次 `mdx get_model` 峰值约 1.68 GiB。零停机 reload 同时保留新旧 Node 时，在新进程 bootstrap 再真实加载模型会触发全机换页抖动，SSH/health 都可能超时；延长超时或后台重试只会放大故障。服务启动和任务前置检查改为固定 Python 版本、模型字节/哈希、YAML 与 FFmpeg filters，发布前独立探针仍真实 `get_model`；实际分离只加载一次模型。发布必须等待公网 `voiceoverTranslation.ready=true`，不能只看 PM2 online 或独立探针成功。
 
+## 2026-07-28 - 持久音色试听的身份是账号加音色，不是账号加语言加音色
+
+- Symptom: 已经生成并永久保存 Zephyr 英文试听后，在中文目标语言下再次点击仍长时间显示旋转图标，并创建了新的 KIE TTS task；用户感知仍是“每次点击都生成”。
+- Evidence: 同一账号 registry 同时出现 Zephyr/en 和 Zephyr/cmn 两条 ready 记录及两个不同 provider task ID；Puck 只有既有英文 ready 记录。修复后在中文页面点击 Puck 直接进入播放，registry 仍为原 3 条，Puck task ID 未变。
+- Root cause / fix: 架构级根因与修复合同见 `CLAUDE.md` #82。服务端新 key 使用账号与音色，并向后复用旧语言维度 ready/processing/unknown 记录，未知提交状态不能借跨语言 key 绕过后重提；前端内存缓存按音色复用，持久查询只显示“正在加载”。
+- Regression check: `node --test server/voiceoverPreviewService.test.mjs`；`node --experimental-strip-types --test src/shell/components/VoiceoverTranslationWorkspace.test.mjs`；真实浏览器点击已有跨语言试听后核对播放状态、registry 数量和 provider task ID 均未新增。
+- Avoid next time: 设计付费缓存时先写清“什么参数真的改变产物”，再定义 key。必须回归跨语言 ready 复用、跨语言 processing 去重、旧 key 兼容、账号隔离和 UI 真实播放，不能只验证同参数的第二次点击。
+
 ## 2026-07-28 - 公共模特素材不能按调用者私有资产鉴权，空草稿不能遮住当前已发布版本
 
 - Symptom: 同事使用已发布公共模特执行模特替换时提示“没有权限执行此操作”；管理员点击“新建版本”后，原来的 8 张固定参考素材看起来全部消失，界面没有提示。
