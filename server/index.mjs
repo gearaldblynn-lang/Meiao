@@ -227,7 +227,10 @@ import {
   pruneAssetCleanupTasks,
   summarizeAssetCleanupStore,
 } from './assetLifecycleStore.mjs';
-import { assertOwnedActiveManagedAssetReferences } from './managedAssetReferencePolicy.mjs';
+import {
+  assertOwnedActiveManagedAssetReferences,
+  prepareAuthorizedManagedAssetJobPayload,
+} from './managedAssetReferencePolicy.mjs';
 import { scrubUnavailableExplicitManagedAssetIds } from './managedAssetStateScrub.mjs';
 import { createTombstonedStateScanTracker, reconcileTombstonedJobs, shouldAlertTombstonedJobCleanup } from './tombstonedJobReconciler.mjs';
 import {
@@ -14286,24 +14289,27 @@ const handleMysqlRequest = async (req, res, url) => {
       return;
     }
 
-    const jobPayload = {
-      module: body.module,
-      taskType: submissionPolicy.taskType,
-      provider: submissionPolicy.provider,
-      payload: await scrubDbJobPayloadBeforeSubmission(
-        await createLibraryModelJobPayload({ payload: body.payload, pool, user }),
-        user.id,
-      ),
-      priority: body.priority,
-      maxRetries: submissionPolicy.maxCreateRetries ?? normalizeJobMaxRetries(body.taskType, body.maxRetries),
-    };
     const submission = await withManagedAssetUserLock(user.id, async (lockedPool) => {
       await assertActiveDbUserUnderManagedAssetLock(lockedPool, user.id, '账号已删除，未创建任务');
-      await assertOwnedActiveManagedAssetReferences({
-        value: jobPayload.payload,
+      const authorizedPayload = await prepareAuthorizedManagedAssetJobPayload({
+        value: body.payload,
         userId: user.id,
         pool: lockedPool,
+        scrubPayload: scrubDbJobPayloadBeforeSubmission,
+        appendTrustedMetadata: (callerOwnedPayload) => createLibraryModelJobPayload({
+          payload: callerOwnedPayload,
+          pool,
+          user,
+        }),
       });
+      const jobPayload = {
+        module: body.module,
+        taskType: submissionPolicy.taskType,
+        provider: submissionPolicy.provider,
+        payload: authorizedPayload,
+        priority: body.priority,
+        maxRetries: submissionPolicy.maxCreateRetries ?? normalizeJobMaxRetries(body.taskType, body.maxRetries),
+      };
       const submissionOptions = {
         user,
         jobPayload,
@@ -18042,14 +18048,12 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       return;
     }
 
+    const callerOwnedPayload = await scrubLocalJobPayloadBeforeSubmission(body.payload, user.id);
     const jobPayload = {
       module: body.module,
       taskType: submissionPolicy.taskType,
       provider: submissionPolicy.provider,
-      payload: await scrubLocalJobPayloadBeforeSubmission(
-        await createLibraryModelJobPayload({ payload: body.payload, store, user }),
-        user.id,
-      ),
+      payload: await createLibraryModelJobPayload({ payload: callerOwnedPayload, store, user }),
       priority: body.priority,
       maxRetries: submissionPolicy.maxCreateRetries ?? normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };
