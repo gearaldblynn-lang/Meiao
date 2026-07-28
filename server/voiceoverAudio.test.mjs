@@ -226,13 +226,16 @@ test('calculateAtempo uses actual duration divided by target duration with inclu
   }), 1.2);
   assert.equal(calculateAtempo({
     actualDurationMs: 750, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35,
-  }), 0.75);
+  }), 1);
   assert.equal(calculateAtempo({
     actualDurationMs: 1350, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35,
   }), 1.35);
   assert.equal(calculateAtempo({
     actualDurationMs: 500, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35,
-  }), 0.75);
+  }), 1);
+  assert.equal(calculateAtempo({
+    actualDurationMs: 1750, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.75,
+  }), 1.75);
 });
 
 test('calculateAtempo rejects out-of-range and invalid numeric inputs', () => {
@@ -340,14 +343,17 @@ test('ducking ratio maps 0, 4, and 12 dB onto FFmpeg 1..20', () => {
 test('final mix maps base video only and excludes its original audio', () => {
   const { args, filterGraph } = buildFinalMixArgs({
     baseVideoPath: '/tmp/base.mp4',
+    sourceAudioPath: '/tmp/original.wav',
     backgroundPath: '/tmp/no_vocals.wav',
     narrationPath: '/tmp/narration.wav',
     outputPath: '/tmp/final.mp4',
     durationMs: 3000,
     duckingDb: 4,
   });
-  assert.match(filterGraph, /\[1:a\]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo\[bg\]/);
-  assert.match(filterGraph, /\[2:a\]aresample=48000,pan=stereo\|c0=c0\|c1=c0\[narr\]/);
+  assert.match(filterGraph, /\[1:a\]aresample=48000,pan=stereo\|c0=FL-FR\|c1=FL-FR\[side\]/);
+  assert.match(filterGraph, /\[2:a\]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo\[stem\]/);
+  assert.match(filterGraph, /\[stem\]\[side\]amix=inputs=2:duration=longest:normalize=0\[bg\]/);
+  assert.match(filterGraph, /\[3:a\]aresample=48000,pan=stereo\|c0=c0\|c1=c0\[narr\]/);
   assert.match(filterGraph, /sidechaincompress=threshold=0\.02:ratio=7\.333333333:attack=20:release=250:makeup=1/);
   assert.match(filterGraph, /amix=inputs=2:duration=longest:normalize=0/);
   assert.match(filterGraph, /alimiter=limit=0\.8912509381/);
@@ -510,6 +516,7 @@ test('packaged FFmpeg fixture retains background, replaces vocals, limits peak, 
   const dir = await mkdtemp(path.join(tmpdir(), 'voiceover-audio-fixture-'));
   const base = path.join(dir, 'base.mp4');
   const background = path.join(dir, 'background.wav');
+  const original = path.join(dir, 'original.wav');
   const vocals = path.join(dir, 'vocals.wav');
   const narration = path.join(dir, 'narration.wav');
   const aligned = path.join(dir, 'aligned.wav');
@@ -545,7 +552,7 @@ test('packaged FFmpeg fixture retains background, replaces vocals, limits peak, 
 
     await extractVoiceoverAudio({
       inputVideoPath: base,
-      outputWavPath: path.join(dir, 'extracted.wav'),
+      outputWavPath: original,
       deps: { ffmpegPath, ffprobePath },
     });
     const analysis = await import('./voiceoverAudio.mjs').then(({ buildVocalOnlyAnalysisVideo }) => (
@@ -579,6 +586,7 @@ test('packaged FFmpeg fixture retains background, replaces vocals, limits peak, 
 
     const mixed = await mixVoiceoverResult({
       baseVideoPath: base,
+      sourceAudioPath: original,
       backgroundPath: background,
       narrationPath: aligned,
       outputPath: final,
@@ -592,6 +600,7 @@ test('packaged FFmpeg fixture retains background, replaces vocals, limits peak, 
 
     const { args: controlArgs } = buildFinalMixArgs({
       baseVideoPath: base,
+      sourceAudioPath: original,
       backgroundPath: background,
       narrationPath: aligned,
       outputPath: control,
@@ -639,6 +648,7 @@ test('real mix uses 1s video-stream duration instead of a 2s audio/container dur
   const dir = await mkdtemp(path.join(tmpdir(), 'voiceover-duration-fixture-'));
   const base = path.join(dir, 'base.mp4');
   const background = path.join(dir, 'background.wav');
+  const original = path.join(dir, 'original.wav');
   const narration = path.join(dir, 'narration.wav');
   const final = path.join(dir, 'final.mp4');
   try {
@@ -659,8 +669,14 @@ test('real mix uses 1s video-stream duration instead of a 2s audio/container dur
         '-ac', channels, '-c:a', 'pcm_s16le', output,
       ]);
     }
+    await extractVoiceoverAudio({
+      inputVideoPath: base,
+      outputWavPath: original,
+      deps: { ffmpegPath, ffprobePath },
+    });
     const result = await mixVoiceoverResult({
       baseVideoPath: base,
+      sourceAudioPath: original,
       backgroundPath: background,
       narrationPath: narration,
       outputPath: final,
@@ -670,6 +686,70 @@ test('real mix uses 1s video-stream duration instead of a 2s audio/container dur
     assert.ok(Math.abs(result.durationMs - 1000) <= 120, JSON.stringify(result));
     assert.equal(result.videoDurationMs, 1000);
     assert.ok(result.audioDurationMs <= 1120);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('real mix recovers a center-free music bed when the separated background is unusable', {
+  skip: ffmpegPath && ffprobePath ? false : 'packaged FFmpeg/FFprobe unavailable',
+  timeout: 30_000,
+}, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'voiceover-side-bed-fixture-'));
+  const base = path.join(dir, 'base.mp4');
+  const original = path.join(dir, 'original.wav');
+  const unusableBackground = path.join(dir, 'background.wav');
+  const narration = path.join(dir, 'narration.wav');
+  const final = path.join(dir, 'final.mp4');
+  const pcm = path.join(dir, 'final.f32le');
+  try {
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'color=c=blue:s=160x120:r=24:d=2',
+      '-f', 'lavfi', '-i',
+      'aevalsrc=0.2*sin(2*PI*300*t)+0.15*sin(2*PI*1000*t)|0.2*sin(2*PI*600*t)+0.15*sin(2*PI*1000*t):s=48000:d=2',
+      '-map', '0:v:0', '-map', '1:a:0',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart',
+      base,
+    ]);
+    await extractVoiceoverAudio({
+      inputVideoPath: base,
+      outputWavPath: original,
+      deps: { ffmpegPath, ffprobePath },
+    });
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
+      '-t', '2', '-c:a', 'pcm_s16le', unusableBackground,
+    ]);
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'sine=frequency=1400:sample_rate=48000:duration=2',
+      '-ac', '1', '-c:a', 'pcm_s16le', narration,
+    ]);
+
+    await mixVoiceoverResult({
+      baseVideoPath: base,
+      sourceAudioPath: original,
+      backgroundPath: unusableBackground,
+      narrationPath: narration,
+      outputPath: final,
+      config: { duckingDb: 0, durationToleranceMs: 120 },
+      deps: { ffmpegPath, ffprobePath },
+    });
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', final, '-map', '0:a:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', pcm,
+    ]);
+    const raw = await readFile(pcm);
+    const samples = new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4);
+    const amplitudes = Object.fromEntries([300, 600, 1000, 1400].map((frequency) => (
+      [frequency, goertzel(samples, 48000, frequency)]
+    )));
+    assert.ok(amplitudes[300] > 0.02, JSON.stringify(amplitudes));
+    assert.ok(amplitudes[600] > 0.02, JSON.stringify(amplitudes));
+    assert.ok(amplitudes[1400] > 0.02, JSON.stringify(amplitudes));
+    assert.ok(amplitudes[1000] < amplitudes[300] * 0.15, JSON.stringify(amplitudes));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

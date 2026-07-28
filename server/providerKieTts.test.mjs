@@ -194,6 +194,15 @@ test('create and record response normalizers cover waiting, success and terminal
     state: 'waiting',
     providerTaskId: 'tts-1',
   });
+  for (const state of ['queuing', 'generating']) {
+    assert.deepEqual(normalizeKieTtsRecordResponse({
+      code: 200,
+      data: { state, resultJson: '' },
+    }, 'tts-1'), {
+      state: 'waiting',
+      providerTaskId: 'tts-1',
+    });
+  }
   assert.deepEqual(normalizeKieTtsRecordResponse(successfulRecord(), 'tts-1'), {
     state: 'success',
     providerTaskId: 'tts-1',

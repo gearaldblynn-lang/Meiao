@@ -899,10 +899,6 @@ test('succeeded live jobs require durable TTS groups to match the production log
         selectedVoiceName: 'Kore',
       },
     },
-  }, {
-    name: 'configured grouping drift',
-    checkpoint: plannedCheckpoint,
-    env: { MEIAO_VOICEOVER_GROUP_GAP_MS: '800' },
   }];
 
   for (const item of cases) {
@@ -941,6 +937,32 @@ test('succeeded live jobs require durable TTS groups to match the production log
       item.name,
     );
   }
+
+  const stableWindowPlan = probeDeps({
+    env: {
+      MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED: '1',
+      MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
+      MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+      MEIAO_VOICEOVER_GROUP_GAP_MS: '800',
+    },
+    liveResult: {
+      job: {
+        id: 'parent-plan-stable-windows',
+        status: 'succeeded',
+        result: {
+          voiceoverCheckpoint: plannedCheckpoint,
+          finalAssetId: 'managed-final',
+          videoUrl: '/api/assets/file/managed-final',
+        },
+      },
+    },
+  });
+  const stableResult = await runVoiceoverProbe([
+    '--live',
+    '--source-asset-id', 'owned-managed-asset',
+    '--target-language', 'en',
+  ], stableWindowPlan);
+  assert.equal(stableResult.exitCode, 0);
 });
 
 test('post-create timeout and terminal failure preserve safe parent recovery evidence without recreating', async () => {

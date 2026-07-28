@@ -116,11 +116,13 @@ export function buildVoiceoverAnalysisMessages({
   targetLanguage,
   translationMode,
   durationMs,
+  maxTargetTextBytesPerSecond,
 } = {}) {
   const fileUrl = validateManagedVideoUrl(vocalOnlyVideoUrl);
   const language = validateTargetLanguage(targetLanguage);
   const mode = validateTranslationMode(translationMode);
   const safeDurationMs = validateDurationMs(durationMs);
+  const targetTextRate = validateTargetTextBytesPerSecond(maxTargetTextBytesPerSecond);
   const modeConstraint = mode === 'natural'
     ? 'Write idiomatic spoken translation. You may restructure wording to fit the original time budget naturally.'
     : 'Prioritize the original meaning and sentence structure, while still fitting safe timing for each original speech window.';
@@ -139,9 +141,12 @@ export function buildVoiceoverAnalysisMessages({
     '3. voiceProfile is limited to pitch, brightness, energy, pace, and a short non-sensitive accentDescription.',
     `4. ${modeConstraint}`,
     '5. Every targetText must be non-empty and written in the requested target language.',
-    '6. Segments must be ordered, have unique ids, remain within the video duration, and use endMs greater than startMs.',
-    `7. Allowed sourceLanguage codes: ${ALLOWED_SOURCE_LANGUAGE_CODES}.`,
-    '8. Mandarin Chinese must use sourceLanguage "cmn". Do not use "zh" or "zh-CN".',
+    `6. For each segment, targetText must not exceed ${targetTextRate} UTF-8 bytes per second of its own startMs-to-endMs window; shorten nonessential phrasing while preserving the core product meaning.`,
+    '7. For languages written with spaces, use at most 3 spoken words per second in each segment. Timing fit is mandatory: omit secondary modifiers and repetition before exceeding either timing limit.',
+    '8. Each targetText must be one concise spoken line. Do not copy every source detail when that would make natural delivery exceed its own window.',
+    '9. Segments must be ordered, have unique ids, remain within the video duration, and use endMs greater than startMs.',
+    `10. Allowed sourceLanguage codes: ${ALLOWED_SOURCE_LANGUAGE_CODES}.`,
+    '11. Mandarin Chinese must use sourceLanguage "cmn". Do not use "zh" or "zh-CN".',
     '',
     'F Format',
     'Output one strict JSON object only. Output no prose, commentary, Markdown, or additional JSON objects.',
@@ -486,7 +491,6 @@ export function buildVoiceoverTtsGroups({
   assertMonotonicSegments(normalized);
   const immutableSegments = normalized.map(freezeSegment);
   const plannedGroups = [];
-  let current = [];
 
   const assertFits = (candidate) => {
     const data = buildGroupData(candidate, voiceName);
@@ -518,25 +522,14 @@ export function buildVoiceoverTtsGroups({
     }));
   };
 
+  // A provider result has no per-dialogue-turn timestamps. Combining adjacent
+  // analysis segments therefore destroys the only durable audio/video sync
+  // anchors and concentrates any residual silence at the end of one long clip.
+  // Keep one provider output per detected speech window so FFmpeg can place and
+  // speed each line independently on its original timeline.
+  void maximumGapMs;
   for (const segment of immutableSegments) {
-    const singleData = assertFits([segment]);
-    if (!current.length) {
-      current = [segment];
-      continue;
-    }
-    const gapMs = segment.startMs - current.at(-1).endMs;
-    const candidate = [...current, segment];
-    const candidateData = buildGroupData(candidate, voiceName);
-    if (gapMs <= maximumGapMs && candidateData.estimatedInputTokens <= inputLimit) {
-      current = candidate;
-      continue;
-    }
-    publish(current, buildGroupData(current, voiceName));
-    current = [segment];
-    if (singleData.estimatedInputTokens > inputLimit) {
-      throw buildVoiceoverError('voiceover_tts_input_too_large', '单个口播片段超过当前语音模型输入上限');
-    }
+    publish([segment], assertFits([segment]));
   }
-  if (current.length) publish(current, buildGroupData(current, voiceName));
   return Object.freeze(plannedGroups);
 }

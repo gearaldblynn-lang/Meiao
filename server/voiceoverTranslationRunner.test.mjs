@@ -651,6 +651,7 @@ test('uses one normalized config snapshot and rejects dense target text before c
     }],
   };
   let getConfigCalls = 0;
+  let promptBudget = 0;
   let childCalls = 0;
   let ttsCalls = 0;
   const harness = await createHarness({
@@ -662,6 +663,10 @@ test('uses one normalized config snapshot and rejects dense target text before c
       MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS: '4096',
     },
     overrides: {
+      buildAnalysisMessages: (options) => {
+        promptBudget = options.maxTargetTextBytesPerSecond;
+        return [];
+      },
       getConfig: (runtimeEnv) => {
         getConfigCalls += 1;
         return {
@@ -696,6 +701,7 @@ test('uses one normalized config snapshot and rejects dense target text before c
     (error) => error?.code === 'voiceover_analysis_invalid',
   );
   assert.equal(getConfigCalls, 1);
+  assert.equal(promptBudget, 16);
   assert.ok(harness.checkpointContexts.length > 0);
   assert.ok(harness.checkpointContexts.every((context) => (
     context?.voiceoverConfig?.maxTargetTextBytesPerSecond === 16
@@ -1132,6 +1138,88 @@ test('corrupt resumed TTS audio stops before the next paid child attempt', async
     (error) => error?.code === 'voiceover_checkpoint_asset_invalid',
   );
   assert.equal(paidCalls, 0);
+});
+
+test('legacy merged TTS checkpoints fail closed before reusing a mismatched segment attempt', async (t) => {
+  const firstSegment = {
+    id: 's1',
+    startMs: 0,
+    endMs: 1_000,
+    sourceText: '第一段',
+    targetText: 'First segment',
+  };
+  const secondSegment = {
+    id: 's2',
+    startMs: 1_200,
+    endMs: 2_200,
+    sourceText: '第二段',
+    targetText: 'Second segment',
+  };
+  const checkpoint = checkpointAt('tts_generating');
+  checkpoint.analysis = {
+    ...checkpoint.analysis,
+    segments: [firstSegment, secondSegment],
+  };
+  checkpoint.translation = {
+    ...checkpoint.translation,
+    segments: [firstSegment, secondSegment],
+  };
+  checkpoint.ttsGroups[0].endMs = 2_200;
+  let childReads = 0;
+  const harness = await createHarness({
+    job: createParentJob({
+      result: { voiceoverCheckpoint: checkpoint },
+    }),
+    overrides: {
+      buildTtsGroups: () => ([
+        {
+          groupIndex: 0,
+          startMs: 0,
+          endMs: 1_000,
+          dialogueTurns: [{ speaker: 'Speaker 1', text: 'First segment' }],
+          scene: 'First',
+          sampleContext: 'First',
+        },
+        {
+          groupIndex: 1,
+          startMs: 1_200,
+          endMs: 2_200,
+          dialogueTurns: [{ speaker: 'Speaker 1', text: 'Second segment' }],
+          scene: 'Second',
+          sampleContext: 'Second',
+        },
+      ]),
+      resolveOwnedAsset: async ({ assetId, sourceUrl, userId, destinationPath }) => {
+        const requestedId = assetId || String(sourceUrl || '').replace(/^managed:\/\//u, '');
+        await mkdir(path.dirname(destinationPath), { recursive: true });
+        await writeFile(destinationPath, requestedId);
+        return {
+          assetId: requestedId,
+          url: `managed://${requestedId}`,
+          path: destinationPath,
+          userId,
+          durationMs: 4_000,
+          hasAudio: true,
+          sizeBytes: 1_024,
+          width: 1080,
+          height: 1920,
+        };
+      },
+      childJobs: {
+        getOrCreate: async () => {
+          childReads += 1;
+          throw new Error('must not reuse a mismatched legacy attempt');
+        },
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.code === 'voiceover_checkpoint_invalid',
+  );
+  assert.equal(childReads, 0);
 });
 
 test('wrong-type persisted final video is rejected instead of returned as playable', async (t) => {

@@ -798,6 +798,23 @@ test('server derives analysis and query-only retry plans without trusting parent
     ...analysisParent,
     errorCode: 'provider_config_error',
   };
+  const invalidAnalysisParent = {
+    ...analysisParent,
+    errorCode: 'voiceover_analysis_invalid',
+  };
+  const invalidAnalysisRetry = deriveVoiceoverRetryPlan(invalidAnalysisParent, {
+    confirmNewProviderAttempt: true,
+  });
+  assert.deepEqual(invalidAnalysisRetry, {
+    kind: 'analysis',
+    userConfirmed: true,
+  });
+  const invalidAnalysisRetryResult = prepareVoiceoverJobRetryResult(
+    invalidAnalysisParent,
+    invalidAnalysisRetry,
+  );
+  assert.equal(invalidAnalysisRetryResult.voiceoverCheckpoint.stage, 'voice_separated');
+  assert.equal(invalidAnalysisRetryResult.voiceoverCheckpoint.analysisAttempt, 1);
   const unconfirmedConfigRetry = deriveVoiceoverRetryPlan(configFailedParent, {
     confirmNewProviderAttempt: false,
   });
