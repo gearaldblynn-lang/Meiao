@@ -366,7 +366,7 @@ const bindClaimedPoseTask = (poseTasks, { poseId, idempotencyKey, job, baselineR
     jobId: String(job?.id || ''),
     submitClaim: undefined,
     retryRequested: undefined,
-    ...(Object.hasOwn(task, 'baselineRevision') ? { baselineRevision } : {}),
+    ...(!BASELINE_POSES.has(poseId) ? { baselineRevision } : {}),
     ...(resultUrl && BASELINE_POSES.has(poseId)
       ? { temporaryResultUrl: resultUrl, referenceStatus: 'generated' }
       : resultUrl ? { resultUrl } : {}),

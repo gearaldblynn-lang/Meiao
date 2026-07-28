@@ -6,6 +6,17 @@ import {
   reconcileVirtualModelGenerationBatch,
   retryVirtualModelGenerationPose,
 } from './virtualModelGenerationService.mjs';
+import {
+  advanceVirtualModelGenerationPoseAttempt,
+  bindVirtualModelGenerationPoseJob,
+  claimVirtualModelGenerationPoseSubmission,
+  failVirtualModelGenerationPoseSubmission,
+  findLatestVirtualModelGenerationBatch,
+  findOrCreateVirtualModelGenerationBatchRecord,
+  getVirtualModelGenerationBatch,
+  normalizeVirtualModelGenerationStore,
+  updateVirtualModelGenerationBatchRecord,
+} from './virtualModelGenerationStore.mjs';
 const loadSeparateServiceInstance = (name) => import(`./virtualModelGenerationService.mjs?instance=${name}`);
 
 const POSES = ['C01', 'C02', 'C03', 'C04', 'C05', 'P05', 'P01', 'P03'];
@@ -421,4 +432,144 @@ test('finalization writes all eight durable slots to the draft in one replacemen
   assert.equal(replacements.length, 1);
   assert.equal(replacements[0].assets.length, 8);
   assert.equal(harness.batches.get('batch-1').status, 'completed');
+});
+
+test('real local generation store carries baseline revision through eight-pose generation and finalization', async () => {
+  const store = normalizeVirtualModelGenerationStore({});
+  const jobs = new Map();
+  const jobsByKey = new Map();
+  const replacements = [];
+  let jobCounter = 0;
+  let assetCounter = 0;
+  const dataSource = { store };
+  const deps = {
+    now: () => 100,
+    createId: () => 'batch-real-store',
+    getModelVersion: async () => ({
+      model: { id: 'model-1', status: 'draft' },
+      version: {
+        id: 'version-1',
+        virtualModelId: 'model-1',
+        status: 'draft',
+      },
+    }),
+    getSourceAssets: async ({ assetIds }) => assetIds.map((assetId) => ({
+      id: assetId,
+      userId: 'admin-1',
+      module: 'virtual_model_generation',
+      publicUrl: `https://source.test/${assetId}.png`,
+      originalName: `${assetId}.png`,
+    })),
+    createOrFindBatchRecord: (batch) => (
+      findOrCreateVirtualModelGenerationBatchRecord({ ...dataSource, batch })
+    ),
+    getBatchRecord: (batchId, userId) => getVirtualModelGenerationBatch({
+      ...dataSource,
+      batchId,
+      userId,
+    }),
+    findLatestBatchRecord: (userId, virtualModelId, virtualModelVersionId) => (
+      findLatestVirtualModelGenerationBatch({
+        ...dataSource,
+        userId,
+        virtualModelId,
+        virtualModelVersionId,
+      })
+    ),
+    updateBatchRecord: (batchId, userId, patch) => (
+      updateVirtualModelGenerationBatchRecord({
+        ...dataSource,
+        batchId,
+        userId,
+        patch,
+      })
+    ),
+    claimPoseSubmission: (input) => (
+      claimVirtualModelGenerationPoseSubmission({ ...dataSource, ...input })
+    ),
+    bindPoseJob: (input) => (
+      bindVirtualModelGenerationPoseJob({ ...dataSource, ...input })
+    ),
+    failPoseSubmission: (input) => (
+      failVirtualModelGenerationPoseSubmission({ ...dataSource, ...input })
+    ),
+    advancePoseAttempt: (input) => (
+      advanceVirtualModelGenerationPoseAttempt({ ...dataSource, ...input })
+    ),
+    findJobByIdempotencyKey: async ({ idempotencyKey }) => (
+      jobsByKey.get(idempotencyKey) || null
+    ),
+    createJob: async (request) => {
+      const job = {
+        id: `real-job-${++jobCounter}`,
+        userId: 'admin-1',
+        status: 'succeeded',
+        payload: request.payload,
+        result: {
+          imageUrl: `https://provider.test/${request.payload.poseId}.png`,
+        },
+      };
+      jobs.set(job.id, job);
+      jobsByKey.set(request.createRuntimeId, job);
+      return job;
+    },
+    getJob: async (jobId) => jobs.get(jobId) || null,
+    cancelJob: async () => {},
+    stabilizeGeneratedReference: async ({ task }) => ({
+      managedAsset: {
+        assetId: `baseline-${task.poseId}`,
+        publicUrl: `https://managed.test/${task.poseId}.png`,
+      },
+      stableReferenceUrl: `https://stable.test/${task.poseId}.png`,
+    }),
+    fetchGeneratedAsset: async () => ({
+      fileBuffer: Buffer.from('image'),
+      mimeType: 'image/png',
+    }),
+    persistGeneratedAsset: async ({ task }) => ({
+      id: `result-${task.poseId}`,
+      publicUrl: `https://managed.test/result-${task.poseId}.png`,
+    }),
+    createPreviewAsset: async ({ assetId }) => ({
+      id: `preview-${++assetCounter}`,
+      publicUrl: `https://preview.test/${assetId}.png`,
+    }),
+    replaceDraftVersionAssets: async ({ assets }) => {
+      replacements.push(structuredClone(assets));
+      return assets;
+    },
+  };
+
+  const generated = await createVirtualModelGenerationBatch({
+    userId: 'admin-1',
+    virtualModelId: 'model-1',
+    virtualModelVersionId: 'version-1',
+    sourceAssetIds: ['source-1'],
+    primarySourceAssetId: 'source-1',
+    clientSubmissionKey: 'real-store-submission',
+    deps,
+  });
+  assert.equal(
+    (await deps.findLatestBatchRecord('admin-1', 'model-1', 'version-1')).id,
+    generated.id,
+  );
+  assert.equal(generated.status, 'ready_to_finalize');
+  assert.ok(
+    generated.poseTasks
+      .filter((task) => DERIVED.has(task.poseId))
+      .every((task) => task.baselineRevision === generated.baselineRevision),
+  );
+
+  const finalized = await finalizeVirtualModelGenerationBatch({
+    batchId: generated.id,
+    userId: 'admin-1',
+    deps,
+  });
+  assert.equal(finalized.assets.length, 8);
+  assert.equal(replacements.length, 1);
+  assert.equal(replacements[0].length, 8);
+  assert.equal(
+    (await deps.getBatchRecord(generated.id, 'admin-1')).status,
+    'completed',
+  );
 });
