@@ -3,6 +3,7 @@ import React, {
   type HTMLAttributes,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -15,9 +16,48 @@ export type ComposerSelectOption = string | {
   label: string;
 };
 
+export type ComposerSelectOptionAction = {
+  isVisible?: (value: string) => boolean;
+  isDisabled?: (value: string) => boolean;
+  ariaLabel: (value: string, label: string) => string;
+  title?: (value: string, label: string) => string;
+  onAction: (value: string) => void;
+  renderIcon: (value: string) => ReactNode;
+};
+
 const toSelectOption = (option: ComposerSelectOption) => (
   typeof option === 'string' ? { value: option, label: option } : option
 );
+
+export const calculateComposerSelectPlacement = ({
+  triggerTop,
+  triggerBottom,
+  triggerLeft,
+  viewportHeight,
+  viewportWidth,
+  preferredHeight = 360,
+  viewportMargin = 16,
+  gap = 6,
+}: {
+  triggerTop: number;
+  triggerBottom: number;
+  triggerLeft: number;
+  viewportHeight: number;
+  viewportWidth: number;
+  preferredHeight?: number;
+  viewportMargin?: number;
+  gap?: number;
+}) => {
+  const availableAbove = Math.max(1, triggerTop - viewportMargin - gap);
+  const availableBelow = Math.max(1, viewportHeight - triggerBottom - viewportMargin - gap);
+  const placement = availableAbove >= Math.min(preferredHeight, availableBelow) ? 'up' : 'down';
+  const available = placement === 'up' ? availableAbove : availableBelow;
+  return {
+    placement,
+    align: triggerLeft > viewportWidth / 2 ? 'right' : 'left',
+    maxHeight: Math.max(1, Math.min(preferredHeight, available)),
+  } as const;
+};
 
 export type ComposerSurfaceProps = HTMLAttributes<HTMLDivElement> & {
   highlighted?: boolean;
@@ -105,12 +145,14 @@ export const ComposerSelect: React.FC<{
   onChange: (value: string) => void;
   icon?: ReactNode;
   title?: string;
+  description?: string;
   allowCustom?: boolean;
   recommendedValue?: string;
   recommendedLabel?: string;
   secondaryRecommendedValue?: string;
   secondaryRecommendedLabel?: string;
   getOptionMeta?: (value: string) => string;
+  optionAction?: ComposerSelectOptionAction;
   disabled?: boolean;
 }> = ({
   value,
@@ -118,17 +160,24 @@ export const ComposerSelect: React.FC<{
   onChange,
   icon,
   title,
+  description,
   allowCustom,
   recommendedValue,
   recommendedLabel = '推荐',
   secondaryRecommendedValue,
   secondaryRecommendedLabel = '常用',
   getOptionMeta,
+  optionAction,
   disabled,
 }) => {
   const [open, setOpen] = useState(false);
   const [customInputs, setCustomInputs] = useState(false);
   const [customValue, setCustomValue] = useState('');
+  const [popoverLayout, setPopoverLayout] = useState<{
+    placement: 'up' | 'down';
+    align: 'left' | 'right';
+    maxHeight: number;
+  }>({ placement: 'up', align: 'left', maxHeight: 360 });
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -138,6 +187,28 @@ export const ComposerSelect: React.FC<{
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, []);
+
+  useLayoutEffect(() => {
+    if (!open || !ref.current) return undefined;
+    const updatePopoverLayout = () => {
+      const trigger = ref.current?.firstElementChild?.getBoundingClientRect();
+      if (!trigger) return;
+      setPopoverLayout(calculateComposerSelectPlacement({
+        triggerTop: trigger.top,
+        triggerBottom: trigger.bottom,
+        triggerLeft: trigger.left,
+        viewportHeight: window.innerHeight,
+        viewportWidth: window.innerWidth,
+      }));
+    };
+    updatePopoverLayout();
+    window.addEventListener('resize', updatePopoverLayout);
+    window.addEventListener('scroll', updatePopoverLayout, true);
+    return () => {
+      window.removeEventListener('resize', updatePopoverLayout);
+      window.removeEventListener('scroll', updatePopoverLayout, true);
+    };
+  }, [open]);
 
   const commitCustom = () => {
     const next = customValue.trim();
@@ -209,21 +280,39 @@ export const ComposerSelect: React.FC<{
         <div
           role="listbox"
           aria-label={title}
-          className={`absolute bottom-full left-0 z-[200] mb-1.5 rounded-2xl border px-1.5 py-2 ${isModelSelect ? 'min-w-[240px]' : 'min-w-[170px]'}`}
+          className={`absolute z-[200] rounded-2xl border px-1.5 py-2 ${
+            popoverLayout.placement === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
+          } ${
+            popoverLayout.align === 'right' ? 'right-0' : 'left-0'
+          } ${
+            isModelSelect || optionAction ? 'min-w-[240px]' : 'min-w-[170px]'
+          }`}
           style={{
             background: 'var(--bg-surface)',
             borderColor: 'var(--border-subtle)',
             boxShadow: 'var(--shadow-elevated)',
+            maxHeight: popoverLayout.maxHeight,
+            maxWidth: 'calc(100vw - 32px)',
+            overflowY: 'auto',
+            overscrollBehavior: 'contain',
           }}
         >
           {title ? (
             <div
-              className="mb-1 border-b px-3 pb-1.5"
-              style={{ borderColor: 'var(--border-subtle)' }}
+              className="sticky top-0 z-10 mb-1 border-b px-3 pb-1.5"
+              style={{
+                borderColor: 'var(--border-subtle)',
+                background: 'var(--bg-surface)',
+              }}
             >
               <span className="text-[10px] font-medium" style={{ color: 'var(--text-tertiary)' }}>
                 {title}
               </span>
+              {description ? (
+                <p className="mt-0.5 max-w-[280px] text-[9px] leading-4" style={{ color: 'var(--text-tertiary)' }}>
+                  {description}
+                </p>
+              ) : null}
             </div>
           ) : null}
 
@@ -264,50 +353,71 @@ export const ComposerSelect: React.FC<{
             const option = toSelectOption(optionItem);
             const active = option.value === value;
             const optionMeta = getOptionMeta?.(option.value);
+            const actionVisible = Boolean(optionAction && optionAction.isVisible?.(option.value) !== false);
             return (
-              <button
+              <div
                 key={option.value}
-                type="button"
-                role="option"
-                aria-selected={active}
-                onClick={() => {
-                  onChange(option.value);
-                  setOpen(false);
-                }}
-                className="flex w-full items-center gap-2 rounded-2xl px-3 py-2 text-[12px] transition-colors"
-                style={{
-                  color: active ? 'var(--accent)' : 'var(--text-secondary)',
-                  background: active ? 'var(--accent-soft)' : 'transparent',
-                }}
+                className="flex items-center gap-1 rounded-2xl"
+                style={{ background: active ? 'var(--accent-soft)' : 'transparent' }}
               >
-                {active ? <Check size={11} /> : null}
-                <span className="flex min-w-0 flex-col items-start">
-                  <span className="truncate">{option.label}</span>
-                  {(isModelSelect || isResolutionSelect) && optionMeta ? (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => {
+                    onChange(option.value);
+                    setOpen(false);
+                  }}
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-2 text-left text-[12px] transition-colors"
+                  style={{
+                    color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                  }}
+                >
+                  {active ? <Check size={11} className="shrink-0" /> : null}
+                  <span className="flex min-w-0 flex-col items-start">
+                    <span className="max-w-[210px] truncate">{option.label}</span>
+                    {(isModelSelect || isResolutionSelect) && optionMeta ? (
+                      <span
+                        className="mt-0.5 text-[10px] font-medium"
+                        style={{ color: active ? 'var(--accent)' : 'var(--text-tertiary)' }}
+                      >
+                        {optionMeta}
+                      </span>
+                    ) : null}
+                  </span>
+                  {recommendedValue && option.value === recommendedValue ? (
                     <span
-                      className="mt-0.5 text-[10px] font-medium"
-                      style={{ color: active ? 'var(--accent)' : 'var(--text-tertiary)' }}
+                      className="ml-auto rounded-full px-1.5 py-0.5 text-[9px] font-black"
+                      style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
                     >
-                      {optionMeta}
+                      {recommendedLabel}
+                    </span>
+                  ) : secondaryRecommendedValue && option.value === secondaryRecommendedValue ? (
+                    <span
+                      className="ml-auto rounded-full px-1.5 py-0.5 text-[9px] font-black"
+                      style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                    >
+                      {secondaryRecommendedLabel}
                     </span>
                   ) : null}
-                </span>
-                {recommendedValue && option.value === recommendedValue ? (
-                  <span
-                    className="ml-auto rounded-full px-1.5 py-0.5 text-[9px] font-black"
-                    style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                </button>
+                {actionVisible && optionAction ? (
+                  <button
+                    type="button"
+                    aria-label={optionAction.ariaLabel(option.value, option.label)}
+                    title={optionAction.title?.(option.value, option.label)}
+                    disabled={optionAction.isDisabled?.(option.value)}
+                    onClick={() => optionAction.onAction(option.value)}
+                    className="mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{
+                      color: 'var(--accent)',
+                      background: active ? 'var(--bg-surface)' : 'var(--bg-elevated)',
+                    }}
                   >
-                    {recommendedLabel}
-                  </span>
-                ) : secondaryRecommendedValue && option.value === secondaryRecommendedValue ? (
-                  <span
-                    className="ml-auto rounded-full px-1.5 py-0.5 text-[9px] font-black"
-                    style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
-                  >
-                    {secondaryRecommendedLabel}
-                  </span>
+                    {optionAction.renderIcon(option.value)}
+                  </button>
                 ) : null}
-              </button>
+              </div>
             );
           })}
 
