@@ -21,6 +21,7 @@ const {
   getPublicBaseUrl,
   getActiveManagedAssetRunIds,
   getStoredAssetById,
+  markStoredAssetPermanent,
   markStoredAssetStorageStatus,
   optimizeMp4BufferForStreaming,
   persistAssetBuffer,
@@ -34,6 +35,31 @@ const {
   collectStoredAssetIdsFromValue,
   writeAtomicJsonFile,
 } = assetStore;
+
+test('markStoredAssetPermanent sets expiresAt to zero for mysql and local registries', async () => {
+  const mysqlCalls = [];
+  await markStoredAssetPermanent({
+    query: async (...args) => {
+      mysqlCalls.push(args);
+    },
+  }, 'asset-mysql', 1234);
+  assert.deepEqual(mysqlCalls, [[
+    'UPDATE stored_assets SET expires_at = 0, updated_at = ? WHERE id = ?',
+    [1234, 'asset-mysql'],
+  ]]);
+
+  let localAssets = [{ id: 'asset-local', expiresAt: 5678, updatedAt: 1 }];
+  await markStoredAssetPermanent(null, 'asset-local', 4321, {
+    mutateLocalRegistry: async (operation) => {
+      await operation(localAssets);
+    },
+  });
+  assert.deepEqual(localAssets, [{
+    id: 'asset-local',
+    expiresAt: 0,
+    updatedAt: 4321,
+  }]);
+});
 
 const testPersistDeps = async (prefix) => {
   const assetDir = await mkdtemp(path.join(tmpdir(), `${prefix}-`));

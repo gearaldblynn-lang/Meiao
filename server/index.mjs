@@ -156,6 +156,7 @@ import {
   listStoredAssetsForUser,
   markStoredAssetAccessed,
   markStoredAssetDeleted,
+  markStoredAssetPermanent,
   normalizeStoredAssetJobId,
   persistAssetBuffer,
   persistAssetFile,
@@ -5488,6 +5489,7 @@ const persistVoiceoverPreviewAudio = async ({
     originalName: `voice-preview-${voiceName}.wav`,
     provider: 'kie_tts',
     jobId: previewId,
+    expiresAt: 0,
   });
   if (shouldUseMysql) {
     return withManagedAssetUserLock(userId, async (pool) => {
@@ -5513,11 +5515,61 @@ const persistVoiceoverPreviewAudio = async ({
   });
 };
 
+const ensureVoiceoverPreviewAudioPersistent = async ({
+  userId,
+  audioUrl,
+}) => {
+  const assetId = extractStoredAssetIdFromPublicUrl(audioUrl);
+  if (!assetId) {
+    const error = new Error('试听音频不是可管理的本地素材');
+    error.code = 'voiceover_preview_asset_invalid';
+    throw error;
+  }
+  const pin = async (pool) => {
+    const asset = await getStoredAssetById(pool, assetId);
+    if (
+      !asset
+      || asset.userId !== userId
+      || asset.module !== 'voiceover_preview'
+      || asset.storageStatus !== 'active'
+      || asset.deletedAt
+    ) {
+      const error = new Error('试听音频素材不存在或不属于当前账号');
+      error.code = 'voiceover_preview_asset_missing';
+      throw error;
+    }
+    if (Number(asset.expiresAt || 0) !== 0) {
+      await markStoredAssetPermanent(pool, assetId);
+    }
+  };
+  if (shouldUseMysql) {
+    return withManagedAssetUserLock(userId, async (pool) => {
+      const owner = await findAnyDbUserById(userId, pool);
+      if (!owner || owner.status !== 'active') {
+        const error = new Error('账号已停用或不存在，未永久保存试听音频');
+        error.code = 'managed_asset_owner_unavailable';
+        throw error;
+      }
+      await pin(pool);
+    });
+  }
+  return withLocalManagedAssetUserLock(userId, async () => {
+    const owner = findLocalUserById(userId);
+    if (!owner || owner.status !== 'active') {
+      const error = new Error('账号已停用或不存在，未永久保存试听音频');
+      error.code = 'managed_asset_owner_unavailable';
+      throw error;
+    }
+    await pin(null);
+  });
+};
+
 const voiceoverPreviewService = createVoiceoverPreviewService({
   rootDir: path.join(dataDir, 'voiceover-preview-cache'),
   env: process.env,
   executeProviderJob,
   persistAudio: persistVoiceoverPreviewAudio,
+  ensureAudioPersistent: ensureVoiceoverPreviewAudioPersistent,
   log: (entry) => console.warn('[voiceover-preview]', entry),
 });
 

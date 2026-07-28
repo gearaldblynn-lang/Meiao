@@ -749,6 +749,28 @@ export const markStoredAssetAccessed = async (pool, assetId, touchedAt = now()) 
   });
 };
 
+export const markStoredAssetPermanent = async (pool, assetId, touchedAt = now(), deps = {}) => {
+  if (!assetId) return;
+  if (pool) {
+    await pool.query(
+      'UPDATE stored_assets SET expires_at = 0, updated_at = ? WHERE id = ?',
+      [touchedAt, assetId],
+    );
+    return;
+  }
+  const mutateRegistry = deps.mutateLocalRegistry || mutateLocalRegistry;
+  await mutateRegistry((assets) => {
+    const index = assets.findIndex((item) => item.id === assetId);
+    if (index >= 0) {
+      assets[index] = {
+        ...assets[index],
+        expiresAt: 0,
+        updatedAt: touchedAt,
+      };
+    }
+  });
+};
+
 export const markStoredAssetStorageStatus = async (pool, assetId, storageStatus, touchedAt = now()) => {
   const normalizedStatus = String(storageStatus || '').trim();
   if (!STORED_ASSET_STORAGE_STATUSES.has(normalizedStatus)) {
