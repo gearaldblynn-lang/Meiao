@@ -98,6 +98,17 @@ test('shell select params support old frontend custom platform and language inpu
   assert.match(bottomInputBar, /中文（Chinese）/);
 });
 
+test('composer selects stay anchored inside the viewport with a scrollable option area', () => {
+  const composerPrimitives = read('./ComposerPrimitives.tsx');
+
+  assert.match(composerPrimitives, /calculateComposerSelectPlacement/);
+  assert.match(composerPrimitives, /maxHeight:\s*popoverLayout\.maxHeight/);
+  assert.match(composerPrimitives, /overflowY:\s*'auto'/);
+  assert.match(composerPrimitives, /placement === 'up'/);
+  assert.match(composerPrimitives, /addEventListener\('resize'/);
+  assert.match(composerPrimitives, /addEventListener\('scroll'/);
+});
+
 test('one click exposes sku naming as a dedicated bottom action instead of burying it under more params', () => {
   const bottomInputBar = source();
 

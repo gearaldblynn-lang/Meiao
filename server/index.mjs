@@ -175,6 +175,7 @@ import {
 import {
   getVoiceoverConfig,
 } from './voiceoverContract.mjs';
+import { createVoiceoverPreviewService } from './voiceoverPreviewService.mjs';
 import { probeVoiceoverManagedMedia } from './voiceoverMediaProbe.mjs';
 import {
   checkVoiceoverSeparationReadiness,
@@ -5345,6 +5346,80 @@ const persistRuntimeRemoteAssetIfEnabled = async ({ userId, moduleName, assetTyp
     if (!owner || owner.status !== 'active') return normalizedUrl;
     return persist(pool);
   });
+};
+
+const persistVoiceoverPreviewAudio = async ({
+  userId,
+  previewId,
+  voiceName,
+  remoteUrl,
+}) => {
+  const persist = (pool) => persistRemoteAsset({
+    pool,
+    publicBaseUrl: getPersistentAssetBaseUrl(),
+    userId,
+    module: 'voiceover_preview',
+    assetType: 'preview',
+    remoteUrl,
+    originalName: `voice-preview-${voiceName}.wav`,
+    provider: 'kie_tts',
+    jobId: previewId,
+  });
+  if (shouldUseMysql) {
+    return withManagedAssetUserLock(userId, async (pool) => {
+      const owner = await findAnyDbUserById(userId, pool);
+      if (!owner || owner.status !== 'active') {
+        const error = new Error('账号已停用或不存在，未保存试听音频');
+        error.code = 'managed_asset_owner_unavailable';
+        throw error;
+      }
+      const persisted = await persist(pool);
+      return persisted.publicUrl;
+    });
+  }
+  return withLocalManagedAssetUserLock(userId, async () => {
+    const owner = findLocalUserById(userId);
+    if (!owner || owner.status !== 'active') {
+      const error = new Error('账号已停用或不存在，未保存试听音频');
+      error.code = 'managed_asset_owner_unavailable';
+      throw error;
+    }
+    const persisted = await persist(null);
+    return persisted.publicUrl;
+  });
+};
+
+const voiceoverPreviewService = createVoiceoverPreviewService({
+  rootDir: path.join(dataDir, 'voiceover-preview-cache'),
+  env: process.env,
+  executeProviderJob,
+  persistAudio: persistVoiceoverPreviewAudio,
+  log: (entry) => console.warn('[voiceover-preview]', entry),
+});
+
+const respondVoiceoverPreviewError = (res, error) => {
+  const statusCode = Number(error?.statusCode || 0);
+  json(res, statusCode >= 400 && statusCode <= 599 ? statusCode : 500, {
+    code: String(error?.code || 'voiceover_preview_failed'),
+    message: String(error?.message || '音色试听失败'),
+  });
+};
+
+const assertVoiceoverPreviewCreationAllowed = (user) => {
+  const config = getVoiceoverConfig(process.env);
+  const kieConfigured = Boolean(String(process.env.KIE_API_KEY || process.env.MEIAO_KIE_API_KEY || '').trim());
+  if (!canUseVideoGenerationFeature(user)) {
+    const error = new Error('当前账号未开通视频生成功能');
+    error.code = 'voiceover_preview_forbidden';
+    error.statusCode = 403;
+    throw error;
+  }
+  if (!config.enabled || !voiceoverTranslationReadiness.ready || !kieConfigured) {
+    const error = new Error('口播翻译语音服务当前未就绪');
+    error.code = 'voiceover_preview_unavailable';
+    error.statusCode = 503;
+    throw error;
+  }
 };
 
 const buildStoredAssetCacheTag = (assetId, fileSize, mtimeMs) => (
@@ -11933,6 +12008,40 @@ const handleMysqlRequest = async (req, res, url) => {
     return;
   }
 
+  if (url.pathname === '/api/voiceover/voice-previews' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      assertVoiceoverPreviewCreationAllowed(user);
+      const body = await readBody(req);
+      const preview = await voiceoverPreviewService.request({
+        userId: user.id,
+        targetLanguage: body?.targetLanguage,
+        voiceName: body?.voiceName,
+      });
+      json(res, preview.status === 'ready' ? 200 : 202, { preview });
+    } catch (error) {
+      respondVoiceoverPreviewError(res, error);
+    }
+    return;
+  }
+
+  const voiceoverPreviewMatch = url.pathname.match(/^\/api\/voiceover\/voice-previews\/([^/]+)$/);
+  if (voiceoverPreviewMatch && req.method === 'GET') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const preview = await voiceoverPreviewService.get({
+        userId: user.id,
+        previewId: decodeURIComponent(voiceoverPreviewMatch[1]),
+      });
+      json(res, 200, { preview });
+    } catch (error) {
+      respondVoiceoverPreviewError(res, error);
+    }
+    return;
+  }
+
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
   if ((req.method === 'GET' || req.method === 'HEAD') && assetRouteMatch) {
     const assetId = decodeURIComponent(assetRouteMatch[1]);
@@ -14824,6 +14933,40 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     const user = localRequireUser(req, res, store);
     if (!user) return;
     await handleMediaTranscodeRequest({ req, res, url, user });
+    return;
+  }
+
+  if (url.pathname === '/api/voiceover/voice-previews' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      assertVoiceoverPreviewCreationAllowed(user);
+      const body = await readBody(req);
+      const preview = await voiceoverPreviewService.request({
+        userId: user.id,
+        targetLanguage: body?.targetLanguage,
+        voiceName: body?.voiceName,
+      });
+      json(res, preview.status === 'ready' ? 200 : 202, { preview });
+    } catch (error) {
+      respondVoiceoverPreviewError(res, error);
+    }
+    return;
+  }
+
+  const voiceoverPreviewMatch = url.pathname.match(/^\/api\/voiceover\/voice-previews\/([^/]+)$/);
+  if (voiceoverPreviewMatch && req.method === 'GET') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const preview = await voiceoverPreviewService.get({
+        userId: user.id,
+        previewId: decodeURIComponent(voiceoverPreviewMatch[1]),
+      });
+      json(res, 200, { preview });
+    } catch (error) {
+      respondVoiceoverPreviewError(res, error);
+    }
     return;
   }
 

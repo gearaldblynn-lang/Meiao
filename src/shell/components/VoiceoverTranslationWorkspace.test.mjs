@@ -82,6 +82,18 @@ test('workspace exposes natural or literal translation and auto or preset voice 
   assert.match(source, /setVoiceMode\('preset'\)/);
 });
 
+test('preset voice rows expose real provider preview without previewing automatically', () => {
+  assert.match(source, /requestVoiceoverPreview/);
+  assert.match(source, /waitForVoiceoverPreview/);
+  assert.match(source, /handleVoicePreview/);
+  assert.match(source, /new Audio\(\)/);
+  assert.match(composerSource, /optionAction=/);
+  assert.match(composerSource, /首次试听可能产生少量 KIE 费用/);
+  assert.match(composerSource, /onVoicePreview/);
+  assert.doesNotMatch(source, /speechSynthesis|SpeechSynthesisUtterance/);
+  assert.doesNotMatch(source, /useEffect\([\s\S]{0,300}requestVoiceoverPreview/);
+});
+
 test('remove-text starts off and reuses the existing normalized subtitle editor', () => {
   assert.match(source, /useState\(false\)/);
   assert.match(source, /DEFAULT_SUBTITLE_REGION/);
