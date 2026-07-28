@@ -315,11 +315,11 @@ type VoiceoverCheckpointV1 = {
 - `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY`：默认 `1`，限制 `1..2`。
 - `MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS`：默认 `3600000`，限制 `300000..7200000`。
 - `MEIAO_VOICEOVER_MIN_ATEMPO`：默认 `0.75`，限制 `0.5..1`。
-- `MEIAO_VOICEOVER_MAX_ATEMPO`：默认 `1.35`，限制 `1..2`。
+- `MEIAO_VOICEOVER_MAX_ATEMPO`：默认 `1.75`，限制 `1..2`。
 - `MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS`：默认 `8192`，只允许降低当前模型目录声明的上限。
 - `MEIAO_VOICEOVER_GROUP_GAP_MS`：默认 `800`，限制 `0..3000`。
 - `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS`：默认 `150`，限制 `0..1000`。
-- `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND`：默认 `96`，限制 `16..512`；只是按口播时间窗拦截异常译文字节密度的保守安全门，不是精确语速或 tokenizer。
+- `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND`：默认 `24`，限制 `16..512`；只是按口播时间窗拦截异常译文字节密度的保守安全门，不是精确语速或 tokenizer。空格分词语言还在分析提示中要求不超过约 3 个口播词/秒。
 - `MEIAO_VOICEOVER_DUCKING_DB`：默认 `4`，限制 `0..12`。
 - `MEIAO_VOICEOVER_FADE_MS`：默认 `40`，限制 `0..200`。
 - `MEIAO_VOICEOVER_DURATION_TOLERANCE_MS`：默认 `100`，限制 `20..500`。
@@ -417,18 +417,18 @@ type VoiceoverAnalysis = {
 
 ### 10.1 口播组
 
-- 相邻间隔不超过 `MEIAO_VOICEOVER_GROUP_GAP_MS` 且总输入未超模型限制的片段合并为一个 TTS 组。
+- 每个检测到的口播时间段独立创建一个 TTS 组；`MEIAO_VOICEOVER_GROUP_GAP_MS` 只保留配置兼容，不再触发跨段合并。
 - 规划与 checkpoint 共用 `VOICEOVER_MAX_TTS_GROUPS=100`；恰好 100 组允许，第 101 组在任何 provider 提交前以 `voiceover_tts_input_too_large` 拒绝。
 - 每组保存目标起止时间、译文、预计语速、实际音频时长和安全变速比。
 - TTS 提交前根据目标时间预算选择 `pace`。
 - TTS 完成后使用 FFmpeg `atempo` 做无变调时间适配。
-- 实际语音短于目标窗且所需慢速低于 `MEIAO_VOICEOVER_MIN_ATEMPO` 时，把 `atempo` 钳制到该可理解下限，剩余时间由静音床补齐，不为拉长时长创建第二个收费 TTS 任务。
+- 每个检测到的口播时间段独立创建一个 TTS 组，不合并相邻时间段；实际语音短于目标窗时保持 `atempo=1` 并按该段起始时间放置，剩余时间保留自然停顿，不再为了填满窗口而降速。
 - 实际语音长于目标窗且所需加速超过 `MEIAO_VOICEOVER_MAX_ATEMPO` 时返回 `voiceover_timing_out_of_range`，避免通过裁切丢失口播内容。
 
 ### 10.2 混音
 
 - vocal 统一为 48 kHz 单声道工作轨。
-- `no_vocals` 保持双声道并统一为 48 kHz。
+- `no_vocals` 保持双声道并统一为 48 kHz；同时从原始提取音轨构造 `FL-FR` 左右声道差分背景床，与 `no_vocals` 混合后再做 ducking。该补偿用于 Demucs 把中心人声和背景音乐一起留在 vocal stem 的素材，不能重新引入口播中心声像。
 - 每个新口播组按原始 `startMs` 放置，首尾按 `MEIAO_VOICEOVER_FADE_MS` 淡入淡出，避免拼接爆音。
 - 口播存在时按 `MEIAO_VOICEOVER_DUCKING_DB` 对背景轨做轻度 sidechain ducking；FFmpeg readiness 必须验证所用 filter，不能上线后才发现构建不支持。
 - 混合轨使用 `alimiter=limit=0.8912509381:level=0` 做峰值保护，禁止削波；必须保持 `level=0` 关闭 auto level compensation，避免 FFmpeg 把受限信号重新增益到 0 dBFS 而破坏 -1 dBFS ceiling。

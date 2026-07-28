@@ -55,6 +55,7 @@ test('analysis prompt is one RTCFE user message with one managed input_file befo
     targetLanguage: 'en',
     translationMode: 'natural',
     durationMs: 12_000,
+    maxTargetTextBytesPerSecond: 24,
   });
 
   assert.equal(messages.length, 1);
@@ -94,6 +95,11 @@ test('analysis prompt is one RTCFE user message with one managed input_file befo
   assert.match(prompt, /no prose/i);
   assert.match(prompt, /English/);
   assert.match(prompt, /12000/);
+  assert.match(prompt, /24 UTF-8 bytes per second/i);
+  assert.match(prompt, /shorten.*nonessential/i);
+  assert.match(prompt, /3 spoken words per second/i);
+  assert.match(prompt, /timing fit is mandatory/i);
+  assert.match(prompt, /omit secondary modifiers/i);
   assert.doesNotMatch(prompt, /\b(?:gender|ethnicity|age|race)\b/i);
 });
 
@@ -151,6 +157,16 @@ test('analysis prompt rejects invalid input instead of constructing an ambiguous
       durationMs: 12_000,
     }),
     (error) => error.code === 'voiceover_language_unsupported',
+  );
+  assert.throws(
+    () => buildVoiceoverAnalysisMessages({
+      vocalOnlyVideoUrl: 'https://managed.example/vocal-only.mp4',
+      targetLanguage: 'en',
+      translationMode: 'natural',
+      durationMs: 12_000,
+      maxTargetTextBytesPerSecond: 513,
+    }),
+    (error) => error.code === 'voiceover_analysis_invalid',
   );
 });
 
@@ -212,7 +228,11 @@ test('strict JSON scanner rejects canonical duplicate keys without misreading st
   }
 
   assert.equal(parse(validAnalysis({
-    segments: [validSegment({ targetText: 'Say "sourceLanguage" and "id" literally.' })],
+    segments: [validSegment({
+      startMs: 0,
+      endMs: 2_000,
+      targetText: 'Say "sourceLanguage" and "id" literally.',
+    })],
   })).segments[0].targetText, 'Say "sourceLanguage" and "id" literally.');
 });
 
@@ -301,11 +321,11 @@ test('parser rejects abnormal target-text byte density in natural and literal mo
 
   assert.equal(parse(validAnalysis({
     sourceLanguage: 'en',
-    segments: [validSegment({ startMs: 0, endMs: 100, sourceText: 'Hello', targetText: '你好。' })],
+    segments: [validSegment({ startMs: 0, endMs: 500, sourceText: 'Hello', targetText: '你好。' })],
   }), parserOptions({ targetLanguage: 'cmn' })).segments[0].targetText, '你好。');
   assert.equal(parse(validAnalysis({
-    segments: [validSegment({ startMs: 0, endMs: 1_000, targetText: 'A concise translated line.' })],
-  })).segments[0].targetText, 'A concise translated line.');
+    segments: [validSegment({ startMs: 0, endMs: 1_000, targetText: 'Concise line.' })],
+  })).segments[0].targetText, 'Concise line.');
 });
 
 test('parser fails closed for invalid options, speech text, profile, duplicate ids, and speaker counts', () => {
@@ -435,7 +455,7 @@ test('UTF-8 estimator is the conservative serialized provider-input byte upper b
   );
 });
 
-test('grouping is deterministic, order preserving, immutable, and carries the complete Task 6 payload', () => {
+test('grouping preserves every detected timing window instead of merging adjacent speech', () => {
   const segments = [
     validSegment({ id: 's1', startMs: 100, endMs: 500, targetText: 'First.' }),
     validSegment({ id: 's2', startMs: 900, endMs: 1_300, targetText: 'Second.' }),
@@ -450,19 +470,18 @@ test('grouping is deterministic, order preserving, immutable, and carries the co
   };
   const groups = buildVoiceoverTtsGroups(options);
 
-  assert.deepEqual(groups.map((group) => group.segmentIds), [['s1', 's2'], ['s3']]);
+  assert.deepEqual(groups.map((group) => group.segmentIds), [['s1'], ['s2'], ['s3']]);
   assert.deepEqual(buildVoiceoverTtsGroups(options), groups);
   assert.deepEqual(segments, snapshot);
   assert.deepEqual(groups[0], {
     groupIndex: 0,
-    segmentIds: ['s1', 's2'],
-    segments: snapshot.slice(0, 2),
+    segmentIds: ['s1'],
+    segments: snapshot.slice(0, 1),
     startMs: 100,
-    endMs: 1_300,
+    endMs: 500,
     voiceName: 'Kore',
     dialogueTurns: [
       { speaker: 'Speaker 1', text: 'First.' },
-      { speaker: 'Speaker 1', text: 'Second.' },
     ],
     scene: groups[0].scene,
     sampleContext: groups[0].sampleContext,
@@ -479,33 +498,53 @@ test('grouping is deterministic, order preserving, immutable, and carries the co
   assert.doesNotMatch(JSON.stringify(groups), /(?:https?:\/\/|\/tmp\/|file:)/);
 });
 
-test('adjacent segments split before their full serialized provider input crosses the budget', () => {
+test('each timing-window group independently respects the serialized provider budget', () => {
   const segments = [
     validSegment({ id: 's1', startMs: 0, endMs: 400, targetText: 'One.' }),
     validSegment({ id: 's2', startMs: 600, endMs: 1_000, targetText: 'Two.' }),
     validSegment({ id: 's3', startMs: 1_200, endMs: 1_600, targetText: 'Three.' }),
   ];
-  const all = buildVoiceoverTtsGroups({
-    segments,
-    selectedVoiceName: 'Kore',
-    maxInputTokens: 8_192,
-    groupGapMs: 800,
-  });
-  const twoSegmentBudget = estimateVoiceoverTtsInputTokens({
+  const singleSegmentBudget = estimateVoiceoverTtsInputTokens({
     voiceName: 'Kore',
-    dialogueTurns: all[0].dialogueTurns.slice(0, 2),
-    scene: all[0].scene,
-    sampleContext: all[0].sampleContext,
+    dialogueTurns: [{ speaker: 'Speaker 1', text: 'Three.' }],
+    scene: 'Translated product voiceover with natural, controlled pacing.',
+    sampleContext: 'Use one consistent narrator and preserve punctuation and pauses.',
   });
   const groups = buildVoiceoverTtsGroups({
     segments,
     selectedVoiceName: 'Kore',
-    maxInputTokens: twoSegmentBudget,
+    maxInputTokens: singleSegmentBudget,
     groupGapMs: 800,
   });
 
-  assert.deepEqual(groups.map((group) => group.segmentIds), [['s1', 's2'], ['s3']]);
-  assert.ok(groups.every((group) => group.estimatedInputTokens <= twoSegmentBudget));
+  assert.deepEqual(groups.map((group) => group.segmentIds), [['s1'], ['s2'], ['s3']]);
+  assert.ok(groups.every((group) => group.estimatedInputTokens <= singleSegmentBudget));
+});
+
+test('the reported four-window canary produces four exact TTS placement groups', () => {
+  const segments = [
+    validSegment({ id: 'seg_1', startMs: 0, endMs: 3_000, targetText: 'First line.' }),
+    validSegment({ id: 'seg_2', startMs: 3_000, endMs: 6_000, targetText: 'Second line.' }),
+    validSegment({ id: 'seg_3', startMs: 6_000, endMs: 10_000, targetText: 'Third line.' }),
+    validSegment({ id: 'seg_4', startMs: 10_000, endMs: 15_070, targetText: 'Fourth line.' }),
+  ];
+
+  const groups = buildVoiceoverTtsGroups({
+    segments,
+    selectedVoiceName: 'Charon',
+    maxInputTokens: 8_192,
+    groupGapMs: 800,
+  });
+
+  assert.deepEqual(
+    groups.map(({ segmentIds, startMs, endMs }) => ({ segmentIds, startMs, endMs })),
+    [
+      { segmentIds: ['seg_1'], startMs: 0, endMs: 3_000 },
+      { segmentIds: ['seg_2'], startMs: 3_000, endMs: 6_000 },
+      { segmentIds: ['seg_3'], startMs: 6_000, endMs: 10_000 },
+      { segmentIds: ['seg_4'], startMs: 10_000, endMs: 15_070 },
+    ],
+  );
 });
 
 test('one oversized segment and invalid grouping configuration fail before provider submission', () => {

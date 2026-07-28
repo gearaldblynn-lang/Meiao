@@ -880,6 +880,7 @@ export async function runVoiceoverTranslationJob({
         targetLanguage: payload.targetLanguage,
         translationMode: payload.translationMode,
         durationMs,
+        maxTargetTextBytesPerSecond: config.maxTargetTextBytesPerSecond,
       });
       const analysisOutput = await analyzeSpeech({
         messages,
@@ -949,6 +950,18 @@ export async function runVoiceoverTranslationJob({
       throwIfAborted(signal);
       const index = planned.groupIndex;
       const existingAttempt = attempts.get(index);
+      if (
+        existingAttempt
+        && (
+          existingAttempt.startMs !== planned.startMs
+          || existingAttempt.endMs !== planned.endMs
+        )
+      ) {
+        throw buildVoiceoverError(
+          'voiceover_checkpoint_invalid',
+          'TTS 检查点时间窗与当前分段计划不一致',
+        );
+      }
       const attempt = Number(existingAttempt?.attempt ?? 0);
       const childKey = `tts:${index}:attempt:${attempt}`;
       let child = existingAttempt?.status === 'succeeded' && existingAttempt?.assetId
@@ -1126,10 +1139,12 @@ export async function runVoiceoverTranslationJob({
     const mixAudio = requireDependency(deps, 'mixAudio');
     const finalPath = await prepareOutputPath('result', 'voiceover-translated.mp4');
     await assertVoiceoverWorkPath(canonicalRoot, baseVideo.path, { mustExist: true });
+    await assertVoiceoverWorkPath(canonicalRoot, originalAudio.path, { mustExist: true });
     await assertVoiceoverWorkPath(canonicalRoot, background.path, { mustExist: true });
     await assertVoiceoverWorkPath(canonicalRoot, alignedAudio.path, { mustExist: true });
     await mixAudio({
       baseVideoPath: baseVideo.path,
+      sourceAudioPath: originalAudio.path,
       backgroundPath: background.path,
       narrationPath: alignedAudio.path,
       outputPath: finalPath,

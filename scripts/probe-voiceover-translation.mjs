@@ -660,6 +660,7 @@ async function defaultRunFixtureProbe(fixturePath, { env, deps }) {
     });
     const final = await mixVoiceoverResult({
       baseVideoPath: fixturePath,
+      sourceAudioPath: originalAudioPath,
       backgroundPath: separated.backgroundPath,
       narrationPath: alignedAudioPath,
       outputPath: finalVideoPath,

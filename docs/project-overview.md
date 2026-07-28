@@ -36,11 +36,12 @@
 - 重点还原可多选六项，默认选择“形态与结构、材质与纹理”；分辨率默认 2K，只有模型声明支持时才显示 4K，不提供 1K 或比例控制。
 - 新建任务由 `MEIAO_PRODUCT_RESTORE_ROLLOUT=off|admin|all` 控制，缺失或非法值按 `off` 处理；开关只控制新建，历史项目仍可查看。
 
-### 短视频 / 口播翻译（仅本地、未发布）
+### 短视频 / 口播翻译
 
-- 输入必须是当前登录账号拥有的梅奥托管视频。流程为本地 FFmpeg 提取音轨、本地非量化 Demucs `mdx` 分离人声/背景、Gemini 单次分析与翻译、KIE Gemini 3.1 Flash TTS 分组合成、本地对齐/ducking/混音，再把 H.264/AAC MP4 作为托管结果写回原任务卡。
+- 输入必须是当前登录账号拥有的梅奥托管视频。流程为本地 FFmpeg 提取音轨、本地非量化 Demucs `mdx` 分离人声/背景、Gemini 单次分析与翻译、KIE Gemini 3.1 Flash TTS 按检测到的每个口播时间段独立合成、本地对齐/ducking/混音，再把 H.264/AAC MP4 作为托管结果写回原任务卡。
+- 新口播不会为了填满时间窗而降速；短语音保持自然速度并按原时间戳放置，长语音按时间窗在上限内加速。混音同时使用 Demucs `no_vocals` 和原音轨左右声道差分，避免中心人声占满混音时把原背景音乐一起删除。
 - “同时去文案”是可选 Golden 阶段，默认区域为底部 30%。它会增加一次 Golden 计费边界；关闭该选项不会调用 Golden。
-- 当前只完成本地实现和非付费验证，没有推送、部署或真实 provider canary。腾讯云开通、CPU/内存/磁盘/并发 sizing 和任何真实计费任务都需要用户另行明确确认。
+- 本地和腾讯云都使用同一套 readiness、父子任务检查点和托管素材合同；正式发布必须在服务端确认 `voiceoverTranslation.ready=true`，并用最小真实任务验收分析、逐段 TTS、对齐、混音和最终资源链。
 - 回滚只把 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=0` 并正常 reload，停止新提交；历史任务、原视频和已经托管的翻译结果继续可查看和下载。
 
 ## 3. 本地运行
@@ -235,12 +236,12 @@ npm run dev
 | `MEIAO_VOICEOVER_PIP_RETRIES` | `8` | 一次性安装单连接重试；整数 `0-20` |
 | `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY` | `1` | 整数 `1-2`；生产首发保持 `1` |
 | `MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS` | `3600000` | 整数 `300000-7200000` |
-| `MEIAO_VOICEOVER_MIN_ATEMPO` | `0.75` | `0.5-1` |
-| `MEIAO_VOICEOVER_MAX_ATEMPO` | `1.35` | `1-2` |
+| `MEIAO_VOICEOVER_MIN_ATEMPO` | `0.75` | `0.5-1`；只兼容旧检查点，新口播实际不低于 `1` |
+| `MEIAO_VOICEOVER_MAX_ATEMPO` | `1.75` | `1-2` |
 | `MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS` | `8192` | 整数 `1-8192`，不得超过语音模型上限 |
-| `MEIAO_VOICEOVER_GROUP_GAP_MS` | `800` | 整数 `0-3000` |
+| `MEIAO_VOICEOVER_GROUP_GAP_MS` | `800` | 整数 `0-3000`；保留兼容，当前每个口播时间段独立 TTS |
 | `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS` | `150` | 整数 `0-1000` |
-| `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND` | `96` | 整数 `16-512` |
+| `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND` | `24` | 整数 `16-512`；空格分词语言提示同时限制约 3 词/秒 |
 | `MEIAO_VOICEOVER_DUCKING_DB` | `4` | `0-12` |
 | `MEIAO_VOICEOVER_FADE_MS` | `40` | 整数 `0-200` |
 | `MEIAO_VOICEOVER_DURATION_TOLERANCE_MS` | `100` | 整数 `20-500` |

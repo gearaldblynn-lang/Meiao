@@ -456,3 +456,8 @@
   根因:首次零停机迁移在候选目录构建后使用 `rsync -a` 同步到正式目录，把本机仓库根目录的 `0700` 与数值 owner `501:20` 一并复制到 `/www/wwwroot/meiao-internal`。PM2 以 root 运行，直连 `127.0.0.1:3100` 仍能读取结果文件并返回 200；公网请求带转发头后启用 `MEIAO_ASSET_X_ACCEL=1`，Nginx worker `www` 无法穿过应用根目录，因而同一文件经域名返回 403。多桑任务 `1f4358bcd4e4ae64423a8677` 的 provider、资产记录和 160242 字节 JPEG 均正常，故障边界只在 X-Accel 文件交付。
   修复:云上应用根目录恢复为 `root:root 0755`，不修改素材、任务、积分或数据库，也不重提已成功任务；多桑原结果 URL 随即恢复 `200 image/jpeg`。标准发布脚本在 staged source copy 后、install/build 前显式 `chmod 0755` 应用根目录，只恢复 Nginx 必需的根目录通行权限，禁止递归放宽 `.env.server`、源码或资产权限。回归测试锁定 copy→chmod→install 顺序并拒绝递归 chmod；云上最近 30 个 active 本地资产经 Nginx HEAD 抽样全部 200。
   如何避免:**只要启用 X-Accel，部署验收就必须同时验证“Node 直读”和“Nginx www 穿透目录后的公网读取”。任何保留元数据的 tar/rsync 同步都不得把开发机仓库根目录权限复制到生产应用根；发布脚本必须显式恢复应用根目录通行，并继续保持密钥和数据文件自身的严格权限。**
+
+- **#81 ✅ 本地已修、待部署(2026-07-28)· 口播翻译按整段慢放且 Demucs 把背景音乐一起删除，成品音画错位并只剩分离杂音**
+  根因:旧规划会把相邻语音时间段合成一个 TTS 组，但 Gemini 3.1 Flash TTS 不返回每个 dialogue turn 的独立时间戳；真实 15.07 秒视频因此只得到一条 8.92 秒音频并被强制降速到 `atempo=0.75`，末尾仍有 3.66 秒无口播。与此同时该素材的 `mdx no_vocals` 只有 -44.9 LUFS，而 vocal stem 与原混音同为 -8.7 LUFS，说明中心人声和背景音乐一起落入 vocal；旧混音只使用 `no_vocals`，把音乐删除后放大了分离残留。KIE 统一查询还会返回文档主模型页未列出的 `queuing/generating`，旧适配器把正常生成态误判成坏响应。
+  修复:每个检测到的口播时间段独立 TTS，短语音保持自然速度并按原时间戳放置，长语音在上限内加速，默认最大 `1.75`；译文密度默认收紧为 24 bytes/s，并提示空格分词语言不超过约 3 词/秒。背景床改为 Demucs `no_vocals` 加原始双声道 `FL-FR` 中心消除差分，再统一 ducking/限幅；不重新引入口播中心声像。KIE `waiting/queuing/generating` 都按同一 task ID 有界轮询；分析校验失败可在用户确认后递增 analysis attempt，旧合并检查点与新时间窗不一致时在任何付费调用前 fail closed。
+  如何避免:**口播对齐必须以可持久化的分段时间窗为最小单位，不能假设多 turn TTS 会返回内部时间戳；不得为了填满窗口把自然语音整体慢放。人声分离验收必须量化原混音、vocal、no-vocals 和最终背景床响度，不能只检查两个 WAV 文件存在。异步 provider 的统一任务状态表优先于单模型示例，所有非终态都要回归；真实 canary 必须逐组核对 `actualDurationMs/atempo`、背景响度、最终时长和 Range 资源链。**

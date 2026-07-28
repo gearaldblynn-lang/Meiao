@@ -485,11 +485,11 @@ export function calculateAtempo({
       atempo: ratio,
     });
   }
-  // A shorter TTS clip can be slowed only to the configured intelligibility
-  // floor, then the remaining target window is filled by the silent bed.
-  // A longer clip cannot be truncated without losing speech, so it still
-  // fails when the required speed-up exceeds the configured ceiling.
-  return Number(Math.max(ratio, minimum).toFixed(9));
+  // Never slow a generated line down to fill its window. Short lines keep their
+  // natural delivery and the following segment still starts at its own durable
+  // timestamp. Longer lines are accelerated only within the configured safety
+  // ceiling, otherwise the job fails rather than truncating speech.
+  return Number(Math.max(ratio, minimum, 1).toFixed(9));
 }
 
 function validateGroupWindows(groups, totalDurationMs, overlapToleranceMs) {
@@ -642,6 +642,7 @@ export function calculateDuckingRatio(duckingDb) {
 
 export function buildFinalMixArgs({
   baseVideoPath,
+  sourceAudioPath,
   backgroundPath,
   narrationPath,
   outputPath,
@@ -650,18 +651,31 @@ export function buildFinalMixArgs({
 }) {
   for (const [value, label] of [
     [baseVideoPath, '底片视频'],
+    [sourceAudioPath, '原始音轨'],
     [backgroundPath, '背景音轨'],
     [narrationPath, '口播音轨'],
     [outputPath, '最终视频'],
   ]) assertAbsoluteFilePath(value, label);
-  assertDistinctOutput(outputPath, [baseVideoPath, backgroundPath, narrationPath]);
+  assertDistinctOutput(outputPath, [
+    baseVideoPath,
+    sourceAudioPath,
+    backgroundPath,
+    narrationPath,
+  ]);
   const duration = Number(durationMs);
   if (!Number.isFinite(duration) || duration <= 0) throw fail('最终视频时长无效');
   const ratio = calculateDuckingRatio(duckingDb);
   const seconds = formatNumber(duration / 1000);
   const filterGraph = [
-    '[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[bg]',
-    '[2:a]aresample=48000,pan=stereo|c0=c0|c1=c0[narr]',
+    // Product voiceovers often arrive as a nearly mono master. Music separators
+    // can classify that entire master as "vocals", leaving only a very quiet,
+    // noisy no_vocals stem. The L-R side signal cancels the centered original
+    // speaker while retaining stereo music/ambience; mixing it under the Demucs
+    // stem is a deterministic local recovery bed, not the old narration track.
+    '[1:a]aresample=48000,pan=stereo|c0=FL-FR|c1=FL-FR[side]',
+    '[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[stem]',
+    '[stem][side]amix=inputs=2:duration=longest:normalize=0[bg]',
+    '[3:a]aresample=48000,pan=stereo|c0=c0|c1=c0[narr]',
     '[narr]asplit=2[narr_sc][narr_mix]',
     `[bg][narr_sc]sidechaincompress=threshold=0.02:ratio=${formatNumber(ratio)}:attack=20:release=250:makeup=1[ducked]`,
     '[ducked][narr_mix]amix=inputs=2:duration=longest:normalize=0,'
@@ -672,6 +686,7 @@ export function buildFinalMixArgs({
     args: [
       '-hide_banner', '-loglevel', 'error', '-y',
       '-i', baseVideoPath,
+      '-i', sourceAudioPath,
       '-i', backgroundPath,
       '-i', narrationPath,
       '-filter_complex', filterGraph,
@@ -689,6 +704,7 @@ export function buildFinalMixArgs({
 
 export async function mixVoiceoverResult({
   baseVideoPath,
+  sourceAudioPath,
   backgroundPath,
   narrationPath,
   outputPath,
@@ -700,12 +716,15 @@ export async function mixVoiceoverResult({
   if (base.videoCodec !== 'h264' || base.width <= 0 || base.height <= 0) {
     throw fail('最终底片必须是有效 H.264 视频');
   }
+  const sourceAudio = await probeMedia(sourceAudioPath, deps, { requireAudio: true, signal });
   const background = await probeMedia(backgroundPath, deps, { requireAudio: true, signal });
   const narration = await probeMedia(narrationPath, deps, { requireAudio: true, signal });
+  assertPcmWorkTrack(sourceAudio, 2);
   assertPcmWorkTrack(background, 2);
   assertPcmWorkTrack(narration, 1);
   const { args } = buildFinalMixArgs({
     baseVideoPath,
+    sourceAudioPath,
     backgroundPath,
     narrationPath,
     outputPath,

@@ -22,6 +22,7 @@ const CHILD_KEY_TTS = /^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d{0,2})$/u;
 const CHILD_KEY_GOLDEN = /^golden:attempt:(0|[1-9]\d{0,2})$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u;
 const VOICEOVER_ANALYSIS_RETRY_ERROR_CODES = new Set([
+  'voiceover_analysis_invalid',
   'voiceover_analysis_submission_unknown',
   'provider_config_error',
   'provider_bad_response',

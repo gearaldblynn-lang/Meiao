@@ -335,7 +335,7 @@ export function normalizeKieTtsRecordResponse(body, taskId) {
     });
   }
   const state = String(body?.data?.state || '').trim();
-  if (!state || state === 'waiting') {
+  if (!state || ['waiting', 'queuing', 'generating'].includes(state)) {
     return { state: 'waiting', providerTaskId };
   }
   if (state === 'fail') {

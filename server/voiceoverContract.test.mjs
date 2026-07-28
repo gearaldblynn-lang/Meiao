@@ -61,8 +61,10 @@ test('invalid capacity values fall back to conservative defaults', () => {
   assert.equal(config.separationConcurrency, 1);
   assert.equal(config.minAtempo, 0.75);
   assert.equal(config.ttsMaxInputTokens, 8192);
-  assert.equal(config.maxTargetTextBytesPerSecond, 96);
-  assert.equal(VOICEOVER_DEFAULTS.maxTargetTextBytesPerSecond, 96);
+  assert.equal(config.maxTargetTextBytesPerSecond, 24);
+  assert.equal(config.maxAtempo, 1.75);
+  assert.equal(VOICEOVER_DEFAULTS.maxTargetTextBytesPerSecond, 24);
+  assert.equal(VOICEOVER_DEFAULTS.maxAtempo, 1.75);
   assert.deepEqual(VOICEOVER_BOUNDS.maxTargetTextBytesPerSecond, [16, 512]);
   assert.equal(VOICEOVER_MAX_TTS_GROUPS, 100);
   assert.equal(getVoiceoverConfig({
@@ -258,7 +260,7 @@ test('analysis overlap and TTS atempo use validated runtime configuration', () =
   assert.throws(() => normalizeVoiceoverCheckpoint(translated, { overlapToleranceMs: 0 }), (error) => error.code === 'voiceover_checkpoint_invalid');
   assert.equal(normalizeVoiceoverCheckpoint(translated, { overlapToleranceMs: 1_000 }).translation.segments.length, 2);
   assert.throws(() => normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', { ttsGroups: [validTtsGroup(0, { atempo: 0.7 })] }), { minAtempo: 0.75, maxAtempo: 1.35 }), (error) => error.code === 'voiceover_checkpoint_invalid');
-  assert.throws(() => normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', { ttsGroups: [validTtsGroup(0, { atempo: 1.36 })] })), (error) => error.code === 'voiceover_checkpoint_invalid');
+  assert.throws(() => normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', { ttsGroups: [validTtsGroup(0, { atempo: 1.76 })] })), (error) => error.code === 'voiceover_checkpoint_invalid');
   assert.equal(normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', { ttsGroups: [validTtsGroup(0, { atempo: 0.7 })] }), { minAtempo: 0.5, maxAtempo: 1.35 }).ttsGroups[0].atempo, 0.7);
   assert.deepEqual(
     normalizeVoiceoverCheckpoint(checkpointAt('tts_generating', { ttsGroups: [validTtsGroup(0, { atempo: 0.5 }), validTtsGroup(1, { atempo: 2 })] }), { minAtempo: 0.5, maxAtempo: 2 }).ttsGroups.map((group) => group.atempo),
@@ -276,7 +278,7 @@ test('public config cannot leak local paths or credentials', () => {
   assert.deepEqual(Object.keys(config).sort(), ['enabled', 'languages', 'limits', 'model', 'readiness', 'ready', 'voices']);
   assert.doesNotMatch(serialized, /SEPARATION_PYTHON|MODEL_DIR|apiKey|token|\/Users\//);
   assert.deepEqual(config.readiness, { pythonReady: true, modelReady: true, ffmpegReady: true, separationConcurrency: 1 });
-  assert.equal(config.limits.maxTargetTextBytesPerSecond, 96);
+  assert.equal(config.limits.maxTargetTextBytesPerSecond, 24);
   assert.equal(config.limits.ttsGroupLimit, VOICEOVER_MAX_TTS_GROUPS);
 });
 
