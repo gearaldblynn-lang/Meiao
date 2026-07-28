@@ -240,6 +240,18 @@ test('deploy_tencent drains writes and releases the job lock before ready-gated 
   assert.doesNotMatch(source, /node scripts\/hold-deploy-drain\.mjs/);
 });
 
+test('deploy_tencent gives existing write requests a five-minute drain budget by default', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  assert.match(
+    source,
+    /DEPLOY_WRITE_DRAIN_ATTEMPTS="\$\{MEIAO_DEPLOY_WRITE_DRAIN_ATTEMPTS:-600\}"/,
+  );
+  assert.match(
+    source,
+    /if \[\[ ! "\$DEPLOY_WRITE_DRAIN_ATTEMPTS" =~ \^\[1-9\]\[0-9\]\*\$ \]\]; then DEPLOY_WRITE_DRAIN_ATTEMPTS=600; fi/,
+  );
+});
+
 test('deploy_tencent proves managed image COS readiness before entering the drain', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const buildIndex = source.indexOf('npm run build -- --outDir dist-next');

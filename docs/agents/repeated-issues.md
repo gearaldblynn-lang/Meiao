@@ -30,6 +30,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `server/processLifecycle.test.mjs`、`server/pm2Contract.test.mjs`、`server/deployClaimLock.test.mjs`、`scripts/deploy_tencent.test.mjs`、`scripts/assert-deploy-health.test.mjs`、`server/deployDrain.test.mjs` 锁定 ready/优雅退出/cluster/release 身份/写请求排空、claim 竞态与禁止 stop-start；`npm run test:pm2-reload` 用真实 PM2 跨 A→B 连续探测 0 失败。云上先用 3101 候选完成旧 fork 首迁，再用标准脚本真实发布到 `meiao-zero502-standard-844605f95229`；绕过本机代理连续直连首页与 health 共 2000 次，HTTP 502、网络错误及其他状态码均为 0，且云上正式进程为单实例 `cluster_mode`、marker/mutex/3101 候选均已清理。
 - Avoid next time: 发布时序是公网可用性合同。单上游不得在候选实例 ready 前停止；验收必须连续探测公网状态码并核对 release ID，不能只在发布结束后看一次 health。
 
+## 2026-07-28 - Valid in-flight uploads can outlive the deployment drain default
+
+- Symptom: 发布构建已完成且云上 job 为零，但切换前持续看到 `activeWriteRequests=1`；默认 60 秒排空超时后，旧 release 保持健康、marker 转为 `manual`、mutex 被保留。
+- Environment: Tencent Cloud production / zero-downtime release / a write request already admitted before the deploy marker.
+- Root cause: 请求追踪与 fail-closed 行为正确，但 60 秒默认等待短于一次真实写请求的持续时间；请求随后自然结束，证明不是计数泄漏或 provider 重提。
+- Fix: `MEIAO_DEPLOY_WRITE_DRAIN_ATTEMPTS` 继续作为显式环境参数，保守默认从 120 次提高到 600 次（0.5 秒间隔，共 5 分钟）；超时后的 manual 恢复合同保持不变。
+- Regression check: `node --test scripts/deploy_tencent.test.mjs` 锁定 5 分钟默认值及环境参数；线上仅在 health 证明 `activeWriteRequests=0`、worker 健康、无发布子进程后按私有 claim 流程恢复 marker/mutex，再走标准发布。
+- Avoid next time: 排空预算必须覆盖允许的最大真实上传时长，并保持 env 可调；不得因等待超时直接删 marker、停止唯一健康进程或使用 active-job override。
+
 ## 2026-07-23 - X-Accel asset delivery requires nginx traversal on the application root
 
 - Symptom: 多桑一键主详任务已成功、积分已结算且卡片显示“已出图”，但图片区域破图；同一结果 URL 公网返回 403。
