@@ -245,6 +245,12 @@ tar \
     # 图片上传是所有业务入口的基础能力。真探针在停旧服务前完成；失败时 set -e
     # 直接终止发布，旧进程和旧 dist 继续服务，不再留下 disabled 半发布状态。
     npm run probe:managed-image-cos
+    case \"\${MEIAO_VOICEOVER_TRANSLATION_ENABLED:-0}\" in
+      1|true|TRUE|on|ON|yes|YES)
+        # 真实加载 Demucs 只在旧进程仍独占服务时做一次；新进程 bootstrap 只做轻量完整性检查。
+        npm run probe:voiceover-translation -- --readiness
+        ;;
+    esac
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs
 
     # marker 先拒绝新写请求并暂停 worker。等旧进程报告在途写请求为 0 后，

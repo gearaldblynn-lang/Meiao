@@ -164,6 +164,7 @@ test('separation propagates the parent normalized config snapshot to readiness',
       deps: {
         checkReadiness: async (options) => {
           assert.equal(options.config, config);
+          assert.equal(options.verifyModelLoad, false);
           throw sentinel;
         },
       },
@@ -197,7 +198,6 @@ test('readiness validates Python imports, the exact Demucs version, and required
     ['-hide_banner', '-filters'],
   ]);
   assert.equal(calls[1].options.env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '1');
-  assert.equal(calls[1].options.timeoutMs, 60_000);
   assert.equal('TORCH_FORCE_WEIGHTS_ONLY_LOAD' in calls[1].options.env, false);
   assert.equal('KIE_API_KEY' in calls[1].options.env, false);
   assert.equal('MEIAO_DB_PASSWORD' in calls[1].options.env, false);
@@ -206,26 +206,24 @@ test('readiness validates Python imports, the exact Demucs version, and required
   assert.doesNotMatch(JSON.stringify(readiness), /\/configured\/|secret|token|https?:/i);
 });
 
-test('readiness gives the cold Demucs model load its configured timeout without widening other probes', async () => {
+test('runtime health verifies pinned files without allocating the Demucs model a second time', async () => {
   const calls = [];
   const readiness = await checkVoiceoverSeparationReadiness({
-    env: completeEnv({ MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS: '75000' }),
+    env: completeEnv(),
+    verifyModelLoad: false,
     deps: readyDeps({
       runProcess: async (_command, args, options) => {
         calls.push({ args, options });
         return args.includes('-filters')
           ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
-          : args[1].includes('demucs.pretrained')
-            ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-            : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' };
+          : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' };
       },
     }),
   });
 
   assert.equal(readiness.ready, true);
-  assert.equal(calls[0].options, undefined);
-  assert.equal(calls[1].options.timeoutMs, 75_000);
-  assert.equal(calls[2].options, undefined);
+  assert.equal(calls.length, 2);
+  assert.equal(calls.some(({ args }) => args.some((arg) => String(arg).includes('demucs.pretrained'))), false);
 });
 
 test('readiness load gate uses the Demucs v4.0.1 public get_model API with modelDir argv', async () => {
