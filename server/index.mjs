@@ -209,6 +209,7 @@ import {
   resolveHistoricalVirtualModelSelectedAssets,
   toVirtualModelPublicSummary,
   unpublishVirtualModel,
+  updateDraftVirtualModelVersion,
   updateVirtualModelDraft,
 } from './virtualModelStore.mjs';
 import {
@@ -11689,6 +11690,7 @@ const handleVirtualModelApiRequest = async ({
   const adminDetailMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)$/);
   const adminDeleteMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)$/);
   const adminVersionMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)\/versions$/);
+  const adminVersionDetailMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)\/versions\/([^/]+)$/);
   const adminAssetsMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)\/versions\/([^/]+)\/assets$/);
   const adminPublishMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)\/publish$/);
   const adminUnpublishMatch = url.pathname.match(/^\/api\/admin\/virtual-models\/([^/]+)\/unpublish$/);
@@ -11698,6 +11700,7 @@ const handleVirtualModelApiRequest = async ({
     || (adminDetailMatch && req.method === 'PATCH')
     || (adminDeleteMatch && req.method === 'DELETE')
     || (adminVersionMatch && req.method === 'POST')
+    || (adminVersionDetailMatch && req.method === 'PATCH')
     || (adminAssetsMatch && req.method === 'PUT')
     || (adminPublishMatch && req.method === 'POST')
     || (adminUnpublishMatch && req.method === 'POST');
@@ -11813,6 +11816,18 @@ const handleVirtualModelApiRequest = async ({
       });
       persist();
       json(res, 201, { version });
+      return true;
+    }
+    if (adminVersionDetailMatch && req.method === 'PATCH') {
+      const body = await readBody(req);
+      const version = await updateDraftVirtualModelVersion({
+        ...dataSource,
+        virtualModelId: decodeURIComponent(adminVersionDetailMatch[1]),
+        virtualModelVersionId: decodeURIComponent(adminVersionDetailMatch[2]),
+        identityProfile: body?.identityProfile,
+      });
+      persist();
+      json(res, 200, { version });
       return true;
     }
     if (adminAssetsMatch && req.method === 'PUT') {
@@ -18033,6 +18048,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       return;
     }
     let submissionPolicy;
+    let authorizedPayload;
     try {
       const prepared = await prepareVoiceoverSubmission({
         body,
@@ -18043,17 +18059,26 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body, {
         voiceoverSourceProbe: prepared.sourceProbe || {},
       });
+      authorizedPayload = await prepareAuthorizedManagedAssetJobPayload({
+        value: body.payload,
+        userId: user.id,
+        scrubPayload: scrubLocalJobPayloadBeforeSubmission,
+        appendTrustedMetadata: (callerOwnedPayload) => createLibraryModelJobPayload({
+          payload: callerOwnedPayload,
+          store,
+          user,
+        }),
+      });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
     }
 
-    const callerOwnedPayload = await scrubLocalJobPayloadBeforeSubmission(body.payload, user.id);
     const jobPayload = {
       module: body.module,
       taskType: submissionPolicy.taskType,
       provider: submissionPolicy.provider,
-      payload: await createLibraryModelJobPayload({ payload: callerOwnedPayload, store, user }),
+      payload: authorizedPayload,
       priority: body.priority,
       maxRetries: submissionPolicy.maxCreateRetries ?? normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };

@@ -2395,6 +2395,10 @@ export const createVirtualModelVersion = async (virtualModelId: string, payload:
   return request<{ version: { id: string; virtualModelId: string; versionNumber: number; status: string } }>(`/api/admin/virtual-models/${encodeURIComponent(virtualModelId)}/versions`, { method: 'POST', body: JSON.stringify(payload) });
 };
 
+export const updateVirtualModelVersion = async (virtualModelId: string, virtualModelVersionId: string, payload: VirtualModelVersionPayload) => {
+  return request<{ version: { id: string; virtualModelId: string; versionNumber: number; status: string; identityProfile: Record<string, unknown> } }>(`/api/admin/virtual-models/${encodeURIComponent(virtualModelId)}/versions/${encodeURIComponent(virtualModelVersionId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+};
+
 export const replaceVirtualModelVersionAssets = async (virtualModelId: string, virtualModelVersionId: string, payload: VirtualModelAssetsPayload) => {
   return request<{ assets: VirtualModelAsset[] }>(`/api/admin/virtual-models/${encodeURIComponent(virtualModelId)}/versions/${encodeURIComponent(virtualModelVersionId)}/assets`, { method: 'PUT', body: JSON.stringify(payload) });
 };
