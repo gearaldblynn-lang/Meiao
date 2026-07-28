@@ -62,18 +62,35 @@ const VirtualModelCreateDialog: React.FC<Props> = ({
   const [clientSubmissionKey, setClientSubmissionKey] = useState('');
   const [batch, setBatch] = useState<VirtualModelGenerationBatch | null>(null);
   const [pending, setPending] = useState(false);
+  const [childActionBusy, setChildActionBusy] = useState(false);
   const [error, setError] = useState('');
   const profileValid = Boolean(modelCode.trim() && modelName.trim());
+  const dialogBusy = pending || childActionBusy;
 
   useEffect(() => {
     if (open && resumeBatch) {
       setMode('auto');
       setBatch(resumeBatch);
+      setPending(false);
+      setChildActionBusy(false);
       setError('');
       return;
     }
     if (open && !resumeBatch) {
+      setMode('choose');
       setModelCode(initialModelCode);
+      setModelName('');
+      setIdentityDescription('');
+      setAssets([]);
+      setPrimaryAssetId('');
+      setPreparedModelId('');
+      setPreparedVersionId('');
+      setClientSubmissionKey('');
+      setBatch(null);
+      setPending(false);
+      setChildActionBusy(false);
+      setError('');
+      return;
     }
     if (!open) {
       setMode('choose');
@@ -87,6 +104,7 @@ const VirtualModelCreateDialog: React.FC<Props> = ({
       setClientSubmissionKey('');
       setBatch(null);
       setPending(false);
+      setChildActionBusy(false);
       setError('');
     }
   }, [initialModelCode, open, resumeBatch]);
@@ -179,20 +197,24 @@ const VirtualModelCreateDialog: React.FC<Props> = ({
     [],
   );
   const handleError = useCallback((message: string) => setError(message), []);
+  const handleChildBusyChange = useCallback(
+    (busy: boolean) => setChildActionBusy(busy),
+    [],
+  );
 
   return <Dialog
     open={open}
     onOpenChange={(next) => {
-      if (!pending) onOpenChange(next);
+      if (!dialogBusy) onOpenChange(next);
     }}
   >
     <DialogContent
       className="max-h-[90vh] w-[94vw] sm:max-w-[1100px] overflow-y-auto"
       onPointerDownOutside={(event) => {
-        if (pending) event.preventDefault();
+        if (dialogBusy) event.preventDefault();
       }}
       onEscapeKeyDown={(event) => {
-        if (pending) event.preventDefault();
+        if (dialogBusy) event.preventDefault();
       }}
     >
       <DialogHeader>
@@ -285,6 +307,7 @@ const VirtualModelCreateDialog: React.FC<Props> = ({
             onBatchChange={handleBatchChange}
             onFinalize={handleFinalize}
             onError={handleError}
+            onBusyChange={handleChildBusyChange}
           />
           : <VirtualModelReferenceUploadStep
             assets={assets}

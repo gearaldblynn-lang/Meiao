@@ -30,6 +30,9 @@ import {
   deriveVirtualModelBatchProgress,
   mergeVirtualModelBatchPoll,
 } from './virtualModelGenerationState.mjs';
+import {
+  createVirtualModelGenerationActionCoordinator,
+} from './virtualModelGenerationActionCoordinator.mjs';
 
 type Props = {
   batch: VirtualModelGenerationBatch;
@@ -37,6 +40,7 @@ type Props = {
   onBatchChange: (batch: VirtualModelGenerationBatch) => void;
   onFinalize: () => Promise<void>;
   onError: (message: string) => void;
+  onBusyChange: (busy: boolean) => void;
 };
 
 const referenceStatusLabel = (task: VirtualModelGenerationPoseTask) => ({
@@ -86,14 +90,17 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
   onBatchChange,
   onFinalize,
   onError,
+  onBusyChange,
 }) => {
   const timerRef = useRef<number | null>(null);
   const latestBatchRef = useRef(batch);
-  const stateRevisionRef = useRef(0);
+  const actionCoordinatorRef = useRef(createVirtualModelGenerationActionCoordinator());
   const [actionId, setActionId] = useState('');
+  const [actionBusy, setActionBusy] = useState(false);
   const [downloadingPoseId, setDownloadingPoseId] = useState('');
   const [previewPoseId, setPreviewPoseId] = useState('');
   const [regenerationConfirmOpen, setRegenerationConfirmOpen] = useState(false);
+  const actionsDisabled = disabled || actionBusy;
   const progress = useMemo(
     () => deriveVirtualModelBatchProgress(batch.poseTasks),
     [batch.poseTasks],
@@ -112,31 +119,48 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
     latestBatchRef.current = batch;
   }, [batch]);
 
+  useEffect(() => () => {
+    actionCoordinatorRef.current.dispose();
+    onBusyChange(false);
+  }, [onBusyChange]);
+
   useEffect(() => {
     const controller = new AbortController();
-    const poll = async () => {
-      if (controller.signal.aborted || TERMINAL_BATCH_STATUSES.has(batch.status)) return;
-      const stateRevision = stateRevisionRef.current;
-      try {
-        const result = await fetchVirtualModelGenerationBatch(batch.id);
-        if (!controller.signal.aborted && stateRevision === stateRevisionRef.current) {
-          const merged = mergeVirtualModelBatchPoll(latestBatchRef.current, result.batch);
-          if (merged !== latestBatchRef.current) {
-            latestBatchRef.current = merged;
-            stateRevisionRef.current += 1;
-            onBatchChange(merged);
-          }
-        }
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          onError(error instanceof Error ? error.message : '生成状态刷新失败。');
-        }
-      }
+    const schedulePoll = () => {
       if (!controller.signal.aborted) {
         timerRef.current = window.setTimeout(poll, 2500);
       }
     };
-    timerRef.current = window.setTimeout(poll, 2500);
+    const poll = async () => {
+      if (controller.signal.aborted || TERMINAL_BATCH_STATUSES.has(batch.status)) return;
+      const pollRevision = actionCoordinatorRef.current.capturePoll();
+      if (pollRevision === null) {
+        schedulePoll();
+        return;
+      }
+      try {
+        const result = await fetchVirtualModelGenerationBatch(batch.id);
+        if (
+          !controller.signal.aborted
+            && actionCoordinatorRef.current.acceptPoll(pollRevision)
+        ) {
+          const merged = mergeVirtualModelBatchPoll(latestBatchRef.current, result.batch);
+          if (merged !== latestBatchRef.current) {
+            latestBatchRef.current = merged;
+            onBatchChange(merged);
+          }
+        }
+      } catch (error) {
+        if (
+          !controller.signal.aborted
+            && actionCoordinatorRef.current.isPollCurrent(pollRevision)
+        ) {
+          onError(error instanceof Error ? error.message : '生成状态刷新失败。');
+        }
+      }
+      schedulePoll();
+    };
+    schedulePoll();
     return () => {
       controller.abort();
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
@@ -145,20 +169,46 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
 
   const applyActionBatch = (next: VirtualModelGenerationBatch) => {
     latestBatchRef.current = next;
-    stateRevisionRef.current += 1;
     onBatchChange(next);
   };
 
-  const retry = async (task: VirtualModelGenerationPoseTask) => {
-    setActionId(task.poseId);
+  const runAction = async <T,>(
+    nextActionId: string,
+    request: () => Promise<T>,
+    apply: (result: T) => void,
+    fallbackMessage: string,
+  ) => {
+    const token = actionCoordinatorRef.current.begin(nextActionId);
+    if (!token) return;
+    setActionId(nextActionId);
+    setActionBusy(true);
+    onBusyChange(true);
     onError('');
     try {
-      applyActionBatch((await retryVirtualModelGenerationPose(batch.id, task.poseId)).batch);
+      const result = await request();
+      if (actionCoordinatorRef.current.isCurrent(token)) {
+        apply(result);
+      }
     } catch (error) {
-      onError(error instanceof Error ? error.message : '重试失败。');
+      if (actionCoordinatorRef.current.isCurrent(token)) {
+        onError(error instanceof Error ? error.message : fallbackMessage);
+      }
     } finally {
-      setActionId('');
+      if (actionCoordinatorRef.current.finish(token)) {
+        setActionId('');
+        setActionBusy(false);
+        onBusyChange(false);
+      }
     }
+  };
+
+  const retry = async (task: VirtualModelGenerationPoseTask) => {
+    await runAction(
+      task.poseId,
+      () => retryVirtualModelGenerationPose(batch.id, task.poseId),
+      (result) => applyActionBatch(result.batch),
+      '重试失败。',
+    );
   };
 
   const downloadPose = async (task: VirtualModelGenerationPoseTask) => {
@@ -178,28 +228,28 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
   };
 
   const cancel = async () => {
-    setActionId('cancel');
-    onError('');
-    try {
-      applyActionBatch((await cancelVirtualModelGenerationBatch(batch.id)).batch);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : '取消失败。');
-    } finally {
-      setActionId('');
-    }
+    await runAction(
+      'cancel',
+      () => cancelVirtualModelGenerationBatch(batch.id),
+      (result) => applyActionBatch(result.batch),
+      '取消失败。',
+    );
   };
 
   const regenerateDerived = async () => {
-    setActionId('regenerate-derived');
-    onError('');
-    try {
-      applyActionBatch((await regenerateVirtualModelDerivedPoses(batch.id)).batch);
-      setRegenerationConfirmOpen(false);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : '其他六张重新生成失败。');
-    } finally {
-      setActionId('');
-    }
+    await runAction(
+      'regenerate-derived',
+      () => regenerateVirtualModelDerivedPoses(batch.id),
+      (result) => {
+        applyActionBatch(result.batch);
+        setRegenerationConfirmOpen(false);
+      },
+      '其他六张重新生成失败。',
+    );
+  };
+
+  const finalize = async () => {
+    await runAction('finalize', onFinalize, () => undefined, '模特素材保存失败。');
   };
 
   const baselinesReady = ['C01', 'P01'].every((poseId) => batch.poseTasks.some(
@@ -219,7 +269,7 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
       </div>
       {!TERMINAL_BATCH_STATUSES.has(batch.status) && <button
         type="button"
-        disabled={disabled || actionId === 'cancel'}
+        disabled={actionsDisabled || actionId === 'cancel'}
         onClick={() => void cancel()}
         className="inline-flex h-8 w-8 items-center justify-center rounded-md border"
         style={{ borderColor: 'var(--border-subtle)' }}
@@ -251,7 +301,7 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
       </div>
       {batch.status === 'regeneration_required' && <button
         type="button"
-        disabled={disabled || Boolean(actionId)}
+        disabled={actionsDisabled}
         onClick={() => setRegenerationConfirmOpen(true)}
         className="rounded-md px-3 py-2 text-sm text-white disabled:opacity-50"
         style={{ background: 'var(--accent)' }}
@@ -356,7 +406,7 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
                 && (!isDerived || baselinesReady)
                 && <button
                   type="button"
-                  disabled={disabled || Boolean(actionId)}
+                  disabled={actionsDisabled}
                   onClick={() => void retry(task)}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md border"
                   style={{ borderColor: 'var(--border-subtle)' }}
@@ -374,8 +424,8 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
     </div>
     <button
       type="button"
-      disabled={disabled || !canFinalizeVirtualModelBatch(batch)}
-      onClick={() => void onFinalize()}
+      disabled={actionsDisabled || !canFinalizeVirtualModelBatch(batch)}
+      onClick={() => void finalize()}
       className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md text-sm font-medium text-white disabled:opacity-50"
       style={{ background: 'var(--accent)' }}
     >
@@ -410,7 +460,7 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
         && <DialogFooter>
           <button
             type="button"
-            disabled={disabled || Boolean(actionId)}
+            disabled={actionsDisabled}
             onClick={() => void retry(previewTask)}
             className="inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm text-white disabled:opacity-50"
             style={{ background: 'var(--accent)' }}
@@ -436,7 +486,7 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
       <DialogFooter>
         <button
           type="button"
-          disabled={Boolean(actionId)}
+          disabled={actionsDisabled}
           onClick={() => setRegenerationConfirmOpen(false)}
           className="rounded-md border px-4 py-2 text-sm"
           style={{ borderColor: 'var(--border-subtle)' }}
@@ -445,7 +495,7 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
         </button>
         <button
           type="button"
-          disabled={disabled || Boolean(actionId)}
+          disabled={actionsDisabled}
           onClick={() => void regenerateDerived()}
           className="inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm text-white disabled:opacity-50"
           style={{ background: 'var(--accent)' }}

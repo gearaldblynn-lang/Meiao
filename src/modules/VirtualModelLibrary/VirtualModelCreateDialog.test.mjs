@@ -66,11 +66,44 @@ test('pose step polls safely and exposes explicit retry regenerate cancel finali
   assert.match(source, /aria-label="取消生成"/);
   assert.match(source, /regenerateVirtualModelDerivedPoses/);
   assert.match(source, /onFinalize: \(\) => Promise<void>/);
-  assert.match(source, /onClick=\{\(\) => void onFinalize\(\)\}/);
+  assert.match(source, /await runAction\('finalize', onFinalize/);
+  assert.match(source, /onClick=\{\(\) => void finalize\(\)\}/);
   assert.match(source, /downloadRemoteFile/);
   assert.match(source, /aria-label=\{`下载 \$\{task\.label\}`\}/);
   assert.doesNotMatch(source, /setInterval/);
   assert.doesNotMatch(source, /autoRetry|automaticRetry/);
+});
+
+test('pose actions share one ref-backed coordinator and report busy state to the parent', () => {
+  const source = read('./VirtualModelPoseGenerationStep.tsx');
+  assert.match(source, /createVirtualModelGenerationActionCoordinator/);
+  assert.match(source, /const actionCoordinatorRef = useRef\(createVirtualModelGenerationActionCoordinator\(\)\)/);
+  assert.match(source, /const actionsDisabled = disabled \|\| actionBusy/);
+  assert.match(source, /const token = actionCoordinatorRef\.current\.begin\(nextActionId\)/);
+  assert.match(source, /if \(!token\) return/);
+  assert.match(source, /actionCoordinatorRef\.current\.isCurrent\(token\)/);
+  assert.match(source, /actionCoordinatorRef\.current\.finish\(token\)/);
+  assert.match(source, /actionCoordinatorRef\.current\.dispose\(\)/);
+  assert.match(source, /onBusyChange: \(busy: boolean\) => void/);
+  assert.match(source, /onBusyChange\(true\)/);
+  assert.match(source, /onBusyChange\(false\)/);
+  assert.match(source, /disabled=\{actionsDisabled \|\| actionId === 'cancel'\}/);
+  assert.match(source, /disabled=\{actionsDisabled\}/);
+});
+
+test('parent dialog blocks every close path while child actions are busy', () => {
+  const source = read('./VirtualModelCreateDialog.tsx');
+  assert.match(source, /const \[childActionBusy, setChildActionBusy\] = useState\(false\)/);
+  assert.match(source, /const dialogBusy = pending \|\| childActionBusy/);
+  assert.match(source, /onBusyChange=\{handleChildBusyChange\}/);
+  assert.match(source, /if \(!dialogBusy\) onOpenChange\(next\)/);
+  assert.match(source, /if \(dialogBusy\) event\.preventDefault\(\)/);
+});
+
+test('opening a fresh creation session clears a previous batch while draft recovery keeps it', () => {
+  const source = read('./VirtualModelCreateDialog.tsx');
+  assert.match(source, /if \(open && resumeBatch\) \{[\s\S]*?setMode\('auto'\)[\s\S]*?setBatch\(resumeBatch\)/);
+  assert.match(source, /if \(open && !resumeBatch\) \{[\s\S]*?setMode\('choose'\)[\s\S]*?setBatch\(null\)[\s\S]*?setChildActionBusy\(false\)/);
 });
 
 test('create batch request reuses one stable client submission key', () => {
