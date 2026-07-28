@@ -80,10 +80,58 @@ test('published models stay immutable and the UI directs changes to a new model 
   assert.doesNotMatch(content, />新建版本<\/button>/);
   assert.match(content, /已发布模特的固定参考素材不可修改，请在左侧新建模特/);
   assert.match(content, /已发布模特的身份特征不可修改，请在左侧新建模特/);
+  assert.match(content, /if \(profileChanged && managementStatus\(selected\) !== 'draft'\)/);
+  assert.match(content, /if \(managementStatus\(selected\) !== 'draft'\) \{ setNotice\('已发布模特的固定参考素材不可修改，请在左侧新建模特'\); return; \}/);
   assert.match(content, /updateVirtualModelVersion/);
   assert.match(content, /else if \(editorProfile\.trim\(\)\) await createVirtualModelVersion/);
-  assert.match(content, /selected\.version\?\.status !== 'draft'/);
+  assert.match(content, /disabled=\{pending \|\| \(selected \? managementStatus\(selected\) !== 'draft' : true\)\}/);
   assert.match(content, /selected\.version\?\.status === 'draft'[\s\S]*publishVirtualModel/);
+});
+
+test('virtual model library has one left-side creation entry and resumes unfinished draft generation', () => {
+  const content = source();
+  assert.match(content, /import VirtualModelCreateDialog from '\.\/VirtualModelCreateDialog'/);
+  assert.match(content, /import \{ shouldResumeVirtualModelBatch \} from '\.\/virtualModelGenerationState\.mjs'/);
+  assert.match(content, /const \[createDialogOpen, setCreateDialogOpen\] = useState\(false\)/);
+  assert.match(content, /const \[resumeBatch, setResumeBatch\] = useState<VirtualModelGenerationBatch \| null>\(null\)/);
+  assert.match(content, /findVirtualModelGenerationBatch/);
+  assert.match(content, /requestId !== selectionRequestRef\.current/);
+  assert.match(content, /shouldResumeVirtualModelBatch\(result\.batch\)/);
+  assert.match(content, /<VirtualModelCreateDialog/);
+  assert.match(content, /resumeBatch=\{resumeBatch\}/);
+  assert.match(content, /onManualCreated=\{handleManualDraftCreated\}/);
+  assert.match(content, /onCompleted=\{handleGeneratedDraftCompleted\}/);
+  assert.equal((content.match(/>新建<\/button>/g) || []).length, 1);
+  assert.doesNotMatch(content, /新建版本/);
+});
+
+test('draft counts and filters use managementStatus instead of the parent model status', () => {
+  const content = source();
+  assert.match(content, /const managementStatus = \(model: AdminVirtualModel\) => model\.version\?\.status === 'draft' \? 'draft' : model\.status/);
+  assert.match(content, /models\.filter\(\(model\) => managementStatus\(model\) === 'draft'\)/);
+  assert.match(content, /models\.filter\(\(model\) => managementStatus\(model\) === 'published'\)/);
+});
+
+test('new model creation suggests the next numeric code from complete history', () => {
+  const content = source();
+  assert.match(content, /import \{ suggestNextVirtualModelCode \} from '\.\/virtualModelCodeSuggestion\.mjs'/);
+  assert.match(content, /const \[suggestedModelCode, setSuggestedModelCode\] = useState\(''\)/);
+  assert.match(content, /const result = await fetchAdminVirtualModels\('all'\)/);
+  assert.match(content, /setSuggestedModelCode\(suggestNextVirtualModelCode\(result\.models\)\)/);
+  assert.match(content, /initialModelCode=\{suggestedModelCode\}/);
+});
+
+test('saved draft materials support preview and individual download without unlocking published uploads', () => {
+  const content = source();
+  assert.match(content, /import \{[^}]*Download[^}]*Upload[^}]*\} from 'lucide-react'/);
+  assert.match(content, /import \{ downloadRemoteFile \} from '\.\.\/\.\.\/utils\/imageUtils'/);
+  assert.match(content, /const \[previewSlot, setPreviewSlot\] = useState\(''\)/);
+  assert.match(content, /const sourceUrl = asset\.publicUrl \|\| asset\.url/);
+  assert.match(content, /aria-label=\{`查看大图 \$\{label\}`\}/);
+  assert.match(content, /aria-label=\{`下载 \$\{label\}`\}/);
+  assert.match(content, /<Dialog open=\{Boolean\(previewAsset && previewUrl\)\}/);
+  assert.match(content, /max-h-\[72vh\] w-full object-contain/);
+  assert.match(content, /const assetEditingDisabled = pending \|\| deletePending \|\| managementStatus\(selected\) !== 'draft'/);
 });
 
 test('virtual model deletion requires an explicit guarded confirmation and preserves history wording', () => {
@@ -145,7 +193,7 @@ test('virtual model deletion requires an explicit guarded confirmation and prese
   assert.match(content, /<div className="mb-5 flex items-start justify-between gap-3"><div className="min-w-0 flex-1"><h2 className="truncate text-base font-semibold">/);
   assert.match(content, /<p className="truncate text-xs" style=\{\{ color: 'var\(--text-tertiary\)' \}\}>\{selected\.code\}/);
   assert.match(content, /<div className="flex shrink-0 gap-2"><button type="button" disabled=\{pending \|\| deletePending\}/);
-  assert.match(content, /disabled=\{pending \|\| deletePending\} onClick=\{openCreate\}/);
+  assert.match(content, /disabled=\{pending \|\| deletePending\} onClick=\{\(\) => void openNewGeneration\(\)\}/);
   assert.match(content, /key=\{value\} type="button" disabled=\{deletePending\} onClick=\{\(\) => setFilter\(value\)\}/);
-  assert.match(content, /key=\{model\.id\} type="button" disabled=\{deletePending\} onClick=\{\(\) => setSelectedId\(model\.id\)\}/);
+  assert.match(content, /key=\{model\.id\} type="button" disabled=\{deletePending\} onClick=\{\(\) => void selectModel\(model\)\}/);
 });

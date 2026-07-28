@@ -2410,3 +2410,76 @@ export const publishVirtualModel = async (virtualModelId: string, virtualModelVe
 export const unpublishVirtualModel = async (virtualModelId: string) => {
   return request<{ result: { ok: boolean } }>(`/api/admin/virtual-models/${encodeURIComponent(virtualModelId)}/unpublish`, { method: 'POST', body: JSON.stringify({}) });
 };
+
+export type VirtualModelGenerationPoseTask = {
+  poseId: string;
+  slot: string;
+  label: string;
+  status: 'pending' | 'queued' | 'running' | 'retry_waiting' | 'succeeded' | 'persisting' | 'saved' | 'failed' | 'cancelled';
+  jobId?: string;
+  resultUrl?: string;
+  temporaryResultUrl?: string;
+  referenceStatus?: 'generated' | 'validating' | 'stabilizing' | 'baseline_ready' | 'reference_failed';
+  managedReferenceAsset?: { assetId: string; publicUrl: string };
+  stableReferenceUrl?: string;
+  referenceErrorCode?: string;
+  referenceErrorMessage?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  baselineRevision?: number;
+};
+
+export type VirtualModelGenerationBatch = {
+  id: string;
+  virtualModelId: string;
+  virtualModelVersionId: string;
+  clientSubmissionKey: string;
+  sourceAssetIds: string[];
+  primarySourceAssetId: string;
+  status: string;
+  poseTasks: VirtualModelGenerationPoseTask[];
+  baselineRevision: number;
+  derivedRegenerationRequired: boolean;
+  finalizedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export const createVirtualModelGenerationBatch = async (payload: {
+  virtualModelId: string;
+  virtualModelVersionId: string;
+  sourceAssetIds: string[];
+  primarySourceAssetId: string;
+  clientSubmissionKey: string;
+}) => request<{ batch: VirtualModelGenerationBatch }>('/api/admin/virtual-model-generation-batches', {
+  method: 'POST',
+  body: JSON.stringify(payload),
+});
+
+export const findVirtualModelGenerationBatch = async (
+  virtualModelId: string,
+  virtualModelVersionId: string,
+) => {
+  const query = new URLSearchParams({ virtualModelId, virtualModelVersionId });
+  return request<{ batch: VirtualModelGenerationBatch | null }>(`/api/admin/virtual-model-generation-batches?${query.toString()}`);
+};
+
+export const fetchVirtualModelGenerationBatch = async (batchId: string) => (
+  request<{ batch: VirtualModelGenerationBatch }>(`/api/admin/virtual-model-generation-batches/${encodeURIComponent(batchId)}`)
+);
+
+export const retryVirtualModelGenerationPose = async (batchId: string, poseId: string) => (
+  request<{ batch: VirtualModelGenerationBatch }>(`/api/admin/virtual-model-generation-batches/${encodeURIComponent(batchId)}/poses/${encodeURIComponent(poseId)}/retry`, { method: 'POST', body: JSON.stringify({}) })
+);
+
+export const regenerateVirtualModelDerivedPoses = async (batchId: string) => (
+  request<{ batch: VirtualModelGenerationBatch }>(`/api/admin/virtual-model-generation-batches/${encodeURIComponent(batchId)}/regenerate-derived`, { method: 'POST', body: JSON.stringify({}) })
+);
+
+export const cancelVirtualModelGenerationBatch = async (batchId: string) => (
+  request<{ batch: VirtualModelGenerationBatch }>(`/api/admin/virtual-model-generation-batches/${encodeURIComponent(batchId)}/cancel`, { method: 'POST', body: JSON.stringify({}) })
+);
+
+export const finalizeVirtualModelGenerationBatch = async (batchId: string) => (
+  request<{ result: { virtualModelId: string; virtualModelVersionId: string; assets: VirtualModelAsset[] } }>(`/api/admin/virtual-model-generation-batches/${encodeURIComponent(batchId)}/finalize`, { method: 'POST', body: JSON.stringify({}) })
+);

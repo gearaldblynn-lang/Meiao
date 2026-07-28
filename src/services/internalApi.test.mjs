@@ -170,6 +170,62 @@ test('virtual model API functions use authenticated public and admin route contr
   }
 });
 
+test('virtual model generation functions match all seven Task 2 route contracts', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({
+      url: String(url),
+      method: init.method || 'GET',
+      body: init.body ? JSON.parse(String(init.body)) : null,
+    });
+    const payload = String(url).endsWith('/finalize')
+      ? { result: { virtualModelId: 'model 1', virtualModelVersionId: 'version 1', assets: [] } }
+      : { batch: { id: 'batch 1', status: 'running', poseTasks: [] } };
+    return new Response(JSON.stringify(payload), {
+      status: init.method === 'POST' && String(url).endsWith('generation-batches') ? 201 : 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    await api.createVirtualModelGenerationBatch({
+      virtualModelId: 'model 1',
+      virtualModelVersionId: 'version 1',
+      sourceAssetIds: ['asset 1'],
+      primarySourceAssetId: 'asset 1',
+      clientSubmissionKey: 'submission-1',
+    });
+    await api.findVirtualModelGenerationBatch('model 1', 'version 1');
+    await api.fetchVirtualModelGenerationBatch('batch 1');
+    await api.retryVirtualModelGenerationPose('batch 1', 'C01');
+    await api.regenerateVirtualModelDerivedPoses('batch 1');
+    await api.cancelVirtualModelGenerationBatch('batch 1');
+    await api.finalizeVirtualModelGenerationBatch('batch 1');
+
+    assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
+      'POST /api/admin/virtual-model-generation-batches',
+      'GET /api/admin/virtual-model-generation-batches?virtualModelId=model+1&virtualModelVersionId=version+1',
+      'GET /api/admin/virtual-model-generation-batches/batch%201',
+      'POST /api/admin/virtual-model-generation-batches/batch%201/poses/C01/retry',
+      'POST /api/admin/virtual-model-generation-batches/batch%201/regenerate-derived',
+      'POST /api/admin/virtual-model-generation-batches/batch%201/cancel',
+      'POST /api/admin/virtual-model-generation-batches/batch%201/finalize',
+    ]);
+    assert.deepEqual(calls[0].body, {
+      virtualModelId: 'model 1',
+      virtualModelVersionId: 'version 1',
+      sourceAssetIds: ['asset 1'],
+      primarySourceAssetId: 'asset 1',
+      clientSubmissionKey: 'submission-1',
+    });
+    assert.deepEqual(calls.slice(3).map((call) => call.body), [{}, {}, {}, {}]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('virtual model status type includes deleted for internal API completeness', async () => {
   const source = await readFile(new URL('./internalApi.ts', import.meta.url), 'utf8');
   const summaryType = source.slice(
