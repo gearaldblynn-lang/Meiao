@@ -7,6 +7,7 @@ import {
   RotateCcw,
   X,
 } from 'lucide-react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import {
   cancelVirtualModelGenerationBatch,
   fetchVirtualModelGenerationBatch,
@@ -345,7 +346,7 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
                 className="h-full w-full"
                 aria-label={`查看大图 ${task.label}`}
               >
-                <img src={task.resultUrl} alt={task.label} className="h-full w-full object-cover" />
+                <AuthenticatedAssetImage src={task.resultUrl} alt={task.label} className="h-full w-full object-cover" />
               </button>
               : <div className="flex h-full items-center justify-center">
                 {referenceActive || ['queued', 'running', 'retry_waiting'].includes(task.status)
@@ -447,7 +448,7 @@ const VirtualModelPoseGenerationStep: React.FC<Props> = ({
         className="flex min-h-0 items-center justify-center overflow-hidden rounded-md"
         style={{ background: 'var(--bg-base)' }}
       >
-        {previewTask?.resultUrl && <img
+        {previewTask?.resultUrl && <AuthenticatedAssetImage
           src={previewTask.resultUrl}
           alt={previewTask.label}
           className="max-h-[72vh] w-full object-contain"

@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { LoaderCircle, Star, Trash2, Upload } from 'lucide-react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { uploadInternalAssetStream } from '../../services/internalApi';
 
 export type VirtualModelReferenceAsset = {
@@ -115,7 +116,7 @@ const VirtualModelReferenceUploadStep: React.FC<Props> = ({
           className="overflow-hidden rounded-md border"
           style={{ borderColor: primary ? 'var(--accent)' : 'var(--border-subtle)' }}
         >
-          <img src={asset.fileUrl} alt={asset.name} className="aspect-[3/4] w-full object-cover" />
+          <AuthenticatedAssetImage src={asset.fileUrl} alt={asset.name} className="aspect-[3/4] w-full object-cover" />
           <div className="flex items-center justify-between gap-1 p-2">
             <button
               type="button"

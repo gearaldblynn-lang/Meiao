@@ -54,6 +54,16 @@ test('reference step enforces one to five image uploads and primary selection', 
   assert.match(source, /设为主参考|主参考/);
 });
 
+test('reference and generated pose previews use authenticated managed-asset rendering', () => {
+  const referenceSource = read('./VirtualModelReferenceUploadStep.tsx');
+  const poseSource = read('./VirtualModelPoseGenerationStep.tsx');
+  assert.match(referenceSource, /import AuthenticatedAssetImage from '\.\.\/\.\.\/components\/AuthenticatedAssetImage'/);
+  assert.match(referenceSource, /<AuthenticatedAssetImage src=\{asset\.fileUrl\}/);
+  assert.match(poseSource, /import AuthenticatedAssetImage from '\.\.\/\.\.\/components\/AuthenticatedAssetImage'/);
+  assert.match(poseSource, /<AuthenticatedAssetImage src=\{task\.resultUrl\}/);
+  assert.match(poseSource, /<AuthenticatedAssetImage[\s\S]*?src=\{previewTask\.resultUrl\}/);
+});
+
 test('pose step polls safely and exposes explicit retry regenerate cancel finalize and download', () => {
   const source = read('./VirtualModelPoseGenerationStep.tsx');
   assert.match(source, /2500/);

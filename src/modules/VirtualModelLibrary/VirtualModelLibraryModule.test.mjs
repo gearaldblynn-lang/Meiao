@@ -134,6 +134,15 @@ test('saved draft materials support preview and individual download without unlo
   assert.match(content, /const assetEditingDisabled = pending \|\| deletePending \|\| managementStatus\(selected\) !== 'draft'/);
 });
 
+test('protected model materials render through the authenticated asset image component', () => {
+  const content = source();
+  assert.match(content, /import AuthenticatedAssetImage from '\.\.\/\.\.\/components\/AuthenticatedAssetImage'/);
+  assert.match(content, /<AuthenticatedAssetImage src=\{assetUrl\} alt=\{label\}/);
+  assert.match(content, /<AuthenticatedAssetImage src=\{previewUrl\} alt=\{previewEntry\[1\]\}/);
+  assert.doesNotMatch(content, /<img src=\{assetUrl\}/);
+  assert.doesNotMatch(content, /<img src=\{previewUrl\}/);
+});
+
 test('virtual model deletion requires an explicit guarded confirmation and preserves history wording', () => {
   const content = source();
   assert.match(content, /import \{[^}]*Trash2[^}]*\} from 'lucide-react'/);

@@ -1211,6 +1211,7 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Root cause: 通用 job 素材鉴权在服务端补入可信公共模特快照之后才执行，因而把公共模特的服务端资产 ID 错当成调用者私有上传资产并返回 403。管理列表又以“有 draft 就优先展示”为规则，`新建版本` 创建的空草稿会遮住 `currentVersionId` 指向的已发布版本，形成数据被清空的假象。
 - Fix: 先清洗并鉴权调用者原始 payload，再附加服务端验证的公共模特快照；显式跨账号私有 asset ID 继续 403。管理列表始终优先 `currentVersionId`，删除右侧“新建版本”，只保留左侧“新建模特”；空描述不再隐式创建 v1，草稿身份资料改为原版本 merge patch，已发布版本的身份描述和固定素材保持不可变。
 - Browser-read hardening: `/api/assets/file` 的授权必须先统一判定 access key、owner 或“当前 published version 关联的 source/preview asset”，再进入 internal/COS 存储分支；不得让 published COS 跨账号 403，也不得让 private internal 绕过 owner 直接 200。
+- Browser-render hardening: 普通 `<img>` 请求无法携带保存在 localStorage 的 Bearer token；即使路由已允许登录同事读取 published 模特素材，直接使用 `127.0.0.1:3100` 或同源受保护 URL 仍会在真实页面破图。虚拟模特管理库、公共选择器、参考图和生成结果统一先把 loopback 托管 URL 归一为页面同源路径，再用已认证 fetch 取 Blob 并以受控 object URL 渲染；卸载或换图必须 abort 请求并释放 object URL，不能以放宽匿名读取解决 UI 问题。
 - Regression check: `node --test server/managedAssetReferencePolicy.test.mjs server/assetReferenceCleanup.test.mjs server/virtualModelApi.test.mjs server/virtualModelStore.test.mjs src/modules/VirtualModelLibrary/VirtualModelLibraryModule.test.mjs src/services/internalApi.test.mjs`；`npm run verify`；用真实存储回放必须显示 001 当前 v2、002/003 当前 v1 且均为 published 8/8。生产验收同时核对用户角色、目标项目 job 数、数据库 current version/素材数、正式域名 UI chunk 和本地/云端关键文件哈希；不为验证权限修复创建新的付费 provider 任务。
 - Avoid next time: 权威服务端补充的公共资产与用户提交的私有资产必须在鉴权边界前分层，不能混入同一个 ownership assertion。后台列表的“当前可见版本”必须由显式 `currentVersionId` 决定；草稿只能作为从未发布模型的 fallback，任何能改变当前可见版本的动作都必须说明影响并保留旧素材可见性。
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Search, X } from 'lucide-react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { fetchVirtualModel, fetchVirtualModels, type VirtualModelSummary } from '../../services/internalApi';
 
 type Selection = {
@@ -82,7 +83,7 @@ const VirtualModelPicker: React.FC<Props> = ({ open, selected, onSelect, onClose
               const active = pendingSelection?.virtualModelId === model.id && pendingSelection.virtualModelVersionId === model.currentVersionId;
               const cover = model.coverUrl || model.version?.thumbnailUrl || '';
               return <button key={model.id} type="button" onClick={() => { setPendingSelection({ virtualModelId: model.id, virtualModelVersionId: model.currentVersionId, modelName: model.name, modelCode: model.code, versionNumber: model.version?.versionNumber, publishedAt: model.version?.publishedAt || undefined }); showDetail(model); }} className="w-[132px] overflow-hidden rounded-md border text-left" style={{ borderColor: active ? 'var(--accent)' : 'var(--border-subtle)' }}>
-                <div className="aspect-[3/4] bg-[var(--bg-elevated)]">{cover ? <img src={cover} alt={model.name} className="h-full w-full object-cover object-top" /> : null}</div>
+                <div className="aspect-[3/4] bg-[var(--bg-elevated)]">{cover ? <AuthenticatedAssetImage src={cover} alt={model.name} className="h-full w-full object-cover object-top" /> : null}</div>
                 <div className="p-2"><p className="truncate text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{model.name}</p><p className="truncate text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{model.code}</p></div>
               </button>;
             })}
@@ -90,7 +91,7 @@ const VirtualModelPicker: React.FC<Props> = ({ open, selected, onSelect, onClose
             {error && <p className="col-span-full py-8 text-center text-[12px] text-red-600">{error}</p>}
           </div>
           <aside className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
-            {detailModel ? <><div className="aspect-[3/4] overflow-hidden rounded-sm bg-[var(--bg-surface)]">{(detailModel.coverUrl || detailModel.version?.thumbnailUrl) ? <img src={detailModel.coverUrl || detailModel.version?.thumbnailUrl} alt={detailModel.name} className="h-full w-full object-cover object-top" /> : null}</div><p className="mt-3 text-[11px] font-medium" style={{ color: 'var(--accent)' }}>已选择模特</p><p className="mt-1 text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>{detailModel.name}</p><p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>{detailModel.code} · 版本 {detailModel.version?.versionNumber || '-'}</p><div className="mt-3 flex flex-wrap gap-1">{(detailModel.tags || []).map((tag) => <span key={tag} className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--bg-surface)', color: 'var(--text-secondary)' }}>{tag}</span>)}</div></> : <p className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>选择一个模特查看公开信息</p>}
+            {detailModel ? <><div className="aspect-[3/4] overflow-hidden rounded-sm bg-[var(--bg-surface)]">{(detailModel.coverUrl || detailModel.version?.thumbnailUrl) ? <AuthenticatedAssetImage src={detailModel.coverUrl || detailModel.version?.thumbnailUrl} alt={detailModel.name} className="h-full w-full object-cover object-top" /> : null}</div><p className="mt-3 text-[11px] font-medium" style={{ color: 'var(--accent)' }}>已选择模特</p><p className="mt-1 text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>{detailModel.name}</p><p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>{detailModel.code} · 版本 {detailModel.version?.versionNumber || '-'}</p><div className="mt-3 flex flex-wrap gap-1">{(detailModel.tags || []).map((tag) => <span key={tag} className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--bg-surface)', color: 'var(--text-secondary)' }}>{tag}</span>)}</div></> : <p className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>选择一个模特查看公开信息</p>}
           </aside>
         </div>
         <footer className="flex justify-end gap-2 border-t px-5 py-4" style={{ borderColor: 'var(--border-subtle)' }}>

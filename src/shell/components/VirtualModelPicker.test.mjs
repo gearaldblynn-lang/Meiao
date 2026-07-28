@@ -30,3 +30,11 @@ test('picker prioritizes a readable portrait and high-contrast selected-model de
   assert.match(source, /已选择模特/);
   assert.match(source, /color: 'var\(--text-primary\)'/);
 });
+
+test('picker covers render through the authenticated asset image component', async () => {
+  const source = await readFile(new URL('./VirtualModelPicker.tsx', import.meta.url), 'utf8');
+  assert.match(source, /import AuthenticatedAssetImage from '\.\.\/\.\.\/components\/AuthenticatedAssetImage'/);
+  assert.match(source, /<AuthenticatedAssetImage src=\{cover\}/);
+  assert.match(source, /<AuthenticatedAssetImage src=\{detailModel\.coverUrl \|\| detailModel\.version\?\.thumbnailUrl\}/);
+  assert.doesNotMatch(source, /<img src=\{cover\}/);
+});
