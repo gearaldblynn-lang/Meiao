@@ -5,6 +5,7 @@ import {
   chmod,
   constants as fsConstants,
   copyFile,
+  link,
   lstat,
   mkdir,
   open,
@@ -56,6 +57,8 @@ const pathExists = async (filePath) => {
 
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
+const PUBLIC_DIR_MODE = 0o755;
+const PUBLIC_FILE_MODE = 0o644;
 
 const ensurePrivateDir = async (directory) => {
   await mkdir(directory, { recursive: true, mode: PRIVATE_DIR_MODE });
@@ -824,16 +827,22 @@ const readTargetJson = async (filePath, fallback, invalidCode) => {
   }
 };
 
-const checkDestinationFiles = async ({ assetsDir, fileRecords, manifest }) => {
-  await mkdir(assetsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
-  await assertNoSymlinkPath(assetsDir, assetsDir);
+const checkDestinationFiles = async ({
+  assetsDir,
+  fileRecords,
+  manifest,
+  readOnly = false,
+}) => {
+  if (!readOnly) await mkdir(assetsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  const assetsExist = await pathExists(assetsDir);
+  if (assetsExist) await assertNoSymlinkPath(assetsDir, assetsDir);
   const manifestMap = manifestByStorageKey(manifest);
   const missing = [];
   const skipped = [];
   for (const record of fileRecords) {
     const expected = manifestMap.get(record.storageKey);
     const destinationPath = resolveInside(assetsDir, record.storageKey);
-    await assertNoSymlinkPath(assetsDir, destinationPath);
+    if (assetsExist) await assertNoSymlinkPath(assetsDir, destinationPath);
     if (!await pathExists(destinationPath)) {
       missing.push({ record, expected, destinationPath });
       continue;
@@ -876,11 +885,19 @@ const stageFiles = async ({ missing, stageRoot }) => {
 const materializeStagedFiles = async (missing, createdFiles, assetsDir) => {
   for (const item of missing) {
     await assertNoSymlinkPath(assetsDir, item.destinationPath);
-    await mkdir(path.dirname(item.destinationPath), { recursive: true, mode: PRIVATE_DIR_MODE });
+    const relativeParent = path.relative(assetsDir, path.dirname(item.destinationPath));
+    let current = assetsDir;
+    for (const segment of relativeParent.split(path.sep).filter(Boolean)) {
+      current = path.join(current, segment);
+      await mkdir(current, { mode: PUBLIC_DIR_MODE }).catch((error) => {
+        if (error?.code !== 'EEXIST') throw error;
+      });
+      await chmod(current, PUBLIC_DIR_MODE);
+    }
     await assertNoSymlinkPath(assetsDir, item.destinationPath);
     try {
-      await copyFile(item.stagePath, item.destinationPath, fsConstants.COPYFILE_EXCL);
-      await chmod(item.destinationPath, PRIVATE_FILE_MODE);
+      await link(item.stagePath, item.destinationPath);
+      await chmod(item.destinationPath, PUBLIC_FILE_MODE);
       createdFiles.push(item.destinationPath);
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
@@ -976,8 +993,17 @@ const readJournal = async (journalPath) => {
 const cleanupJournalFiles = async ({ assetsDir, files = [] }) => {
   for (const entry of files) {
     const destinationPath = resolveInside(assetsDir, entry.storageKey);
+    const stagePath = resolveInside(entry.stageRoot, entry.storageKey);
     await assertNoSymlinkPath(assetsDir, destinationPath);
-    if (!await pathExists(destinationPath)) continue;
+    if (!await pathExists(destinationPath) || !await pathExists(stagePath)) continue;
+    const [destinationStat, stageStat] = await Promise.all([
+      lstat(destinationPath),
+      lstat(stagePath),
+    ]);
+    if (
+      destinationStat.dev !== stageStat.dev
+      || destinationStat.ino !== stageStat.ino
+    ) continue;
     const actual = await sha256File(destinationPath);
     if (actual.sha256 !== entry.sha256 || actual.size !== entry.size) {
       throw createImporterError(
@@ -1112,6 +1138,46 @@ export const importLocalLibrary = async ({
   const resolvedAssetsDir = path.resolve(assetsDir);
   const controlDir = path.join(path.dirname(path.resolve(storePath)), '.virtual-model-library-import');
   const journalPath = path.join(controlDir, 'local-journal.json');
+  if (dryRun) {
+    if (await pathExists(journalPath)) {
+      throw createImporterError(
+        'import_recovery_required',
+        '检测到未完成的 local 导入；dry-run 不会执行恢复，请以写入模式恢复',
+      );
+    }
+    const loaded = await loadAndValidatePackage(packagePath);
+    const [storeTarget, registryTarget] = await Promise.all([
+      readTargetJson(storePath, {
+        virtualModels: [],
+        virtualModelVersions: [],
+        virtualModelAssets: [],
+      }, 'target_store_invalid'),
+      readTargetJson(registryPath, { assets: [] }, 'target_registry_invalid'),
+    ]);
+    if (!Array.isArray(registryTarget.value?.assets)) {
+      throw createImporterError('target_registry_invalid', '目标 asset registry 的 assets 必须是数组');
+    }
+    const plan = buildImportPlan({
+      libraryData: loaded.libraryData,
+      manifest: loaded.manifest,
+      existingStore: storeTarget.value,
+      existingRegistry: registryTarget.value,
+      publicBaseUrl,
+    });
+    const filePlan = await checkDestinationFiles({
+      assetsDir: resolvedAssetsDir,
+      fileRecords: plan.fileRecords,
+      manifest: loaded.manifest,
+      readOnly: true,
+    });
+    return summaryFromPlan({
+      mode: 'local',
+      dryRun: true,
+      loaded,
+      plan,
+      filePlan,
+    });
+  }
   const releaseLock = await acquireImportLock(controlDir, 'local');
   try {
     await recoverLocalJournal({ journalPath, assetsDir: resolvedAssetsDir });
@@ -1224,6 +1290,7 @@ export const importLocalLibrary = async ({
         storageKey: item.record.storageKey,
         sha256: item.expected.sha256,
         size: item.expected.size,
+        stageRoot,
       })),
     };
     await writeJournal(journalPath, journal);
@@ -1268,7 +1335,7 @@ const mysqlRows = async (connection, sql, params) => {
   return Array.isArray(result) ? result[0] : [];
 };
 
-const fetchMysqlExisting = async (connection, libraryData) => {
+const fetchMysqlExisting = async (connection, libraryData, { lock = true } = {}) => {
   const targetModels = libraryData.virtualModels.filter((model) => TARGET_CODES.has(String(model.code)));
   const modelIds = targetModels.map((model) => model.id);
   const codes = targetModels.map((model) => model.code);
@@ -1287,25 +1354,26 @@ const fetchMysqlExisting = async (connection, libraryData) => {
     relation.previewAssetId,
   ]))];
   const placeholders = (values) => values.map(() => '?').join(',');
+  const lockClause = lock ? ' FOR UPDATE' : '';
   const [modelRows, versionRows, relationRows, assetRows] = await Promise.all([
     mysqlRows(
       connection,
-      `SELECT * FROM virtual_models WHERE id IN (${placeholders(modelIds)}) OR code IN (${placeholders(codes)}) FOR UPDATE`,
+      `SELECT * FROM virtual_models WHERE id IN (${placeholders(modelIds)}) OR code IN (${placeholders(codes)})${lockClause}`,
       [...modelIds, ...codes],
     ),
     mysqlRows(
       connection,
-      `SELECT * FROM virtual_model_versions WHERE id IN (${placeholders(versionIds)}) OR virtual_model_id IN (${placeholders(modelIds)}) FOR UPDATE`,
+      `SELECT * FROM virtual_model_versions WHERE id IN (${placeholders(versionIds)}) OR virtual_model_id IN (${placeholders(modelIds)})${lockClause}`,
       [...versionIds, ...modelIds],
     ),
     mysqlRows(
       connection,
-      `SELECT * FROM virtual_model_assets WHERE id IN (${placeholders(relationIds)}) OR virtual_model_version_id IN (${placeholders(versionIds)}) FOR UPDATE`,
+      `SELECT * FROM virtual_model_assets WHERE id IN (${placeholders(relationIds)}) OR virtual_model_version_id IN (${placeholders(versionIds)})${lockClause}`,
       [...relationIds, ...versionIds],
     ),
     mysqlRows(
       connection,
-      `SELECT * FROM stored_assets WHERE id IN (${placeholders(assetIds)}) FOR UPDATE`,
+      `SELECT * FROM stored_assets WHERE id IN (${placeholders(assetIds)})${lockClause}`,
       assetIds,
     ),
   ]);
@@ -1404,16 +1472,19 @@ const insertMysqlPlan = async (connection, additions) => {
   }
 };
 
-const queryPresentIds = async (connection, table, ids) => {
+const queryRecoveryRows = async (connection, table, ids) => {
   if (!Array.isArray(ids) || ids.length === 0) return [];
   const placeholders = ids.map(() => '?').join(',');
-  const rows = await mysqlRows(
+  return mysqlRows(
     connection,
-    `SELECT id FROM ${table} WHERE id IN (${placeholders})`,
+    `SELECT * FROM ${table} WHERE id IN (${placeholders})`,
     ids,
   );
-  return rows.map((row) => String(row.id || ''));
 };
+
+const digestCanonicalRows = (rows) => sha256Buffer(Buffer.from(JSON.stringify(
+  stableValue([...rows].sort((left, right) => String(left.id).localeCompare(String(right.id)))),
+)));
 
 const recoverMysqlJournal = async ({ connection, journalPath, assetsDir }) => {
   const journal = await readJournal(journalPath);
@@ -1422,18 +1493,41 @@ const recoverMysqlJournal = async ({ connection, journalPath, assetsDir }) => {
     throw createImporterError('import_journal_invalid', 'mysql journal 合同不匹配');
   }
   const groups = [
-    ['virtual_models', journal.ids.models],
-    ['virtual_model_versions', journal.ids.versions],
-    ['virtual_model_assets', journal.ids.relations],
-    ['stored_assets', journal.ids.registry],
+    ['models', 'virtual_models', canonicalModel],
+    ['versions', 'virtual_model_versions', canonicalVersion],
+    ['relations', 'virtual_model_assets', canonicalRelation],
+    ['registry', 'stored_assets', canonicalRegistry],
   ];
   let present = 0;
   let expected = 0;
-  for (const [table, ids] of groups) {
-    expected += ids.length;
-    present += (await queryPresentIds(connection, table, ids)).length;
+  let allEqual = true;
+  for (const [key, table, canonical] of groups) {
+    const expectedRows = journal.expected?.[key];
+    if (!Array.isArray(expectedRows)) {
+      throw createImporterError('import_journal_invalid', 'MySQL journal 缺少 canonical expected 数据');
+    }
+    if (journal.expectedDigests?.[key] !== digestCanonicalRows(expectedRows)) {
+      throw createImporterError('import_journal_invalid', 'MySQL journal canonical digest 不匹配');
+    }
+    const rows = await queryRecoveryRows(
+      connection,
+      table,
+      expectedRows.map((row) => row.id),
+    );
+    expected += expectedRows.length;
+    present += rows.length;
+    const actualById = new Map(rows.map((row) => {
+      const normalized = canonical(row);
+      return [normalized.id, normalized];
+    }));
+    if (!expectedRows.every((row) => {
+      const actual = actualById.get(String(row.id));
+      return actual && equalEntity(actual, row);
+    })) {
+      allEqual = false;
+    }
   }
-  if (present === expected) {
+  if (present === expected && allEqual) {
     await cleanupJournalStage({ assetsDir, stageRoot: journal.stageRoot });
     await unlink(journalPath);
     return { recovered: true, action: 'committed' };
@@ -1441,7 +1535,7 @@ const recoverMysqlJournal = async ({ connection, journalPath, assetsDir }) => {
   if (present !== 0) {
     throw createImporterError(
       'mysql_recovery_conflict',
-      'MySQL journal 对应稳定 ID 只存在一部分，已拒绝自动处理',
+      'MySQL journal 对应数据不完整或内容不一致，已拒绝自动处理',
       { present, expected },
     );
   }
@@ -1467,9 +1561,40 @@ export const importMysqlLibrary = async ({
     throw createImporterError('mysql_assets_dir_required', 'mysql 模式必须显式提供 assetsDir');
   }
   const resolvedAssetsDir = path.resolve(assetsDir);
-  await mkdir(resolvedAssetsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
   const controlDir = path.join(resolvedAssetsDir, '.virtual-model-library-import');
   const journalPath = path.join(controlDir, 'mysql-journal.json');
+  if (dryRun) {
+    if (await pathExists(journalPath)) {
+      throw createImporterError(
+        'import_recovery_required',
+        '检测到未完成的 MySQL 导入；dry-run 不会执行恢复，请以写入模式恢复',
+      );
+    }
+    const loaded = await loadAndValidatePackage(packagePath);
+    const rewritten = rewriteLibraryPublicUrls(loaded.libraryData, { publicBaseUrl });
+    const existing = await fetchMysqlExisting(connection, rewritten, { lock: false });
+    const plan = buildImportPlan({
+      libraryData: rewritten,
+      manifest: loaded.manifest,
+      existingStore: existing.store,
+      existingRegistry: existing.registry,
+      publicBaseUrl,
+    });
+    const filePlan = await checkDestinationFiles({
+      assetsDir: resolvedAssetsDir,
+      fileRecords: plan.fileRecords,
+      manifest: loaded.manifest,
+      readOnly: true,
+    });
+    return summaryFromPlan({
+      mode: 'mysql',
+      dryRun: true,
+      loaded,
+      plan,
+      filePlan,
+    });
+  }
+  await mkdir(resolvedAssetsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
   const releaseLock = await acquireImportLock(controlDir, 'mysql');
   try {
     await recoverMysqlJournal({ connection, journalPath, assetsDir: resolvedAssetsDir });
@@ -1558,10 +1683,25 @@ export const importMysqlLibrary = async ({
         relations: plan.additions.relations.map((item) => item.id),
         registry: plan.additions.registry.map((item) => item.id),
       },
+      expected: {
+        models: plan.additions.models.map(canonicalModel),
+        versions: plan.additions.versions.map(canonicalVersion),
+        relations: plan.additions.relations.map(canonicalRelation),
+        registry: plan.additions.registry.map(canonicalRegistry),
+      },
+      expectedDigests: Object.fromEntries(
+        Object.entries({
+          models: plan.additions.models.map(canonicalModel),
+          versions: plan.additions.versions.map(canonicalVersion),
+          relations: plan.additions.relations.map(canonicalRelation),
+          registry: plan.additions.registry.map(canonicalRegistry),
+        }).map(([key, rows]) => [key, digestCanonicalRows(rows)]),
+      ),
       files: filePlan.missing.map((item) => ({
         storageKey: item.record.storageKey,
         sha256: item.expected.sha256,
         size: item.expected.size,
+        stageRoot,
       })),
     };
     await writeJournal(journalPath, journal);

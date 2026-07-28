@@ -6,6 +6,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  rm,
   stat,
   symlink,
   unlink,
@@ -300,6 +301,15 @@ const runImporterChild = (method, options) => {
   );
 };
 
+const snapshotTree = async (directory) => {
+  const files = await listFiles(directory);
+  return Promise.all(files.map(async (filePath) => ({
+    relativePath: path.relative(directory, filePath),
+    sha256: sha256(await readFile(filePath)),
+    mode: (await stat(filePath)).mode & 0o777,
+  })));
+};
+
 test('CLI defaults to dry-run when no mode flag is supplied', () => {
   const args = parseCliArgs(['--package', '/tmp/library']);
   assert.equal(args.mode, 'dry-run');
@@ -320,6 +330,42 @@ test('CLI local write refuses to run without explicit offline confirmation', asy
   assert.equal(result.status, 1);
   assert.match(result.stderr, /local_offline_confirmation_required/);
   assert.deepEqual(await listFiles(target.assetsDir), []);
+});
+
+test('local crash followed by dry-run requires recovery and writes zero bytes', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture);
+  const child = runImporterChild('importLocalLibrary', {
+    packagePath: fixture.packageRoot,
+    ...target,
+    faultInjection: 'after_local_store_rename',
+  });
+  assert.equal(child.status, 86, child.stderr);
+  const before = await snapshotTree(target.directory);
+
+  await assert.rejects(
+    importLocalLibrary({
+      packagePath: fixture.packageRoot,
+      ...target,
+      dryRun: true,
+    }),
+    (error) => error.code === 'import_recovery_required',
+  );
+  assert.deepEqual(await snapshotTree(target.directory), before);
+});
+
+test('local dry-run does not create a missing assets or control directory', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture);
+  await rm(target.assetsDir, { recursive: true, force: true });
+  const before = await snapshotTree(target.directory);
+  await importLocalLibrary({
+    packagePath: fixture.packageRoot,
+    ...target,
+    dryRun: true,
+  });
+  assert.deepEqual(await snapshotTree(target.directory), before);
+  await assert.rejects(stat(target.assetsDir), (error) => error.code === 'ENOENT');
 });
 
 test('package validation checks all 80 files against both checksum manifests', async () => {
@@ -465,6 +511,14 @@ test('first local import adds only 004/005 and second import makes zero changes'
   assert.equal(store.virtualModelAssets.length, 40);
   assert.equal(registry.assets.length, 80);
   assert.equal((await listFiles(target.assetsDir)).length, 32);
+  for (const filePath of await listFiles(target.assetsDir)) {
+    assert.equal((await stat(filePath)).mode & 0o777, 0o644);
+    let parent = path.dirname(filePath);
+    while (parent !== target.assetsDir) {
+      assert.equal((await stat(parent)).mode & 0o777, 0o755);
+      parent = path.dirname(parent);
+    }
+  }
   const targetModelIds = new Set(
     store.virtualModels
       .filter((model) => ['004', '005'].includes(model.code))
@@ -696,6 +750,30 @@ class FakeMysqlConnection {
   }
 }
 
+test('MySQL crash followed by dry-run requires recovery without a transaction or writes', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture, { baseline: false });
+  const child = runImporterChild('importMysqlLibrary', {
+    packagePath: fixture.packageRoot,
+    assetsDir: target.assetsDir,
+    faultInjection: 'after_mysql_materialize',
+  });
+  assert.equal(child.status, 87, child.stderr);
+  const before = await snapshotTree(target.assetsDir);
+  const connection = new FakeMysqlConnection();
+  await assert.rejects(
+    importMysqlLibrary({
+      packagePath: fixture.packageRoot,
+      connection,
+      assetsDir: target.assetsDir,
+      dryRun: true,
+    }),
+    (error) => error.code === 'import_recovery_required',
+  );
+  assert.equal(connection.begun, 0);
+  assert.deepEqual(await snapshotTree(target.assetsDir), before);
+});
+
 test('MySQL import commits all missing rows in one transaction', async () => {
   const fixture = await makePackageFixture();
   const target = await makeTarget(fixture, { baseline: false });
@@ -784,4 +862,86 @@ test('MySQL materialize crash journal removes rolled-back files before next impo
     files: 32,
   });
   assert.equal((await listFiles(target.assetsDir)).length, 32);
+});
+
+test('MySQL recovery preserves an external same-hash file with a different inode', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture, { baseline: false });
+  const child = runImporterChild('importMysqlLibrary', {
+    packagePath: fixture.packageRoot,
+    assetsDir: target.assetsDir,
+    faultInjection: 'after_mysql_materialize',
+  });
+  assert.equal(child.status, 87, child.stderr);
+  const journalPath = path.join(
+    target.assetsDir,
+    '.virtual-model-library-import',
+    'mysql-journal.json',
+  );
+  const journal = await readJson(journalPath);
+  const owned = journal.files[0];
+  const destinationPath = path.join(target.assetsDir, owned.storageKey);
+  const stagePath = path.join(journal.stageRoot, owned.storageKey);
+  const [ownedDestinationStat, ownedStageStat] = await Promise.all([
+    stat(destinationPath),
+    stat(stagePath),
+  ]);
+  assert.equal(ownedDestinationStat.ino, ownedStageStat.ino);
+
+  const bytes = await readFile(destinationPath);
+  await unlink(destinationPath);
+  await writeFile(destinationPath, bytes);
+  await chmod(destinationPath, 0o644);
+  const externalInode = (await stat(destinationPath)).ino;
+  assert.notEqual(externalInode, ownedStageStat.ino);
+
+  await importMysqlLibrary({
+    packagePath: fixture.packageRoot,
+    connection: new FakeMysqlConnection(),
+    assetsDir: target.assetsDir,
+  });
+  assert.equal((await stat(destinationPath)).ino, externalInode);
+});
+
+test('MySQL recovery fails closed when every journal id exists with different content', async () => {
+  const fixture = await makePackageFixture();
+  const target = await makeTarget(fixture, { baseline: false });
+  const child = runImporterChild('importMysqlLibrary', {
+    packagePath: fixture.packageRoot,
+    assetsDir: target.assetsDir,
+    faultInjection: 'after_mysql_materialize',
+  });
+  assert.equal(child.status, 87, child.stderr);
+  const journalPath = path.join(
+    target.assetsDir,
+    '.virtual-model-library-import',
+    'mysql-journal.json',
+  );
+  const journal = await readJson(journalPath);
+  const rowsByTable = new Map([
+    ['virtual_models', journal.expected.models],
+    ['virtual_model_versions', journal.expected.versions],
+    ['virtual_model_assets', journal.expected.relations],
+    ['stored_assets', journal.expected.registry],
+  ]);
+  const connection = new FakeMysqlConnection();
+  connection.query = async (sql) => {
+    for (const [table, rows] of rowsByTable) {
+      if (sql.includes(`FROM ${table}`)) {
+        return [[...rows.map((row, index) => (
+          index === 0 ? { ...row, id: row.id, status: 'conflicting-content' } : row
+        ))]];
+      }
+    }
+    throw new Error(`Unexpected SQL: ${sql}`);
+  };
+
+  await assert.rejects(
+    importMysqlLibrary({
+      packagePath: fixture.packageRoot,
+      connection,
+      assetsDir: target.assetsDir,
+    }),
+    (error) => error.code === 'mysql_recovery_conflict',
+  );
 });
