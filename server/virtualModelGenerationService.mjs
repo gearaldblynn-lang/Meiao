@@ -59,16 +59,38 @@ const submit = async (batch, userId, poseIds, deps) => {
     const index = current.poseTasks.findIndex((task) => task.poseId === poseId);
     const task = current.poseTasks[index];
     if (!task || task.status !== 'pending' || task.jobId) continue;
-    const job = await deps.createJob({
-      module: 'virtual_model_library', taskType: 'kie_image', provider: 'kie', maxRetries: 2,
+    const idempotencyKey = `virtual-model-generation:${current.id}:${poseId}:${current.baselineRevision}`;
+    const claimed = await deps.claimPoseSubmission({
+      batchId: current.id,
+      userId,
+      poseId,
+      baselineRevision: current.baselineRevision,
+      idempotencyKey,
+      claimedAt: deps.now(),
+    });
+    if (!claimed) {
+      current = await deps.getBatchRecord(current.id, userId) || current;
+      continue;
+    }
+    const claimedBatch = await deps.getBatchRecord(current.id, userId) || current;
+    const claimedTask = claimedBatch.poseTasks.find((item) => item.poseId === poseId);
+    if (!claimedTask || claimedTask.submitClaim?.idempotencyKey !== idempotencyKey) continue;
+    let job;
+    try {
+      job = await deps.createJob({
+      module: 'virtual_model_library', taskType: 'kie_image', provider: 'kie', maxRetries: 0,
       payload: {
         imageUrls, prompt: buildVirtualModelPosePrompt({ sourceName, poseId, referenceCount: imageUrls.length, referenceRole: derived ? 'baseline' : 'uploaded' }),
         model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K', subFeature: 'virtual_model_pose_generation', shellPurpose: 'virtual_model_library_auto_angle',
-        generationBatchId: current.id, virtualModelId: current.virtualModelId, virtualModelVersionId: current.virtualModelVersionId, poseId, slot: task.slot, baselineRevision: derived ? current.baselineRevision : undefined,
+        generationBatchId: current.id, virtualModelId: current.virtualModelId, virtualModelVersionId: current.virtualModelVersionId, poseId, slot: claimedTask.slot, baselineRevision: derived ? current.baselineRevision : undefined, idempotencyKey,
       },
-    });
-    const poseTasks = current.poseTasks.map((item, taskIndex) => taskIndex === index ? { ...item, status: String(job.status || 'queued'), jobId: job.id, retryRequested: undefined, ...(derived ? { baselineRevision: current.baselineRevision } : {}), errorCode: undefined, errorMessage: undefined } : item);
-    current = await update(current, userId, { status: 'queued', poseTasks }, deps);
+      });
+    } catch (error) {
+      await deps.failPoseSubmission?.({ batchId: current.id, userId, poseId, idempotencyKey, failedAt: deps.now(), errorCode: String(error?.code || 'MODEL_GENERATION_SUBMISSION_FAILED'), errorMessage: String(error?.message || 'Virtual model generation submission failed') });
+      throw error;
+    }
+    const poseTasks = claimedBatch.poseTasks.map((item) => item.poseId === poseId ? { ...item, status: String(job.status || 'queued'), jobId: job.id, retryRequested: undefined, ...(derived ? { baselineRevision: current.baselineRevision } : {}), errorCode: undefined, errorMessage: undefined } : item);
+    current = await update(claimedBatch, userId, { status: 'queued', poseTasks }, deps);
   }
   return current;
 };

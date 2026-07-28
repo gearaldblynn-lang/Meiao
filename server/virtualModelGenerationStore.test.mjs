@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  claimVirtualModelGenerationPoseSubmission,
   createVirtualModelGenerationBatchRecord,
   ensureVirtualModelGenerationSchema,
   getVirtualModelGenerationBatch,
@@ -67,4 +68,41 @@ test('MySQL generation batches normalize JSON fields and only update their owner
   assert.deepEqual(loaded.finalizationResult, { assets: [] });
   await updateVirtualModelGenerationBatchRecord({ pool, batchId: 'batch-1', userId: 'admin-1', patch: { status: 'running', updatedAt: 3 } });
   assert.match(calls.find((call) => call.sql.startsWith('UPDATE')).sql, /WHERE id = \? AND user_id = \?/);
+});
+
+test('submission claims are durable compare-and-set records keyed by batch pose and baseline revision', async () => {
+  const store = normalizeVirtualModelGenerationStore({
+    virtualModelGenerationBatches: [makeBatch({ poseTasks: [{ poseId: 'C01', status: 'pending' }] })],
+  });
+  const input = {
+    store, batchId: 'batch-1', userId: 'admin-1', poseId: 'C01', baselineRevision: 1,
+    idempotencyKey: 'virtual-model-generation:batch-1:C01:1', claimedAt: 2,
+  };
+  assert.equal(await claimVirtualModelGenerationPoseSubmission(input), true);
+  assert.equal(await claimVirtualModelGenerationPoseSubmission(input), false);
+  assert.deepEqual(store.virtualModelGenerationBatches[0].poseTasks[0].submitClaim, {
+    idempotencyKey: 'virtual-model-generation:batch-1:C01:1', baselineRevision: 1, claimedAt: 2,
+  });
+});
+
+test('MySQL submission claims compare the stored pose snapshot so only one process can claim it', async () => {
+  let storedJson = '[{"poseId":"C01","status":"pending"}]';
+  const calls = [];
+  const pool = {
+    query: async (sql, values = []) => {
+      calls.push({ sql, values });
+      if (sql.startsWith('SELECT pose_tasks_json')) return [[{ pose_tasks_json: storedJson }]];
+      if (sql.startsWith('UPDATE virtual_model_generation_batches')) {
+        const [nextJson, , , , expectedJson] = values;
+        if (expectedJson !== storedJson) return [{ affectedRows: 0 }];
+        storedJson = nextJson;
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+  };
+  const input = { pool, batchId: 'batch-1', userId: 'admin-1', poseId: 'C01', baselineRevision: 1, idempotencyKey: 'virtual-model-generation:batch-1:C01:1', claimedAt: 2 };
+  assert.equal(await claimVirtualModelGenerationPoseSubmission(input), true);
+  assert.equal(await claimVirtualModelGenerationPoseSubmission(input), false);
+  assert.match(calls.find((call) => call.sql.startsWith('UPDATE virtual_model_generation_batches')).sql, /AND pose_tasks_json = \?/);
 });

@@ -94,6 +94,83 @@ export const updateVirtualModelGenerationBatchRecord = async ({ pool = null, sto
   return batchFromRow(target.virtualModelGenerationBatches[index]);
 };
 
+const claimableTaskIndex = (poseTasks, poseId, baselineRevision, idempotencyKey) => poseTasks.findIndex((task) => (
+  task?.poseId === poseId
+  && task.status === 'pending'
+  && !task.jobId
+  && !task.submitClaim
+  && (!Object.hasOwn(task, 'baselineRevision') || Number(task.baselineRevision) === Number(baselineRevision))
+  && String(idempotencyKey || '').trim()
+));
+
+const claimPatch = (poseTasks, index, { idempotencyKey, baselineRevision, claimedAt }) => poseTasks.map((task, taskIndex) => taskIndex === index ? {
+  ...task,
+  submitClaim: { idempotencyKey, baselineRevision, claimedAt },
+} : task);
+
+export const claimVirtualModelGenerationPoseSubmission = async ({
+  pool = null,
+  store = null,
+  batchId,
+  userId,
+  poseId,
+  baselineRevision,
+  idempotencyKey,
+  claimedAt,
+} = {}) => {
+  if (!String(batchId || '').trim() || !String(userId || '').trim() || !String(poseId || '').trim() || !String(idempotencyKey || '').trim()) return false;
+  if (pool) {
+    const [rows] = await pool.query('SELECT pose_tasks_json FROM virtual_model_generation_batches WHERE id = ? AND user_id = ? LIMIT 1', [batchId, userId]);
+    const raw = rows[0]?.pose_tasks_json;
+    const poseTasks = parseJson(raw, []);
+    const index = claimableTaskIndex(poseTasks, poseId, baselineRevision, idempotencyKey);
+    if (index < 0 || typeof raw !== 'string') return false;
+    const nextPoseTasks = claimPatch(poseTasks, index, { idempotencyKey, baselineRevision, claimedAt });
+    const [result] = await pool.query(
+      'UPDATE virtual_model_generation_batches SET pose_tasks_json = ?, updated_at = ? WHERE id = ? AND user_id = ? AND pose_tasks_json = ?',
+      [JSON.stringify(nextPoseTasks), claimedAt, batchId, userId, raw],
+    );
+    return result.affectedRows === 1;
+  }
+  const target = normalizeVirtualModelGenerationStore(store);
+  const batch = target.virtualModelGenerationBatches.find((item) => item.id === batchId && String(item.userId ?? item.user_id) === String(userId));
+  const poseTasks = batch?.poseTasks;
+  const index = claimableTaskIndex(poseTasks, poseId, baselineRevision, idempotencyKey);
+  if (index < 0) return false;
+  batch.poseTasks = claimPatch(poseTasks, index, { idempotencyKey, baselineRevision, claimedAt });
+  batch.updatedAt = claimedAt;
+  return true;
+};
+
+export const failVirtualModelGenerationPoseSubmission = async ({
+  pool = null,
+  store = null,
+  batchId,
+  userId,
+  poseId,
+  idempotencyKey,
+  failedAt,
+  errorCode = 'MODEL_GENERATION_SUBMISSION_FAILED',
+  errorMessage = 'Virtual model generation submission failed',
+} = {}) => {
+  const failTask = (tasks) => tasks.map((task) => task?.poseId === poseId && task?.submitClaim?.idempotencyKey === idempotencyKey ? {
+    ...task, status: 'failed', submitClaim: undefined, errorCode, errorMessage,
+  } : task);
+  if (pool) {
+    const [rows] = await pool.query('SELECT pose_tasks_json FROM virtual_model_generation_batches WHERE id = ? AND user_id = ? LIMIT 1', [batchId, userId]);
+    const raw = rows[0]?.pose_tasks_json;
+    const poseTasks = parseJson(raw, []);
+    if (typeof raw !== 'string' || !poseTasks.some((task) => task?.poseId === poseId && task?.submitClaim?.idempotencyKey === idempotencyKey)) return false;
+    const [result] = await pool.query('UPDATE virtual_model_generation_batches SET pose_tasks_json = ?, updated_at = ? WHERE id = ? AND user_id = ? AND pose_tasks_json = ?', [JSON.stringify(failTask(poseTasks)), failedAt, batchId, userId, raw]);
+    return result.affectedRows === 1;
+  }
+  const batch = normalizeVirtualModelGenerationStore(store).virtualModelGenerationBatches.find((item) => item.id === batchId && String(item.userId ?? item.user_id) === String(userId));
+  if (!batch?.poseTasks?.some((task) => task?.poseId === poseId && task?.submitClaim?.idempotencyKey === idempotencyKey)) return false;
+  batch.poseTasks = failTask(batch.poseTasks);
+  batch.updatedAt = failedAt;
+  return true;
+};
+
 export const listActiveVirtualModelGenerationSourceAssetIds = async ({ pool = null, store = null } = {}) => {
   const batches = pool ? (await pool.query(`SELECT source_asset_ids_json, pose_tasks_json FROM virtual_model_generation_batches WHERE status IN (${[...ACTIVE_VIRTUAL_MODEL_BATCH_STATUSES].map(() => '?').join(',')})`, [...ACTIVE_VIRTUAL_MODEL_BATCH_STATUSES]))[0] : normalizeVirtualModelGenerationStore(store).virtualModelGenerationBatches.filter((batch) => ACTIVE_VIRTUAL_MODEL_BATCH_STATUSES.has(String(batch.status)));
   return [...new Set(batches.flatMap((batch) => [...strings(parseJson(batch.sourceAssetIds ?? batch.source_asset_ids_json, [])), ...(parseJson(batch.poseTasks ?? batch.pose_tasks_json, []) || []).map((task) => String(task?.managedReferenceAsset?.assetId || '')).filter(Boolean)]))];

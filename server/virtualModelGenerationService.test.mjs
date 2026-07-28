@@ -6,6 +6,7 @@ import {
   reconcileVirtualModelGenerationBatch,
   retryVirtualModelGenerationPose,
 } from './virtualModelGenerationService.mjs';
+const loadSeparateServiceInstance = (name) => import(`./virtualModelGenerationService.mjs?instance=${name}`);
 
 const POSES = ['C01', 'C02', 'C03', 'C04', 'C05', 'P05', 'P01', 'P03'];
 const DERIVED = new Set(['C02', 'C03', 'C04', 'C05', 'P05', 'P03']);
@@ -28,6 +29,16 @@ const makeHarness = () => {
     },
     getJob: async (jobId) => jobs.get(jobId) || null,
     cancelJob: async () => {},
+    claimPoseSubmission: async ({ batchId, poseId, baselineRevision, idempotencyKey, claimedAt }) => {
+      const batch = batches.get(batchId);
+      if (batch.poseTasks.some((task) => task.poseId === poseId && task.submitClaim)) return false;
+      batch.poseTasks = batch.poseTasks.map((task) => task.poseId === poseId ? {
+        ...task,
+        submitClaim: { idempotencyKey, baselineRevision, claimedAt },
+      } : task);
+      return true;
+    },
+    failPoseSubmission: async () => {},
     stabilizeGeneratedReference: async ({ task }) => ({
       managedAsset: { assetId: `managed-${task.poseId}`, publicUrl: `https://managed.test/${task.poseId}.png` },
       stableReferenceUrl: `https://stable.test/${task.poseId}.png`,
@@ -62,10 +73,30 @@ test('creation submits only C01 and P01 with current-user virtual-model source a
   const batch = await createBatch(harness);
   assert.deepEqual(batch.poseTasks.map((task) => task.poseId), POSES);
   assert.deepEqual(harness.createCalls.map((call) => call.request.payload.poseId), ['C01', 'P01']);
+  assert.ok(harness.createCalls.every((call) => call.request.maxRetries === 0));
   assert.deepEqual(harness.createCalls[0].request.payload.imageUrls, ['https://source.test/source-1.png', 'https://source.test/source-2.png']);
 
   harness.deps.getSourceAssets = async () => [{ id: 'source-1', userId: 'other-user', module: 'virtual_model_generation', publicUrl: 'https://other.test/source.png' }];
   await assert.rejects(createBatch(harness), (error) => error?.code === 'MODEL_ASSET_UNAVAILABLE');
+});
+
+test('two separate service instances claim a pending pose once before creating a paid job', async () => {
+  const harness = makeHarness();
+  const [first, second] = await Promise.all([loadSeparateServiceInstance('one'), loadSeparateServiceInstance('two')]);
+  const timestamp = harness.deps.now();
+  harness.batches.set('batch-1', {
+    id: 'batch-1', userId: 'admin-1', virtualModelId: 'model-1', virtualModelVersionId: 'version-1',
+    sourceAssetIds: ['source-1'], primarySourceAssetId: 'source-1', status: 'queued', baselineRevision: 1,
+    derivedRegenerationRequired: false, createdAt: timestamp, updatedAt: timestamp,
+    poseTasks: POSES.map((poseId) => ({ poseId, slot: poseId, label: poseId, status: poseId === 'C01' ? 'pending' : 'cancelled' })),
+  });
+  await Promise.all([
+    first.reconcileVirtualModelGenerationBatch({ batchId: 'batch-1', userId: 'admin-1', deps: harness.deps }),
+    second.reconcileVirtualModelGenerationBatch({ batchId: 'batch-1', userId: 'admin-1', deps: harness.deps }),
+  ]);
+  assert.equal(harness.createCalls.length, 1);
+  assert.equal(harness.createCalls[0].request.maxRetries, 0);
+  assert.equal(harness.createCalls[0].request.payload.idempotencyKey, 'virtual-model-generation:batch-1:C01:1');
 });
 
 test('derived work waits for both completed and stabilized baseline outputs', async () => {
