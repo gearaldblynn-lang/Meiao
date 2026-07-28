@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  bindVirtualModelGenerationPoseJob,
   claimVirtualModelGenerationPoseSubmission,
   createVirtualModelGenerationBatchRecord,
   ensureVirtualModelGenerationSchema,
@@ -105,4 +106,45 @@ test('MySQL submission claims compare the stored pose snapshot so only one proce
   assert.equal(await claimVirtualModelGenerationPoseSubmission(input), true);
   assert.equal(await claimVirtualModelGenerationPoseSubmission(input), false);
   assert.match(calls.find((call) => call.sql.startsWith('UPDATE virtual_model_generation_batches')).sql, /AND pose_tasks_json = \?/);
+});
+
+test('interleaved C01 and P01 bindings merge only their claimed pose without erasing the other job', async () => {
+  const store = normalizeVirtualModelGenerationStore({
+    virtualModelGenerationBatches: [makeBatch({
+      poseTasks: [{ poseId: 'C01', status: 'pending' }, { poseId: 'P01', status: 'pending' }],
+    })],
+  });
+  const claim = (poseId) => ({ store, batchId: 'batch-1', userId: 'admin-1', poseId, baselineRevision: 1, idempotencyKey: `virtual-model-generation:batch-1:${poseId}:1`, claimedAt: 2 });
+  assert.equal(await claimVirtualModelGenerationPoseSubmission(claim('C01')), true);
+  assert.equal(await claimVirtualModelGenerationPoseSubmission(claim('P01')), true);
+  await Promise.all([
+    bindVirtualModelGenerationPoseJob({ ...claim('C01'), job: { id: 'job-c01', status: 'queued' }, boundAt: 3 }),
+    bindVirtualModelGenerationPoseJob({ ...claim('P01'), job: { id: 'job-p01', status: 'queued' }, boundAt: 3 }),
+  ]);
+  assert.deepEqual(store.virtualModelGenerationBatches[0].poseTasks.map((task) => [task.poseId, task.jobId]), [['C01', 'job-c01'], ['P01', 'job-p01']]);
+});
+
+test('MySQL pose binding retries a compare-and-set conflict and preserves both interleaved job IDs', async () => {
+  const key = (poseId) => `virtual-model-generation:batch-1:${poseId}:1`;
+  let storedJson = JSON.stringify([
+    { poseId: 'C01', status: 'pending', submitClaim: { idempotencyKey: key('C01') } },
+    { poseId: 'P01', status: 'pending', submitClaim: { idempotencyKey: key('P01') } },
+  ]);
+  const pool = {
+    query: async (sql, values = []) => {
+      if (sql.startsWith('SELECT * FROM virtual_model_generation_batches')) return [[{ id: 'batch-1', user_id: 'admin-1', virtual_model_id: 'model-1', virtual_model_version_id: 'version-1', source_asset_ids_json: '[]', primary_source_asset_id: '', status: 'queued', pose_tasks_json: storedJson, baseline_revision: 1, derived_regeneration_required: 0, created_at: 1, updated_at: 1 }]];
+      if (sql.startsWith('UPDATE virtual_model_generation_batches')) {
+        const [nextJson, , , , expectedJson] = values;
+        if (expectedJson !== storedJson) return [{ affectedRows: 0 }];
+        storedJson = nextJson;
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+  };
+  await Promise.all([
+    bindVirtualModelGenerationPoseJob({ pool, batchId: 'batch-1', userId: 'admin-1', poseId: 'C01', idempotencyKey: key('C01'), job: { id: 'job-c01', status: 'queued' }, baselineRevision: 1, boundAt: 2 }),
+    bindVirtualModelGenerationPoseJob({ pool, batchId: 'batch-1', userId: 'admin-1', poseId: 'P01', idempotencyKey: key('P01'), job: { id: 'job-p01', status: 'queued' }, baselineRevision: 1, boundAt: 2 }),
+  ]);
+  assert.deepEqual(JSON.parse(storedJson).map((task) => [task.poseId, task.jobId]), [['C01', 'job-c01'], ['P01', 'job-p01']]);
 });

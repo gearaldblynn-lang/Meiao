@@ -60,37 +60,49 @@ const submit = async (batch, userId, poseIds, deps) => {
     const task = current.poseTasks[index];
     if (!task || task.status !== 'pending' || task.jobId) continue;
     const idempotencyKey = `virtual-model-generation:${current.id}:${poseId}:${current.baselineRevision}`;
-    const claimed = await deps.claimPoseSubmission({
-      batchId: current.id,
-      userId,
-      poseId,
-      baselineRevision: current.baselineRevision,
-      idempotencyKey,
-      claimedAt: deps.now(),
-    });
-    if (!claimed) {
-      current = await deps.getBatchRecord(current.id, userId) || current;
-      continue;
+    if (!task.submitClaim) {
+      const claimed = await deps.claimPoseSubmission({
+        batchId: current.id,
+        userId,
+        poseId,
+        baselineRevision: current.baselineRevision,
+        idempotencyKey,
+        claimedAt: deps.now(),
+      });
+      if (!claimed) {
+        current = await deps.getBatchRecord(current.id, userId) || current;
+        continue;
+      }
     }
     const claimedBatch = await deps.getBatchRecord(current.id, userId) || current;
     const claimedTask = claimedBatch.poseTasks.find((item) => item.poseId === poseId);
     if (!claimedTask || claimedTask.submitClaim?.idempotencyKey !== idempotencyKey) continue;
+    const existingJob = claimedTask.retryRequested ? null : await deps.findJobByIdempotencyKey({ userId, idempotencyKey });
     let job;
     try {
-      job = await deps.createJob({
+      job = existingJob || await deps.createJob({
       module: 'virtual_model_library', taskType: 'kie_image', provider: 'kie', maxRetries: 0,
+      createRuntimeId: idempotencyKey,
       payload: {
         imageUrls, prompt: buildVirtualModelPosePrompt({ sourceName, poseId, referenceCount: imageUrls.length, referenceRole: derived ? 'baseline' : 'uploaded' }),
         model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K', subFeature: 'virtual_model_pose_generation', shellPurpose: 'virtual_model_library_auto_angle',
-        generationBatchId: current.id, virtualModelId: current.virtualModelId, virtualModelVersionId: current.virtualModelVersionId, poseId, slot: claimedTask.slot, baselineRevision: derived ? current.baselineRevision : undefined, idempotencyKey,
+        generationBatchId: current.id, virtualModelId: current.virtualModelId, virtualModelVersionId: current.virtualModelVersionId, poseId, slot: claimedTask.slot, baselineRevision: derived ? current.baselineRevision : undefined, idempotencyKey, clientSubmissionKey: idempotencyKey,
       },
       });
     } catch (error) {
       await deps.failPoseSubmission?.({ batchId: current.id, userId, poseId, idempotencyKey, failedAt: deps.now(), errorCode: String(error?.code || 'MODEL_GENERATION_SUBMISSION_FAILED'), errorMessage: String(error?.message || 'Virtual model generation submission failed') });
       throw error;
     }
-    const poseTasks = claimedBatch.poseTasks.map((item) => item.poseId === poseId ? { ...item, status: String(job.status || 'queued'), jobId: job.id, retryRequested: undefined, ...(derived ? { baselineRevision: current.baselineRevision } : {}), errorCode: undefined, errorMessage: undefined } : item);
-    current = await update(claimedBatch, userId, { status: 'queued', poseTasks }, deps);
+    const bound = await deps.bindPoseJob({
+      batchId: current.id,
+      userId,
+      poseId,
+      idempotencyKey,
+      job,
+      baselineRevision: current.baselineRevision,
+      boundAt: deps.now(),
+    });
+    current = bound || await deps.getBatchRecord(current.id, userId) || current;
   }
   return current;
 };
@@ -135,7 +147,6 @@ const reconcileUnlocked = async ({ batchId, userId, deps }) => {
     });
     batch = await update(batch, userId, { status: 'running', poseTasks }, deps);
   }
-  if (batch.poseTasks.some((task) => task.jobId && ACTIVE.has(task.status))) return batch.status === 'running' ? batch : update(batch, userId, { status: 'running' }, deps);
   batch = await stabilize(batch, userId, deps);
   const retries = batch.poseTasks.filter((task) => task.status === 'pending' && task.retryRequested);
   if (retries.length) return submit(batch, userId, retries.map((task) => task.poseId), deps);
@@ -149,6 +160,7 @@ const reconcileUnlocked = async ({ batchId, userId, deps }) => {
     const derivedPending = batch.poseTasks.filter((task) => DERIVED.has(task.poseId) && task.status === 'pending' && !task.jobId).map((task) => task.poseId);
     if (derivedPending.length) return submit(batch, userId, derivedPending, deps);
   }
+  if (batch.poseTasks.some((task) => task.jobId && ACTIVE.has(task.status))) return batch.status === 'running' ? batch : update(batch, userId, { status: 'running' }, deps);
   const finalizable = baselinesReady && batch.poseTasks.length === VIRTUAL_MODEL_GENERATION_POSES.length && !batch.derivedRegenerationRequired && batch.poseTasks.every((task) => task.status === 'succeeded') && batch.poseTasks.filter((task) => DERIVED.has(task.poseId)).every((task) => task.baselineRevision === batch.baselineRevision);
   if (finalizable) return update(batch, userId, { status: 'ready_to_finalize' }, deps);
   const failed = batch.poseTasks.find((task) => ['failed', 'cancelled'].includes(task.status) || task.referenceStatus === 'reference_failed');

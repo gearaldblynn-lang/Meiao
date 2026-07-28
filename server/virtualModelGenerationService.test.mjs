@@ -15,6 +15,7 @@ const makeHarness = () => {
   const batches = new Map();
   const jobs = new Map();
   const createCalls = [];
+  const jobsByRuntimeId = new Map();
   let id = 0;
   const deps = {
     now: () => 100,
@@ -22,12 +23,21 @@ const makeHarness = () => {
     getModelVersion: async () => ({ model: { id: 'model-1', status: 'draft' }, version: { id: 'version-1', virtualModelId: 'model-1', status: 'draft' } }),
     getSourceAssets: async ({ assetIds }) => assetIds.map((assetId) => ({ id: assetId, userId: 'admin-1', module: 'virtual_model_generation', publicUrl: `https://source.test/${assetId}.png`, originalName: `${assetId}.png` })),
     createJob: async (request) => {
+      const runtimeId = request.createRuntimeId;
+      const existing = jobsByRuntimeId.get(runtimeId);
+      const currentExisting = existing ? jobs.get(existing.id) || existing : null;
+      if (currentExisting && ['queued', 'running', 'retry_waiting'].includes(currentExisting.status)) return currentExisting;
       const job = { id: `job-${++id}`, userId: 'admin-1', status: 'queued', payload: request.payload, result: null };
       jobs.set(job.id, job);
+      jobsByRuntimeId.set(runtimeId, job);
       createCalls.push({ job, request });
       return job;
     },
     getJob: async (jobId) => jobs.get(jobId) || null,
+    findJobByIdempotencyKey: async ({ idempotencyKey }) => {
+      const job = jobsByRuntimeId.get(idempotencyKey);
+      return job ? jobs.get(job.id) || job : null;
+    },
     cancelJob: async () => {},
     claimPoseSubmission: async ({ batchId, poseId, baselineRevision, idempotencyKey, claimedAt }) => {
       const batch = batches.get(batchId);
@@ -39,6 +49,20 @@ const makeHarness = () => {
       return true;
     },
     failPoseSubmission: async () => {},
+    bindPoseJob: async ({ batchId, userId, poseId, idempotencyKey, job, boundAt, baselineRevision }) => {
+      const batch = batches.get(batchId);
+      if (!batch || batch.userId !== userId) return null;
+      const task = batch.poseTasks.find((item) => item.poseId === poseId);
+      if (task?.submitClaim?.idempotencyKey !== idempotencyKey) return null;
+      batch.poseTasks = batch.poseTasks.map((item) => item.poseId === poseId ? {
+        ...item,
+        status: job.status || 'queued',
+        jobId: job.id,
+        ...(DERIVED.has(poseId) ? { baselineRevision } : {}),
+      } : item);
+      batch.updatedAt = boundAt;
+      return structuredClone(batch);
+    },
     stabilizeGeneratedReference: async ({ task }) => ({
       managedAsset: { assetId: `managed-${task.poseId}`, publicUrl: `https://managed.test/${task.poseId}.png` },
       stableReferenceUrl: `https://stable.test/${task.poseId}.png`,
@@ -97,6 +121,52 @@ test('two separate service instances claim a pending pose once before creating a
   assert.equal(harness.createCalls.length, 1);
   assert.equal(harness.createCalls[0].request.maxRetries, 0);
   assert.equal(harness.createCalls[0].request.payload.idempotencyKey, 'virtual-model-generation:batch-1:C01:1');
+  assert.equal(harness.createCalls[0].request.createRuntimeId, 'virtual-model-generation:batch-1:C01:1');
+});
+
+test('interleaved service recovery binds distinct C01 and P01 jobs without overwriting either pose', async () => {
+  const harness = makeHarness();
+  const [first, second] = await Promise.all([loadSeparateServiceInstance('c01'), loadSeparateServiceInstance('p01')]);
+  const claim = (poseId) => ({ idempotencyKey: `virtual-model-generation:batch-1:${poseId}:1`, baselineRevision: 1, claimedAt: 1 });
+  harness.batches.set('batch-1', {
+    id: 'batch-1', userId: 'admin-1', virtualModelId: 'model-1', virtualModelVersionId: 'version-1', sourceAssetIds: ['source-1'], primarySourceAssetId: 'source-1', status: 'queued', baselineRevision: 1, derivedRegenerationRequired: false, createdAt: 1, updatedAt: 1,
+    poseTasks: POSES.map((poseId) => ({ poseId, slot: poseId, label: poseId, status: ['C01', 'P01'].includes(poseId) ? 'pending' : 'cancelled', ...(['C01', 'P01'].includes(poseId) ? { submitClaim: claim(poseId) } : {}) })),
+  });
+  await Promise.all([
+    first.reconcileVirtualModelGenerationBatch({ batchId: 'batch-1', userId: 'admin-1', deps: harness.deps }),
+    second.reconcileVirtualModelGenerationBatch({ batchId: 'batch-1', userId: 'admin-1', deps: harness.deps }),
+  ]);
+  const jobs = harness.batches.get('batch-1').poseTasks.filter((task) => ['C01', 'P01'].includes(task.poseId));
+  assert.deepEqual(jobs.map((task) => task.jobId).sort(), ['job-1', 'job-2']);
+  assert.equal(harness.createCalls.length, 2);
+});
+
+test('a claimed pose recovers an already-created job by idempotency key without another create', async () => {
+  const harness = makeHarness();
+  const key = 'virtual-model-generation:batch-1:C01:1';
+  const job = { id: 'recovered-job', userId: 'admin-1', status: 'queued', payload: { idempotencyKey: key }, result: null };
+  harness.jobs.set(job.id, job);
+  harness.deps.findJobByIdempotencyKey = async ({ idempotencyKey }) => idempotencyKey === key ? job : null;
+  harness.batches.set('batch-1', {
+    id: 'batch-1', userId: 'admin-1', virtualModelId: 'model-1', virtualModelVersionId: 'version-1', sourceAssetIds: ['source-1'], primarySourceAssetId: 'source-1', status: 'queued', baselineRevision: 1, derivedRegenerationRequired: false, createdAt: 1, updatedAt: 1,
+    poseTasks: POSES.map((poseId) => ({ poseId, slot: poseId, label: poseId, status: poseId === 'C01' ? 'pending' : 'cancelled', ...(poseId === 'C01' ? { submitClaim: { idempotencyKey: key, baselineRevision: 1, claimedAt: 1 } } : {}) })),
+  });
+  await reconcileVirtualModelGenerationBatch({ batchId: 'batch-1', userId: 'admin-1', deps: harness.deps });
+  assert.equal(harness.createCalls.length, 0);
+  assert.equal(harness.batches.get('batch-1').poseTasks[0].jobId, 'recovered-job');
+});
+
+test('a create-before-bind crash reuses the unique runtime job on the next reconciliation', async () => {
+  const harness = makeHarness();
+  let bindAttempts = 0;
+  const realBind = harness.deps.bindPoseJob;
+  harness.deps.bindPoseJob = async (input) => ++bindAttempts === 1 ? null : realBind(input);
+  await createBatch(harness);
+  assert.equal(harness.createCalls.length, 2);
+  assert.equal(harness.batches.get('batch-1').poseTasks.find((task) => task.poseId === 'C01').jobId, undefined);
+  await reconcileVirtualModelGenerationBatch({ batchId: 'batch-1', userId: 'admin-1', deps: harness.deps });
+  assert.equal(harness.createCalls.length, 2);
+  assert.ok(harness.batches.get('batch-1').poseTasks.filter((task) => ['C01', 'P01'].includes(task.poseId)).every((task) => task.jobId));
 });
 
 test('derived work waits for both completed and stabilized baseline outputs', async () => {
