@@ -41,6 +41,15 @@ const waitUntil = async (predicate, timeoutMs = 1_000) => {
   throw new Error('preview service did not settle');
 };
 
+const waitForPersistedStatus = async (rootDir, previewId, expectedStatus) => (
+  waitUntil(async () => {
+    const raw = JSON.parse(await readFile(path.join(rootDir, 'registry.json'), 'utf8'));
+    return raw.records?.find((record) => (
+      record.previewId === previewId && record.status === expectedStatus
+    ));
+  })
+);
+
 test('one explicit preview request creates one provider task and reuses the persisted audio across languages', async (t) => {
   let nowMs = 1_000_000;
   const fixture = await createFixture({ now: () => nowMs });
@@ -219,13 +228,7 @@ test('cross-language clicks while a preview is processing do not submit twice', 
   assert.equal(duplicate.status, 'processing');
   assert.equal(fixture.calls.length, 1);
   releaseProvider();
-  await waitUntil(async () => {
-    const current = await fixture.service.get({
-      userId: input.userId,
-      previewId: first.previewId,
-    });
-    return current.status === 'ready';
-  });
+  await waitForPersistedStatus(fixture.rootDir, first.previewId, 'ready');
 });
 
 test('persisted previews remain isolated to the account that generated them', async (t) => {
@@ -253,13 +256,7 @@ test('persisted previews remain isolated to the account that generated them', as
   assert.equal(second.status, 'processing');
   assert.notEqual(second.previewId, first.previewId);
   assert.equal(fixture.calls.length, 2);
-  await waitUntil(async () => {
-    const current = await fixture.service.get({
-      userId: 'account-b',
-      previewId: second.previewId,
-    });
-    return current.status === 'ready';
-  });
+  await waitForPersistedStatus(fixture.rootDir, second.previewId, 'ready');
 });
 
 test('provider task id is checkpointed before polling result completion', async (t) => {
@@ -289,13 +286,7 @@ test('provider task id is checkpointed before polling result completion', async 
     return raw.records?.[0]?.providerTaskId === 'preview-provider-checkpoint';
   });
   releaseProvider();
-  await waitUntil(async () => {
-    const current = await fixture.service.get({
-      userId: 'user-2',
-      previewId: requested.previewId,
-    });
-    return current.status === 'ready';
-  });
+  await waitForPersistedStatus(fixture.rootDir, requested.previewId, 'ready');
 });
 
 test('preview validates catalog values before any paid provider call', async (t) => {
