@@ -235,6 +235,36 @@ test('buildPublicSystemConfig publishes the frozen public voiceover contract onl
   assert.equal(JSON.stringify(config.voiceoverTranslation).match(/private|\/Users|token|apiKey/i), null);
 });
 
+test('buildPublicSystemConfig publishes validated shared voice preview urls', () => {
+  const config = buildPublicSystemConfig({
+    MEIAO_VOICEOVER_TRANSLATION_ENABLED: '1',
+    KIE_API_KEY: 'private-kie-token',
+  }, {}, {
+    voiceoverReadiness: { pythonReady: true, modelReady: true, ffmpegReady: true },
+    voiceoverPreviewUrls: {
+      Zephyr: '/voiceover-previews/Zephyr.mp3',
+    },
+  });
+
+  assert.equal(
+    config.voiceoverTranslation.voices.find((voice) => voice.name === 'Zephyr')?.previewUrl,
+    '/voiceover-previews/Zephyr.mp3',
+  );
+  assert.equal(
+    'previewUrl' in config.voiceoverTranslation.voices.find((voice) => voice.name === 'Puck'),
+    false,
+  );
+});
+
+test('index loads the shared preview library once and injects it into both config handlers', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  assert.match(source, /loadVoiceoverPreviewLibrary\(\{\s*publicDir:/);
+  assert.match(source, /const withVoiceoverPublicConfig = \(overrides = \{\}\) => \(\{/);
+  assert.match(source, /voiceoverPreviewUrls:\s*voiceoverPreviewLibrary\.previewUrlsByVoice/);
+  const configBlocks = source.match(/buildPublicSystemConfig\([\s\S]*?withVoiceoverPublicConfig\(\{/g) || [];
+  assert.ok(configBlocks.length >= 6, `expected all config handlers to use the shared helper, got ${configBlocks.length}`);
+});
+
 test('public voiceover ready remains false when KIE credentials are unavailable', () => {
   const config = buildPublicSystemConfig({
     MEIAO_VOICEOVER_TRANSLATION_ENABLED: '1',

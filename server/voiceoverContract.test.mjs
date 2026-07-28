@@ -77,6 +77,25 @@ test('invalid capacity values fall back to conservative defaults', () => {
   }).readinessModelTimeoutMs, 90_000);
 });
 
+test('public voice catalog exposes only validated deployable preview urls', () => {
+  const config = getVoiceoverPublicConfig(
+    enabledEnv(),
+    { pythonReady: true, modelReady: true, ffmpegReady: true },
+    {
+      Zephyr: '/voiceover-previews/Zephyr.mp3',
+      Puck: 'https://private.example/Puck.mp3',
+      Kore: '/../server/data/private.wav',
+      Unknown: '/voiceover-previews/Unknown.mp3',
+    },
+  );
+  assert.equal(config.voices.find((voice) => voice.name === 'Zephyr')?.previewUrl, '/voiceover-previews/Zephyr.mp3');
+  assert.equal('previewUrl' in config.voices.find((voice) => voice.name === 'Puck'), false);
+  assert.equal('previewUrl' in config.voices.find((voice) => voice.name === 'Kore'), false);
+  assert.equal(config.voices.some((voice) => voice.name === 'Unknown'), false);
+  assert.equal(JSON.stringify(config).includes('private.example'), false);
+  assert.equal(JSON.stringify(config).includes('server/data'), false);
+});
+
 test('payload only accepts catalog members and a managed source identity', () => {
   assert.equal(normalizePayload(validPayload()).targetLanguage, 'en');
   assert.equal(normalizePayload(validPayload({ voiceMode: 'preset', voiceName: 'Kore' })).voiceName, 'Kore');
