@@ -462,11 +462,29 @@ test('admin asset binding creates a separate preview asset before storing model 
 test('job intake derives historical library authorization from owned persisted jobs instead of a client flag', async () => {
   const source = await readFile(new URL('./index.mjs', import.meta.url), 'utf8');
   const intake = source.slice(source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'POST')"), source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'GET')"));
-  assert.match(intake, /createLibraryModelJobPayload\(\{ payload: body\.payload, pool, user \}\)/);
+  assert.match(intake, /createLibraryModelJobPayload\(\{\s*payload: callerOwnedPayload,\s*pool,\s*user,\s*\}\)/);
   const libraryPayload = source.slice(source.indexOf('const createLibraryModelJobPayload'), source.indexOf('const injectLibraryModelAssetsForProvider'));
   assert.match(libraryPayload, /findOwnedHistoricalVirtualModelSnapshot/);
   assert.match(libraryPayload, /replacementScope: payload\.replacementScope/);
   assert.doesNotMatch(libraryPayload, /payload\.allowHistoricalPublishedVersion === true/);
+});
+
+test('job intake routes caller assets through authorization before appending the trusted public-model snapshot', async () => {
+  const source = await readFile(new URL('./index.mjs', import.meta.url), 'utf8');
+  const intake = source.slice(
+    source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'POST')"),
+    source.indexOf("if (url.pathname === '/api/jobs' && req.method === 'GET')"),
+  );
+  const authorizationIndex = intake.indexOf('await prepareAuthorizedManagedAssetJobPayload({');
+  const jobPayloadIndex = intake.indexOf('const jobPayload = {');
+
+  assert.ok(authorizationIndex >= 0, 'caller asset authorization must run at job intake');
+  assert.ok(jobPayloadIndex > authorizationIndex, 'job creation must use the authorized, server-enriched payload');
+  assert.match(intake, /value: body\.payload/);
+  assert.match(intake, /scrubPayload: scrubDbJobPayloadBeforeSubmission/);
+  assert.match(intake, /appendTrustedMetadata: \(callerOwnedPayload\) => createLibraryModelJobPayload/);
+  assert.match(intake, /payload: authorizedPayload/);
+  assert.doesNotMatch(intake, /value: jobPayload\.payload/);
 });
 
 test('library selection is validated before the shell creates an optimistic project or task', async () => {

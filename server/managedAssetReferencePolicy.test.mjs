@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { assertOwnedActiveManagedAssetReferences } from './managedAssetReferencePolicy.mjs';
+import * as managedAssetReferencePolicy from './managedAssetReferencePolicy.mjs';
+
+const {
+  assertOwnedActiveManagedAssetReferences,
+  prepareAuthorizedManagedAssetJobPayload,
+} = managedAssetReferencePolicy;
 
 test('managed references are accepted only when every asset is active and owned by the caller', async () => {
   const calls = [];
@@ -80,4 +85,66 @@ test('explicit persisted asset identities still require active ownership', async
     }),
     (error) => error?.code === 'managed_asset_forbidden' && error?.statusCode === 403,
   );
+});
+
+test('job intake authorizes caller assets before appending trusted public-model metadata', async () => {
+  assert.equal(typeof prepareAuthorizedManagedAssetJobPayload, 'function');
+  const ownedAsset = {
+    id: 'asset-owned',
+    userId: 'user-1',
+    storageKey: 'managed-images/users/user-1/source/asset-owned/reference.png',
+    storageStatus: 'active',
+    deletedAt: null,
+  };
+
+  const payload = await prepareAuthorizedManagedAssetJobPayload({
+    value: { imageUrlAssetId: 'asset-owned' },
+    userId: 'user-1',
+    scrubPayload: async (value) => ({ ...value }),
+    assertReferences: (options) => assertOwnedActiveManagedAssetReferences({
+      ...options,
+      listAssetsForUser: async () => [ownedAsset],
+    }),
+    appendTrustedMetadata: async (callerOwnedPayload) => ({
+      ...callerOwnedPayload,
+      identitySource: 'library',
+      virtualModelCoverAssetId: 'asset-public-model',
+    }),
+  });
+
+  assert.equal(payload.imageUrlAssetId, 'asset-owned');
+  assert.equal(payload.virtualModelCoverAssetId, 'asset-public-model');
+});
+
+test('job intake rejects injected cross-user asset IDs before trusted metadata is appended', async () => {
+  assert.equal(typeof prepareAuthorizedManagedAssetJobPayload, 'function');
+  let appendCalls = 0;
+
+  await assert.rejects(
+    () => prepareAuthorizedManagedAssetJobPayload({
+      value: {
+        imageUrlAssetId: 'asset-owned',
+        injectedCoverAssetId: 'asset-other',
+      },
+      userId: 'user-1',
+      scrubPayload: async (value) => ({ ...value }),
+      assertReferences: (options) => assertOwnedActiveManagedAssetReferences({
+        ...options,
+        listAssetsForUser: async () => [{
+          id: 'asset-owned',
+          userId: 'user-1',
+          storageKey: 'managed-images/users/user-1/source/asset-owned/reference.png',
+          storageStatus: 'active',
+          deletedAt: null,
+        }],
+      }),
+      appendTrustedMetadata: async (callerOwnedPayload) => {
+        appendCalls += 1;
+        return callerOwnedPayload;
+      },
+    }),
+    (error) => error?.code === 'managed_asset_forbidden' && error?.statusCode === 403,
+  );
+
+  assert.equal(appendCalls, 0);
 });
