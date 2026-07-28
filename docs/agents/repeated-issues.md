@@ -1387,11 +1387,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/providerKieTts.test.mjs server/voiceoverChildJobStore.test.mjs server/voiceoverAudio.test.mjs src/adapters/voiceoverTranslationHydration.test.mjs src/shell/components/VoiceoverResultPlayer.test.mjs`；真实父任务必须保持原 TTS task ID、落库 `actualDurationMs/atempo`、输出 H.264/AAC MP4，并在刷新后显示“已完成”、可切换“翻译结果”和下载。
 - Avoid next time: 付费异步任务的短暂查询空窗不能制造新 attempt；音频过短和过长的安全语义不同，前者可补静音、后者不能裁词；浏览器播放必须以受账号鉴权的托管资产 ID 重建 URL，不能把开发/反代 origin 差异当成资源不可信。
 
-## 2026-07-28 - 口播分段不能合并慢放，背景保留不能只信 Demucs no-vocals
+## 2026-07-28 - 口播分段不能合并慢放，纯新口播成品不得重新混入任何原音轨
 
-- Symptom: 本地真实口播翻译的背景音乐消失并变成分离杂音，英语口播仍是缓慢节奏，音画明显不匹配。
+- Symptom: 本地真实口播翻译先出现背景音乐消失和慢速错位；尝试恢复背景后又出现旧人声重复、杂音和分离伪影。
 - Evidence: 原音轨和 Demucs vocal 都是 -8.7 LUFS，`no_vocals` 只有 -44.9 LUFS；旧 8.92 秒 TTS 被 `atempo=0.75` 放进 15.07 秒总窗，口播约 11.41 秒结束后留下 3.66 秒空白。修复后的同一真实父任务生成 4 个独立时间窗，实际倍率为 1.716/1.459/1.217/1.591，最终背景床为 -24.6 LUFS，H.264/AAC MP4 为 15.042 秒且 Range 206。
-- Root cause / fix: 架构级根因、修复和防复发合同见 `CLAUDE.md` #81。补充供应商兼容：KIE 统一 task API 的 `queuing/generating` 都是正常非终态，必须继续查询原 task ID，不能抛错后诱导新建任务。
-- Regression check: `node --test server/voiceoverAnalysis.test.mjs server/voiceoverAudio.test.mjs server/providerKieTts.test.mjs server/voiceoverChildJobStore.test.mjs server/voiceoverTranslationRunner.test.mjs scripts/probe-voiceover-translation.test.mjs`；真实 canary 逐组核对时间窗、`actualDurationMs`、`atempo>=1`、背景床响度、最终时长/编码/fast-start 和鉴权 Range。
-- Avoid next time: 技术验收与听感验收分开记录；“任务成功、两个 stem 都存在”不能证明背景音乐保留，也不能证明口播节奏匹配。
+- Root cause / fix: 架构级根因、修复和防复发合同见 `CLAUDE.md` #81。Demucs 只服务于旧口播识别；最终 FFmpeg 只允许底片画面和对齐后的新口播两个媒体输入，不再使用原音轨或背景 stem。补充供应商兼容：KIE 统一 task API 的 `queuing/generating` 都是正常非终态，必须继续查询原 task ID，不能抛错后诱导新建任务。
+- Regression check: `node --test server/voiceoverAnalysis.test.mjs server/voiceoverAudio.test.mjs server/providerKieTts.test.mjs server/voiceoverChildJobStore.test.mjs server/voiceoverTranslationRunner.test.mjs scripts/probe-voiceover-translation.test.mjs`；真实 fixture 频谱证明原音乐和旧人声频率消失、新口播频率存在；真实 canary 逐组核对时间窗、`actualDurationMs`、`atempo>=1`、最终时长/编码/fast-start 和鉴权 Range。
+- Avoid next time: 技术验收与听感验收分开记录；“任务成功、两个 stem 都存在”不能证明最终音轨干净。产品明确要纯口播时，不做任何声源分离背景恢复。
 - Cloud release follow-up: 腾讯云 7.5 GiB 主机的常驻可用内存约 1.8 GiB，而一次 `mdx get_model` 峰值约 1.68 GiB。零停机 reload 同时保留新旧 Node 时，在新进程 bootstrap 再真实加载模型会触发全机换页抖动，SSH/health 都可能超时；延长超时或后台重试只会放大故障。服务启动和任务前置检查改为固定 Python 版本、模型字节/哈希、YAML 与 FFmpeg filters，发布前独立探针仍真实 `get_model`；实际分离只加载一次模型。发布必须等待公网 `voiceoverTranslation.ready=true`，不能只看 PM2 online 或独立探针成功。

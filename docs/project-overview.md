@@ -38,7 +38,7 @@
 
 ### 短视频 / 口播翻译
 
-- 输入必须是当前登录账号拥有的梅奥托管视频。流程为本地 FFmpeg 提取音轨、本地非量化 Demucs `mdx` 分离人声/背景、Gemini 单次分析与翻译、KIE Gemini 3.1 Flash TTS 按检测到的每个口播时间段独立合成、本地对齐/ducking/混音，再把 H.264/AAC MP4 作为托管结果写回原任务卡。
+- 输入必须是当前登录账号拥有的梅奥托管视频。流程为本地 FFmpeg 提取音轨、本地非量化 Demucs `mdx` 分离人声用于识别、Gemini 单次分析与翻译、KIE Gemini 3.1 Flash TTS 按检测到的每个口播时间段独立合成、本地对齐，并用新口播完全替换原视频音轨，再把 H.264/AAC MP4 作为托管结果写回原任务卡。成品不保留原口播、背景音乐或环境声，后期可重新配乐。
 - 新口播不会为了填满时间窗而降速；短语音保持自然速度并按原时间戳放置，长语音按时间窗在上限内加速。混音同时使用 Demucs `no_vocals` 和原音轨左右声道差分，避免中心人声占满混音时把原背景音乐一起删除。
 - “同时去文案”是可选 Golden 阶段，默认区域为底部 30%。它会增加一次 Golden 计费边界；关闭该选项不会调用 Golden。
 - 本地和腾讯云都使用同一套 readiness、父子任务检查点和托管素材合同；正式发布必须在服务端确认 `voiceoverTranslation.ready=true`，并用最小真实任务验收分析、逐段 TTS、对齐、混音和最终资源链。
@@ -246,7 +246,6 @@ npm run dev
 | `MEIAO_VOICEOVER_GROUP_GAP_MS` | `800` | 整数 `0-3000`；保留兼容，当前每个口播时间段独立 TTS |
 | `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS` | `150` | 整数 `0-1000` |
 | `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND` | `24` | 整数 `16-512`；空格分词语言提示同时限制约 3 词/秒 |
-| `MEIAO_VOICEOVER_DUCKING_DB` | `4` | `0-12` |
 | `MEIAO_VOICEOVER_FADE_MS` | `40` | 整数 `0-200` |
 | `MEIAO_VOICEOVER_DURATION_TOLERANCE_MS` | `100` | 整数 `20-500` |
 | `MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS` | `259200000` | 整数 `3600000-2592000000` |
@@ -270,7 +269,7 @@ test -n "$MEIAO_VOICEOVER_FIXTURE_PATH"
 npm run probe:voiceover-translation -- --fixture-path "$MEIAO_VOICEOVER_FIXTURE_PATH"
 ```
 
-fixture 只运行本机 FFmpeg/Demucs，验证 H.264/AAC 输入、人声/背景输出、人声分析媒体、对齐、ducking、H.264/AAC 最终视频、时长容差、`ftyp` 和本地字节区间读取；不会调用 Gemini、KIE 或 Golden。`--resume-parent-job-id` / `--resume-child-task-id` 只查询已有任务。只有 `--live --source-asset-id <明确托管ID> --target-language <code>` 可以创建任务，且还必须配置受认证 base URL、会话和一次性 `MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1`；`--remove-text` 会先提示额外 Golden 费用。
+fixture 只运行本机 FFmpeg/Demucs，验证 H.264/AAC 输入、人声/背景输出、人声分析媒体、对齐、成品仅含新口播、H.264/AAC 最终视频、时长容差、`ftyp` 和本地字节区间读取；不会调用 Gemini、KIE 或 Golden。`--resume-parent-job-id` / `--resume-child-task-id` 只查询已有任务。只有 `--live --source-asset-id <明确托管ID> --target-language <code>` 可以创建任务，且还必须配置受认证 base URL、会话和一次性 `MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1`；`--remove-text` 会先提示额外 Golden 费用。
 
 远程探针使用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 作为梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 只能在当前 shell/命令临时注入并在执行后清除，不能写入任何 env 文件；`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 也只接受探针启动前的单次命令环境，持久化在 `.env.server` / `.env.local` 中会被忽略。live 和失败证据会输出安全的内部 `parentJobId` / `childJobId`；`--resume-child-task-id` 只接受该内部 `childJobId` 并直查 `/api/jobs/:id`，不会按 `providerTaskId` 搜索或扫描父任务列表。
 
