@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import * as assetStore from './assetStore.mjs';
+import { verifyManagedAssetAccessKey } from './managedAssetAccessKey.mjs';
 
 const PNG_FILE_BUFFER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 const JPEG_FILE_BUFFER = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]);
@@ -104,6 +105,37 @@ test('persistAssetBuffer removes a partial destination when exclusive open succe
     );
     assert.equal(closeCalls, 1);
     await assert.rejects(access(target));
+  } finally {
+    await rm(assetDir, { recursive: true, force: true });
+  }
+});
+
+test('persistAssetBuffer signs browser-direct local asset urls when the access secret is configured', async () => {
+  const { assetDir, deps } = await testPersistDeps('meiao-buffer-access-key');
+  const env = {
+    MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'test-managed-asset-secret-32-bytes',
+  };
+  try {
+    const record = await persistAssetBuffer({
+      publicBaseUrl: 'https://meiaoyuntai.com',
+      userId: 'user-1',
+      module: 'one_click',
+      assetType: 'result',
+      originalName: 'result.jpg',
+      mimeType: 'image/jpeg',
+      fileBuffer: JPEG_FILE_BUFFER,
+      env,
+      deps,
+    });
+    const publicUrl = new URL(record.publicUrl);
+    const accessKey = publicUrl.searchParams.get('asset_key');
+
+    assert.equal(publicUrl.origin + publicUrl.pathname, 'https://meiaoyuntai.com/api/assets/file/fixed-asset-id/result.jpg');
+    assert.ok(accessKey);
+    assert.equal(verifyManagedAssetAccessKey(accessKey, {
+      assetId: record.id,
+      userId: record.userId,
+    }, env), true);
   } finally {
     await rm(assetDir, { recursive: true, force: true });
   }
@@ -267,6 +299,41 @@ test('persistAssetFile streams a file, verifies sha256, and records explicit ttl
     assert.ok(persisted.assetType.length <= 20);
     assert.equal((await readFile(assetStore.resolveStoredAssetPath(persisted))).toString(), contents.toString());
     assert.equal(inserted.length, 1);
+  } finally {
+    if (persisted) await deleteStoredAssetFile(persisted.storageKey);
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test('persistAssetFile signs browser-direct streamed asset urls when the access secret is configured', async () => {
+  const fixtureDir = await mkdtemp(path.join(tmpdir(), 'meiao-stream-access-key-'));
+  const sourcePath = path.join(fixtureDir, 'result.mp4');
+  const env = {
+    MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'test-managed-asset-secret-32-bytes',
+  };
+  await writeFile(sourcePath, Buffer.from('streamed-result-fixture'));
+
+  let persisted;
+  try {
+    persisted = await persistAssetFile({
+      pool: { query: async () => [[]] },
+      publicBaseUrl: 'https://meiaoyuntai.com',
+      userId: 'stream-user',
+      module: 'video',
+      assetType: 'result',
+      originalName: 'result.mp4',
+      mimeType: 'video/mp4',
+      sourcePath,
+      env,
+    });
+    const publicUrl = new URL(persisted.publicUrl);
+    const accessKey = publicUrl.searchParams.get('asset_key');
+
+    assert.ok(accessKey);
+    assert.equal(verifyManagedAssetAccessKey(accessKey, {
+      assetId: persisted.id,
+      userId: persisted.userId,
+    }, env), true);
   } finally {
     if (persisted) await deleteStoredAssetFile(persisted.storageKey);
     await rm(fixtureDir, { recursive: true, force: true });

@@ -461,3 +461,8 @@
   根因:旧规划会把相邻语音时间段合成一个 TTS 组，但 Gemini 3.1 Flash TTS 不返回每个 dialogue turn 的独立时间戳；真实 15.07 秒视频因此只得到一条 8.92 秒音频并被强制降速到 `atempo=0.75`，末尾仍有 3.66 秒无口播。该素材的 `mdx no_vocals` 只有 -44.9 LUFS，而 vocal stem 与原混音同为 -8.7 LUFS；后续用 `no_vocals` 加原始双声道中心消除虽恢复了部分音乐，却仍会把分离伪影、环境声和非完全居中的旧口播带回成品，表现为杂音和双人声。KIE 统一查询还会返回文档主模型页未列出的 `queuing/generating`，旧适配器把正常生成态误判成坏响应。
   修复:每个检测到的口播时间段独立 TTS，短语音保持自然速度并按原时间戳放置，长语音在上限内加速，默认最大 `1.75`；译文密度默认收紧为 24 bytes/s，并提示空格分词语言不超过约 3 词/秒。Demucs 仍只用于抽取旧口播供识别；最终 MP4 只映射原视频画面和对齐后的新口播，完全不输入原音轨、`no_vocals` 或环境声，背景音乐留给后期重新添加。KIE `waiting/queuing/generating` 都按同一 task ID 有界轮询；分析校验失败可在用户确认后递增 analysis attempt，旧合并检查点与新时间窗不一致时在任何付费调用前 fail closed。
   如何避免:**口播对齐必须以可持久化的分段时间窗为最小单位，不能假设多 turn TTS 会返回内部时间戳；不得为了填满窗口把自然语音整体慢放。若产品合同是“纯新口播”，最终混音的 FFmpeg 输入合同只能包含底片视频和新口播，不能靠声源分离估计背景；真实频谱回归必须证明原音乐频率、旧人声频率均消失而新口播存在。异步 provider 的统一任务状态表优先于单模型示例，所有非终态都要回归；真实 canary 必须逐组核对 `actualDurationMs/atempo`、最终时长和 Range 资源链。**
+
+- **#82 ✅ 本地已修、待部署(2026-07-29)· 站内结果已成功落盘，但项目卡查看和下载统一 403**
+  根因:公共模特素材加固把 owner/access-key 校验前移到所有 `/api/assets/file` 分支，但普通项目卡仍用原生媒体元素和浏览器下载请求历史无签名 URL，无法携带 localStorage Bearer。因而 provider、文件和资产记录全部成功后，Node 授权仍拒绝请求；这与 #80 的 X-Accel 目录权限故障不同。
+  修复:buffer 与 streamed-file 两类落盘入口统一生成 HMAC 签名 URL，覆盖未来图片、音频和视频结果；登录和 `/api/auth/me` 下发仅限 `/api/assets/file/` 的 HttpOnly、SameSite=Strict 素材会话 Cookie，兼容历史无签名 URL 与 apex/www，普通 API 仍只接受 Bearer，退出登录清除同范围 Cookie。
+  如何避免:**素材安全变更必须端到端回放“历史无签名 URL + 新签名 URL”的查看与下载；原生 `<img>/<video>/<a>` 不得假设携带 localStorage Bearer。任何全局读取策略调整都要覆盖所有落盘入口、所有消费 UI、跨 apex/www、Node 与公网字节/哈希一致性，不能只验证数据库或 provider 成功。**

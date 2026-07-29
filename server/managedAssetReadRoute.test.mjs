@@ -27,6 +27,20 @@ test('stored internal assets require ownership unless they belong to the current
   assert.match(handler, /const isOwner = Boolean[\s\S]*!isOwner[\s\S]*!isSharedPublishedVirtualModelAsset/);
 });
 
+test('legacy unsigned assets authenticate through an asset-only cookie without enabling cookie auth for other APIs', () => {
+  assert.match(source, /from '\.\/managedAssetSessionCookie\.mjs'/);
+  assert.match(source, /getDbSessionUser\(req, \{ allowAssetCookie: true \}\)/);
+  assert.match(source, /localGetSessionUser\(req, store, \{ allowAssetCookie: true \}\)/);
+  assert.match(source, /const requireDbUser = async \(req, res\) =>[\s\S]{0,300}getDbSessionUser\(req\)/);
+  assert.match(source, /const localRequireUser = \(req, res, store\) =>[\s\S]{0,200}localGetSessionUser\(req, store\)/);
+  assert.match(source, /setManagedAssetSessionCookie\(res, token, req\)/);
+  assert.match(source, /clearManagedAssetSessionCookie\(res, req\)/);
+  assert.match(
+    source,
+    /const getTokenFromRequest = \(req, options = \{\}\) =>[\s\S]{0,500}options\.allowAssetCookie[\s\S]{0,500}getManagedAssetSessionToken\(req\)/,
+  );
+});
+
 test('provider execution injects the signed managed image resolver scoped to the job owner', () => {
   assert.match(
     source,

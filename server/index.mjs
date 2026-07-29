@@ -249,6 +249,10 @@ import {
   verifyManagedAssetAccessKey,
 } from './managedAssetAccessKey.mjs';
 import {
+  buildManagedAssetSessionCookie,
+  getManagedAssetSessionToken,
+} from './managedAssetSessionCookie.mjs';
+import {
   enqueueAssetCleanupTask,
   pruneAssetCleanupTasks,
   summarizeAssetCleanupStore,
@@ -3355,9 +3359,8 @@ const localCreateSession = (store, userId) => {
   return token;
 };
 
-const localGetSessionUser = (req, store) => {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+const localGetSessionUser = (req, store, options = {}) => {
+  const token = getTokenFromRequest(req, options);
   if (!token) return null;
 
   const now = Date.now();
@@ -3386,9 +3389,30 @@ const localRequireAdmin = (req, res, store) => {
   return user;
 };
 
-const getTokenFromRequest = (req) => {
+const getTokenFromRequest = (req, options = {}) => {
   const authHeader = req.headers.authorization || '';
-  return authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (bearerToken) return bearerToken;
+  return options.allowAssetCookie ? getManagedAssetSessionToken(req) : '';
+};
+
+const getManagedAssetCookieBaseUrl = (req) => (
+  getPublicBaseUrl(process.env, req)
+  || `${String(req?.headers?.['x-forwarded-proto'] || 'http').split(',')[0].trim()}://${String(req?.headers?.host || '').trim()}`
+);
+
+const setManagedAssetSessionCookie = (res, token, req) => {
+  res.setHeader('Set-Cookie', buildManagedAssetSessionCookie(token, {
+    publicBaseUrl: getManagedAssetCookieBaseUrl(req),
+    maxAgeSeconds: Math.ceil(SESSION_TTL_MS / 1000),
+  }));
+};
+
+const clearManagedAssetSessionCookie = (res, req) => {
+  res.setHeader('Set-Cookie', buildManagedAssetSessionCookie('', {
+    publicBaseUrl: getManagedAssetCookieBaseUrl(req),
+    clear: true,
+  }));
 };
 
 const getMysqlPool = async () => {
@@ -5899,8 +5923,8 @@ const purgeExpiredDbSessions = async () => {
   await pool.query('DELETE FROM sessions WHERE expires_at <= ?', [Date.now()]);
 };
 
-const getDbSessionUser = async (req) => {
-  const token = getTokenFromRequest(req);
+const getDbSessionUser = async (req, options = {}) => {
+  const token = getTokenFromRequest(req, options);
   if (!token) return null;
 
   await purgeExpiredDbSessions();
@@ -12484,7 +12508,7 @@ const handleMysqlRequest = async (req, res, url) => {
     const assetId = decodeURIComponent(assetRouteMatch[1]);
     await serveStoredAsset(req, res, assetId, {
       accessKey: getManagedAssetAccessKeyFromUrl(url),
-      resolveRequestUserId: async () => String((await getDbSessionUser(req))?.id || ''),
+      resolveRequestUserId: async () => String((await getDbSessionUser(req, { allowAssetCookie: true }))?.id || ''),
     });
     return;
   }
@@ -13060,6 +13084,7 @@ const handleMysqlRequest = async (req, res, url) => {
     await updateDbUserLoginTime(user.id, loginTime);
     await ensureDbAppState(user.id);
     const token = await createDbSession(user.id);
+    setManagedAssetSessionCookie(res, token, req);
     const freshUser = await findDbUserById(user.id);
     await createDbLog({
       user: freshUser || user,
@@ -13077,6 +13102,7 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/auth/me' && req.method === 'GET') {
     const user = await requireDbUser(req, res);
     if (!user) return;
+    setManagedAssetSessionCookie(res, getTokenFromRequest(req), req);
     json(res, 200, { user: cleanUser(user) });
     return;
   }
@@ -13119,6 +13145,7 @@ const handleMysqlRequest = async (req, res, url) => {
         status: 'success',
       });
     }
+    clearManagedAssetSessionCookie(res, req);
     json(res, 200, { ok: true });
     return;
   }
@@ -15399,7 +15426,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     const assetId = decodeURIComponent(assetRouteMatch[1]);
     await serveStoredAsset(req, res, assetId, {
       accessKey: getManagedAssetAccessKeyFromUrl(url),
-      resolveRequestUserId: async () => String(localGetSessionUser(req, store)?.id || ''),
+      resolveRequestUserId: async () => String(localGetSessionUser(req, store, { allowAssetCookie: true })?.id || ''),
       store,
     });
     return;
@@ -15491,6 +15518,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
 
     user.lastLoginAt = Date.now();
     const token = localCreateSession(store, user.id);
+    setManagedAssetSessionCookie(res, token, req);
     if (!store.appStates[user.id]) {
       store.appStates[user.id] = createDefaultState();
     }
@@ -15511,6 +15539,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
   if (url.pathname === '/api/auth/me' && req.method === 'GET') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
+    setManagedAssetSessionCookie(res, getTokenFromRequest(req), req);
     json(res, 200, { user: cleanUser(user) });
     return;
   }
@@ -15549,6 +15578,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       status: 'success',
     });
     writeLocalStore(store);
+    clearManagedAssetSessionCookie(res, req);
     json(res, 200, { ok: true });
     return;
   }

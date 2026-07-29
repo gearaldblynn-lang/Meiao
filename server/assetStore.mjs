@@ -311,6 +311,19 @@ export const buildAssetPublicPath = (assetId, originalName = '') => {
 export const buildAssetPublicUrl = (publicBaseUrl, assetId, originalName = '') =>
   `${normalizeBaseUrl(publicBaseUrl)}${buildAssetPublicPath(assetId, originalName)}`;
 
+const buildAccessControlledAssetPublicUrl = ({
+  publicBaseUrl,
+  assetId,
+  originalName,
+  userId,
+  env = process.env,
+}) => {
+  const publicUrl = buildAssetPublicUrl(publicBaseUrl, assetId, originalName);
+  return String(env?.MEIAO_MANAGED_ASSET_ACCESS_SECRET || '').trim().length >= 24
+    ? appendManagedAssetAccessKey(publicUrl, { assetId, userId }, env)
+    : publicUrl;
+};
+
 export const extractStoredAssetIdFromPublicUrl = (value) => {
   const normalized = String(value || '').trim();
   if (!normalized) return '';
@@ -882,6 +895,7 @@ export const persistAssetBuffer = async ({
   providerSourceUrl = '',
   jobId = '',
   expiresAt,
+  env = process.env,
   deps = {},
 }) => {
   const createdAt = (deps.now || now)();
@@ -908,29 +922,35 @@ export const persistAssetBuffer = async ({
     await destinationHandle.close();
     destinationHandle = null;
     const record = {
-    id,
-    userId: String(userId || ''),
-    module: String(module || 'system').slice(0, 60),
-    assetType: String(assetType || 'source').slice(0, 20),
-    storageKey: storageKey.replace(/\\/g, '/'),
-    storageBucket: '',
-    storageRegion: '',
-    originalName: safeName,
-    mimeType: String(mimeType || 'application/octet-stream'),
-    fileSize: storedBuffer?.length || 0,
-    contentHash: createHash('sha256').update(storedBuffer || Buffer.alloc(0)).digest('hex'),
-    width: Number(width || 0),
-    height: Number(height || 0),
-    provider: String(provider || 'internal').slice(0, 40),
-    storageStatus: 'active',
-    providerSourceUrl: String(providerSourceUrl || ''),
-    jobId: String(jobId || ''),
-    publicUrl: buildAssetPublicUrl(publicBaseUrl, id, safeName),
-    createdAt,
-    updatedAt: createdAt,
-    lastAccessedAt: createdAt,
-    expiresAt: normalizeAssetExpiresAt({ expiresAt, module, createdAt }),
-    deletedAt: null,
+      id,
+      userId: String(userId || ''),
+      module: String(module || 'system').slice(0, 60),
+      assetType: String(assetType || 'source').slice(0, 20),
+      storageKey: storageKey.replace(/\\/g, '/'),
+      storageBucket: '',
+      storageRegion: '',
+      originalName: safeName,
+      mimeType: String(mimeType || 'application/octet-stream'),
+      fileSize: storedBuffer?.length || 0,
+      contentHash: createHash('sha256').update(storedBuffer || Buffer.alloc(0)).digest('hex'),
+      width: Number(width || 0),
+      height: Number(height || 0),
+      provider: String(provider || 'internal').slice(0, 40),
+      storageStatus: 'active',
+      providerSourceUrl: String(providerSourceUrl || ''),
+      jobId: String(jobId || ''),
+      publicUrl: buildAccessControlledAssetPublicUrl({
+        publicBaseUrl,
+        assetId: id,
+        originalName: safeName,
+        userId,
+        env,
+      }),
+      createdAt,
+      updatedAt: createdAt,
+      lastAccessedAt: createdAt,
+      expiresAt: normalizeAssetExpiresAt({ expiresAt, module, createdAt }),
+      deletedAt: null,
     };
 
     await createAssetRecord(pool, record);
@@ -964,6 +984,7 @@ export const persistAssetFile = async ({
   jobId = '',
   expiresAt,
   expectedSha256 = '',
+  env = process.env,
   deps = {},
 }) => {
   const createdAt = (deps.now || now)();
@@ -1016,7 +1037,13 @@ export const persistAssetFile = async ({
       storageStatus: 'active',
       providerSourceUrl: String(providerSourceUrl || ''),
       jobId: String(jobId || ''),
-      publicUrl: buildAssetPublicUrl(publicBaseUrl, id, safeName),
+      publicUrl: buildAccessControlledAssetPublicUrl({
+        publicBaseUrl,
+        assetId: id,
+        originalName: safeName,
+        userId,
+        env,
+      }),
       createdAt,
       updatedAt: createdAt,
       lastAccessedAt: createdAt,
