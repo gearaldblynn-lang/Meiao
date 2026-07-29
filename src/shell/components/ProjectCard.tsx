@@ -3,6 +3,7 @@ import { CheckSquare2, ChevronLeft, ChevronRight, CircleAlert, Copy, Download, F
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, TranslationEditRegion, TranslationEditVersion, VideoStoryboardProject } from '../../types';
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import {
   buildTranslationResultDownloadPath,
   getTranslationResultRatioLabel,
@@ -419,7 +420,7 @@ const renderMedia = (result: GeneratedResult, className: string, options?: { vid
       </div>
     );
   }
-  return <img src={result.imageUrl} alt={result.prompt} className={className} loading="lazy" decoding="async" />;
+  return <AuthenticatedAssetImage src={result.imageUrl} alt={result.prompt} className={className} loading="lazy" decoding="async" />;
 };
 
 const getResultExtension = (result: GeneratedResult) => (result.mediaType === 'video' || result.videoUrl ? 'mp4' : 'png');
@@ -2238,7 +2239,7 @@ const ProjectCard: React.FC<Props> = ({
                               </div>
                               <div>
                                 {selectedVersion?.status === 'completed' && selectedResult.imageUrl ? (
-                                  <img src={selectedResult.imageUrl} alt="生成结果" className="h-full w-full object-contain" />
+                                  <AuthenticatedAssetImage src={selectedResult.imageUrl} alt="生成结果" className="h-full w-full object-contain" />
                                 ) : (
                                   <div className="flex h-full w-full items-center justify-center text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
                                     {result.status === 'error' ? '失败' : '生成中'}
@@ -3300,9 +3301,9 @@ const ProjectCard: React.FC<Props> = ({
                         </p>
                       </div>
                     ) : selectedVersion?.status === 'completed' && selectedVersion?.imageUrl ? (
-                      <img src={selectedVersion.imageUrl} alt="生成结果" className="max-h-[68vh] w-full object-contain" />
+                      <AuthenticatedAssetImage src={selectedVersion.imageUrl} alt="生成结果" className="max-h-[68vh] w-full object-contain" />
                     ) : result.imageUrl ? (
-                      <img src={result.imageUrl} alt="生成结果" className="max-h-[68vh] w-full object-contain" />
+                      <AuthenticatedAssetImage src={result.imageUrl} alt="生成结果" className="max-h-[68vh] w-full object-contain" />
                     ) : (
                       <div className="max-w-sm whitespace-pre-wrap text-center text-[12px] leading-6" style={{ color: result.status === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}>
                         {result.error || result.prompt || (result.status === 'error' ? '生成失败，可点击重试' : '结果生成中')}

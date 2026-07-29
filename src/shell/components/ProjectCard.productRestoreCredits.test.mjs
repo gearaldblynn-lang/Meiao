@@ -75,6 +75,7 @@ const formatMonthDay = () => '07-14';
 const canManuallyReanalyzeProductRestore = () => false;
 const PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID = 'product-restore-manual-analysis';
 const EmptyComponent = () => null;
+const AuthenticatedAssetImage = (props) => React.createElement('img', props);
 const ConfirmDialog = EmptyComponent;
 const ImageLightbox = EmptyComponent;
 const RetouchComparisonViewer = EmptyComponent;

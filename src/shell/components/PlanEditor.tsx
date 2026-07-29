@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Copy, Download, FileText, RotateCcw, Sparkles, Square, Trash2 } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import { isImeComposing } from '../../utils/ime';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import ConfirmDialog from './ConfirmDialog';
 import { findResultsForPlanDisplay } from './planResultMatching';
 
@@ -105,7 +106,7 @@ const renderMedia = (result?: GeneratedResult, className = '') => {
     const src = result.videoUrl || result.imageUrl;
     return src ? <video src={src} className={className} controls muted playsInline preload="metadata" /> : null;
   }
-  return result.imageUrl ? <img src={result.imageUrl} alt={result.prompt} className={className} loading="lazy" decoding="async" /> : null;
+  return result.imageUrl ? <AuthenticatedAssetImage src={result.imageUrl} alt={result.prompt} className={className} loading="lazy" decoding="async" /> : null;
 };
 
 const normalizeAspectRatio = (value?: string) => {

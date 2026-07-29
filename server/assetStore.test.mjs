@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import * as assetStore from './assetStore.mjs';
-import { verifyManagedAssetAccessKey } from './managedAssetAccessKey.mjs';
 
 const PNG_FILE_BUFFER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 const JPEG_FILE_BUFFER = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]);
@@ -110,7 +109,7 @@ test('persistAssetBuffer removes a partial destination when exclusive open succe
   }
 });
 
-test('persistAssetBuffer signs browser-direct local asset urls when the access secret is configured', async () => {
+test('persistAssetBuffer stores stable local asset urls without access capabilities', async () => {
   const { assetDir, deps } = await testPersistDeps('meiao-buffer-access-key');
   const env = {
     MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'test-managed-asset-secret-32-bytes',
@@ -128,14 +127,8 @@ test('persistAssetBuffer signs browser-direct local asset urls when the access s
       deps,
     });
     const publicUrl = new URL(record.publicUrl);
-    const accessKey = publicUrl.searchParams.get('asset_key');
-
     assert.equal(publicUrl.origin + publicUrl.pathname, 'https://meiaoyuntai.com/api/assets/file/fixed-asset-id/result.jpg');
-    assert.ok(accessKey);
-    assert.equal(verifyManagedAssetAccessKey(accessKey, {
-      assetId: record.id,
-      userId: record.userId,
-    }, env), true);
+    assert.equal(publicUrl.search, '');
   } finally {
     await rm(assetDir, { recursive: true, force: true });
   }
@@ -305,7 +298,7 @@ test('persistAssetFile streams a file, verifies sha256, and records explicit ttl
   }
 });
 
-test('persistAssetFile signs browser-direct streamed asset urls when the access secret is configured', async () => {
+test('persistAssetFile stores stable streamed asset urls without access capabilities', async () => {
   const fixtureDir = await mkdtemp(path.join(tmpdir(), 'meiao-stream-access-key-'));
   const sourcePath = path.join(fixtureDir, 'result.mp4');
   const env = {
@@ -327,13 +320,7 @@ test('persistAssetFile signs browser-direct streamed asset urls when the access 
       env,
     });
     const publicUrl = new URL(persisted.publicUrl);
-    const accessKey = publicUrl.searchParams.get('asset_key');
-
-    assert.ok(accessKey);
-    assert.equal(verifyManagedAssetAccessKey(accessKey, {
-      assetId: persisted.id,
-      userId: persisted.userId,
-    }, env), true);
+    assert.equal(publicUrl.search, '');
   } finally {
     if (persisted) await deleteStoredAssetFile(persisted.storageKey);
     await rm(fixtureDir, { recursive: true, force: true });
@@ -913,7 +900,7 @@ test('uploaded image becomes active only after Tencent COS confirms the object',
   assert.equal(record.storageStatus, 'active');
   const publicUrl = new URL(record.publicUrl);
   assert.equal(publicUrl.origin + publicUrl.pathname, `https://meiao.example.com/api/assets/file/${record.id}/buyer-reference.png`);
-  assert.ok(publicUrl.searchParams.get('asset_key'));
+  assert.equal(publicUrl.search, '');
 });
 
 test('COS uploads reject a missing bucket snapshot before creating asset metadata', async () => {

@@ -8,7 +8,6 @@ import { readResponseBodyWithTimeout } from './providerBodyRead.mjs';
 import { inferExtensionFromMimeType, parseDataUrlPayload } from './providerAssetTransfer.mjs';
 import { enqueueAssetCleanupTask, ensureAssetLifecycleSchema } from './assetLifecycleStore.mjs';
 import { buildCosImageObjectKey, putTencentCosImage } from './tencentCosImageStore.mjs';
-import { appendManagedAssetAccessKey } from './managedAssetAccessKey.mjs';
 import {
   getManagedImageFileExtension,
   resolveManagedImageUpload,
@@ -310,19 +309,6 @@ export const buildAssetPublicPath = (assetId, originalName = '') => {
 
 export const buildAssetPublicUrl = (publicBaseUrl, assetId, originalName = '') =>
   `${normalizeBaseUrl(publicBaseUrl)}${buildAssetPublicPath(assetId, originalName)}`;
-
-const buildAccessControlledAssetPublicUrl = ({
-  publicBaseUrl,
-  assetId,
-  originalName,
-  userId,
-  env = process.env,
-}) => {
-  const publicUrl = buildAssetPublicUrl(publicBaseUrl, assetId, originalName);
-  return String(env?.MEIAO_MANAGED_ASSET_ACCESS_SECRET || '').trim().length >= 24
-    ? appendManagedAssetAccessKey(publicUrl, { assetId, userId }, env)
-    : publicUrl;
-};
 
 export const extractStoredAssetIdFromPublicUrl = (value) => {
   const normalized = String(value || '').trim();
@@ -939,13 +925,7 @@ export const persistAssetBuffer = async ({
       storageStatus: 'active',
       providerSourceUrl: String(providerSourceUrl || ''),
       jobId: String(jobId || ''),
-      publicUrl: buildAccessControlledAssetPublicUrl({
-        publicBaseUrl,
-        assetId: id,
-        originalName: safeName,
-        userId,
-        env,
-      }),
+      publicUrl: buildAssetPublicUrl(publicBaseUrl, id, safeName),
       createdAt,
       updatedAt: createdAt,
       lastAccessedAt: createdAt,
@@ -1037,13 +1017,7 @@ export const persistAssetFile = async ({
       storageStatus: 'active',
       providerSourceUrl: String(providerSourceUrl || ''),
       jobId: String(jobId || ''),
-      publicUrl: buildAccessControlledAssetPublicUrl({
-        publicBaseUrl,
-        assetId: id,
-        originalName: safeName,
-        userId,
-        env,
-      }),
+      publicUrl: buildAssetPublicUrl(publicBaseUrl, id, safeName),
       createdAt,
       updatedAt: createdAt,
       lastAccessedAt: createdAt,
@@ -1181,11 +1155,7 @@ export const persistUploadedAssetBuffer = async ({
     storageStatus: 'uploading',
     providerSourceUrl: '',
     jobId: '',
-    publicUrl: appendManagedAssetAccessKey(
-      buildAssetPublicUrl(publicBaseUrl, id, safeName),
-      { assetId: id, userId },
-      env,
-    ),
+    publicUrl: buildAssetPublicUrl(publicBaseUrl, id, safeName),
     createdAt,
     updatedAt: createdAt,
     lastAccessedAt: createdAt,

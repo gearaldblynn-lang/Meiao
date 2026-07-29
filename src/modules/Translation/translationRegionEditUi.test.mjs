@@ -565,7 +565,7 @@ test('translation compare exposes pending edit versions while downloads use comp
   assert.match(compare, /selectedVersion\?\.status === 'generating'[\s\S]*?'处理中'/);
   assert.match(compare, /selectedVersion\?\.status === 'error'[\s\S]*?'保存失败'/);
   assert.match(compare, /selectedVersion\?\.status === 'completed' && selectedVersion\?\.imageUrl/);
-  assert.match(compare, /<img src=\{selectedVersion\.imageUrl\}/);
+  assert.match(compare, /<AuthenticatedAssetImage src=\{selectedVersion\.imageUrl\}/);
   assert.match(compare, /handleDownloadSingle\(selectedResult, translationCompareIndex, selectedVersion\)/);
   assert.match(compare, /openTranslationRegionEdit\(result, pathLabel\)/);
   assert.match(compare, /\u4e0a\u4e00\u7248/);
