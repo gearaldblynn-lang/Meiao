@@ -21,6 +21,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Avoid next time:
 ```
 
+## 2026-07-29 - Authenticated internal model assets must not use direct-first provider URLs
+
+- Symptom: 云上公共模特替换已创建 KIE `gpt-image-2` 任务，随后以 `Image fetch failed. Check access settings or use our File Upload API instead.` 失败。
+- Environment: Tencent Cloud production / public virtual-model replacement / authenticated `/api/assets/file/...` / KIE image generation.
+- Root cause: 公共模特身份图属于本机 `internal` 存储；鉴权读取解析器没有可交给外部 provider 的公网签名 URL。`direct-first` 分支却把这个结果再次降级成正式域名直链。KIE 请求中的三张模特图因此都是无凭证 `meiaoyuntai.com/api/assets/file/...`，匿名读取均为 HTTP 403；任务已经拿到 `providerTaskId`，不能再通过自动 fallback 重提。
+- Fix: `internal` 素材的 provider 解析器签发只对本机回环有效、同时绑定 asset ID 与真实 owner 的 HMAC capability；generation/chat 识别回环地址后只用它读取原字节，再通过 KIE File Upload 转成 provider 可读地址，绝不把 capability 或需登录的正式域名直链交给外部服务。只有完全没有鉴权解析器的调用才允许使用 `direct-first` 公网基址兜底；COS 签名读取和非托管真实公网 URL 合同保持不变。
+- Regression check: `node --test server/managedAssetAccessKey.test.mjs server/providerAssetTransfer.test.mjs server/managedAssetReadResolver.test.mjs server/managedAssetReadRoute.test.mjs`; virtual-model/provider targeted suites; `npm run verify`; cloud source hash、真实 loopback capability 读取、模拟外部暂存、公共模特实体文件和受保护 URL 匿名 403 边界检查。
+- Avoid next time: “浏览器正式域名可打开”不等于“外部 provider 可匿名读取”。无解析器、公网签名 URL、只供服务端读取的回环 capability 三种状态必须保持不同语义；任何受保护 `/api/assets/file/...` 都不能因公网 host 被重新判成 provider 直链，任何回环 capability 也不能泄露给外部 provider。
+
 ## 2026-07-23 - Single-upstream stop/start deployment makes public 502 inevitable
 
 - Symptom: 官网今天多次在发布期间返回 502，恢复后过一会又出现；日志中可对应到 PM2 `STOPPED -> RUNNING` 空窗。

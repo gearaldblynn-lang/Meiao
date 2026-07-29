@@ -461,19 +461,33 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
   const normalizedOptions = normalizeOptions(envOrOptions, signal, options);
   if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
   const resolveManagedAssetReadUrl = normalizedOptions.deps.resolveManagedAssetReadUrl;
+  const hasManagedAssetReadResolver = typeof resolveManagedAssetReadUrl === 'function';
   let resolvedManagedAssetReadUrl = '';
-  if (typeof resolveManagedAssetReadUrl === 'function') {
+  if (hasManagedAssetReadResolver) {
     const signedReadUrl = String(await resolveManagedAssetReadUrl(assetUrl, {
       purpose: 'provider',
       signal: normalizedOptions.signal,
       env: normalizedOptions.env,
     }) || '').trim();
     resolvedManagedAssetReadUrl = signedReadUrl;
-    if (signedReadUrl && !normalizedOptions.forceUpload && !normalizedOptions.stageResolvedManagedAsset) {
+    const resolvedReadUrlRequiresStaging = (() => {
+      if (!signedReadUrl) return false;
+      try {
+        return isLocalOrPrivateHostname(new URL(signedReadUrl).hostname);
+      } catch {
+        return false;
+      }
+    })();
+    if (
+      signedReadUrl
+      && !normalizedOptions.forceUpload
+      && !normalizedOptions.stageResolvedManagedAsset
+      && !resolvedReadUrlRequiresStaging
+    ) {
       return signedReadUrl;
     }
   }
-  if (!normalizedOptions.forceUpload && !resolvedManagedAssetReadUrl) {
+  if (!normalizedOptions.forceUpload && !resolvedManagedAssetReadUrl && !hasManagedAssetReadResolver) {
     const publicAssetUrl = resolveExternallyReachableManagedAssetUrl(assetUrl, normalizedOptions.env);
     if (publicAssetUrl) return publicAssetUrl;
   }

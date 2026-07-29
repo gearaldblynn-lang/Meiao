@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { verifyManagedAssetAccessKey } from './managedAssetAccessKey.mjs';
 import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
 
 const cosAsset = (overrides = {}) => ({
@@ -15,6 +16,11 @@ const cosAsset = (overrides = {}) => ({
   deletedAt: null,
   ...overrides,
 });
+
+const providerAccessEnv = {
+  MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'managed-asset-provider-test-secret',
+  PORT: '3100',
+};
 
 test('active COS managed assets receive a fresh purpose-specific signed URL', async () => {
   const signCalls = [];
@@ -46,10 +52,11 @@ test('active COS managed assets receive a fresh purpose-specific signed URL', as
   ]);
 });
 
-test('historical internal assets keep their existing local stream path', async () => {
+test('historical internal assets receive a loopback provider capability and keep their browser stream path', async () => {
   const result = await resolveManagedAssetReadUrl('/api/assets/file/asset-local/image.png', {
     purpose: 'provider',
     userId: 'user-1',
+    env: providerAccessEnv,
     getAsset: async () => cosAsset({
       id: 'asset-local',
       provider: 'internal',
@@ -58,7 +65,17 @@ test('historical internal assets keep their existing local stream path', async (
     createCosReadUrl: async () => { throw new Error('COS signer must not run'); },
   });
 
-  assert.equal(result, '');
+  const providerUrl = new URL(result);
+  assert.equal(providerUrl.origin, 'http://127.0.0.1:3100');
+  assert.equal(providerUrl.pathname, '/api/assets/file/asset-local/image.png');
+  assert.equal(
+    verifyManagedAssetAccessKey(
+      providerUrl.searchParams.get('asset_key'),
+      { assetId: 'asset-local', userId: 'user-1' },
+      providerAccessEnv,
+    ),
+    true,
+  );
 
   const browserResult = await resolveManagedAssetReadUrl('/api/assets/file/asset-local/image.png', {
     purpose: 'browser',
@@ -69,10 +86,11 @@ test('historical internal assets keep their existing local stream path', async (
   assert.equal(browserResult, '');
 });
 
-test('historical KIE-labelled result assets still use the local read path', async () => {
+test('historical KIE-labelled result assets use the authenticated loopback read path', async () => {
   const result = await resolveManagedAssetReadUrl('/api/assets/file/asset-kie/result.png', {
     purpose: 'provider',
     userId: 'user-1',
+    env: providerAccessEnv,
     getAsset: async () => cosAsset({
       id: 'asset-kie',
       provider: 'kie',
@@ -81,13 +99,23 @@ test('historical KIE-labelled result assets still use the local read path', asyn
     createCosReadUrl: async () => { throw new Error('COS signer must not run'); },
   });
 
-  assert.equal(result, '');
+  const providerUrl = new URL(result);
+  assert.equal(providerUrl.origin, 'http://127.0.0.1:3100');
+  assert.equal(
+    verifyManagedAssetAccessKey(
+      providerUrl.searchParams.get('asset_key'),
+      { assetId: 'asset-kie', userId: 'user-1' },
+      providerAccessEnv,
+    ),
+    true,
+  );
 });
 
 test('server-validated public virtual-model assets can be read by a different task user', async () => {
   const result = await resolveManagedAssetReadUrl('/api/assets/file/asset-model-1/identity.png', {
     purpose: 'provider',
     userId: 'task-user',
+    env: providerAccessEnv,
     authorizedSharedAssetIds: new Set(['asset-model-1']),
     getAsset: async () => cosAsset({
       id: 'asset-model-1',
@@ -99,7 +127,16 @@ test('server-validated public virtual-model assets can be read by a different ta
     createCosReadUrl: async () => { throw new Error('COS signer must not run'); },
   });
 
-  assert.equal(result, '');
+  const providerUrl = new URL(result);
+  assert.equal(providerUrl.origin, 'http://127.0.0.1:3100');
+  assert.equal(
+    verifyManagedAssetAccessKey(
+      providerUrl.searchParams.get('asset_key'),
+      { assetId: 'asset-model-1', userId: 'model-admin' },
+      providerAccessEnv,
+    ),
+    true,
+  );
 });
 
 test('a shared allowlist never bypasses ownership for non-library assets', async () => {

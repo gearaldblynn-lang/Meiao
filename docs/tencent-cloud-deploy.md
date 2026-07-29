@@ -221,7 +221,7 @@ KIE Gemini 当前会在完整读取前探测视频元数据；腾讯 COS 的 V5 
 
 `MEIAO_IMAGE_COS_BROWSER_URL_TTL_SECONDS` / `MEIAO_IMAGE_COS_PROVIDER_URL_TTL_SECONDS` 默认为 `300` / `10800`。上传默认 3 次、单次 30 秒、退避基数 500ms；超时或请求取消会先取消 SDK 底层上传任务，签名、HEAD 和删除请求默认 15 秒超时。同一次重试始终复用同一对象键，失败时不回退到本地磁盘或 KIE 图床。素材删除默认先等待 2 分钟，worker 每条删除前重新核对持久引用；同账号 COS 上传和账号删除用最长 30 秒的 MySQL advisory lock 互斥。清理默认每 30 分钟、每批 20 条，重试基数 60 秒，8 次后进入 manual review 并每 24 小时再试，in-progress lease 10 分钟，上传卡住 15 分钟视为失败并对账。默认 backlog 达 100 条或最老等待达 24 小时告警；已完成/受保护的审计任务保留 30 天后裁剪，health 只读聚合计数。
 
-Gemini 视频不受 `MEIAO_KIE_MANAGED_ASSET_MODE` 回滚开关影响；提交前使用 `MEIAO_GEMINI_VIDEO_MEDIA_MODE=cos-direct|kie-stage` 明确选择单一路由。无论选择哪一路，都禁止 Gemini 明确读文件失败后再换素材路由或换模型兜底。图片、PDF 等非视频托管素材仍按 `MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址；只有上游明确返回文件读取/下载/MIME 不可用错误且没有 `providerTaskId` 时，才允许转存 KIE 并重试同一模型。普通 HTTP 500/502、网络中断、鉴权、余额、限额和已有 task id 都不触发回退。
+Gemini 视频不受 `MEIAO_KIE_MANAGED_ASSET_MODE` 回滚开关影响；提交前使用 `MEIAO_GEMINI_VIDEO_MEDIA_MODE=cos-direct|kie-stage` 明确选择单一路由。无论选择哪一路，都禁止 Gemini 明确读文件失败后再换素材路由或换模型兜底。图片、PDF 等非视频托管素材在没有注入鉴权读取解析器时，仍可按 `MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址；正式任务已注入解析器时，COS 素材使用短期签名读取地址，本机 `internal` 素材只签发绑定 asset ID 与真实 owner 的服务端回环 capability，由服务端读取原字节后转存 KIE，不能把 capability 或需要登录的 `/api/assets/file/...` 正式域名直链交给外部 provider。只有上游明确返回文件读取/下载/MIME 不可用错误且没有 `providerTaskId` 时，才允许转存 KIE 并重试同一模型。普通 HTTP 500/502、网络中断、鉴权、余额、限额和已有 task id 都不触发回退。
 
 非视频托管素材需要紧急回滚时仍可显式设置 `MEIAO_KIE_MANAGED_ASSET_MODE=kie-only`；该开关不会覆盖上面的 Gemini 视频单一路由与付费后不重提规则。
 

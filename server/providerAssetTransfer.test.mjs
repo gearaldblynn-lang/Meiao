@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { verifyManagedAssetAccessKey } from './managedAssetAccessKey.mjs';
+import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
 import {
   __testOnly_clearManagedAssetUploadCache,
   assertRemoteProviderMediaUrlAllowed,
@@ -89,6 +91,85 @@ test('generation and chat use the canonical HTTPS origin in direct-first mode', 
     await resolveProviderChatMediaUrl('/api/assets/file/a/source.png', { env, deps }),
     'https://meiaoyuntai.com/api/assets/file/a/source.png'
   );
+});
+
+test('generation and chat stage authenticated internal assets instead of exposing the loopback capability', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const calls = [];
+  const managedAssetUrl = 'https://meiaoyuntai.com/api/assets/file/model-asset/front.jpg';
+  const stagedUrl = 'https://tempfile.redpandaai.co/kieai/mayo-storage/internal/front.jpg';
+  const env = {
+    MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'managed-asset-provider-test-secret',
+    MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+    MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+    PORT: '3100',
+  };
+  const deps = {
+    resolveManagedAssetReadUrl: async (value, options) => {
+      calls.push(['resolve', value, options.purpose]);
+      return resolveManagedAssetReadUrl(value, {
+        ...options,
+        env,
+        getAsset: async () => ({
+          id: 'model-asset',
+          userId: 'model-admin',
+          module: 'virtual_model',
+          provider: 'internal',
+          storageStatus: 'active',
+          storageKey: 'model-admin/source/front.jpg',
+          publicUrl: managedAssetUrl,
+          deletedAt: null,
+        }),
+        authorizedSharedAssetIds: new Set(['model-asset']),
+      });
+    },
+    fetchWithTimeout: async (value) => {
+      const providerReadUrl = new URL(value);
+      calls.push([
+        'fetch',
+        providerReadUrl.origin,
+        providerReadUrl.pathname,
+        verifyManagedAssetAccessKey(
+          providerReadUrl.searchParams.get('asset_key'),
+          { assetId: 'model-asset', userId: 'model-admin' },
+          env,
+        ),
+      ]);
+      return createResponse(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), {
+        'content-type': 'image/jpeg',
+      });
+    },
+    uploadAssetViaKieWithFallback: async (payload) => {
+      calls.push(['upload', payload.mimeType, payload.fileBuffer.length]);
+      return { result: { fileUrl: stagedUrl } };
+    },
+  };
+  const resolved = await resolveProviderGenerationMediaUrl(managedAssetUrl, { env, deps });
+
+  assert.equal(resolved, stagedUrl);
+  __testOnly_clearManagedAssetUploadCache();
+  assert.equal(
+    await resolveProviderChatMediaUrl(managedAssetUrl, { env, deps }),
+    stagedUrl,
+  );
+  assert.equal(calls.filter(([kind]) => kind === 'resolve').length, 4);
+  assert.equal(calls.filter(([kind]) => kind === 'fetch').length, 2);
+  assert.equal(calls.filter(([kind]) => kind === 'upload').length, 2);
+  assert.ok(calls.some((call) => (
+    call[0] === 'fetch'
+    && call[1] === 'http://127.0.0.1:3100'
+    && call[2] === '/api/assets/file/model-asset/front.jpg'
+    && call[3] === true
+  )));
+  assert.ok(calls.every((call) => (
+    call[0] !== 'fetch'
+    || (
+      call[1] === 'http://127.0.0.1:3100'
+      && call[2] === '/api/assets/file/model-asset/front.jpg'
+      && call[3] === true
+    )
+  )));
+  assert.ok(calls.every((call) => call[0] !== 'upload' || (call[1] === 'image/jpeg' && call[2] === 4)));
 });
 
 test('managed COS images are staged for generation while chat can use a fresh signed read URL', async () => {

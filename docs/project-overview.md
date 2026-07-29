@@ -174,7 +174,7 @@ npm run dev
 - `MEIAO_ASSET_CLEANUP_ALERT_BACKLOG` / `MEIAO_ASSET_CLEANUP_ALERT_OLDEST_MS` / `MEIAO_ASSET_UPLOAD_STALE_MS`：默认 `100` / `86400000` / `900000`；`/api/health.managedAssetCleanup` 会报 backlog、最老等待、重试、manual review 和卡住上传。
 - `/api/health.managedImageUpload` 暴露 `mode/configured/ready/status/lastProbeAt/lastProbeAgeMs/alerting`，探针失败时只附脱敏 `failureCode`。部署门禁要求 `ready=true`，不再只看 HTTP 和 worker。
 - `MEIAO_ASSET_CLEANUP_AUDIT_RETENTION_MS`：默认 `2592000000`（30 天）；只裁剪 complete/protected 审计记录，不删待处理或人工复核任务。
-- `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；图片、PDF 等非视频素材仅在 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 时直连优先，明确读取失败且无 `providerTaskId` 时才允许转存 KIE。Gemini 视频不受该开关影响，由独立的 `MEIAO_GEMINI_VIDEO_MEDIA_MODE` 决定提交前走 COS 直连或 KIE 暂存；任何模式都禁止付费失败后的素材回退和模型回退。
+- `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；图片、PDF 等非视频素材仅在 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 且调用方没有注入鉴权读取解析器时直连优先。正式任务已注入解析器时，COS 素材使用短期签名读取地址；本机 `internal` 素材只签发绑定 asset ID 与真实 owner 的服务端回环 capability，由服务端读取原字节后转存 KIE，不能把 capability 或需要登录的 `/api/assets/file/...` 正式域名直链交给外部 provider。只有明确读取失败且无 `providerTaskId` 时才允许重试同一模型。Gemini 视频不受该开关影响，由独立的 `MEIAO_GEMINI_VIDEO_MEDIA_MODE` 决定提交前走 COS 直连或 KIE 暂存；任何模式都禁止付费失败后的素材回退和模型回退。
 - `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY`：默认 `3`；真正进入 KIE file-stream-upload 时的进程级跨任务并发总上限，补足单任务素材解析限流无法约束多任务同时上传的问题。
 - `MEIAO_KIE_ASSET_UPLOAD_RETRIES` / `MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS`：默认 `2` / `1000`；只用于文件上传 POST 的连接错误与 `429/500/502/503/504` 响应重试，不放宽 createTask/chat 等可能扣费的提交 POST。
 - `MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS` / `MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES`：默认 `1800000` / `2000`；成功转存 URL 的进程内缓存与容量上限，并发上传同一素材会共享一个 Promise，失败不缓存。
