@@ -252,6 +252,7 @@ import {
   buildManagedAssetSessionCookie,
   getManagedAssetSessionToken,
 } from './managedAssetSessionCookie.mjs';
+import { buildManagedAssetProxyAuthHeaders } from './assetDownloadProxyAuth.mjs';
 import {
   enqueueAssetCleanupTask,
   pruneAssetCleanupTasks,
@@ -731,6 +732,11 @@ const proxyRemoteDownload = async (req, res, remoteUrl) => {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DOWNLOAD_PROXY_TIMEOUT_MS);
+  const managedAssetAuthHeaders = buildManagedAssetProxyAuthHeaders(normalizedUrl, {
+    authorization: req.headers.authorization,
+    publicBaseUrl: getPublicBaseUrl(process.env, null),
+    requestBaseUrl: getPublicBaseUrl({}, req),
+  });
   let response;
   try {
     response = await fetch(normalizedUrl, {
@@ -739,6 +745,7 @@ const proxyRemoteDownload = async (req, res, remoteUrl) => {
       redirect: 'follow',
       headers: {
         Accept: 'image/*,application/octet-stream,*/*;q=0.8',
+        ...managedAssetAuthHeaders,
       },
     });
   } catch (error) {

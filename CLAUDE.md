@@ -464,5 +464,5 @@
 
 - **#82 ✅ 本地已修、待部署(2026-07-29)· 站内结果已成功落盘，但项目卡查看和下载统一 403**
   根因:公共模特素材加固把 owner/access-key 校验前移到所有 `/api/assets/file` 分支，但普通项目卡仍用原生媒体元素和浏览器下载请求历史无签名 URL，无法携带 localStorage Bearer。因而 provider、文件和资产记录全部成功后，Node 授权仍拒绝请求；这与 #80 的 X-Accel 目录权限故障不同。
-  修复:buffer 与 streamed-file 两类落盘入口统一生成 HMAC 签名 URL，覆盖未来图片、音频和视频结果；登录和 `/api/auth/me` 下发仅限 `/api/assets/file/` 的 HttpOnly、SameSite=Strict 素材会话 Cookie，兼容历史无签名 URL 与 apex/www，普通 API 仍只接受 Bearer，退出登录清除同范围 Cookie。
+  修复:buffer 与 streamed-file 两类落盘入口统一生成 HMAC 签名 URL，覆盖未来图片、音频和视频结果；登录和 `/api/auth/me` 下发仅限 `/api/assets/file/` 的 HttpOnly、SameSite=Strict 素材会话 Cookie，兼容历史无签名 URL 与 apex/www，普通 API 仍只接受 Bearer，退出登录清除同范围 Cookie。跨 apex/www 的下载代理只对同站 `/api/assets/file/` 转发当前 Bearer，外部 URL、本站其他路由和相似域名均不携带凭证。
   如何避免:**素材安全变更必须端到端回放“历史无签名 URL + 新签名 URL”的查看与下载；原生 `<img>/<video>/<a>` 不得假设携带 localStorage Bearer。任何全局读取策略调整都要覆盖所有落盘入口、所有消费 UI、跨 apex/www、Node 与公网字节/哈希一致性，不能只验证数据库或 provider 成功。**

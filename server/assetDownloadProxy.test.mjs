@@ -35,4 +35,9 @@ test('asset download proxy is available for browser zip downloads', () => {
     /localRequireUser\(req, res, store\)/,
     'download proxy should require a logged-in local user'
   );
+  assert.match(
+    source,
+    /buildManagedAssetProxyAuthHeaders\(normalizedUrl,/,
+    'download proxy should forward owner auth only through the scoped managed-asset policy'
+  );
 });
