@@ -462,7 +462,8 @@
   修复:每个检测到的口播时间段独立 TTS，短语音保持自然速度并按原时间戳放置，长语音在上限内加速，默认最大 `1.75`；译文密度默认收紧为 24 bytes/s，并提示空格分词语言不超过约 3 词/秒。Demucs 仍只用于抽取旧口播供识别；最终 MP4 只映射原视频画面和对齐后的新口播，完全不输入原音轨、`no_vocals` 或环境声，背景音乐留给后期重新添加。KIE `waiting/queuing/generating` 都按同一 task ID 有界轮询；分析校验失败可在用户确认后递增 analysis attempt，旧合并检查点与新时间窗不一致时在任何付费调用前 fail closed。
   如何避免:**口播对齐必须以可持久化的分段时间窗为最小单位，不能假设多 turn TTS 会返回内部时间戳；不得为了填满窗口把自然语音整体慢放。若产品合同是“纯新口播”，最终混音的 FFmpeg 输入合同只能包含底片视频和新口播，不能靠声源分离估计背景；真实频谱回归必须证明原音乐频率、旧人声频率均消失而新口播存在。异步 provider 的统一任务状态表优先于单模型示例，所有非终态都要回归；真实 canary 必须逐组核对 `actualDurationMs/atempo`、最终时长和 Range 资源链。**
 
-- **#82 ✅ 本地已修、待部署(2026-07-29)· 站内结果已成功落盘，但项目卡查看和下载统一 403**
+- **#82 ✅ 已发布并完成云上查看与下载验收(2026-07-29)· 站内结果已成功落盘，但项目卡查看和下载统一 403**
   根因:公共模特素材加固把 owner/access-key 校验前移到所有 `/api/assets/file` 分支，但普通项目卡仍用原生媒体元素和浏览器下载请求历史无签名 URL，无法携带 localStorage Bearer。因而 provider、文件和资产记录全部成功后，Node 授权仍拒绝请求；这与 #80 的 X-Accel 目录权限故障不同。
   修复:buffer 与 streamed-file 两类落盘入口统一生成 HMAC 签名 URL，覆盖未来图片、音频和视频结果；登录和 `/api/auth/me` 下发仅限 `/api/assets/file/` 的 HttpOnly、SameSite=Strict 素材会话 Cookie，兼容历史无签名 URL 与 apex/www，普通 API 仍只接受 Bearer，退出登录清除同范围 Cookie。跨 apex/www 的下载代理只对同站 `/api/assets/file/` 转发当前 Bearer，外部 URL、本站其他路由和相似域名均不携带凭证。
+  云上验收:release `meiao-20260729110742-0770733995d6`；多桑原故障 asset `3123fa51e2c46f437d3b2bc2` 在 apex、www、Node、Cookie 历史读取、无会话签名读取和 www→apex 下载代理均返回 200 `image/jpeg`、167787 bytes，SHA-256 均为 `91eb83bc5e039e6a1c795913b1165e71e3212d08e00eb4eacee82257ceb41132`。未登录历史 URL 仍为 403，下载代理访问非素材 `/api/auth/me` 仍为 401；四份运行文件云端/本地哈希一致，marker/mutex 均清除。
   如何避免:**素材安全变更必须端到端回放“历史无签名 URL + 新签名 URL”的查看与下载；原生 `<img>/<video>/<a>` 不得假设携带 localStorage Bearer。任何全局读取策略调整都要覆盖所有落盘入口、所有消费 UI、跨 apex/www、Node 与公网字节/哈希一致性，不能只验证数据库或 provider 成功。**
