@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -40,4 +41,21 @@ test('clearing the asset session cookie preserves the same scope', () => {
   assert.match(cookie, /Domain=meiaoyuntai\.com/);
   assert.match(cookie, /Max-Age=0/);
   assert.match(cookie, /Path=\/api\/assets\/file\//);
+});
+
+test('every authenticated API boundary repairs a missing asset media cookie', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+
+  assert.match(
+    source,
+    /const refreshManagedAssetSessionCookie = \(req, res\) =>[\s\S]{0,500}getManagedAssetSessionToken\(req\)[\s\S]{0,500}setManagedAssetSessionCookie\(res, token, req\)/,
+  );
+  assert.match(
+    source,
+    /const requireDbUser = async \(req, res\) =>[\s\S]{0,700}refreshManagedAssetSessionCookie\(req, res\)[\s\S]{0,100}return user/,
+  );
+  assert.match(
+    source,
+    /const localRequireUser = \(req, res, store\) =>[\s\S]{0,500}refreshManagedAssetSessionCookie\(req, res\)[\s\S]{0,100}return user/,
+  );
 });

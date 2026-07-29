@@ -1,4 +1,5 @@
 import React from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { AspectRatio, VideoStoryboardConfig, VideoSubMode } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { PopoverSelect, PrimaryActionButton, SegmentedTabs, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
@@ -275,9 +276,9 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
               return (
                 <div key={`img-${index}`} className="relative aspect-square rounded-lg overflow-hidden border border-slate-100 bg-slate-50 group">
                   {file
-                    ? <img src={safeCreateObjectURL(file)} alt={file.name} className="h-full w-full object-cover" />
+                    ? <AuthenticatedAssetImage src={safeCreateObjectURL(file)} alt={file.name} className="h-full w-full object-cover" />
                     : url
-                      ? <img src={url} alt={`产品图${index + 1}`} className="h-full w-full object-cover" />
+                      ? <AuthenticatedAssetImage src={url} alt={`产品图${index + 1}`} className="h-full w-full object-cover" />
                       : <div className="h-full w-full bg-slate-100" />
                   }
                   <button

@@ -4,6 +4,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { RotateCcw, ScanLine, Trash2, X } from 'lucide-react';
 import { Dialog, DialogContent, DialogTitle } from '../../shell/components/ui/dialog';
 import {
@@ -515,7 +516,7 @@ const TranslationRegionEditDialogSession: React.FC<TranslationRegionEditDialogPr
         <div className="translation-region-dialog-body">
           <div className="translation-region-workspace">
             <div ref={frameRef} className="translation-region-image-frame">
-              <img
+              <AuthenticatedAssetImage
                 src={imageUrl}
                 alt={title}
                 draggable={false}

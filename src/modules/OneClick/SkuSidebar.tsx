@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import {
   AspectRatio,
   GenerationQuality,
@@ -213,7 +214,7 @@ const SkuSidebar: React.FC<Props> = ({
           <div key={item.id} className="aspect-square relative rounded-lg border border-slate-100 overflow-hidden group">
             {item.file ? (
               <div className="w-full h-full relative">
-                <img src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                <AuthenticatedAssetImage src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                 {!item.uploadedUrl && (
                   <div className="absolute inset-0 bg-white/60 flex items-center justify-center">
                     <i className="fas fa-spinner fa-spin text-rose-500 text-xs"></i>
@@ -221,7 +222,7 @@ const SkuSidebar: React.FC<Props> = ({
                 )}
               </div>
             ) : item.uploadedUrl ? (
-              <img src={item.uploadedUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+              <AuthenticatedAssetImage src={item.uploadedUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
             ) : null}
             <button onClick={() => removeImage(item.id)}
               className="absolute top-0 right-0 w-5 h-5 bg-rose-500 text-white rounded-bl-lg flex items-center justify-center opacity-0 group-hover:opacity-100">

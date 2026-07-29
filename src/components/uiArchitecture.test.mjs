@@ -2371,7 +2371,7 @@ test('chat composer uses a unified attachment entry and compact capability icons
   assert.match(composer, /key=\{`\$\{selectedModel\}-\$\{attachmentAccept\}`\}/);
   assert.match(composer, /attachment\.kind === 'image'/);
   assert.match(composer, /attachment\.url/);
-  assert.match(composer, /<img/);
+  assert.match(composer, /<AuthenticatedAssetImage/);
   assert.match(composer, /absolute bottom-3 left-3/);
   assert.match(composer, /application\/x-meiao-chat-image/);
   assert.match(composer, /onDrop=\{handleDrop\}/);

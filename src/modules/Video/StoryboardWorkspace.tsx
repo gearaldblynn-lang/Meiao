@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { VideoStoryboardBoard, VideoStoryboardProject } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 
@@ -42,7 +43,7 @@ const FilePreview: React.FC<{ file: File; alt: string }> = ({ file, alt }) => {
     return () => URL.revokeObjectURL(nextSrc);
   }, [file]);
 
-  return <img src={src} alt={alt} className="w-full h-full object-cover" />;
+  return <AuthenticatedAssetImage src={src} alt={alt} className="w-full h-full object-cover" />;
 };
 
 const BoardCard: React.FC<{
@@ -81,7 +82,7 @@ const BoardCard: React.FC<{
 
       <button type="button" onClick={onOpen} className="w-full bg-slate-50 min-h-[320px] flex items-center justify-center p-4">
         {board.imageUrl ? (
-          <img src={board.imageUrl} alt={board.title} className="max-w-full max-h-[420px] rounded-[20px] shadow-lg" />
+          <AuthenticatedAssetImage src={board.imageUrl} alt={board.title} className="max-w-full max-h-[420px] rounded-[20px] shadow-lg" />
         ) : (
           <div className="text-center text-slate-400">
             <i className={`fas ${board.status === 'generating' ? 'fa-spinner fa-spin' : board.status === 'failed' ? 'fa-circle-exclamation' : 'fa-image'} text-3xl mb-3`}></i>
@@ -292,7 +293,7 @@ const ProjectCard: React.FC<{
                   </div>
                   <div className="w-28 aspect-square rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 flex items-center justify-center">
                     {project.whiteBgImageUrl ? (
-                      <img src={project.whiteBgImageUrl} alt="white-bg" className="w-full h-full object-cover" />
+                      <AuthenticatedAssetImage src={project.whiteBgImageUrl} alt="white-bg" className="w-full h-full object-cover" />
                     ) : (
                       <span className="text-[11px] font-black text-slate-400">
                         {project.whiteBgStatus === 'failed' ? '生成失败' : project.whiteBgStatus === 'generating' ? '生成中' : '未生成'}
@@ -342,7 +343,7 @@ const ProjectCard: React.FC<{
           <div className="w-full max-w-7xl bg-white rounded-[32px] overflow-hidden shadow-2xl grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_460px]">
             <div className="bg-slate-100 min-h-[640px] flex items-center justify-center p-6">
               {activeBoard.imageUrl ? (
-                <img src={activeBoard.imageUrl} alt="active-board" className="max-w-full max-h-[640px] rounded-[28px] shadow-xl" />
+                <AuthenticatedAssetImage src={activeBoard.imageUrl} alt="active-board" className="max-w-full max-h-[640px] rounded-[28px] shadow-xl" />
               ) : (
                 <div className="text-center text-slate-400">
                   <i className={`fas ${activeBoard.status === 'generating' ? 'fa-spinner fa-spin' : 'fa-image'} text-3xl mb-3`}></i>

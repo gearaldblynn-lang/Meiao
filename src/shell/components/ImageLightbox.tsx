@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { Download, X, ChevronLeft, ChevronRight, Move } from 'lucide-react';
 import { detectRemoteMp4VideoCodec, getBrowserVideoCodecWarning } from '../../utils/videoCodec';
 
@@ -199,7 +200,7 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
           ) : null}
         </div>
       ) : (
-        <img
+        <AuthenticatedAssetImage
           src={currentItem.url}
           alt=""
           className="max-h-[80vh] max-w-[84vw] rounded-[22px] object-contain"

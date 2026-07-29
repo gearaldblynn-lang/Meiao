@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { X, ChevronLeft, ChevronRight, Film, Music2 } from 'lucide-react';
 import type { Material } from '../../ShellMigratedApp';
 import { getBrowserVideoCodecWarning, isBrowserUnsupportedVideoCodec } from '../../utils/videoCodec';
@@ -178,7 +179,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                             音频
                           </span>
                         ) : (
-                          <img src={m.url} alt={m.fileName} className="w-full h-full object-cover" />
+                          <AuthenticatedAssetImage src={m.url} alt={m.fileName} className="w-full h-full object-cover" />
                         )}
                       </button>
                       {mediaKind === 'video' ? (

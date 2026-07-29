@@ -1,3 +1,4 @@
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 
 import React, { useState, useRef, useEffect } from 'react';
 import { GlobalApiConfig, RetouchTask, RetouchPersistentState, AspectRatio, KieAiResult } from '../../types';
@@ -548,12 +549,12 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
                 <div className="relative aspect-square bg-slate-100 overflow-hidden cursor-pointer" onClick={() => task.status === 'completed' && setSelectedTask(task)}>
                   {task.status === 'completed' && task.resultUrl ? (
                     <div className="relative w-full h-full group">
-                      <img src={task.resultUrl || undefined} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                      <AuthenticatedAssetImage src={task.resultUrl || undefined} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
                       <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"><i className="fas fa-search-plus text-white text-3xl"></i></div>
                     </div>
                   ) : (
                     <>
-                      {(task.sourceUrl || (task.file ? safeCreateObjectURL(task.file) : '')) && <img src={task.sourceUrl || safeCreateObjectURL(task.file!)} className="w-full h-full object-cover opacity-60 grayscale" />}
+                      {(task.sourceUrl || (task.file ? safeCreateObjectURL(task.file) : '')) && <AuthenticatedAssetImage src={task.sourceUrl || safeCreateObjectURL(task.file!)} className="w-full h-full object-cover opacity-60 grayscale" />}
                       {(task.status === 'processing' || task.status === 'uploading') && (
                         <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm flex flex-col items-center justify-center text-white p-6">
                            <div className="w-16 h-16 relative mb-4">
@@ -604,13 +605,13 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
                <div className="flex-1 flex flex-col p-6 relative">
                   <span className="absolute top-10 left-10 z-10 px-4 py-1.5 bg-slate-800/80 backdrop-blur text-white text-[10px] font-black rounded-full uppercase tracking-widest">Original / 原图</span>
                   <div className="flex-1 flex items-center justify-center overflow-hidden rounded-3xl bg-white border border-slate-200 shadow-inner">
-                    {(selectedTask.sourceUrl || (selectedTask.file ? safeCreateObjectURL(selectedTask.file) : '')) && <img src={selectedTask.sourceUrl || safeCreateObjectURL(selectedTask.file!)} className="max-w-full max-h-full object-contain" />}
+                    {(selectedTask.sourceUrl || (selectedTask.file ? safeCreateObjectURL(selectedTask.file) : '')) && <AuthenticatedAssetImage src={selectedTask.sourceUrl || safeCreateObjectURL(selectedTask.file!)} className="max-w-full max-h-full object-contain" />}
                   </div>
                </div>
                <div className="flex-1 flex flex-col p-6 relative">
                   <span className="absolute top-10 left-10 z-10 px-4 py-1.5 bg-emerald-600 text-white text-[10px] font-black rounded-full uppercase tracking-widest">Enhanced / 精修结果</span>
                   <div className="flex-1 flex items-center justify-center overflow-hidden rounded-3xl bg-white border border-emerald-100 shadow-inner">
-                    {selectedTask.resultUrl && <img src={selectedTask.resultUrl} className="max-w-full max-h-full object-contain" />}
+                    {selectedTask.resultUrl && <AuthenticatedAssetImage src={selectedTask.resultUrl} className="max-w-full max-h-full object-contain" />}
                   </div>
                </div>
             </div>

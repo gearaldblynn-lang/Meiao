@@ -42,7 +42,7 @@ test('shell result cards require confirmation before deleting generated results'
 
 test('shell result cards display generated images without cropping the backend asset', () => {
   const source = read('./ResultCard.tsx');
-  const imageTag = source.match(/<img src=\{result\.imageUrl\}[\s\S]*?\/>/)?.[0] || '';
+  const imageTag = source.match(/<AuthenticatedAssetImage src=\{result\.imageUrl\}[\s\S]*?\/>/)?.[0] || '';
 
   assert.match(imageTag, /object-contain/);
   assert.doesNotMatch(imageTag, /object-cover/);

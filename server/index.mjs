@@ -3383,6 +3383,7 @@ const localRequireUser = (req, res, store) => {
     json(res, 401, { message: '登录状态已失效，请重新登录。' });
     return null;
   }
+  refreshManagedAssetSessionCookie(req, res);
   return user;
 };
 
@@ -3420,6 +3421,12 @@ const clearManagedAssetSessionCookie = (res, req) => {
     publicBaseUrl: getManagedAssetCookieBaseUrl(req),
     clear: true,
   }));
+};
+
+const refreshManagedAssetSessionCookie = (req, res) => {
+  const token = getTokenFromRequest(req);
+  if (!token || getManagedAssetSessionToken(req) === token) return;
+  setManagedAssetSessionCookie(res, token, req);
 };
 
 const getMysqlPool = async () => {
@@ -11152,6 +11159,7 @@ const requireDbUser = async (req, res) => {
     json(res, 401, { message: '登录状态已失效，请重新登录。' });
     return null;
   }
+  refreshManagedAssetSessionCookie(req, res);
   return user;
 };
 

@@ -1,3 +1,4 @@
+import AuthenticatedAssetImage from './AuthenticatedAssetImage';
 
 import React, { useRef, useState, useEffect } from 'react';
 import { FileItem, ModuleConfig, GlobalApiConfig, AspectRatio, AppModule, TranslationSubMode, KieAiResult } from '../types';
@@ -708,9 +709,9 @@ const FileProcessor: React.FC<Props> = ({
                       <div className="flex items-center justify-center gap-3">
                         <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden ring-1 ring-slate-200 shrink-0">
                           {item.sourcePreviewUrl || item.sourceUrl ? (
-                            <img src={getClientSafeAssetUrl(item.sourcePreviewUrl || item.sourceUrl)} className="w-full h-full object-cover" />
+                            <AuthenticatedAssetImage src={getClientSafeAssetUrl(item.sourcePreviewUrl || item.sourceUrl)} className="w-full h-full object-cover" />
                           ) : item.file ? (
-                            <img src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" />
+                            <AuthenticatedAssetImage src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" />
                           ) : null}
                         </div>
                         <div className="w-2 h-0.5 bg-slate-200"></div>
@@ -719,9 +720,9 @@ const FileProcessor: React.FC<Props> = ({
                           onClick={() => item.status === 'completed' && setSelectedItem(item)}
                         >
                           {item.resultUrl ? (
-                            <img src={getClientSafeAssetUrl(item.resultUrl)} className="w-full h-full object-cover shadow-sm" />
+                            <AuthenticatedAssetImage src={getClientSafeAssetUrl(item.resultUrl)} className="w-full h-full object-cover shadow-sm" />
                           ) : item.resultBlob ? (
-                            <img src={safeCreateObjectURL(item.resultBlob)} className="w-full h-full object-cover shadow-sm" />
+                            <AuthenticatedAssetImage src={safeCreateObjectURL(item.resultBlob)} className="w-full h-full object-cover shadow-sm" />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center">
                               <i className={`fas ${['processing', 'uploading'].includes(item.status) ? 'fa-spinner fa-spin text-indigo-400' : 'fa-image text-slate-200'}`}></i>

@@ -1,3 +1,4 @@
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 
 import React, { useRef, useState, useEffect } from 'react';
 import { BuyerShowPersistentState, AspectRatio, GenerationQuality } from '../../types';
@@ -181,7 +182,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                   <div key={i} className="aspect-square bg-white rounded-lg border border-slate-200 overflow-hidden relative group shadow-sm">
                     {f instanceof File ? (
                       <div className="w-full h-full relative">
-                        <img
+                        <AuthenticatedAssetImage
                           src={safeCreateObjectURL(f)}
                           className="w-full h-full object-cover"
                           onError={(e) => {
@@ -201,7 +202,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                         />
                       </div>
                     ) : previewUrl ? (
-                      <img src={previewUrl} className="w-full h-full object-cover" />
+                      <AuthenticatedAssetImage src={previewUrl} className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full flex flex-col items-center justify-center bg-slate-50 text-slate-300">
                         <i className="far fa-file-image text-lg mb-1"></i>
@@ -238,7 +239,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                 {referenceImage ? (
                 <div className="relative h-24 rounded-2xl border border-slate-200 overflow-hidden group shadow-sm">
                     <div className="w-full h-full relative">
-                      <img
+                      <AuthenticatedAssetImage
                         src={safeCreateObjectURL(referenceImage)}
                         className="w-full h-full object-cover"
                         onError={(e) => {
@@ -269,7 +270,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                 </div>
                 ) : (uploadedReferenceUrl ? (
                   <div className="relative h-24 rounded-2xl border border-slate-200 overflow-hidden group shadow-sm">
-                    <img src={uploadedReferenceUrl} className="w-full h-full object-cover" />
+                    <AuthenticatedAssetImage src={uploadedReferenceUrl} className="w-full h-full object-cover" />
                     <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-3 transition-opacity">
                       <button onClick={() => refInputRef.current?.click()} className="px-4 py-1.5 bg-white text-amber-600 text-[10px] font-black rounded-lg shadow-md">更换图</button>
                       <button onClick={() => onUpdate({ referenceImage: null, uploadedReferenceUrl: null })} className="px-4 py-1.5 bg-rose-600 text-white text-[10px] font-black rounded-lg shadow-md">移除</button>

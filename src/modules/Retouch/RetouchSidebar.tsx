@@ -1,3 +1,4 @@
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 
 import React, { useRef, useState, useEffect } from 'react';
 import { AspectRatio, GenerationQuality, KieAiModel, RetouchPersistentState, RetouchTask } from '../../types';
@@ -153,9 +154,9 @@ const RetouchSidebar: React.FC<Props> = ({
                   {(pendingFiles.length > 0 ? pendingFiles : uploadedSourcePreviewUrls).map((f, i) => (
                     <div key={i} className="aspect-square bg-white rounded-lg border border-slate-200 overflow-hidden">
                       {f instanceof File ? (
-                        <img src={safeCreateObjectURL(f)} className="w-full h-full object-cover" />
+                        <AuthenticatedAssetImage src={safeCreateObjectURL(f)} className="w-full h-full object-cover" />
                       ) : (
-                        <img
+                        <AuthenticatedAssetImage
                           src={f}
                           className="w-full h-full object-cover"
                           alt="uploaded source preview"
@@ -170,7 +171,7 @@ const RetouchSidebar: React.FC<Props> = ({
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">质感参照图 (可选)</span>
                 {referenceImage ? (
                   <div className="relative h-24 rounded-xl border border-slate-200 overflow-hidden group">
-                    <img
+                    <AuthenticatedAssetImage
                       src={safeCreateObjectURL(referenceImage)}
                       className="w-full h-full object-cover"
                       onError={(e) => {
@@ -203,7 +204,7 @@ const RetouchSidebar: React.FC<Props> = ({
                   </div>
                 ) : (uploadedReferenceUrl ? (
                   <div className="relative h-24 rounded-xl border border-slate-200 overflow-hidden group">
-                    <img src={uploadedReferenceUrl} className="w-full h-full object-cover" />
+                    <AuthenticatedAssetImage src={uploadedReferenceUrl} className="w-full h-full object-cover" />
                     <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-3 transition-opacity">
                       <button onClick={() => refInputRef.current?.click()} className="px-3 py-1 bg-white text-[9px] font-black rounded-lg">更换</button>
                       <button onClick={() => {

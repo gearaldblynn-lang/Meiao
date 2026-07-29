@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { OneClickReferencePreset, OneClickSubMode } from '../../types';
 import ConfirmDialog from '../../shell/components/ConfirmDialog';
 import { filterReferencePresets } from './referencePresetUtils.mjs';
@@ -134,7 +135,7 @@ const ReferencePresetManager: React.FC<Props> = ({
                   >
                     <div className="aspect-square bg-slate-100">
                       {preset.coverImageUrl ? (
-                        <img src={preset.coverImageUrl} className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                        <AuthenticatedAssetImage src={preset.coverImageUrl} className="h-full w-full object-cover" referrerPolicy="no-referrer" />
                       ) : (
                         <div className="flex h-full items-center justify-center text-xs font-bold text-slate-400">待补参考图</div>
                       )}
@@ -167,7 +168,7 @@ const ReferencePresetManager: React.FC<Props> = ({
               <>
                 <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-white">
                   {selectedPreset.coverImageUrl ? (
-                    <img src={selectedPreset.coverImageUrl} className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
+                    <AuthenticatedAssetImage src={selectedPreset.coverImageUrl} className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
                   ) : (
                     <div className="flex aspect-square items-center justify-center text-xs font-bold text-slate-400">待补参考图</div>
                   )}
@@ -194,7 +195,7 @@ const ReferencePresetManager: React.FC<Props> = ({
                     <div className="mt-4 grid grid-cols-3 gap-2">
                       {selectedPreset.referenceImageUrls.map((url) => (
                         <div key={url} className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-                          <img src={url} className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
+                          <AuthenticatedAssetImage src={url} className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
                         </div>
                       ))}
                     </div>

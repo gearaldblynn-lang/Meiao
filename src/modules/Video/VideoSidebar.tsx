@@ -1,3 +1,4 @@
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 
 import React, { useRef, useMemo } from 'react';
 import { VideoPersistentState, VideoConfig, SceneItem } from '../../types';
@@ -98,9 +99,9 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
             {hasProductAssets ? (
               <div className="relative aspect-video rounded-xl overflow-hidden shadow-inner ring-1 ring-slate-100">
                 {state.productImages[0] ? (
-                  <img src={safeCreateObjectURL(state.productImages[0])} className="w-full h-full object-cover" />
+                  <AuthenticatedAssetImage src={safeCreateObjectURL(state.productImages[0])} className="w-full h-full object-cover" />
                 ) : state.uploadedProductUrls?.[0] ? (
-                  <img src={state.uploadedProductUrls[0]} className="w-full h-full object-cover" />
+                  <AuthenticatedAssetImage src={state.uploadedProductUrls[0]} className="w-full h-full object-cover" />
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center bg-slate-50 text-slate-300">
                     <i className="far fa-file-image text-lg mb-1"></i>

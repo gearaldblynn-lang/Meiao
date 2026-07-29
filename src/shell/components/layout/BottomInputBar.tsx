@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import AuthenticatedAssetImage from '../../../components/AuthenticatedAssetImage';
 import type { AppModule, SystemPublicConfig } from '../../types';
 import { AppModuleObj } from '../../types';
 import type { OneClickReferencePreset } from '../../../types';
@@ -2113,7 +2114,7 @@ const BottomInputBar: React.FC<Props> = ({
           <div className="mt-2 flex flex-wrap gap-1.5">
             {setMaterials.map((item) => (
               <div key={item.id} className="group relative h-12 w-12 overflow-hidden rounded-2xl border" style={{ borderColor: 'var(--border-subtle)' }}>
-                <img src={item.url} alt={item.fileName} className="h-full w-full object-cover" />
+                <AuthenticatedAssetImage src={item.url} alt={item.fileName} className="h-full w-full object-cover" />
                 <button
                   type="button"
                   onClick={() => onRemoveMaterial(type, item.id)}
@@ -2486,7 +2487,7 @@ const BottomInputBar: React.FC<Props> = ({
                             }}
                           >
                             <div className="relative aspect-[3/4] overflow-hidden rounded-2xl">
-                              <img src={style.previewImage} alt={style.name} loading="lazy" className="h-full w-full object-cover" />
+                              <AuthenticatedAssetImage src={style.previewImage} alt={style.name} loading="lazy" className="h-full w-full object-cover" />
                               <button
                                 type="button"
                                 onClick={(event) => { event.stopPropagation(); setXhsPreviewImage(style.previewImage); }}
@@ -2521,7 +2522,7 @@ const BottomInputBar: React.FC<Props> = ({
             style={{ background: 'rgba(0,0,0,0.76)', backdropFilter: 'blur(10px)' }}
             onClick={() => setXhsPreviewImage(null)}
           >
-            <img src={xhsPreviewImage} alt="小红书预设放大预览" className="max-h-[86vh] max-w-full rounded-3xl object-contain" onClick={(event) => event.stopPropagation()} />
+            <AuthenticatedAssetImage src={xhsPreviewImage} alt="小红书预设放大预览" className="max-h-[86vh] max-w-full rounded-3xl object-contain" onClick={(event) => event.stopPropagation()} />
           </div>
         )}
       </>
@@ -2666,7 +2667,7 @@ const BottomInputBar: React.FC<Props> = ({
                       style={logoStyle}
                       onPointerDown={(event) => handleLogoPlacementPointerDown(event, 'move')}
                     >
-                      <img
+                      <AuthenticatedAssetImage
                         src={activeEverythingReplaceLogo.url}
                         alt="Logo位置预览"
                         className="h-full w-full object-contain"
@@ -2798,7 +2799,7 @@ const BottomInputBar: React.FC<Props> = ({
                         color: activeLogoId === logo.id ? 'var(--accent)' : 'var(--text-secondary)',
                       }}
                     >
-                      <img src={logo.url} alt={logo.fileName} className="h-8 w-8 rounded-xl object-contain" />
+                      <AuthenticatedAssetImage src={logo.url} alt={logo.fileName} className="h-8 w-8 rounded-xl object-contain" />
                       <span className="min-w-0 flex-1 truncate">{logo.fileName || `Logo ${index + 1}`}</span>
                       {activeLogoId === logo.id && <Check size={14} />}
                     </button>
@@ -2840,7 +2841,7 @@ const BottomInputBar: React.FC<Props> = ({
                     onPointerUp={handleLogoReplaceRegionPointerUp}
                     onPointerCancel={handleLogoReplaceRegionPointerUp}
                   >
-                    <img
+                    <AuthenticatedAssetImage
                       src={activeLogoReplaceReference.url}
                       alt="Logo替换区域参考图"
                       className="h-full w-full select-none object-contain"
@@ -3025,7 +3026,7 @@ const BottomInputBar: React.FC<Props> = ({
                             style={{ background: 'var(--bg-elevated)', color: active ? 'var(--accent)' : 'var(--text-tertiary)' }}
                           >
                             {candidate.kind === 'image' && candidate.url ? (
-                              <img src={candidate.url} alt="" className="h-full w-full object-cover" />
+                              <AuthenticatedAssetImage src={candidate.url} alt="" className="h-full w-full object-cover" />
                             ) : candidate.kind === 'video' ? (
                               <Clapperboard size={16} />
                             ) : (

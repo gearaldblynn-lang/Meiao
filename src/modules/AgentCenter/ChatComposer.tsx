@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { SystemPublicConfig } from '../../types';
 import { LegacyFaIcon } from '../../components/ui/workspacePrimitives';
 import { Popover, PopoverContent, PopoverTrigger } from '../../shell/components/ui/popover';
@@ -645,7 +646,7 @@ const ChatComposer: React.FC<Props> = ({
                 style={{ background: 'var(--bg-elevated)' }}
               >
                 {attachment.kind === 'image' && attachment.url ? (
-                  <img src={attachment.url} alt={attachment.name} className="h-8 w-8 rounded-xl object-cover" />
+                  <AuthenticatedAssetImage src={attachment.url} alt={attachment.name} className="h-8 w-8 rounded-xl object-cover" />
                 ) : (
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
                     <LegacyFaIcon icon="fa-file-lines" className="text-[12px]" />

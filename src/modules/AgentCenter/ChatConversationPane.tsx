@@ -1,4 +1,5 @@
 import React, { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { AgentChatMessage, AgentChatSession, AgentSummary, AuthUser, ModuleInterfaceId, SystemPublicConfig } from '../../types';
 import { LegacyFaIcon } from '../../components/ui/workspacePrimitives';
 import { downloadRemoteFile } from '../../utils/imageUtils';
@@ -658,7 +659,7 @@ const ChatConversationPane: React.FC<Props> = ({
                 className="relative flex aspect-square max-h-[58vh] items-center justify-center"
               >
                 <button type="button" onClick={() => openPreview(previewImages, selectedImageIndex)} className="flex h-full w-full items-center justify-center">
-                  <img
+                  <AuthenticatedAssetImage
                     src={primaryImage.url}
                     alt={primaryImage.name}
                     className="h-full w-full rounded-[18px] object-contain"
@@ -705,7 +706,7 @@ const ChatConversationPane: React.FC<Props> = ({
                     title={`查看${image.name}`}
                     aria-current={index === selectedImageIndex ? 'true' : undefined}
                   >
-                    <img
+                    <AuthenticatedAssetImage
                       src={image.url}
                       alt={image.name}
                       className="h-full w-full rounded-[9px] object-cover"
@@ -876,7 +877,7 @@ const ChatConversationPane: React.FC<Props> = ({
                                   createdAt: message.createdAt,
                                 })}
                               >
-                                  <img src={attachment.url} alt={attachment.name} className="h-9 w-9 rounded-xl object-cover" />
+                                  <AuthenticatedAssetImage src={attachment.url} alt={attachment.name} className="h-9 w-9 rounded-xl object-cover" />
                                   <span className="truncate text-[11px] font-medium">{label}</span>
                                 </button>
                                 <button
@@ -980,7 +981,7 @@ const ChatConversationPane: React.FC<Props> = ({
                         draggable
                         onDragStart={(event) => beginDragReuseImage(event, image)}
                       >
-                        <img src={image.url} alt={image.name} className="h-44 w-full rounded-[16px] object-cover" />
+                        <AuthenticatedAssetImage src={image.url} alt={image.name} className="h-44 w-full rounded-[16px] object-cover" />
                       </button>
                     <div className="flex items-center justify-between gap-2 px-1 pb-1 pt-3">
                       <div className="min-w-0">
@@ -1103,7 +1104,7 @@ const ChatConversationPane: React.FC<Props> = ({
                 </>
               ) : null}
               <div className="flex h-full min-h-0 items-center justify-center overflow-hidden">
-                <img
+                <AuthenticatedAssetImage
                   src={activePreviewImage.url}
                   alt={activePreviewImage.name}
                   className="block h-full w-full rounded-[20px] object-contain"

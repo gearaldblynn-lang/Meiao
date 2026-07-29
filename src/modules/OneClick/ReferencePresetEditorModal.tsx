@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { OneClickReferenceDimension, OneClickReferencePreset, OneClickSubMode } from '../../types';
 
 const DIMENSION_OPTIONS: Array<{ value: OneClickReferenceDimension; label: string }> = [
@@ -162,7 +163,7 @@ const ReferencePresetEditorModal: React.FC<Props> = ({ open, mode, initialValue,
               <span className="text-xs font-bold text-slate-500">封面预览</span>
               <div className="overflow-hidden rounded-[22px] border border-slate-200 bg-white">
                 {draft.coverImageUrl ? (
-                  <img src={draft.coverImageUrl} className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
+                  <AuthenticatedAssetImage src={draft.coverImageUrl} className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
                 ) : (
                   <div className="flex aspect-square items-center justify-center text-xs font-bold text-slate-400">未设置封面图</div>
                 )}

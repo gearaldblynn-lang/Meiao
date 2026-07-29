@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { AgentSummary, AgentVersion, StudioConfigDiff, StudioTrainingMessage, SystemPublicConfig } from '../../types';
 import { applyStudioTrainingChanges, sendStudioTrainingMessage } from '../../services/internalApi';
 import { estimateTokenCount } from './agentCenterUtils.mjs';
@@ -81,7 +82,7 @@ const renderMessageAttachments = (
             } : undefined}
           >
             <a href={attachment.url} target="_blank" rel="noreferrer">
-              <img src={attachment.url} alt={attachment.name || `附件${index + 1}`} className="h-20 w-20 object-cover" />
+              <AuthenticatedAssetImage src={attachment.url} alt={attachment.name || `附件${index + 1}`} className="h-20 w-20 object-cover" />
             </a>
             <span className="absolute inset-x-0 bottom-0 truncate bg-slate-950/62 px-2 py-1 text-[10px] font-medium text-white opacity-0 transition group-hover:opacity-100">
               {attachment.name || `图片${index + 1}`}

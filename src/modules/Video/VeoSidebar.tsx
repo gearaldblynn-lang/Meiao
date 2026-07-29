@@ -1,3 +1,4 @@
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 
 import React, { useRef, useState } from 'react';
 import { VideoPersistentState, VideoConfig } from '../../types';
@@ -86,7 +87,7 @@ const VeoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcessing })
               <div key={idx} className="relative aspect-square bg-slate-50 rounded-xl border border-slate-200 overflow-hidden group">
                 {state.productImages[idx] ? (
                   <>
-                    <img src={safeCreateObjectURL(state.productImages[idx])} className="w-full h-full object-cover" />
+                    <AuthenticatedAssetImage src={safeCreateObjectURL(state.productImages[idx])} className="w-full h-full object-cover" />
                     <button
                       onClick={() => removeImage(idx)}
                       className="absolute top-1 right-1 w-5 h-5 bg-black/50 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"

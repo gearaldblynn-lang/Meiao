@@ -1,3 +1,4 @@
+import AuthenticatedAssetImage from './AuthenticatedAssetImage';
 
 import React, { useEffect, useState } from 'react';
 // Fixed: Replaced ProcessingConfig with exported ModuleConfig
@@ -81,7 +82,7 @@ const ComparisonModal: React.FC<Props> = ({ item, config, onClose }) => {
               Original / 原图
             </div>
             <div className="flex-1 flex items-center justify-center overflow-auto rounded-2xl bg-white border border-slate-200 shadow-inner">
-              {originalUrl && <img src={originalUrl} className="max-w-full max-h-full object-contain" alt="Original" />}
+              {originalUrl && <AuthenticatedAssetImage src={originalUrl} className="max-w-full max-h-full object-contain" alt="Original" />}
             </div>
           </div>
 
@@ -91,7 +92,7 @@ const ComparisonModal: React.FC<Props> = ({ item, config, onClose }) => {
               Processed / AI 生成
             </div>
             <div className="flex-1 flex items-center justify-center overflow-auto rounded-2xl bg-white border border-indigo-100 shadow-inner shadow-indigo-50/50">
-              {resultUrl && <img src={resultUrl} className="max-w-full max-h-full object-contain" alt="Processed" />}
+              {resultUrl && <AuthenticatedAssetImage src={resultUrl} className="max-w-full max-h-full object-contain" alt="Processed" />}
             </div>
           </div>
         </div>

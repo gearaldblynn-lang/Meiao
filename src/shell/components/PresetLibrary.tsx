@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { X, Plus, Bookmark, Check, Trash2, Search, Pencil } from 'lucide-react';
 import type { OneClickReferencePreset } from '../../types';
 import { isImeComposing } from '../../utils/ime';
@@ -263,7 +264,7 @@ const PresetLibrary: React.FC<Props> = ({ open, onClose, onApply, lockedKind, on
                   >
                     {/* Image */}
                     <div className="aspect-square overflow-hidden relative">
-                      <img src={preset.imageUrl} alt={preset.name} className="w-full h-full object-cover" />
+                      <AuthenticatedAssetImage src={preset.imageUrl} alt={preset.name} className="w-full h-full object-cover" />
 
                       {/* Selected overlay */}
                       {isSelected && (

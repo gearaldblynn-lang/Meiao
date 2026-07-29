@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import {
   ChevronLeft,
   ChevronRight,
@@ -398,7 +399,7 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
           >
             <div className="absolute inset-0 flex items-center justify-center">
               {item.originalUrl && !originalLoadFailed ? (
-                <img
+                <AuthenticatedAssetImage
                   data-comparison-layer="original"
                   key={`original-${item.id}-${item.originalUrl}`}
                   src={item.originalUrl}
@@ -425,7 +426,7 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
               style={{ clipPath: `inset(0 0 0 ${dividerPercent}%)` }}
             >
               {!resultLoadFailed ? (
-                <img
+                <AuthenticatedAssetImage
                   data-comparison-layer="result"
                   key={`result-${item.id}-${item.resultUrl}`}
                   src={item.resultUrl}

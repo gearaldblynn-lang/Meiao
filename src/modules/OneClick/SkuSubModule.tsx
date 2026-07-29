@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { Download, Maximize2, RotateCcw, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import {
@@ -756,7 +757,7 @@ const SkuSubModule: React.FC<Props> = ({
                       </div>
                     ) : scheme.status === 'completed' && scheme.resultUrl ? (
                       <div className="relative group/img w-full h-full flex items-center justify-center">
-                        <img src={scheme.resultUrl} alt={scheme.uiTitle} className="max-w-full max-h-[320px] rounded-[20px] shadow-lg transition-transform duration-500 group-hover/img:scale-[1.02]" onError={() => { if (scheme.resultUrl?.startsWith('blob:')) setImageErrors(prev => ({ ...prev, [scheme.id]: true })); }} />
+                        <AuthenticatedAssetImage src={scheme.resultUrl} alt={scheme.uiTitle} className="max-w-full max-h-[320px] rounded-[20px] shadow-lg transition-transform duration-500 group-hover/img:scale-[1.02]" onError={() => { if (scheme.resultUrl?.startsWith('blob:')) setImageErrors(prev => ({ ...prev, [scheme.id]: true })); }} />
                         <div className="absolute inset-0 bg-black/40 rounded-[20px] opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center gap-3">
                           <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="px-4 py-2 bg-white/20 hover:bg-white text-white hover:text-rose-600 backdrop-blur-md rounded-full text-xs font-bold transition-all disabled:opacity-50"><i className="fas fa-redo mr-1"></i>{scheme.status === 'generating' ? '生成中...' : '重新生成'}</button>
                           <button onClick={() => setPreviewId(scheme.id)} className="px-4 py-2 bg-white/20 hover:bg-white text-white hover:text-slate-900 backdrop-blur-md rounded-full text-xs font-bold transition-all"><i className="fas fa-eye mr-1"></i>查看大图</button>
@@ -808,7 +809,7 @@ const SkuSubModule: React.FC<Props> = ({
           return (
             <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center" onClick={() => setPreviewId(null)}>
               <button onClick={(e) => { e.stopPropagation(); prevPreview(); }} className="absolute left-6 top-1/2 -translate-y-1/2 w-12 h-12 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white text-xl transition-all" disabled={currentPreviewIndex <= 0}><i className="fas fa-chevron-left"></i></button>
-              <img src={previewScheme.resultUrl} className="max-w-[90vw] max-h-[90vh] rounded-2xl shadow-2xl" onClick={(e) => e.stopPropagation()} />
+              <AuthenticatedAssetImage src={previewScheme.resultUrl} className="max-w-[90vw] max-h-[90vh] rounded-2xl shadow-2xl" onClick={(e) => e.stopPropagation()} />
               <button onClick={(e) => { e.stopPropagation(); nextPreview(); }} className="absolute right-6 top-1/2 -translate-y-1/2 w-12 h-12 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white text-xl transition-all" disabled={currentPreviewIndex >= completedResults.length - 1}><i className="fas fa-chevron-right"></i></button>
               <div className="absolute top-6 right-6 flex items-center gap-3">
                 <span className="text-white/60 text-sm font-bold">{currentPreviewIndex + 1} / {completedResults.length}</span>

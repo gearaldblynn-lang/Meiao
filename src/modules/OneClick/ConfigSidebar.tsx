@@ -1,3 +1,4 @@
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 
 import React, { useRef, useState, useEffect } from 'react';
 import { AspectRatio, OneClickConfig, OneClickSubMode, GenerationQuality, StyleStrength, GlobalApiConfig, OneClickReferenceAnalysis, OneClickReferenceDimension, OneClickReferenceItem, OneClickReferencePreset, OneClickReferencePresetLibrary } from '../../types';
@@ -393,7 +394,7 @@ const ConfigSidebar: React.FC<Props> = ({
         <div key={item.id} className="aspect-square relative rounded-lg border border-slate-100 overflow-hidden group">
           {item.file ? (
             <div className="w-full h-full relative">
-              <img src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+              <AuthenticatedAssetImage src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
               {!item.uploadedUrl && (
                 <div className="absolute inset-0 bg-white/60 flex items-center justify-center">
                   <i className="fas fa-spinner fa-spin text-indigo-500 text-xs"></i>
@@ -401,7 +402,7 @@ const ConfigSidebar: React.FC<Props> = ({
               )}
             </div>
           ) : item.uploadedUrl ? (
-            <img src={item.uploadedUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+            <AuthenticatedAssetImage src={item.uploadedUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
           ) : null}
           <button onClick={() => removeReferenceFile(item.id)} className="absolute top-0 right-0 w-5 h-5 bg-rose-500 text-white rounded-bl-lg flex items-center justify-center opacity-0 group-hover:opacity-100">
             <i className="fas fa-times text-[10px]"></i>
@@ -534,9 +535,9 @@ const ConfigSidebar: React.FC<Props> = ({
                         <div className="mt-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3">
                           <div className="relative h-14 w-14 overflow-hidden rounded-xl border border-slate-100 bg-slate-50">
                             {logoImage ? (
-                              <img src={safeCreateObjectURL(logoImage)} className="h-full w-full object-contain p-1" referrerPolicy="no-referrer" />
+                              <AuthenticatedAssetImage src={safeCreateObjectURL(logoImage)} className="h-full w-full object-contain p-1" referrerPolicy="no-referrer" />
                             ) : uploadedLogoUrl ? (
-                              <img src={uploadedLogoUrl} className="h-full w-full object-contain p-1" referrerPolicy="no-referrer" />
+                              <AuthenticatedAssetImage src={uploadedLogoUrl} className="h-full w-full object-contain p-1" referrerPolicy="no-referrer" />
                             ) : null}
                             {(isUploadingLogo || (logoImage && !uploadedLogoUrl)) ? (
                               <div className="absolute inset-0 flex items-center justify-center bg-white/70">
@@ -567,7 +568,7 @@ const ConfigSidebar: React.FC<Props> = ({
                             <div key={i} className="aspect-square relative rounded-lg border border-slate-100 overflow-hidden group">
                               {img ? (
                                 <div className="w-full h-full relative">
-                                  <img
+                                  <AuthenticatedAssetImage
                                     src={safeCreateObjectURL(img)}
                                     className="w-full h-full object-cover"
                                     referrerPolicy="no-referrer"
@@ -590,7 +591,7 @@ const ConfigSidebar: React.FC<Props> = ({
                                   )}
                                 </div>
                               ) : (url ? (
-                                <img
+                                <AuthenticatedAssetImage
                                   src={url}
                                   className="w-full h-full object-cover"
                                   alt="Uploaded fallback"

@@ -1,3 +1,4 @@
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Download, Maximize2, RotateCcw, Trash2 } from 'lucide-react';
@@ -1166,7 +1167,7 @@ const DetailPageSubModule: React.FC<Props> = ({
                                             <p className="text-[9px] mt-2 opacity-40">请点击下方按钮重新生成或找回</p>
                                           </div>
                                         ) : (
-                                          <img
+                                          <AuthenticatedAssetImage
                                             src={scheme.resultUrl}
                                             className="w-full block shadow-xl border border-white/10 brightness-[1.02] contrast-[1.02]"
                                             alt={`Detail Screen ${idx+1}`}
@@ -1225,7 +1226,7 @@ const DetailPageSubModule: React.FC<Props> = ({
               {schemes.find(s => s.id === previewId)?.resultUrl && (
                 <button onClick={() => { void downloadRemoteFile(schemes.find(s => s.id === previewId)!.resultUrl!, `detail_preview.png`); }} className="absolute -top-16 right-14 text-white/40 text-3xl hover:text-rose-500 transition-colors" title="下载"><i className="fas fa-download"></i></button>
               )}
-              <img
+              <AuthenticatedAssetImage
                 src={schemes.find(s => s.id === previewId)?.resultUrl}
                 className="max-h-[85vh] rounded-2xl shadow-2xl border-2 border-white/5 object-contain animate-in zoom-in duration-300"
                 alt="Sequence Preview"

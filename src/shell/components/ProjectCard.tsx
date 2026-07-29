@@ -2235,7 +2235,7 @@ const ProjectCard: React.FC<Props> = ({
                               style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)' }}
                             >
                               <div className="border-r" style={{ borderColor: 'var(--border-subtle)' }}>
-                                {sourceUrl ? <img src={sourceUrl} alt="原图" className="h-full w-full object-contain" /> : <div className="h-full w-full" />}
+                                {sourceUrl ? <AuthenticatedAssetImage src={sourceUrl} alt="原图" className="h-full w-full object-contain" /> : <div className="h-full w-full" />}
                               </div>
                               <div>
                                 {selectedVersion?.status === 'completed' && selectedResult.imageUrl ? (
@@ -2670,7 +2670,7 @@ const ProjectCard: React.FC<Props> = ({
                             <div className="grid h-[210px] w-full grid-cols-2 overflow-hidden">
                               <div className="relative border-r" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 70%, transparent)', background: 'var(--bg-base)' }}>
                                 {sourcePreviewUrl || displayResult.sourceUrl ? (
-                                  <img
+                                  <AuthenticatedAssetImage
                                     src={sourcePreviewUrl || displayResult.sourceUrl}
                                     alt={`${displayResult.fileName || 'source'} original`}
                                     className="h-full w-full object-contain"
@@ -3243,7 +3243,7 @@ const ProjectCard: React.FC<Props> = ({
                   </div>
                   <div className="flex min-h-0 flex-1 items-center justify-center p-3" style={{ background: 'var(--bg-base)' }}>
                     {sourceUrl ? (
-                      <img src={sourceUrl} alt="原图" className="max-h-[68vh] w-full object-contain" />
+                      <AuthenticatedAssetImage src={sourceUrl} alt="原图" className="max-h-[68vh] w-full object-contain" />
                     ) : (
                       <div className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>原图地址缺失</div>
                     )}

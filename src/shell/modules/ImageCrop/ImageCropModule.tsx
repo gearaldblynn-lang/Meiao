@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
+import AuthenticatedAssetImage from '../../../components/AuthenticatedAssetImage';
 import { Download, ImagePlus, Loader2, Plus, ScissorsLineDashed, Trash2, UploadCloud, X } from 'lucide-react';
 import type { GeneratedResult, Project, SubFeatureOption, Task } from '../../../ShellMigratedApp';
 import type { AppModule } from '../../../types';
@@ -430,7 +431,7 @@ const ImageCropModule: React.FC<Props> = ({
               return (
                 <div key={`${item.file.name}-${item.objectUrl}`} className="overflow-hidden rounded-[8px] border" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)' }}>
                   <div className="flex h-[160px] items-center justify-center">
-                    <img src={item.objectUrl} alt={item.file.name} className="h-full w-full object-contain" />
+                    <AuthenticatedAssetImage src={item.objectUrl} alt={item.file.name} className="h-full w-full object-contain" />
                   </div>
                   <div className="border-t p-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}>
                     <div className="truncate font-medium" style={{ color: 'var(--text-primary)' }}>{item.file.name}</div>
@@ -536,7 +537,7 @@ const ImageCropModule: React.FC<Props> = ({
                 setSplitLines((current) => [...current].sort((a, b) => a - b));
               }}
             >
-              <img src={source.objectUrl} alt="待切片长图预览" className="block h-auto w-full select-none" draggable={false} />
+              <AuthenticatedAssetImage src={source.objectUrl} alt="待切片长图预览" className="block h-auto w-full select-none" draggable={false} />
               {splitLines.map((line, index) => {
                 const top = `${(line / source.height) * 100}%`;
                 return (

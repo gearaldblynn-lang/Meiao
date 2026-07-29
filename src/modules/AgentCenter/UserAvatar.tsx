@@ -1,4 +1,5 @@
 import React from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { findAgentAvatarPreset } from './agentAvatarOptions';
 
 interface Props {
@@ -11,7 +12,7 @@ interface Props {
 const UserAvatar: React.FC<Props> = ({ name = '我', avatarUrl, avatarPreset, className = 'h-12 w-12 rounded-full text-sm font-black' }) => {
   if (avatarUrl) {
     return (
-      <img
+      <AuthenticatedAssetImage
         src={avatarUrl}
         alt={`${name} 头像`}
         className={`${className} object-cover border shadow-none`}

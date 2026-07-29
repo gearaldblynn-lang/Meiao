@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback, memo, useEffect } from 'react';
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 import { GlobalApiConfig, BuyerShowPersistentState, BuyerShowTask, BuyerShowSet } from '../../types';
 import BuyerShowSidebar from '../../modules/BuyerShow/BuyerShowSidebar';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
@@ -48,7 +49,7 @@ const BuyerShowTaskItem = memo(({ task, index, setId, onRegenerate, onRecover, o
                 <p className="text-[8px] mt-1">请重新生成或找回</p>
               </div>
             ) : (
-              <img
+              <AuthenticatedAssetImage
                 src={task.resultUrl}
                 className="w-full h-full object-cover transition-transform duration-700 group-hover/img:scale-105"
                 alt="Generated result"
@@ -1249,7 +1250,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
           </div>
         </main>
       </div>
-      {previewUrl && <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/95 backdrop-blur-md p-8" onClick={() => setPreviewUrl(null)}><div className="relative max-w-5xl max-h-full flex items-center justify-center"><img src={previewUrl} className="max-w-full max-h-[85vh] rounded-2xl shadow-2xl border-4 border-white/10 object-contain" onClick={(e) => e.stopPropagation()} /></div></div>}
+      {previewUrl && <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/95 backdrop-blur-md p-8" onClick={() => setPreviewUrl(null)}><div className="relative max-w-5xl max-h-full flex items-center justify-center"><AuthenticatedAssetImage src={previewUrl} className="max-w-full max-h-[85vh] rounded-2xl shadow-2xl border-4 border-white/10 object-contain" onClick={(e) => e.stopPropagation()} /></div></div>}
     </div>
   );
 };

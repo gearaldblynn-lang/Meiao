@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import AuthenticatedAssetImage from '../../../components/AuthenticatedAssetImage';
 import { AlertCircle, Bell, CheckCircle2, KeyRound, Link2, LogIn, LogOut, Moon, RefreshCcw, Server, Shield, Trash2 } from 'lucide-react';
 import { createDefaultWorkspacePreferences, loadPersistedAppState, savePersistedAppState, buildPersistedAppState } from '../../../utils/appState';
 import {
@@ -182,7 +183,7 @@ const ProviderLogo: React.FC<{
         style={{ background: style.bg, border: `1px solid ${style.border || 'transparent'}` }}
         aria-label={displayName || provider || label}
       >
-        <img src={src} alt="" className="h-[72%] w-[72%] object-contain" />
+        <AuthenticatedAssetImage src={src} alt="" className="h-[72%] w-[72%] object-contain" />
       </span>
     );
   }

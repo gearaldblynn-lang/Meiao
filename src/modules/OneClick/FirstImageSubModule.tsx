@@ -1,3 +1,4 @@
+import AuthenticatedAssetImage from '../../components/AuthenticatedAssetImage';
 
 import React, { useState, useRef, useEffect } from 'react';
 import { ImagePlus, Palette, Sparkles, Trash2, X } from 'lucide-react';
@@ -1340,7 +1341,7 @@ const FirstImageSubModule: React.FC<Props> = ({
                               <span className="text-[10px] font-bold">预览已失效，请重新生成</span>
                             </div>
                           ) : (
-                            <img
+                            <AuthenticatedAssetImage
                               src={scheme.resultUrl}
                               className="w-full h-full object-cover transition-all duration-500 group-hover/preview:scale-105 brightness-[1.02] contrast-[1.02]"
                               key={scheme.resultUrl}
@@ -1453,7 +1454,7 @@ const FirstImageSubModule: React.FC<Props> = ({
 
               <button onClick={prevPreview} disabled={currentPreviewIndex === 0} className={`absolute left-4 w-14 h-14 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20 transition-all ${currentPreviewIndex === 0 ? 'opacity-20 cursor-not-allowed' : 'opacity-100'}`}><i className="fas fa-chevron-left text-xl"></i></button>
 
-              <img
+              <AuthenticatedAssetImage
                 src={completedResults[currentPreviewIndex]?.resultUrl}
                 className="max-w-[85vw] max-h-[85vh] rounded-2xl shadow-2xl border-4 border-white/10 object-contain animate-in zoom-in duration-300"
               />
