@@ -74,6 +74,7 @@ type VoiceoverTranslationComposerProps = {
   onTranslationModeChange: (value: VoiceoverTranslationMode) => void;
   onVoiceSelectionChange: (value: string) => void;
   onVoicePreview: (value: string) => void;
+  onVoicePopoverOpenChange: (open: boolean) => void;
   onRemoveTextChange: (enabled: boolean) => void;
   onSubtitleRegionChange: (region: SubtitleRemovalRegion) => void;
   onOpenConfirmation: () => void;
@@ -115,6 +116,7 @@ const VoiceoverTranslationComposer: React.FC<VoiceoverTranslationComposerProps> 
   onTranslationModeChange,
   onVoiceSelectionChange,
   onVoicePreview,
+  onVoicePopoverOpenChange,
   onRemoveTextChange,
   onSubtitleRegionChange,
   onOpenConfirmation,
@@ -295,6 +297,7 @@ const VoiceoverTranslationComposer: React.FC<VoiceoverTranslationComposerProps> 
                 icon={<Volume2 size={12} />}
                 title="口播音色"
                 description="点击即可播放已预置的真实 Gemini 音色；仅当静态试听缺失时，才会按当前账号生成并永久缓存。"
+                onOpenChange={onVoicePopoverOpenChange}
                 optionAction={{
                   isVisible: (value) => value !== '__auto__',
                   isDisabled: (value) => Boolean(

@@ -114,6 +114,11 @@ const safeFailureMessage = (error) => {
   return String(error?.message || '音色试听生成失败').slice(0, 240);
 };
 
+const isTerminalProviderTaskFailure = (error) => (
+  ['provider_job_failed', 'task_not_found'].includes(String(error?.code || ''))
+  || ['failed', 'not_found'].includes(String(error?.providerStatus || ''))
+);
+
 export const createVoiceoverPreviewService = ({
   rootDir,
   env = process.env,
@@ -207,6 +212,7 @@ export const createVoiceoverPreviewService = ({
           current.audioUrl = audioUrl;
           current.message = '';
           current.providerTaskId = String(output?.providerTaskId || current.providerTaskId || '').trim();
+          current.providerDisposition = 'completed';
           current.readyAt = now();
           current.updatedAt = current.readyAt;
           await persistRegistry();
@@ -215,9 +221,20 @@ export const createVoiceoverPreviewService = ({
         await mutate(async () => {
           const current = registry.records.find((item) => item.previewId === previewId);
           if (!current) return;
-          current.status = error?.code === 'provider_submission_unknown' ? 'unknown' : 'failed';
+          const providerTaskId = String(
+            error?.providerTaskId || current.providerTaskId || '',
+          ).trim();
+          const providerDisposition = providerTaskId
+            ? isTerminalProviderTaskFailure(error)
+              ? 'terminal_failed'
+              : 'resume_existing'
+            : error?.code === 'provider_submission_unknown'
+              ? 'submission_unknown'
+              : 'retry_new';
+          current.status = providerDisposition === 'submission_unknown' ? 'unknown' : 'failed';
           current.message = safeFailureMessage(error);
-          current.providerTaskId = String(error?.providerTaskId || current.providerTaskId || '').trim();
+          current.providerTaskId = providerTaskId;
+          current.providerDisposition = providerDisposition;
           current.updatedAt = now();
           await persistRegistry();
         });
@@ -290,11 +307,18 @@ export const createVoiceoverPreviewService = ({
         );
       }
       const timestamp = now();
+      const resumableProviderTaskId = (
+        existing?.providerTaskId
+        && existing?.providerDisposition !== 'terminal_failed'
+      )
+        ? String(existing.providerTaskId).trim()
+        : '';
       const nextRecord = {
         ...normalized,
         previewId,
         status: 'processing',
-        providerTaskId: '',
+        providerTaskId: resumableProviderTaskId,
+        providerDisposition: resumableProviderTaskId ? 'resume_existing' : 'submitting',
         audioUrl: '',
         message: '',
         createdAt: timestamp,
@@ -332,6 +356,7 @@ export const createVoiceoverPreviewService = ({
     return toPublicRecord(record);
   };
 
+  let startupRegistryChanged = false;
   for (const record of registry.records) {
     if (record.status === 'ready' && record.audioUrl) {
       queueMicrotask(() => {
@@ -350,7 +375,24 @@ export const createVoiceoverPreviewService = ({
     } else if (record.status === 'processing') {
       record.status = 'unknown';
       record.message = '上次试听提交状态未知，为避免重复扣费，本次不会自动重提';
+      record.providerDisposition = 'submission_unknown';
+      record.updatedAt = now();
+      startupRegistryChanged = true;
     }
+  }
+  if (startupRegistryChanged) {
+    queueMicrotask(() => {
+      void mutate(async () => {
+        await persistRegistry();
+      }).catch((error) => {
+        log({
+          level: 'warn',
+          action: 'voice_preview_restart_normalization_failed',
+          code: String(error?.code || ''),
+          message: String(error?.message || '试听恢复状态持久化失败').slice(0, 240),
+        });
+      });
+    });
   }
 
   return { request, get };

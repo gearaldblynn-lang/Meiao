@@ -4,7 +4,15 @@ const createPlaybackError = () => {
   return error;
 };
 
-export const playVoiceoverPreviewAudio = async (audio, audioUrl) => {
+const createPlaybackAbortError = () => {
+  const error = new Error('音色试听已停止');
+  error.name = 'AbortError';
+  error.code = 'voiceover_preview_playback_aborted';
+  return error;
+};
+
+export const playVoiceoverPreviewAudio = async (audio, audioUrl, { signal } = {}) => {
+  if (signal?.aborted) throw createPlaybackAbortError();
   audio.pause();
   audio.src = audioUrl;
   audio.load();
@@ -14,6 +22,7 @@ export const playVoiceoverPreviewAudio = async (audio, audioUrl) => {
     const cleanup = () => {
       audio.removeEventListener('playing', handlePlaying);
       audio.removeEventListener('error', handleError);
+      signal?.removeEventListener('abort', handleAbort);
     };
     const finish = (callback, value) => {
       if (settled) return;
@@ -23,9 +32,15 @@ export const playVoiceoverPreviewAudio = async (audio, audioUrl) => {
     };
     const handlePlaying = () => finish(resolve);
     const handleError = () => finish(reject, createPlaybackError());
+    const handleAbort = () => finish(reject, createPlaybackAbortError());
 
     audio.addEventListener('playing', handlePlaying);
     audio.addEventListener('error', handleError);
+    signal?.addEventListener('abort', handleAbort, { once: true });
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
     try {
       Promise.resolve(audio.play()).catch((error) => finish(reject, error));
     } catch (error) {

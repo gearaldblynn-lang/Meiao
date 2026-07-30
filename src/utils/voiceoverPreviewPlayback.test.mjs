@@ -58,3 +58,26 @@ test('play rejection and media error both reject so the caller can fall back', a
   );
   assert.equal(failed.listeners.size, 0);
 });
+
+test('a superseded playback attempt rejects as aborted without becoming a media failure', async () => {
+  const { audio, listeners } = createAudio({ emit: 'never' });
+  const controller = new AbortController();
+  const playback = playVoiceoverPreviewAudio(
+    audio,
+    '/voiceover-previews/Aoede.wav',
+    { signal: controller.signal },
+  );
+  controller.abort();
+
+  await assert.rejects(
+    Promise.race([
+      playback,
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error('playback abort watchdog expired')),
+        100,
+      )),
+    ]),
+    (error) => error?.name === 'AbortError',
+  );
+  assert.equal(listeners.size, 0);
+});

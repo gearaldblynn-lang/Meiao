@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -204,6 +205,21 @@ test('new task checkpoints provider id before audio download and is resumable', 
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
+});
+
+test('download timeout stays armed until the response body is consumed', () => {
+  const source = readFileSync(
+    new URL('./generate-voiceover-preview-library.mjs', import.meta.url),
+    'utf8',
+  );
+  const downloadStart = source.indexOf('const downloadAudio = async');
+  const downloadEnd = source.indexOf('export async function generateVoiceoverPreviewLibrary', downloadStart);
+  const downloadBlock = source.slice(downloadStart, downloadEnd);
+  assert.ok(downloadBlock.indexOf('await response.arrayBuffer()') >= 0);
+  assert.ok(
+    downloadBlock.indexOf('clearTimeout(timer)') > downloadBlock.indexOf('await response.arrayBuffer()'),
+    'the timeout must remain active while the response body is being read',
+  );
 });
 
 test('unknown submissions are persisted and never automatically resubmitted', async () => {
