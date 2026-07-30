@@ -30,12 +30,28 @@ export const evaluatePortOwnerReuse = ({ port, owner, processCwd, expectedCwd })
   return { ok: true };
 };
 
-export const buildDoctorReport = ({ devServer, apiServer, proxyHealthy }) => {
+const normalizeDirectory = (value) => String(value || '').replace(/\/+$/u, '');
+
+export const buildDoctorReport = ({
+  devServer,
+  apiServer,
+  proxyHealthy,
+  expectedWorkingDirectory = '',
+}) => {
   const devReady = Boolean(devServer?.listening);
   const apiReady = Boolean(apiServer?.listening);
   const devWorkspaceReady = devReady && devServer?.workspaceOk !== false;
   const apiWorkspaceReady = apiReady && apiServer?.workspaceOk !== false;
   const proxyReady = Boolean(proxyHealthy);
+  const expectedDirectory = normalizeDirectory(expectedWorkingDirectory);
+  const runtimeDirectories = [
+    devReady ? normalizeDirectory(devServer?.workingDirectory) : '',
+    apiReady ? normalizeDirectory(apiServer?.workingDirectory) : '',
+  ].filter(Boolean);
+  const staleRuntimeDirectories = expectedDirectory
+    ? runtimeDirectories.filter((directory) => directory !== expectedDirectory)
+    : [];
+  const runtimeIdentityReady = staleRuntimeDirectories.length === 0;
 
   let status = 'ok';
   let summary = '本地开发环境已就绪，可直接打开 http://localhost:3000。';
@@ -55,6 +71,9 @@ export const buildDoctorReport = ({ devServer, apiServer, proxyHealthy }) => {
   } else if (!proxyReady) {
     status = 'warning';
     summary = '3000 和 3100 都已启动，但 3000/api/health 没有成功代理到后端。';
+  } else if (!runtimeIdentityReady) {
+    status = 'warning';
+    summary = '3000/3100 虽然健康，但运行的是另一个工作区，页面可能显示旧功能。请先切换常驻进程的工作目录。';
   }
 
   return {
@@ -73,6 +92,12 @@ export const buildDoctorReport = ({ devServer, apiServer, proxyHealthy }) => {
         ok: proxyReady,
         label: '3000/api/health 代理检查',
       },
+      runtimeIdentity: {
+        ok: runtimeIdentityReady,
+        label: runtimeIdentityReady
+          ? '3000/3100 运行目录与当前项目一致'
+          : `当前项目 ${expectedDirectory}；实际进程 ${[...new Set(staleRuntimeDirectories)].join(', ')}`,
+      },
     },
   };
 };
@@ -84,6 +109,9 @@ export const formatDoctorReport = (report) => {
     `- ${report.checks.devServer.ok ? '已就绪' : '未就绪'}: ${report.checks.devServer.label}`,
     `- ${report.checks.apiServer.ok ? '已就绪' : '未就绪'}: ${report.checks.apiServer.label}`,
     `- ${report.checks.proxy.ok ? '已就绪' : '未就绪'}: ${report.checks.proxy.label}`,
+    ...(report.checks.runtimeIdentity
+      ? [`- ${report.checks.runtimeIdentity.ok ? '已就绪' : '未就绪'}: ${report.checks.runtimeIdentity.label}`]
+      : []),
     '',
     '默认开发入口: http://localhost:3000',
     '后端健康检查: http://127.0.0.1:3100/api/health',

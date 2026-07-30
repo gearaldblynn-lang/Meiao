@@ -294,7 +294,7 @@ const VoiceoverTranslationComposer: React.FC<VoiceoverTranslationComposerProps> 
                 onChange={onVoiceSelectionChange}
                 icon={<Volume2 size={12} />}
                 title="口播音色"
-                description="首次生成后永久保存到当前账号，以后点击直接播放；首次生成可能产生少量 KIE 费用。"
+                description="点击即可播放已预置的真实 Gemini 音色；仅当静态试听缺失时，才会按当前账号生成并永久缓存。"
                 optionAction={{
                   isVisible: (value) => value !== '__auto__',
                   isDisabled: (value) => Boolean(

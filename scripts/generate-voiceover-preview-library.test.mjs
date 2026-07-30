@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   buildVoiceoverPreviewProviderJob,
   generateVoiceoverPreviewLibrary,
+  keepVoiceoverPreviewProcessAlive,
 } from './generate-voiceover-preview-library.mjs';
 import {
   VOICEOVER_PREVIEW_LANGUAGE,
@@ -271,4 +272,31 @@ test('all catalog voices are processed in catalog order', async () => {
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
+});
+
+test('the CLI keeps Node alive while provider polling only has unref timers', async () => {
+  const handles = [];
+  const cleared = [];
+  let finishTask;
+  const task = new Promise((resolve) => {
+    finishTask = resolve;
+  });
+  const running = keepVoiceoverPreviewProcessAlive(
+    () => task,
+    {
+      setIntervalImpl: (callback, milliseconds) => {
+        const handle = { callback, milliseconds };
+        handles.push(handle);
+        return handle;
+      },
+      clearIntervalImpl: (handle) => cleared.push(handle),
+    },
+  );
+
+  assert.equal(handles.length, 1);
+  assert.equal(handles[0].milliseconds, 60_000);
+  assert.deepEqual(cleared, []);
+  finishTask('done');
+  assert.equal(await running, 'done');
+  assert.deepEqual(cleared, handles);
 });

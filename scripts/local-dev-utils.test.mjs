@@ -24,13 +24,25 @@ test('doctor report warns when backend is up but vite is missing', () => {
 
 test('doctor report is healthy when dev server, api server, and proxy are all ready', () => {
   const report = buildDoctorReport({
-    devServer: { listening: true, port: 3000, owner: 'node(79045)' },
-    apiServer: { listening: true, port: 3100, owner: 'node(63465)' },
+    devServer: {
+      listening: true,
+      port: 3000,
+      owner: 'node(79045)',
+      workingDirectory: '/repo/current',
+    },
+    apiServer: {
+      listening: true,
+      port: 3100,
+      owner: 'node(63465)',
+      workingDirectory: '/repo/current',
+    },
     proxyHealthy: true,
+    expectedWorkingDirectory: '/repo/current',
   });
 
   assert.equal(report.status, 'ok');
   assert.equal(report.checks.proxy.ok, true);
+  assert.equal(report.checks.runtimeIdentity.ok, true);
   assert.match(formatDoctorReport(report), /localhost:3000/);
 });
 
@@ -45,6 +57,31 @@ test('doctor report rejects healthy-looking ports owned by another worktree', ()
   assert.equal(report.checks.devServer.ok, false);
   assert.equal(report.checks.apiServer.ok, false);
   assert.match(report.summary, /其他版本或工作树/);
+});
+
+test('doctor report rejects healthy ports owned by a stale worktree', () => {
+  const report = buildDoctorReport({
+    devServer: {
+      listening: true,
+      port: 3000,
+      owner: 'node(79045)',
+      workingDirectory: '/repo/.worktrees/old-feature',
+    },
+    apiServer: {
+      listening: true,
+      port: 3100,
+      owner: 'node(63465)',
+      workingDirectory: '/repo/.worktrees/old-feature',
+    },
+    proxyHealthy: true,
+    expectedWorkingDirectory: '/repo/.worktrees/voiceover',
+  });
+
+  assert.equal(report.status, 'warning');
+  assert.equal(report.checks.runtimeIdentity.ok, false);
+  assert.match(report.summary, /另一个工作区/);
+  assert.match(formatDoctorReport(report), /old-feature/);
+  assert.match(formatDoctorReport(report), /voiceover/);
 });
 
 test('start plan flags occupied ports with actionable guidance', () => {

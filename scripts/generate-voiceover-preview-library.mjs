@@ -401,6 +401,21 @@ export async function generateVoiceoverPreviewLibrary({
   };
 }
 
+export const keepVoiceoverPreviewProcessAlive = async (
+  task,
+  {
+    setIntervalImpl = setInterval,
+    clearIntervalImpl = clearInterval,
+  } = {},
+) => {
+  const keepAliveHandle = setIntervalImpl(() => {}, 60_000);
+  try {
+    return await task();
+  } finally {
+    clearIntervalImpl(keepAliveHandle);
+  }
+};
+
 const isMain = process.argv[1]
   && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 
@@ -410,13 +425,13 @@ if (isMain) {
     envPath: path.join(SCRIPT_ROOT, '.env.server'),
     targetEnv: env,
   });
-  generateVoiceoverPreviewLibrary({
+  keepVoiceoverPreviewProcessAlive(() => generateVoiceoverPreviewLibrary({
     rootDir: SCRIPT_ROOT,
     env,
     log: ({ voiceName, status }) => {
       process.stdout.write(`[voiceover-preview] ${voiceName}: ${status}\n`);
     },
-  }).then((result) => {
+  })).then((result) => {
     process.stdout.write(
       `[voiceover-preview] ready ${result.ready}/${result.total}; generated ${result.generated}; skipped ${result.skipped}\n`,
     );

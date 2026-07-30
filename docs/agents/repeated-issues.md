@@ -1400,7 +1400,7 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 - Symptom: 已经生成并永久保存 Zephyr 英文试听后，在中文目标语言下再次点击仍长时间显示旋转图标，并创建了新的 KIE TTS task；用户感知仍是“每次点击都生成”。
 - Evidence: 同一账号 registry 同时出现 Zephyr/en 和 Zephyr/cmn 两条 ready 记录及两个不同 provider task ID；Puck 只有既有英文 ready 记录。修复后在中文页面点击 Puck 直接进入播放，registry 仍为原 3 条，Puck task ID 未变。
-- Root cause / fix: 架构级根因与修复合同见 `CLAUDE.md` #82。服务端新 key 使用账号与音色，并向后复用旧语言维度 ready/processing/unknown 记录，未知提交状态不能借跨语言 key 绕过后重提；前端内存缓存按音色复用，持久查询只显示“正在加载”。
+- Root cause / fix: 架构级根因与修复合同见 `CLAUDE.md` #84。服务端新 key 使用账号与音色，并向后复用旧语言维度 ready/processing/unknown 记录，未知提交状态不能借跨语言 key 绕过后重提；前端内存缓存按音色复用，持久查询只显示“正在加载”。
 - Regression check: `node --test server/voiceoverPreviewService.test.mjs`；`node --experimental-strip-types --test src/shell/components/VoiceoverTranslationWorkspace.test.mjs`；真实浏览器点击已有跨语言试听后核对播放状态、registry 数量和 provider task ID 均未新增。
 - Avoid next time: 设计付费缓存时先写清“什么参数真的改变产物”，再定义 key。必须回归跨语言 ready 复用、跨语言 processing 去重、旧 key 兼容、账号隔离和 UI 真实播放，不能只验证同参数的第二次点击。
 
@@ -1451,3 +1451,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 新增服务端虚拟模特专用压缩器，覆盖 `virtual_model`、`virtual_model_generation` 上传和 AI 结果持久化；默认 3MiB env 目标，小图原样保留，大图只在 JPEG/PNG/WebP 编码层做最低质量 82 的保守优化。每个候选必须保持像素宽高、已有 DPI 和 alpha；候选不更小就保留原图，绝不 resize 强行命中体积。
 - Regression check: 自动化必须锁定小图字节完全一致、大 JPEG 与透明 PNG 输出更小、宽高/DPI 不变、alpha 不丢，并锁住手动上传与 AI 自动入库都调用同一压缩器。云上日志保留原始/落盘字节、压缩状态、宽高和 DPI，便于抽样核查。
 - Avoid next time: “下载时压缩”和“领域原图入库”不是同一合同。所有多入口数据治理都应在服务端权威持久化边界收敛；质量、体积、容量阈值必须 env 化，分辨率、DPI、透明度等不变量必须用真实编码库回归，不能只看文件扩展名或肉眼。
+
+## 2026-07-30 - 本地端口健康不等于正在运行当前工作区
+
+- Symptom: 口播翻译代码已经包含限高弹层和音色试听按钮，但 `127.0.0.1:3000` 仍显示整页高下拉框且没有试听；手动杀掉 Vite 后旧界面又自动回来。
+- Evidence: 3000/3100 均通过 health，实际监听进程的 cwd 却是 `.worktrees/model-replace-public-current-release`；`com.meiao.current.vite` 与 `com.meiao.current.server` 两个 LaunchAgent 的 `WorkingDirectory` 都固定在旧 worktree，且 `KeepAlive=true`，所以杀进程只会让 launchd 从旧目录重启。
+- Root cause: 本地验收只检查端口、代理和 health，没有验证监听进程的工作目录身份；同一仓库并行 worktree 时，“服务健康”和“代码版本正确”被错误地当成同一件事。
+- Fix: 两个 LaunchAgent 的工作目录切到当前口播翻译 worktree，并执行 bootout/bootstrap/kickstart；`npm run doctor` 新增 3000/3100 监听 PID 的 cwd 与调用目录一致性门禁，端口健康但 worktree 不匹配时直接 WARN 并指出期望和实际目录。
+- Regression check: `node --test scripts/local-dev-utils.test.mjs`；`npm run doctor` 必须显示“3000/3100 运行目录与当前项目一致”；真实浏览器刷新后语言和音色 listbox 高度均为 360px、内部滚动，音色存在 30 个试听按钮。
+- Avoid next time: worktree 功能验收前必须同时核对端口 PID、进程 cwd、LaunchAgent `WorkingDirectory` 和浏览器实际 DOM；不能用 health 200 或“重启过”证明页面来自当前分支。常驻服务切换 worktree 后必须重新 bootstrap 或 kickstart，并把 cwd 身份纳入自动门禁。

@@ -1,0 +1,218 @@
+{
+  "version": 1,
+  "model": "google/gemini-3-1-flash-tts",
+  "language": "cmn",
+  "sampleText": "你好，这是一段口播音色试听。",
+  "voices": [
+    {
+      "name": "Zephyr",
+      "file": "Zephyr.wav",
+      "contentType": "audio/wav",
+      "bytes": 193964,
+      "sha256": "e8c3d6d6e18704795f8557c685ca3914244662389c24d8a3902a648b5eaf4f4d"
+    },
+    {
+      "name": "Puck",
+      "file": "Puck.wav",
+      "contentType": "audio/wav",
+      "bytes": 193964,
+      "sha256": "69464c8a47b08fe072fcf9384d880cb49103dd70ff73948642429fff70c6712b"
+    },
+    {
+      "name": "Charon",
+      "file": "Charon.wav",
+      "contentType": "audio/wav",
+      "bytes": 184364,
+      "sha256": "ce4d0f344f289c0eb27b53d9ba8ab1547a2facb535b6b30f934a13784a4616a2"
+    },
+    {
+      "name": "Kore",
+      "file": "Kore.wav",
+      "contentType": "audio/wav",
+      "bytes": 203564,
+      "sha256": "3ccf0d67af938e02667cd77f7046b5e78739af962ea9f13f42dc0722d9c17e4d"
+    },
+    {
+      "name": "Fenrir",
+      "file": "Fenrir.wav",
+      "contentType": "audio/wav",
+      "bytes": 186284,
+      "sha256": "404ebcd4868de72a4e3442c1bfd124993860ea7ecddd95ce9a6a488b02daa441"
+    },
+    {
+      "name": "Leda",
+      "file": "Leda.wav",
+      "contentType": "audio/wav",
+      "bytes": 184364,
+      "sha256": "db1450ec4774e9e2ecd32127febd9faa9fe3e9915f1939cc81a4e2718ca1a43b"
+    },
+    {
+      "name": "Orus",
+      "file": "Orus.wav",
+      "contentType": "audio/wav",
+      "bytes": 176684,
+      "sha256": "d69f8c7199c141b193d66533a081b8fa0580fed838d78d03cac6a12ff45edb98"
+    },
+    {
+      "name": "Aoede",
+      "file": "Aoede.wav",
+      "contentType": "audio/wav",
+      "bytes": 217004,
+      "sha256": "92e8f0f89313173819a002646ef59e11f9c041e1078e2aeb4308ab3aa4f923c6"
+    },
+    {
+      "name": "Callirrhoe",
+      "file": "Callirrhoe.wav",
+      "contentType": "audio/wav",
+      "bytes": 199724,
+      "sha256": "474fbb671cec02015531845430b638cf7c669d76eaaa6819c59e158e61c1c82f"
+    },
+    {
+      "name": "Autonoe",
+      "file": "Autonoe.wav",
+      "contentType": "audio/wav",
+      "bytes": 190124,
+      "sha256": "ad6d9cd920b1d447ea26e9535c65b61ab9da578815c042a0ddf0ad3bae1de019"
+    },
+    {
+      "name": "Enceladus",
+      "file": "Enceladus.wav",
+      "contentType": "audio/wav",
+      "bytes": 203564,
+      "sha256": "891013d6f52b7e24ed9b3c3fadfbedd1bd2c67a723fd02b1b8ef55a0e6b8359c"
+    },
+    {
+      "name": "Iapetus",
+      "file": "Iapetus.wav",
+      "contentType": "audio/wav",
+      "bytes": 184364,
+      "sha256": "2656c43f6bdf1dced3d60ca61b88cec41ef207e8bfb7bf726f4325a5c4d44943"
+    },
+    {
+      "name": "Umbriel",
+      "file": "Umbriel.wav",
+      "contentType": "audio/wav",
+      "bytes": 186284,
+      "sha256": "c94c2c80eb86584130724e73104812556ba4688d9228c949d49533756305c791"
+    },
+    {
+      "name": "Algieba",
+      "file": "Algieba.wav",
+      "contentType": "audio/wav",
+      "bytes": 218924,
+      "sha256": "69bc9ed9d19b004b6bcf0bce57a5e5a74bee1fbb7e7dd8c2ad320c613dc7781a"
+    },
+    {
+      "name": "Despina",
+      "file": "Despina.wav",
+      "contentType": "audio/wav",
+      "bytes": 192044,
+      "sha256": "23d37692e80db475ae43c7fb4f3bd0264f7aeae048c771c4a61f00d4a1f4f13a"
+    },
+    {
+      "name": "Erinome",
+      "file": "Erinome.wav",
+      "contentType": "audio/wav",
+      "bytes": 195884,
+      "sha256": "26bd1c5b0c30e380a59e34ebd48c6dd3bb9ba59d53a5d12344878a81bc07bb7e"
+    },
+    {
+      "name": "Algenib",
+      "file": "Algenib.wav",
+      "contentType": "audio/wav",
+      "bytes": 176684,
+      "sha256": "92b7fcf21ed030aab2e152484afe7a4dda10d99f567f656238c4b79cf31c5b88"
+    },
+    {
+      "name": "Rasalgethi",
+      "file": "Rasalgethi.wav",
+      "contentType": "audio/wav",
+      "bytes": 199724,
+      "sha256": "665877c6de8f3a76dfa803b611f2c28d6015e84172206f08b071eccc0018d1fc"
+    },
+    {
+      "name": "Laomedeia",
+      "file": "Laomedeia.wav",
+      "contentType": "audio/wav",
+      "bytes": 201644,
+      "sha256": "1eb726d96741d01c7c2c56f34271570c46b14ee713f064d1cd99b3adf04d93c6"
+    },
+    {
+      "name": "Achernar",
+      "file": "Achernar.wav",
+      "contentType": "audio/wav",
+      "bytes": 190124,
+      "sha256": "15ab0d19bc4bc45bfee5e93f3e662e0159d3fadfc099138abda436e96d085d00"
+    },
+    {
+      "name": "Alnilam",
+      "file": "Alnilam.wav",
+      "contentType": "audio/wav",
+      "bytes": 213164,
+      "sha256": "fbe5989947ddf74ae09268c57fe134f56885b95ef91e263c0e18725a5519d4ea"
+    },
+    {
+      "name": "Schedar",
+      "file": "Schedar.wav",
+      "contentType": "audio/wav",
+      "bytes": 224684,
+      "sha256": "6ac71573c029ac908c7fd74387e2c47c48778e89d1f24faab6a81a9595201e29"
+    },
+    {
+      "name": "Gacrux",
+      "file": "Gacrux.wav",
+      "contentType": "audio/wav",
+      "bytes": 197804,
+      "sha256": "d7cac2716b6e575b55f871578344a52f6a9261fceb17aab2d588c94b3fb289d1"
+    },
+    {
+      "name": "Pulcherrima",
+      "file": "Pulcherrima.wav",
+      "contentType": "audio/wav",
+      "bytes": 205484,
+      "sha256": "071694784610f5e1d4838cf812a848bf34bc1546201639df7e35362e39966000"
+    },
+    {
+      "name": "Achird",
+      "file": "Achird.wav",
+      "contentType": "audio/wav",
+      "bytes": 199724,
+      "sha256": "555f509f8bdad8b7f6538c87f80aeae63f7c15b80126116dd084c33e56ea9589"
+    },
+    {
+      "name": "Zubenelgenubi",
+      "file": "Zubenelgenubi.wav",
+      "contentType": "audio/wav",
+      "bytes": 192044,
+      "sha256": "ecb643e0203d22d5cf036f628c03344c26899b8d98669cb8cf05ba8f475a97ce"
+    },
+    {
+      "name": "Vindemiatrix",
+      "file": "Vindemiatrix.wav",
+      "contentType": "audio/wav",
+      "bytes": 188204,
+      "sha256": "7bd3f9f8459827db148a4f74fcbf3a28155a3610560d82a68b214a74ef9ab2c6"
+    },
+    {
+      "name": "Sadachbia",
+      "file": "Sadachbia.wav",
+      "contentType": "audio/wav",
+      "bytes": 188204,
+      "sha256": "171f43cc920ed097af3e481e5da37c277f132c2395106b92f6e482107a956a00"
+    },
+    {
+      "name": "Sadaltager",
+      "file": "Sadaltager.wav",
+      "contentType": "audio/wav",
+      "bytes": 201644,
+      "sha256": "458280e698cd9237a2e00b1b9c4b1f3c2f010afc30f52b3f791e4c422104a7ed"
+    },
+    {
+      "name": "Sulafat",
+      "file": "Sulafat.wav",
+      "contentType": "audio/wav",
+      "bytes": 193964,
+      "sha256": "3bb9b83cf98e5064afd5cd009ea233f6fabd4d43cc2b6405d0af311ce5659e6e"
+    }
+  ]
+}
