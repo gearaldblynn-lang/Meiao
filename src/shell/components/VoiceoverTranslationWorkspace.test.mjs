@@ -107,7 +107,7 @@ test('prebuilt preview urls play before the account generation fallback', () => 
   const previewEnd = source.indexOf('const handleRemoveTextChange', previewStart);
   const previewBlock = source.slice(previewStart, previewEnd);
   const cachedLookup = previewBlock.indexOf('previewUrlsRef.current.get(cacheKey)');
-  const directPlay = previewBlock.indexOf('playVoiceoverPreviewAudio(audio, cachedUrl)');
+  const directPlay = previewBlock.indexOf('playVoiceoverPreviewAudio(audio, cachedUrl');
   const fallbackRequest = previewBlock.indexOf('requestVoiceoverPreview({');
   assert.ok(cachedLookup >= 0 && cachedLookup < directPlay && directPlay < fallbackRequest);
   assert.match(previewBlock, /previewUrlsRef\.current\.delete\(cacheKey\)/);
@@ -115,6 +115,27 @@ test('prebuilt preview urls play before the account generation fallback', () => 
     previewBlock.indexOf('setVoicePreviewingName(requestedVoiceName)') > directPlay,
     'direct playback must not show the generation/loading state',
   );
+});
+
+test('superseded static playback and a closed voice popover stop without paid fallback', () => {
+  const previewStart = source.indexOf('const handleVoicePreview = useCallback');
+  const previewEnd = source.indexOf('const handleRemoveTextChange', previewStart);
+  const previewBlock = source.slice(previewStart, previewEnd);
+  const directPlay = previewBlock.indexOf('playVoiceoverPreviewAudio(audio, cachedUrl');
+  const abortedGuard = previewBlock.indexOf('controller.signal.aborted', directPlay);
+  const deleteCachedUrl = previewBlock.indexOf('previewUrlsRef.current.delete(cacheKey)', directPlay);
+  const fallbackRequest = previewBlock.indexOf('requestVoiceoverPreview({', directPlay);
+  assert.ok(
+    directPlay >= 0
+      && abortedGuard > directPlay
+      && abortedGuard < deleteCachedUrl
+      && deleteCachedUrl < fallbackRequest,
+    'an aborted direct-play attempt must exit before cache eviction and paid fallback',
+  );
+  assert.match(composerSource, /onVoicePopoverOpenChange/);
+  assert.match(composerSource, /onOpenChange=\{onVoicePopoverOpenChange\}/);
+  assert.match(source, /const handleVoicePopoverOpenChange = useCallback\(\(open: boolean\) => \{[\s\S]*if \(open\) return;[\s\S]*previewControllerRef\.current\?\.abort\(\)[\s\S]*previewAudioRef\.current\?\.pause\(\)/);
+  assert.match(source, /onVoicePopoverOpenChange=\{handleVoicePopoverOpenChange\}/);
 });
 
 test('remove-text starts off and reuses the existing normalized subtitle editor', () => {

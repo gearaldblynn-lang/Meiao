@@ -405,28 +405,37 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     if (!canCreate || !voices.some((voice) => voice.name === requestedVoiceName)) return;
     const audio = previewAudioRef.current;
     if (!audio) return;
+    if (voicePreviewingName) return;
+    previewControllerRef.current?.abort();
+    const controller = new AbortController();
+    previewControllerRef.current = controller;
     if (voicePlayingName === requestedVoiceName && !audio.paused) {
       audio.pause();
       setVoicePlayingName('');
+      if (previewControllerRef.current === controller) {
+        previewControllerRef.current = null;
+      }
       return;
     }
-    if (voicePreviewingName) return;
     const cacheKey = requestedVoiceName;
     const cachedUrl = previewUrlsRef.current.get(cacheKey);
     if (cachedUrl) {
       try {
-        await playVoiceoverPreviewAudio(audio, cachedUrl);
-        if (mountedRef.current) setVoicePlayingName(requestedVoiceName);
+        await playVoiceoverPreviewAudio(audio, cachedUrl, { signal: controller.signal });
+        if (!controller.signal.aborted && mountedRef.current) {
+          setVoicePlayingName(requestedVoiceName);
+        }
+        if (previewControllerRef.current === controller) {
+          previewControllerRef.current = null;
+        }
         return;
       } catch {
+        if (controller.signal.aborted) return;
         previewUrlsRef.current.delete(cacheKey);
         if (mountedRef.current) setVoicePlayingName('');
       }
     }
 
-    previewControllerRef.current?.abort();
-    const controller = new AbortController();
-    previewControllerRef.current = controller;
     setVoicePreviewingName(requestedVoiceName);
     setVoicePlayingName('');
     setErrorMessage('');
@@ -441,7 +450,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       if (!ready.audioUrl) throw new Error('试听音频地址缺失');
       previewUrlsRef.current.set(cacheKey, ready.audioUrl);
       if (!controller.signal.aborted && mountedRef.current) {
-        await playVoiceoverPreviewAudio(audio, ready.audioUrl);
+        await playVoiceoverPreviewAudio(audio, ready.audioUrl, { signal: controller.signal });
         setVoicePlayingName(requestedVoiceName);
       }
     } catch (error) {
@@ -451,8 +460,8 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     } finally {
       if (previewControllerRef.current === controller) {
         previewControllerRef.current = null;
+        if (mountedRef.current) setVoicePreviewingName('');
       }
-      if (mountedRef.current) setVoicePreviewingName('');
     }
   }, [
     canCreate,
@@ -461,6 +470,15 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     voicePreviewingName,
     voices,
   ]);
+
+  const handleVoicePopoverOpenChange = useCallback((open: boolean) => {
+    if (open) return;
+    previewControllerRef.current?.abort();
+    previewControllerRef.current = null;
+    previewAudioRef.current?.pause();
+    setVoicePreviewingName('');
+    setVoicePlayingName('');
+  }, []);
 
   const handleRemoveTextChange = useCallback((enabled: boolean) => {
     setRemoveText(enabled);
@@ -584,6 +602,7 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
               onTranslationModeChange={setTranslationMode}
               onVoiceSelectionChange={handleVoiceSelectionChange}
               onVoicePreview={(value) => void handleVoicePreview(value)}
+              onVoicePopoverOpenChange={handleVoicePopoverOpenChange}
               onRemoveTextChange={handleRemoveTextChange}
               onSubtitleRegionChange={setSubtitleRegion}
               onOpenConfirmation={() => setConfirmOpen(true)}

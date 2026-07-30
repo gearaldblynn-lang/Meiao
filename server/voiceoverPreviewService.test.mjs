@@ -289,6 +289,85 @@ test('provider task id is checkpointed before polling result completion', async 
   await waitForPersistedStatus(fixture.rootDir, requested.previewId, 'ready');
 });
 
+test('post-checkpoint failure resumes the same provider task without another paid create', async (t) => {
+  const jobs = [];
+  let attempt = 0;
+  const fixture = await createFixture({
+    executeProviderJob: async (job, _env, _signal, options) => {
+      jobs.push(job);
+      attempt += 1;
+      if (attempt === 1) {
+        await options.onProviderTaskId('preview-provider-resume');
+        throw Object.assign(new Error('temporary query failure'), {
+          code: 'provider_network_error',
+          providerTaskId: 'preview-provider-resume',
+          providerStage: 'provider_wait',
+          providerStatus: 'network_error',
+        });
+      }
+      return {
+        providerTaskId: job.providerTaskId,
+        result: { audioUrl: 'https://provider.example/resumed.wav' },
+      };
+    },
+  });
+  t.after(fixture.cleanup);
+
+  const first = await fixture.service.request({
+    userId: 'user-resume',
+    targetLanguage: 'cmn',
+    voiceName: 'Puck',
+  });
+  await waitForPersistedStatus(fixture.rootDir, first.previewId, 'failed');
+
+  const resumed = await fixture.service.request({
+    userId: 'user-resume',
+    targetLanguage: 'cmn',
+    voiceName: 'Puck',
+  });
+  assert.equal(resumed.status, 'processing');
+  await waitForPersistedStatus(fixture.rootDir, first.previewId, 'ready');
+
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[0].providerTaskId, undefined);
+  assert.equal(jobs[1].providerTaskId, 'preview-provider-resume');
+  assert.equal(jobs.filter((job) => !job.providerTaskId).length, 1);
+});
+
+test('restart persists providerless processing records as submission unknown', async (t) => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), 'meiao-voice-preview-restart-'));
+  t.after(() => rm(rootDir, { recursive: true, force: true }));
+  await writeFile(path.join(rootDir, 'registry.json'), JSON.stringify({
+    records: [{
+      userId: 'restart-user',
+      previewId: 'voice-preview-restart',
+      status: 'processing',
+      voiceName: 'Kore',
+      targetLanguage: 'cmn',
+      providerTaskId: '',
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    }],
+  }), 'utf8');
+
+  createVoiceoverPreviewService({
+    rootDir,
+    executeProviderJob: async () => {
+      throw new Error('providerless restart must not submit');
+    },
+    persistAudio: async () => {
+      throw new Error('providerless restart must not persist audio');
+    },
+  });
+
+  const record = await waitForPersistedStatus(
+    rootDir,
+    'voice-preview-restart',
+    'unknown',
+  );
+  assert.match(record.message, /不会自动重提/);
+});
+
 test('preview validates catalog values before any paid provider call', async (t) => {
   const fixture = await createFixture();
   t.after(fixture.cleanup);

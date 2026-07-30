@@ -2,6 +2,7 @@ import React, {
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type ReactNode,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -153,6 +154,7 @@ export const ComposerSelect: React.FC<{
   secondaryRecommendedLabel?: string;
   getOptionMeta?: (value: string) => string;
   optionAction?: ComposerSelectOptionAction;
+  onOpenChange?: (open: boolean) => void;
   disabled?: boolean;
 }> = ({
   value,
@@ -168,6 +170,7 @@ export const ComposerSelect: React.FC<{
   secondaryRecommendedLabel = '常用',
   getOptionMeta,
   optionAction,
+  onOpenChange,
   disabled,
 }) => {
   const [open, setOpen] = useState(false);
@@ -179,14 +182,20 @@ export const ComposerSelect: React.FC<{
     maxHeight: number;
   }>({ placement: 'up', align: 'left', maxHeight: 360 });
   const ref = useRef<HTMLDivElement>(null);
+  const updateOpen = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  }, [onOpenChange]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+      if (open && ref.current && !ref.current.contains(event.target as Node)) {
+        updateOpen(false);
+      }
     };
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, []);
+  }, [open, updateOpen]);
 
   useLayoutEffect(() => {
     if (!open || !ref.current) return undefined;
@@ -217,7 +226,7 @@ export const ComposerSelect: React.FC<{
     onChange(isCount ? next.replace(/[^\d]/g, '') || next : next);
     setCustomInputs(false);
     setCustomValue('');
-    setOpen(false);
+    updateOpen(false);
   };
 
   const isRecommended = Boolean(recommendedValue && value === recommendedValue);
@@ -239,7 +248,7 @@ export const ComposerSelect: React.FC<{
         active={open}
         disabled={disabled}
         onClick={() => {
-          if (!disabled) setOpen((current) => !current);
+          if (!disabled) updateOpen(!open);
         }}
         icon={icon}
         label={(
@@ -366,7 +375,7 @@ export const ComposerSelect: React.FC<{
                   aria-selected={active}
                   onClick={() => {
                     onChange(option.value);
-                    setOpen(false);
+                    updateOpen(false);
                   }}
                   className="flex min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-2 text-left text-[12px] transition-colors"
                   style={{

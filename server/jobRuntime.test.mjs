@@ -265,6 +265,15 @@ test('index loads the shared preview library once and injects it into both confi
   assert.ok(configBlocks.length >= 6, `expected all config handlers to use the shared helper, got ${configBlocks.length}`);
 });
 
+test('production static delivery registers browser-playable voice preview MIME types', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  assert.match(source, /'\.wav':\s*'audio\/wav'/);
+  assert.match(source, /'\.mp3':\s*'audio\/mpeg'/);
+  assert.match(source, /'\.ogg':\s*'audio\/ogg'/);
+  assert.match(source, /'\.webm':\s*'audio\/webm'/);
+  assert.match(source, /'\.m4a':\s*'audio\/mp4'/);
+});
+
 test('public voiceover ready remains false when KIE credentials are unavailable', () => {
   const config = buildPublicSystemConfig({
     MEIAO_VOICEOVER_TRANSLATION_ENABLED: '1',

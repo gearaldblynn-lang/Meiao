@@ -109,6 +109,12 @@ test('composer selects stay anchored inside the viewport with a scrollable optio
   assert.match(composerPrimitives, /addEventListener\('scroll'/);
 });
 
+test('composer selects notify consumers whenever the popover closes', () => {
+  const composerPrimitives = read('./ComposerPrimitives.tsx');
+  assert.match(composerPrimitives, /onOpenChange\?: \(open: boolean\) => void/);
+  assert.match(composerPrimitives, /onOpenChange\?\.\(nextOpen\)/);
+});
+
 test('one click exposes sku naming as a dedicated bottom action instead of burying it under more params', () => {
   const bottomInputBar = source();
 

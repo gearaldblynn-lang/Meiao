@@ -128,10 +128,29 @@ const downloadAudio = async ({
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
-  let response;
   try {
-    response = await fetchImpl(parsedUrl, { signal: controller.signal });
+    const response = await fetchImpl(parsedUrl, { signal: controller.signal });
+    if (!response?.ok) {
+      throw generationError(
+        'voiceover_preview_download_failed',
+        `试听音频下载失败（HTTP ${Number(response?.status || 0)}）`,
+      );
+    }
+    const declaredBytes = Number(response.headers?.get?.('content-length') || 0);
+    if (declaredBytes > maxBytes) {
+      throw generationError('voiceover_preview_download_too_large', '试听音频超过单文件大小上限');
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > maxBytes) {
+      throw generationError('voiceover_preview_download_too_large', '试听音频超过单文件大小上限');
+    }
+    const audio = detectVoiceoverPreviewAudio(
+      bytes,
+      response.headers?.get?.('content-type') || '',
+    );
+    return { bytes, ...audio };
   } catch (error) {
+    if (error?.code) throw error;
     throw generationError(
       'voiceover_preview_download_failed',
       error?.name === 'AbortError' ? '试听音频下载超时' : '试听音频下载失败',
@@ -139,25 +158,6 @@ const downloadAudio = async ({
   } finally {
     clearTimeout(timer);
   }
-  if (!response?.ok) {
-    throw generationError(
-      'voiceover_preview_download_failed',
-      `试听音频下载失败（HTTP ${Number(response?.status || 0)}）`,
-    );
-  }
-  const declaredBytes = Number(response.headers?.get?.('content-length') || 0);
-  if (declaredBytes > maxBytes) {
-    throw generationError('voiceover_preview_download_too_large', '试听音频超过单文件大小上限');
-  }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > maxBytes) {
-    throw generationError('voiceover_preview_download_too_large', '试听音频超过单文件大小上限');
-  }
-  const audio = detectVoiceoverPreviewAudio(
-    bytes,
-    response.headers?.get?.('content-type') || '',
-  );
-  return { bytes, ...audio };
 };
 
 export async function generateVoiceoverPreviewLibrary({
