@@ -246,10 +246,29 @@ test('baseline stabilization fully downloads, decodes, persists, and creates a s
   assert.match(source, /fetchRemoteAssetBufferWithRetry/);
   assert.match(source, /sharp\(fileBuffer,\s*\{\s*failOn:\s*'error'\s*\}\)\.metadata\(\)/);
   assert.match(source, /sharp\(fileBuffer,\s*\{\s*failOn:\s*'error'\s*\}\)\.toBuffer\(\)/);
-  assert.match(source, /persistGeneratedAsset\(\{\s*batch,\s*task,\s*fileBuffer,\s*mimeType/);
-  assert.match(source, /uploadAssetViaKieStream\(\{/);
+  assert.match(source, /const optimizedReferenceImage = await optimizeVirtualModelImage\(\{/);
+  assert.match(
+    source,
+    /persistGeneratedAsset\(\{\s*batch,\s*task,\s*fileBuffer:\s*optimizedReferenceImage\.fileBuffer,\s*mimeType:\s*optimizedReferenceImage\.mimeType/,
+  );
+  assert.match(
+    source,
+    /uploadAssetViaKieStream\(\{\s*fileBuffer:\s*optimizedReferenceImage\.fileBuffer[\s\S]*?mimeType:\s*optimizedReferenceImage\.mimeType/,
+  );
   assert.match(source, /stableReferenceUrl/);
   assert.match(source, /const withGenerationAssetOwnerLock/);
   assert.match(source, /persistGeneratedAsset:[\s\S]*?withGenerationAssetOwnerLock/);
   assert.match(source, /createPreviewAsset:[\s\S]*?withGenerationAssetOwnerLock/);
+});
+
+test('AI-generated virtual model results use the same no-resize optimizer before persistence', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  assert.match(
+    source,
+    /persistGeneratedAsset:\s*async[\s\S]*?optimizeVirtualModelImage\(\{[\s\S]*?fileBuffer[\s\S]*?mimeType[\s\S]*?originalName/,
+  );
+  assert.match(
+    source,
+    /persistGeneratedAsset:\s*async[\s\S]*?persistAssetBuffer\(\{[\s\S]*?fileBuffer:\s*optimizedImage\.fileBuffer/,
+  );
 });

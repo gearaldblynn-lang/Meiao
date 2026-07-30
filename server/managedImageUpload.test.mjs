@@ -32,3 +32,13 @@ test('generated image outputs still use the historical local persistence functio
     /const persistRuntimeRemoteAssetIfEnabled[\s\S]{0,1200}persistRemoteAsset\(/,
   );
 });
+
+test('virtual model uploads enter the server-side no-resize image optimizer', () => {
+  assert.match(source, /from '\.\/virtualModelImageCompression\.mjs'/);
+  assert.match(source, /shouldOptimizeVirtualModelImageModule\(moduleName\)/);
+  assert.match(
+    source,
+    /persistUploadedAssetIfEnabled[\s\S]*?optimizeVirtualModelImage\(\{[\s\S]*?fileBuffer[\s\S]*?mimeType[\s\S]*?fileName/,
+  );
+  assert.match(source, /imageOptimization/);
+});

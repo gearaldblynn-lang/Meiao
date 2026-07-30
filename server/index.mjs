@@ -291,6 +291,10 @@ import {
 import { runManagedImageCosProbe } from '../scripts/probe-managed-image-cos.mjs';
 import { createLocalTemporalActivities, createMysqlTemporalActivities, startMeiaoTemporalWorker } from './temporalWorker.mjs';
 import { buildImageOutputTransformFromJob, transformImageOutputBuffer } from './imagePostProcess.mjs';
+import {
+  optimizeVirtualModelImage,
+  shouldOptimizeVirtualModelImageModule,
+} from './virtualModelImageCompression.mjs';
 import { createProviderCompletedImageOutputRejectedError } from './imageOutputContract.mjs';
 import {
   buildReadyImageCheckpoint,
@@ -5096,26 +5100,62 @@ const scrubLocalProtectedManagedAssetRefs = async (store) => {
 const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, assetType = 'source', fileName, mimeType, fileBuffer, width = 0, height = 0 }) => {
   const publicBaseUrl = getPersistentAssetBaseUrl(req);
   const normalizedAssetType = String(assetType || 'source').trim().toLowerCase();
+  const optimizedImage = shouldOptimizeVirtualModelImageModule(moduleName)
+    ? await optimizeVirtualModelImage({
+      fileBuffer,
+      mimeType,
+      fileName,
+    })
+    : {
+      fileBuffer,
+      fileName,
+      mimeType,
+      sourceBytes: fileBuffer.length,
+      outputBytes: fileBuffer.length,
+      compressed: false,
+      width,
+      height,
+      density: 0,
+    };
   const managedImage = ['source', 'reference', 'chat'].includes(normalizedAssetType)
-    ? resolveManagedImageUpload({ fileBuffer, mimeType, env: process.env })
-    : { isImage: false, mimeType: String(mimeType || 'application/octet-stream').trim().toLowerCase() };
+    ? resolveManagedImageUpload({
+      fileBuffer: optimizedImage.fileBuffer,
+      mimeType: optimizedImage.mimeType,
+      env: process.env,
+    })
+    : { isImage: false, mimeType: String(optimizedImage.mimeType || 'application/octet-stream').trim().toLowerCase() };
   const isImageUpload = managedImage.isImage;
   if (!isImageUpload && !isExternallyReachableBaseUrl(publicBaseUrl)) {
     return null;
   }
-  const persist = (pool) => persistUploadedAssetBuffer({
-    pool,
-    publicBaseUrl,
-    userId: user.id,
-    module: moduleName,
-    assetType: normalizedAssetType,
-    originalName: fileName,
-    mimeType: managedImage.mimeType,
-    fileBuffer,
-    width,
-    height,
-    env: process.env,
-  });
+  const persist = async (pool) => {
+    const persisted = await persistUploadedAssetBuffer({
+      pool,
+      publicBaseUrl,
+      userId: user.id,
+      module: moduleName,
+      assetType: normalizedAssetType,
+      originalName: optimizedImage.fileName,
+      mimeType: managedImage.mimeType,
+      fileBuffer: optimizedImage.fileBuffer,
+      width: optimizedImage.width || width,
+      height: optimizedImage.height || height,
+      env: process.env,
+    });
+    return {
+      ...persisted,
+      imageOptimization: shouldOptimizeVirtualModelImageModule(moduleName)
+        ? {
+          compressed: optimizedImage.compressed,
+          sourceBytes: optimizedImage.sourceBytes,
+          outputBytes: optimizedImage.outputBytes,
+          width: optimizedImage.width,
+          height: optimizedImage.height,
+          density: optimizedImage.density,
+        }
+        : null,
+    };
+  };
   if (!shouldUseMysql) {
     return withLocalManagedAssetUserLock(user.id, async () => {
       const owner = findLocalUserById(user.id);
@@ -5139,6 +5179,14 @@ const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, assetType 
     return persist(pool);
   });
 };
+
+const buildPersistedAssetLogMeta = (persisted) => ({
+  assetId: persisted.id,
+  fileUrl: stripManagedAssetAccessKey(persisted.publicUrl),
+  ...(persisted.imageOptimization ? {
+    imageOptimization: persisted.imageOptimization,
+  } : {}),
+});
 
 const buildTransformedImageOutputName = (fallbackName = 'result.png') => {
   const name = String(fallbackName || 'result.png').trim() || 'result.png';
@@ -12114,19 +12162,38 @@ const createVirtualModelGenerationApiService = ({
         : mimeType === 'image/webp'
           ? 'webp'
           : 'png';
-      return withGenerationAssetOwnerLock((assetPool) => persistAssetBuffer({
+      const originalName = `${batch.id}_${task.poseId}.${extension}`;
+      const optimizedImage = await optimizeVirtualModelImage({
+        fileBuffer,
+        mimeType,
+        originalName,
+      });
+      return withGenerationAssetOwnerLock(async (assetPool) => {
+        const persisted = await persistAssetBuffer({
           pool: assetPool,
           publicBaseUrl: getPersistentAssetBaseUrl(req),
           userId: user.id,
           module: 'virtual_model',
           assetType: 'result',
-          originalName: `${batch.id}_${task.poseId}.${extension}`,
-          mimeType,
-          fileBuffer,
-          width,
-          height,
+          originalName: optimizedImage.fileName,
+          mimeType: optimizedImage.mimeType,
+          fileBuffer: optimizedImage.fileBuffer,
+          width: optimizedImage.width || width,
+          height: optimizedImage.height || height,
           provider: 'internal',
-        }));
+        });
+        return {
+          ...persisted,
+          imageOptimization: {
+            compressed: optimizedImage.compressed,
+            sourceBytes: optimizedImage.sourceBytes,
+            outputBytes: optimizedImage.outputBytes,
+            width: optimizedImage.width,
+            height: optimizedImage.height,
+            density: optimizedImage.density,
+          },
+        };
+      });
     },
     stabilizeGeneratedReference: async ({ batch, task, url }) => {
       const { fileBuffer } = await fetchGeneratedAsset({ url });
@@ -12160,6 +12227,11 @@ const createVirtualModelGenerationApiService = ({
           { code: 'MODEL_GENERATION_RESULT_INVALID' },
         );
       }
+      const optimizedReferenceImage = await optimizeVirtualModelImage({
+        fileBuffer,
+        mimeType,
+        fileName: `${batch.id}_${task.poseId}.${mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'}`,
+      });
       const managedAsset = task.managedReferenceAsset?.assetId
         && task.managedReferenceAsset?.publicUrl
         ? {
@@ -12169,10 +12241,10 @@ const createVirtualModelGenerationApiService = ({
         : await deps.persistGeneratedAsset({
           batch,
           task,
-          fileBuffer,
-          mimeType,
-          width: metadata.width,
-          height: metadata.height,
+          fileBuffer: optimizedReferenceImage.fileBuffer,
+          mimeType: optimizedReferenceImage.mimeType,
+          width: optimizedReferenceImage.width,
+          height: optimizedReferenceImage.height,
         }).then((persistedAsset) => ({
           assetId: persistedAsset.id,
           publicUrl: persistedAsset.publicUrl,
@@ -12180,9 +12252,9 @@ const createVirtualModelGenerationApiService = ({
       let uploaded;
       try {
         uploaded = await uploadAssetViaKieStream({
-          fileBuffer,
-          fileName: `${batch.id}_${task.poseId}.${mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'}`,
-          mimeType,
+          fileBuffer: optimizedReferenceImage.fileBuffer,
+          fileName: optimizedReferenceImage.fileName,
+          mimeType: optimizedReferenceImage.mimeType,
           uploadPath: `mayo-storage/virtual-model-baselines/${batch.id}`,
         }, process.env);
       } catch (error) {
@@ -14746,10 +14818,7 @@ const handleMysqlRequest = async (req, res, url) => {
         action: 'asset_persisted',
         message: `素材上传成功：${originalFileName}`,
         status: 'success',
-        meta: {
-          assetId: persisted.id,
-          fileUrl: stripManagedAssetAccessKey(persisted.publicUrl),
-        },
+        meta: buildPersistedAssetLogMeta(persisted),
       });
       json(res, 200, { fileUrl: persisted.publicUrl, assetId: persisted.id });
       return;
@@ -14819,10 +14888,7 @@ const handleMysqlRequest = async (req, res, url) => {
         action: 'asset_persisted',
         message: `素材上传成功：${file.name || 'upload.bin'}`,
         status: 'success',
-        meta: {
-          assetId: persisted.id,
-          fileUrl: stripManagedAssetAccessKey(persisted.publicUrl),
-        },
+        meta: buildPersistedAssetLogMeta(persisted),
       });
       json(res, 200, { fileUrl: persisted.publicUrl, assetId: persisted.id });
       return;
@@ -18527,10 +18593,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         action: 'asset_persisted',
         message: `素材上传成功：${originalFileName}`,
         status: 'success',
-        meta: {
-          assetId: persisted.id,
-          fileUrl: stripManagedAssetAccessKey(persisted.publicUrl),
-        },
+        meta: buildPersistedAssetLogMeta(persisted),
       });
       writeLocalStore(store);
       json(res, 200, { fileUrl: persisted.publicUrl, assetId: persisted.id });
@@ -18606,10 +18669,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         action: 'asset_persisted',
         message: `素材上传成功：${file.name || 'upload.bin'}`,
         status: 'success',
-        meta: {
-          assetId: persisted.id,
-          fileUrl: stripManagedAssetAccessKey(persisted.publicUrl),
-        },
+        meta: buildPersistedAssetLogMeta(persisted),
       });
       writeLocalStore(store);
       json(res, 200, { fileUrl: persisted.publicUrl, assetId: persisted.id });

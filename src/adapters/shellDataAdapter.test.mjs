@@ -4258,6 +4258,90 @@ test('shell data adapter hides unbound retouch analysis control jobs instead of 
   assert.deepEqual(snapshot.tasks, []);
 });
 
+test('shell data adapter removes the persisted model replacement preflight ghost and keeps the real image project', () => {
+  const analysisJobId = 'd8a54153eb8fc1d583c90fcf';
+  const imageJobId = 'cc60d90d5f9d507adbf753f3';
+  const shellProjectId = 'proj-1785374604732';
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: `job-${analysisJobId}`,
+      name: '7月30日项目1',
+      module: 'everything_replace',
+      subFeature: 'model_replace',
+      status: 'generating',
+      createdAt: 1785374589000,
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+      sourceType: 'persisted',
+      backendJobId: analysisJobId,
+    }, {
+      id: shellProjectId,
+      name: '7月30日项目1',
+      module: 'everything_replace',
+      subFeature: 'model_replace',
+      status: 'completed',
+      createdAt: 1785374604732,
+      taskCount: 1,
+      completedCount: 1,
+      results: [{
+        id: `${imageJobId}-result-1`,
+        projectId: shellProjectId,
+        imageUrl: '/api/assets/file/model-replace-result.jpg',
+        prompt: '公共模特替换',
+        model: 'gpt-image-2',
+        aspectRatio: '3:4',
+        status: 'completed',
+        createdAt: 1785374610000,
+        module: 'everything_replace',
+        subFeature: 'model_replace',
+        taskId: 'eb06f293',
+        backendJobId: imageJobId,
+      }],
+    }],
+  }, [{
+    id: analysisJobId,
+    module: 'everything_replace',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    payload: {
+      subFeature: 'model_replace',
+      taskPurpose: 'model_replace_preflight',
+      preflightPart: 'reference',
+      chunkIndex: 1,
+      chunkCount: 1,
+    },
+    result: { content: '{"ok":true}' },
+    createdAt: 1785374589000,
+    finishedAt: 1785374600000,
+  }, {
+    id: imageJobId,
+    module: 'everything_replace',
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: 'eb06f293',
+    status: 'succeeded',
+    payload: {
+      subFeature: 'model_replace',
+      shellProjectId,
+      shellProjectName: '7月30日项目1',
+      aspectRatio: '3:4',
+    },
+    result: {
+      imageUrl: '/api/assets/file/model-replace-result.jpg',
+      providerTaskId: 'eb06f293',
+    },
+    createdAt: 1785374604732,
+    finishedAt: 1785374610000,
+  }]);
+
+  assert.deepEqual(snapshot.projects.map((project) => project.id), [shellProjectId]);
+  assert.equal(snapshot.projects[0]?.results.length, 1);
+  assert.equal(snapshot.projects[0]?.results[0]?.backendJobId, imageJobId);
+  assert.equal(snapshot.tasks.some((task) => task.id === analysisJobId), false);
+});
+
 const productRestoreAnalysis = {
   productIdentitySummary: '保持商品身份',
   invariantFeatures: ['logo'],

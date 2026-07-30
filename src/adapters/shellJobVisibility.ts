@@ -28,6 +28,7 @@ const SHELL_CONTROL_JOB_PURPOSES = new Set([
   'translation_copy_analysis',
   'retouch_analysis',
   'product_restore_analysis',
+  'model_replace_preflight',
   'storyboard_planning',
 ]);
 

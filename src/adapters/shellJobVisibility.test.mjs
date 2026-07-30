@@ -83,3 +83,16 @@ test('isShellControlJob recognizes planning and analysis jobs across shell modul
   }, 'one_click'), true);
   assert.equal(isShellControlJob({ module: 'retouch', taskType: 'kie_image', payload: {} }, 'retouch'), false);
 });
+
+test('isShellControlJob recognizes model replacement preflight analysis by stable purpose', () => {
+  assert.equal(isShellControlJob({
+    module: 'everything_replace',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    payload: {
+      subFeature: 'model_replace',
+      taskPurpose: 'model_replace_preflight',
+      preflightPart: 'reference',
+    },
+  }, 'everything_replace'), true);
+});

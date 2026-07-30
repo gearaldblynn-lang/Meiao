@@ -1252,3 +1252,20 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `src/components/managedAssetRenderBoundary.test.mjs` 递归扫描全部运行时 TSX，除统一基础组件外任何 `<img>` 都会失败；`server/managedAssetSessionCookie.test.mjs` 同时锁定 MySQL/本地认证边界。提交 `faa81f3` 的 `npm run verify` 已覆盖 TypeScript/ESLint、144 个服务端测试文件、189 个前端测试文件、23 个脚本测试文件及生产构建；另跑 Agent Center、OneClick、provider/RTCFE 159 项定向回归。代码搜索只允许基础组件保留一个 `<img>`。
 - Cloud validation: release `meiao-20260729145631-d64f591090f0` 在多次活动任务门禁安全退出后，等 running=0 并通过标准 drain/mutex 发布；公网与 host-local health 均命中精确 release，Temporal worker/COS ready，应用根目录 0755、`.env.server` 0600、关键源文件哈希匹配，marker/mutex 已清除。董丹丹账号用 Bearer 请求 `/api/state` 返回 200 并自动补发 Path=`/api/assets/file/`、HttpOnly、Secure、SameSite=Strict Cookie；两张精确 styleRef 以 Bearer 和原生 Cookie 访问均最终 200，MIME、176361/401274 bytes 与 SHA-256 全部匹配，匿名仍 403。受控浏览器当前是另一个登录态且当前子功能无项目，因此未把该页面冒充董丹丹真实 DOM；用户侧刷新后仍应单列观察缩略图和全屏预览是否 `complete=true`、`naturalWidth>0`。
 - Avoid next time: 安全策略变化必须建立“数据库归属、服务端授权、浏览器传凭证、全局 UI 消费、Nginx/对象存储交付”五层合同和仓库级结构门禁，禁止继续按截图逐组件打补丁。图片统一走 Bearer→Blob；必须 Range 的原生媒体统一走最小作用域 HttpOnly Cookie；Curl 200、provider 成功、DB 正常和真实 DOM 各自独立验收。
+
+## 2026-07-30 - 控制任务语义漏登记会在恢复时制造模特替换幽灵卡
+
+- Symptom: 多桑账号一次模特替换操作在项目列表出现两张任务卡，一张正常完成，另一张长期显示生成中。
+- Cloud evidence: 每次操作只有一个 `kie_image` job 和一个 provider task id；同次还存在一个无 `shellProjectId` 的 `kie_chat` job，payload 固定携带 `subFeature=model_replace`、`taskPurpose=model_replace_preflight`、`preflightPart=reference`。持久状态同时出现真实 `proj-*` 卡和合成的 `job-<analysisJobId>` 空卡。
+- Root cause: 预分析是内部控制任务，但共享 `isShellControlJob` 的 purpose 集合漏掉了 `model_replace_preflight`。恢复适配器因此把分析 job 当普通结果映射成卡片；同一个漏判又让历史幽灵卡过滤器失效。这是展示/水合重复，不是第二次生图提交或重复计费。
+- Fix: 在共享控制任务 purpose 集合登记 `model_replace_preflight`；新映射直接跳过，现有 `filterLegacyShellControlJobGhosts` 同时移除已持久化的 `job-<analysisJobId>` 空卡，不删除生产任务审计记录、不改付费链路。
+- Regression check: 以生产形状构造“真实项目 + 持久化幽灵卡 + 预分析 job + 生图 job”，`buildShellDataSnapshot` 最终必须只保留真实项目和真实生图结果；`isShellControlJob` 必须按稳定 purpose 判定，不能按模块名或卡片顺序猜测。
+- Avoid next time: 任何新增 planning/preflight/analysis job 都必须在创建时声明稳定 `taskPurpose`，并同步进入共享控制任务可见性合同。任务创建、付费身份、项目卡恢复必须分别验收；看到两张卡不能直接推断为重复 provider 提交。
+
+## 2026-07-30 - 虚拟模特原图体积必须在服务端入库边界统一治理
+
+- Symptom: AI 生成的虚拟模特图片偶尔体积很大；只在某个浏览器上传组件压缩会漏掉生成结果、重试和其他客户端入口，且现有 canvas 压缩会缩分辨率并丢失 DPI。
+- Root cause: 虚拟模特的手动上传、生成参考和八姿态结果经过不同调用链，过去没有统一的领域入库策略。通用前端 `prepareImageForUpload` 以降分辨率换体积，不符合虚拟模特固定参考素材的几何合同。
+- Fix: 新增服务端虚拟模特专用压缩器，覆盖 `virtual_model`、`virtual_model_generation` 上传和 AI 结果持久化；默认 3MiB env 目标，小图原样保留，大图只在 JPEG/PNG/WebP 编码层做最低质量 82 的保守优化。每个候选必须保持像素宽高、已有 DPI 和 alpha；候选不更小就保留原图，绝不 resize 强行命中体积。
+- Regression check: 自动化必须锁定小图字节完全一致、大 JPEG 与透明 PNG 输出更小、宽高/DPI 不变、alpha 不丢，并锁住手动上传与 AI 自动入库都调用同一压缩器。云上日志保留原始/落盘字节、压缩状态、宽高和 DPI，便于抽样核查。
+- Avoid next time: “下载时压缩”和“领域原图入库”不是同一合同。所有多入口数据治理都应在服务端权威持久化边界收敛；质量、体积、容量阈值必须 env 化，分辨率、DPI、透明度等不变量必须用真实编码库回归，不能只看文件扩展名或肉眼。

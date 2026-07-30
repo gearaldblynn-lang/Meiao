@@ -164,6 +164,7 @@ npm run dev
 - `MEIAO_IMAGE_COS_UPLOAD_MAX_ATTEMPTS` / `MEIAO_IMAGE_COS_UPLOAD_TIMEOUT_MS` / `MEIAO_IMAGE_COS_UPLOAD_RETRY_BASE_MS`：默认 `3` / `30000` / `500`；重试幂等上传并复用同一对象键。
 - `MEIAO_MANAGED_IMAGE_PROBE_INTERVAL_MS` / `MEIAO_MANAGED_IMAGE_PROBE_MAX_AGE_MS` / `MEIAO_MANAGED_IMAGE_PROBE_STATUS_FILE`：默认 `900000` / `3600000` / `server/data/managed-image-cos-readiness.json`。服务定期执行 put/head/签名读取字节校验/delete/not-found；状态文件只存不可逆配置指纹，密钥不进入 health 或文件。
 - `MEIAO_MANAGED_IMAGE_MAX_BYTES`：新上传图片的服务端字节上限，默认 `20971520` (20MB)；同时校验 MIME 与文件头，拒绝伪装图片。
+- `MEIAO_VIRTUAL_MODEL_IMAGE_TARGET_BYTES`：虚拟模特库原图的保守目标体积，默认 `3145728` (3MiB)，限制 1–20MiB。仅对超过目标的 JPEG/PNG/WebP 做高质量重编码，不调用 resize，不改变像素宽高或已有 DPI；保守质量下仍无法命中目标时保留最小的安全候选，不继续降画质。
 - `MEIAO_ASSET_COS_RECONCILE_INTERVAL_MS`：活跃 COS 记录与对象存在性的 HEAD 对账间隔，默认 `86400000` (24 小时)；缺失对象会进入一致性清理并触发 health 告警。
 - `MEIAO_IMAGE_COS_OPERATION_TIMEOUT_MS`：默认 `15000`；限制 COS 签名、HEAD 与删除操作，避免 SDK 回调不返回时卡死 worker。
 - `MEIAO_ASSET_DELETE_GRACE_MS` / `MEIAO_ASSET_USER_LOCK_TIMEOUT_SECONDS` / `MEIAO_ASSET_LOCK_CONNECTION_LIMIT`：默认 `120000` / `30` / `20`；素材进入 `delete_pending` 后先留出并发收敛窗口，worker 每条删除前重新核对引用。同账号 COS 上传与账号删除用 MySQL advisory lock 互斥，锁使用独立连接池，不占用业务查询连接。
