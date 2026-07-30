@@ -32,6 +32,7 @@ import {
   DEFAULT_SUBTITLE_REGION,
   subtitleRegionToPixels,
 } from '../../utils/subtitleRemovalRegion.mjs';
+import { playVoiceoverPreviewAudio } from '../../utils/voiceoverPreviewPlayback.mjs';
 import ConfirmDialog from './ConfirmDialog';
 import VoiceoverTranslationComposer, {
   type PreparedVoiceoverSource,
@@ -190,6 +191,14 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     if (voices.some((voice) => voice.name === voiceName)) return;
     setVoiceName(voices[0]?.name || '');
   }, [voiceName, voices]);
+
+  useEffect(() => {
+    voices.forEach((voice) => {
+      if (voice.previewUrl) {
+        previewUrlsRef.current.set(voice.name, voice.previewUrl);
+      }
+    });
+  }, [voices]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -403,21 +412,16 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
     }
     if (voicePreviewingName) return;
     const cacheKey = requestedVoiceName;
-    const play = async (audioUrl: string) => {
-      audio.pause();
-      audio.src = audioUrl;
-      audio.load();
-      try {
-        await audio.play();
-        if (mountedRef.current) setVoicePlayingName(requestedVoiceName);
-      } catch {
-        if (mountedRef.current) setVoicePlayingName('');
-      }
-    };
     const cachedUrl = previewUrlsRef.current.get(cacheKey);
     if (cachedUrl) {
-      await play(cachedUrl);
-      return;
+      try {
+        await playVoiceoverPreviewAudio(audio, cachedUrl);
+        if (mountedRef.current) setVoicePlayingName(requestedVoiceName);
+        return;
+      } catch {
+        previewUrlsRef.current.delete(cacheKey);
+        if (mountedRef.current) setVoicePlayingName('');
+      }
     }
 
     previewControllerRef.current?.abort();
@@ -437,7 +441,8 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       if (!ready.audioUrl) throw new Error('试听音频地址缺失');
       previewUrlsRef.current.set(cacheKey, ready.audioUrl);
       if (!controller.signal.aborted && mountedRef.current) {
-        await play(ready.audioUrl);
+        await playVoiceoverPreviewAudio(audio, ready.audioUrl);
+        setVoicePlayingName(requestedVoiceName);
       }
     } catch (error) {
       if (!controller.signal.aborted && mountedRef.current) {

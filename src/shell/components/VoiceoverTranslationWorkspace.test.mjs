@@ -100,6 +100,23 @@ test('preset voice rows expose real provider preview without previewing automati
   assert.doesNotMatch(source, /useEffect\([\s\S]{0,300}requestVoiceoverPreview/);
 });
 
+test('prebuilt preview urls play before the account generation fallback', () => {
+  assert.match(source, /voice\.previewUrl/);
+  assert.match(source, /previewUrlsRef\.current\.set\(voice\.name, voice\.previewUrl\)/);
+  const previewStart = source.indexOf('const handleVoicePreview = useCallback');
+  const previewEnd = source.indexOf('const handleRemoveTextChange', previewStart);
+  const previewBlock = source.slice(previewStart, previewEnd);
+  const cachedLookup = previewBlock.indexOf('previewUrlsRef.current.get(cacheKey)');
+  const directPlay = previewBlock.indexOf('playVoiceoverPreviewAudio(audio, cachedUrl)');
+  const fallbackRequest = previewBlock.indexOf('requestVoiceoverPreview({');
+  assert.ok(cachedLookup >= 0 && cachedLookup < directPlay && directPlay < fallbackRequest);
+  assert.match(previewBlock, /previewUrlsRef\.current\.delete\(cacheKey\)/);
+  assert.ok(
+    previewBlock.indexOf('setVoicePreviewingName(requestedVoiceName)') > directPlay,
+    'direct playback must not show the generation/loading state',
+  );
+});
+
 test('remove-text starts off and reuses the existing normalized subtitle editor', () => {
   assert.match(source, /useState\(false\)/);
   assert.match(source, /DEFAULT_SUBTITLE_REGION/);
