@@ -23,11 +23,30 @@ const getPortOwner = (port) => {
   try {
     const output = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' });
     const lines = output.trim().split('\n');
-    if (lines.length < 2) return '';
+    if (lines.length < 2) return { owner: '', workingDirectory: '' };
     const parts = lines[1].trim().split(/\s+/);
-    return `${parts[0]}(${parts[1]})`;
+    const pid = parts[1];
+    let workingDirectory = '';
+    try {
+      const cwdOutput = execFileSync(
+        'lsof',
+        ['-a', '-p', pid, '-d', 'cwd', '-Fn'],
+        { encoding: 'utf8' },
+      );
+      workingDirectory = cwdOutput
+        .split('\n')
+        .find((line) => line.startsWith('n'))
+        ?.slice(1)
+        || '';
+    } catch {
+      workingDirectory = '';
+    }
+    return {
+      owner: `${parts[0]}(${pid})`,
+      workingDirectory,
+    };
   } catch {
-    return '';
+    return { owner: '', workingDirectory: '' };
   }
 };
 
@@ -46,11 +65,14 @@ const main = async () => {
     checkPortListening(3100),
     checkProxyHealth(),
   ]);
+  const devOwner = devListening ? getPortOwner(3000) : {};
+  const apiOwner = apiListening ? getPortOwner(3100) : {};
 
   const report = buildDoctorReport({
-    devServer: { listening: devListening, port: 3000, owner: devListening ? getPortOwner(3000) : '' },
-    apiServer: { listening: apiListening, port: 3100, owner: apiListening ? getPortOwner(3100) : '' },
+    devServer: { listening: devListening, port: 3000, ...devOwner },
+    apiServer: { listening: apiListening, port: 3100, ...apiOwner },
     proxyHealthy,
+    expectedWorkingDirectory: process.cwd(),
   });
 
   console.log(formatDoctorReport(report));

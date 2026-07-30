@@ -88,8 +88,8 @@ test('preset voice rows expose real provider preview without previewing automati
   assert.match(source, /handleVoicePreview/);
   assert.match(source, /new Audio\(\)/);
   assert.match(composerSource, /optionAction=/);
-  assert.match(composerSource, /首次生成后永久保存到当前账号/);
-  assert.match(composerSource, /以后点击直接播放/);
+  assert.match(composerSource, /点击即可播放已预置的真实 Gemini 音色/);
+  assert.match(composerSource, /仅当静态试听缺失时/);
   assert.match(source, /const cacheKey = requestedVoiceName/);
   assert.doesNotMatch(source, /const cacheKey = `\$\{targetLanguage\}:\$\{requestedVoiceName\}`/);
   assert.match(composerSource, /正在加载 \$\{label\} 试听/);
