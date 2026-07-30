@@ -352,4 +352,3 @@ MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh
 - 30/30 静态资源校验结果。
 - 自动化测试结果。
 - 本地和云上 UI 验收结果分别陈述。
-
