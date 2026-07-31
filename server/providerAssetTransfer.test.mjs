@@ -264,6 +264,96 @@ test('stable managed identities fail closed when the owner-aware resolver is mis
   }
 });
 
+test('stable managed identities reject missing or mismatched stored public paths before network transfer', async () => {
+  for (const publicUrl of [
+    '',
+    '/not-a-managed-asset/source.mp4',
+    '/api/assets/file/different-asset/source.mp4',
+  ]) {
+    __testOnly_clearManagedAssetUploadCache();
+    let fetchCalls = 0;
+    let uploadCalls = 0;
+    const env = {
+      MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'managed-asset-provider-test-secret',
+      MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+      PORT: '3100',
+    };
+    const deps = {
+      resolveManagedAssetReadUrl: async (value, options) => resolveManagedAssetReadUrl(value, {
+        ...options,
+        env,
+        userId: 'voiceover-user',
+        getAsset: async () => ({
+          id: 'voiceover-source',
+          userId: 'voiceover-user',
+          module: 'video',
+          provider: 'internal_transcode',
+          storageStatus: 'active',
+          storageKey: 'voiceover-user/source/source.mp4',
+          publicUrl,
+          deletedAt: null,
+        }),
+      }),
+      fetchWithTimeout: async () => {
+        fetchCalls += 1;
+        return createResponse(Buffer.from('not-owned-media'), {
+          'content-type': 'application/octet-stream',
+        });
+      },
+      uploadAssetViaKieWithFallback: async () => {
+        uploadCalls += 1;
+        return { result: { fileUrl: 'https://must-not-upload.test/source.bin' } };
+      },
+    };
+
+    await assert.rejects(
+      () => resolveProviderGenerationMediaUrl('managed://voiceover-source', {
+        env,
+        deps,
+      }),
+      (error) => error?.code === 'managed_asset_unavailable',
+    );
+    assert.equal(fetchCalls, 0);
+    assert.equal(uploadCalls, 0);
+  }
+});
+
+test('malformed managed identity schemes fail before resolver or provider transfer', async () => {
+  for (const value of [
+    'managed://asset-local?asset_key=forged',
+    'managed://asset-local#fragment',
+    'managed:///asset-local',
+    'managed:asset-local',
+  ]) {
+    let resolverCalls = 0;
+    let fetchCalls = 0;
+    let uploadCalls = 0;
+    await assert.rejects(
+      () => resolveProviderGenerationMediaUrl(value, {
+        env: { MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first' },
+        deps: {
+          resolveManagedAssetReadUrl: async () => {
+            resolverCalls += 1;
+            return 'https://must-not-resolve.test/source.mp4';
+          },
+          fetchWithTimeout: async () => {
+            fetchCalls += 1;
+            return createResponse(Buffer.from('must-not-fetch'));
+          },
+          uploadAssetViaKieWithFallback: async () => {
+            uploadCalls += 1;
+            return { result: { fileUrl: 'https://must-not-upload.test/source.mp4' } };
+          },
+        },
+      }),
+      (error) => error?.code === 'managed_asset_unavailable',
+    );
+    assert.equal(resolverCalls, 0);
+    assert.equal(fetchCalls, 0);
+    assert.equal(uploadCalls, 0);
+  }
+});
+
 test('managed COS images are staged for generation while chat can use a fresh signed read URL', async () => {
   const calls = [];
   const signedUrl = 'https://meiao-managed-images-1406860462.cos.ap-guangzhou.myqcloud.com/managed-images/users/abc/source/asset/image.png?q-signature=fresh';
