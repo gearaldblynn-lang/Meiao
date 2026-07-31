@@ -8,8 +8,8 @@ import {
   stripManagedAssetAccessKey,
 } from './managedAssetAccessKey.mjs';
 import {
+  extractManagedAssetPublicPathId,
   extractManagedAssetIdentityId,
-  normalizeManagedAssetIdentity,
 } from './managedAssetIdentity.mjs';
 import { createTencentCosImageReadUrl, headTencentCosImage } from './tencentCosImageStore.mjs';
 
@@ -31,7 +31,7 @@ const buildInternalProviderReadUrl = (value, asset, env = {}, appendAccessKey = 
   const stableManagedAssetId = extractManagedAssetIdentityId(value);
   if (
     stableManagedAssetId
-    && !normalizeManagedAssetIdentity(asset.publicUrl, asset.id)
+    && extractManagedAssetPublicPathId(asset.publicUrl) !== String(asset.id || '').trim()
   ) {
     throw createReadError('managed_asset_unavailable', '内部素材缺少匹配的稳定读取路径', 404);
   }

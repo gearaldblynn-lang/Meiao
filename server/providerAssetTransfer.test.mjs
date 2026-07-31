@@ -269,8 +269,15 @@ test('stable managed identities reject missing or mismatched stored public paths
     '',
     '/not-a-managed-asset/source.mp4',
     '/api/assets/file/different-asset/source.mp4',
+    'managed://voiceover-source',
+    '/api/assets/file/voiceover-source/../../../..',
+    '/api/assets/file/voiceover-source/%2e%2e/%2e%2e/%2e%2e/%2e%2e',
+    '/api/assets/file/voiceover-source/source.mp4/extra',
+    '/api/assets/file/voiceover-source/',
+    'https://meiao.example/api/assets/file/voiceover-source/source.mp4/../other.mp4',
   ]) {
     __testOnly_clearManagedAssetUploadCache();
+    let capabilityCalls = 0;
     let fetchCalls = 0;
     let uploadCalls = 0;
     const env = {
@@ -283,6 +290,10 @@ test('stable managed identities reject missing or mismatched stored public paths
         ...options,
         env,
         userId: 'voiceover-user',
+        appendAccessKey: (value) => {
+          capabilityCalls += 1;
+          return value;
+        },
         getAsset: async () => ({
           id: 'voiceover-source',
           userId: 'voiceover-user',
@@ -313,6 +324,7 @@ test('stable managed identities reject missing or mismatched stored public paths
       }),
       (error) => error?.code === 'managed_asset_unavailable',
     );
+    assert.equal(capabilityCalls, 0);
     assert.equal(fetchCalls, 0);
     assert.equal(uploadCalls, 0);
   }
