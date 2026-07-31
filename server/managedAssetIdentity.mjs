@@ -1,4 +1,5 @@
 const SAFE_ASSET_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u;
+const MANAGED_ASSET_IDENTITY_SCHEME = /^managed:/iu;
 const MANAGED_ASSET_IDENTITY = /^managed:\/\/([A-Za-z0-9][A-Za-z0-9._:-]{0,199})$/u;
 const MANAGED_ASSET_PATH = /^\/api\/assets\/file\/([A-Za-z0-9][A-Za-z0-9._:-]{0,199})(?:\/[^?#]*)?$/u;
 
@@ -8,6 +9,10 @@ const extractManagedPathAssetId = (pathname) => (
 
 export const extractManagedAssetIdentityId = (value) => (
   MANAGED_ASSET_IDENTITY.exec(String(value || '').trim())?.[1] || ''
+);
+
+export const hasManagedAssetIdentityScheme = (value) => (
+  MANAGED_ASSET_IDENTITY_SCHEME.test(String(value || '').trim())
 );
 
 export const normalizeManagedAssetIdentity = (value, expectedAssetId) => {

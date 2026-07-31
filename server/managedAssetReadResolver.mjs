@@ -7,7 +7,10 @@ import {
   appendManagedAssetAccessKey,
   stripManagedAssetAccessKey,
 } from './managedAssetAccessKey.mjs';
-import { extractManagedAssetIdentityId } from './managedAssetIdentity.mjs';
+import {
+  extractManagedAssetIdentityId,
+  normalizeManagedAssetIdentity,
+} from './managedAssetIdentity.mjs';
 import { createTencentCosImageReadUrl, headTencentCosImage } from './tencentCosImageStore.mjs';
 
 const createReadError = (code, message, statusCode) => {
@@ -25,8 +28,15 @@ const buildInternalProviderReadUrl = (value, asset, env = {}, appendAccessKey = 
     ? configuredPort
     : 3100;
   const loopbackOrigin = `http://127.0.0.1:${port}`;
+  const stableManagedAssetId = extractManagedAssetIdentityId(value);
+  if (
+    stableManagedAssetId
+    && !normalizeManagedAssetIdentity(asset.publicUrl, asset.id)
+  ) {
+    throw createReadError('managed_asset_unavailable', '内部素材缺少匹配的稳定读取路径', 404);
+  }
   const sourceValue = stripManagedAssetAccessKey(
-    extractManagedAssetIdentityId(value) ? asset.publicUrl : (value || asset.publicUrl),
+    stableManagedAssetId ? asset.publicUrl : (value || asset.publicUrl),
   );
   const parsed = new URL(sourceValue, loopbackOrigin);
   const loopbackUrl = new URL(`${parsed.pathname}${parsed.search}`, loopbackOrigin).toString();
@@ -50,7 +60,11 @@ export const resolveManagedAssetReadUrl = async (value, options = {}) => {
     : new Set();
   const isAuthorizedSharedVirtualModelAsset = String(asset.module || '') === 'virtual_model'
     && authorizedSharedAssetIds.has(assetId);
-  if (asset.userId && (!userId || String(asset.userId) !== userId) && !isAuthorizedSharedVirtualModelAsset) {
+  const assetUserId = String(asset.userId || '').trim();
+  if (
+    !assetUserId
+    || ((!userId || assetUserId !== userId) && !isAuthorizedSharedVirtualModelAsset)
+  ) {
     throw createReadError('managed_asset_forbidden', '没有权限读取该图片素材', 403);
   }
   if (getStoredAssetStorageProvider(asset) === 'internal') {

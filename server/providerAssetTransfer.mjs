@@ -5,7 +5,10 @@ import {
   isVideoMediaUrl,
   shouldUploadGeminiMediaUrlForStableMime,
 } from './providerMediaRouting.mjs';
-import { extractManagedAssetIdentityId } from './managedAssetIdentity.mjs';
+import {
+  extractManagedAssetIdentityId,
+  hasManagedAssetIdentityScheme,
+} from './managedAssetIdentity.mjs';
 
 export const MAX_PROVIDER_REMOTE_MEDIA_MB = 256;
 export const MAX_PROVIDER_REMOTE_MEDIA_BYTES = MAX_PROVIDER_REMOTE_MEDIA_MB * 1024 * 1024;
@@ -61,7 +64,7 @@ export const isManagedAssetUrl = (value) =>
   typeof value === 'string'
   && (
     value.includes(MANAGED_ASSET_PATH_SEGMENT)
-    || Boolean(extractManagedAssetIdentityId(value))
+    || hasManagedAssetIdentityScheme(value)
   );
 
 export const getManagedAssetPath = (value) => {
@@ -432,6 +435,9 @@ export const downloadManagedAsset = async (assetUrl, envOrOptions = {}, signal =
   const fetchWithTimeout = normalizedOptions.deps.fetchWithTimeout || fetch;
   const resolveManagedAssetReadUrl = normalizedOptions.deps.resolveManagedAssetReadUrl;
   const stableManagedAssetId = extractManagedAssetIdentityId(assetUrl);
+  if (hasManagedAssetIdentityScheme(assetUrl) && !stableManagedAssetId) {
+    throw createProviderError('managed_asset_unavailable', '内部素材稳定身份格式无效');
+  }
   if (stableManagedAssetId && typeof resolveManagedAssetReadUrl !== 'function') {
     throw createProviderError('managed_asset_unavailable', '内部素材稳定身份缺少安全读取解析器');
   }
@@ -472,6 +478,9 @@ export const downloadManagedAsset = async (assetUrl, envOrOptions = {}, signal =
 export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions = {}, signal = null, options = {}) => {
   const normalizedOptions = normalizeOptions(envOrOptions, signal, options);
   if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
+  if (hasManagedAssetIdentityScheme(assetUrl) && !extractManagedAssetIdentityId(assetUrl)) {
+    throw createProviderError('managed_asset_unavailable', '内部素材稳定身份格式无效');
+  }
   const resolveManagedAssetReadUrl = normalizedOptions.deps.resolveManagedAssetReadUrl;
   const hasManagedAssetReadResolver = typeof resolveManagedAssetReadUrl === 'function';
   let resolvedManagedAssetReadUrl = '';

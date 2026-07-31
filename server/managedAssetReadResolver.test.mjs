@@ -156,6 +156,29 @@ test('stable managed identities preserve unavailable and owner isolation checks'
   assert.equal(capabilityCalls, 0);
 });
 
+test('managed asset rows without an owner fail before COS lookup or signing', async () => {
+  let headCalls = 0;
+  let signCalls = 0;
+  await assert.rejects(
+    () => resolveManagedAssetReadUrl('managed://asset-cos-1', {
+      purpose: 'provider',
+      userId: 'user-1',
+      getAsset: async () => cosAsset({ userId: '' }),
+      headCos: async () => {
+        headCalls += 1;
+        return { exists: true };
+      },
+      createCosReadUrl: async () => {
+        signCalls += 1;
+        return 'https://must-not-sign.test';
+      },
+    }),
+    (error) => error?.code === 'managed_asset_forbidden',
+  );
+  assert.equal(headCalls, 0);
+  assert.equal(signCalls, 0);
+});
+
 test('stable managed identity syntax rejects query and fragment suffixes before asset lookup', async () => {
   let getAssetCalls = 0;
   for (const value of [
