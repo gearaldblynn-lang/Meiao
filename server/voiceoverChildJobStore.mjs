@@ -110,8 +110,8 @@ export const buildVoiceoverChildJobId = (parentJobId, childKey) => {
   const digest = createHash('sha256')
     .update(`${parentId}\0${normalizedChildKey}`)
     .digest('hex')
-    .slice(0, 32);
-  return `voiceover-child-${digest}`;
+    .slice(0, 24);
+  return digest;
 };
 
 export const isParentOwnedChildJob = (job) => {
