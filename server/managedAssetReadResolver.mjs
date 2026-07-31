@@ -7,6 +7,7 @@ import {
   appendManagedAssetAccessKey,
   stripManagedAssetAccessKey,
 } from './managedAssetAccessKey.mjs';
+import { extractManagedAssetIdentityId } from './managedAssetIdentity.mjs';
 import { createTencentCosImageReadUrl, headTencentCosImage } from './tencentCosImageStore.mjs';
 
 const createReadError = (code, message, statusCode) => {
@@ -24,7 +25,9 @@ const buildInternalProviderReadUrl = (value, asset, env = {}, appendAccessKey = 
     ? configuredPort
     : 3100;
   const loopbackOrigin = `http://127.0.0.1:${port}`;
-  const sourceValue = stripManagedAssetAccessKey(value || asset.publicUrl);
+  const sourceValue = stripManagedAssetAccessKey(
+    extractManagedAssetIdentityId(value) ? asset.publicUrl : (value || asset.publicUrl),
+  );
   const parsed = new URL(sourceValue, loopbackOrigin);
   const loopbackUrl = new URL(`${parsed.pathname}${parsed.search}`, loopbackOrigin).toString();
   return appendAccessKey(loopbackUrl, {
@@ -34,7 +37,7 @@ const buildInternalProviderReadUrl = (value, asset, env = {}, appendAccessKey = 
 };
 
 export const resolveManagedAssetReadUrl = async (value, options = {}) => {
-  const assetId = extractStoredAssetIdFromPublicUrl(value);
+  const assetId = extractManagedAssetIdentityId(value) || extractStoredAssetIdFromPublicUrl(value);
   if (!assetId) return '';
   const getAsset = options.getAsset || getStoredAssetById;
   const asset = await getAsset(options.pool || null, assetId);

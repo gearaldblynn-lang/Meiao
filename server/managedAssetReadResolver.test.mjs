@@ -86,6 +86,98 @@ test('historical internal assets receive a loopback provider capability and keep
   assert.equal(browserResult, '');
 });
 
+test('stable managed identities resolve through the owned internal asset row', async () => {
+  const result = await resolveManagedAssetReadUrl('managed://asset-local', {
+    purpose: 'provider',
+    userId: 'user-1',
+    env: providerAccessEnv,
+    getAsset: async (pool, assetId) => {
+      assert.equal(pool, null);
+      assert.equal(assetId, 'asset-local');
+      return cosAsset({
+        id: 'asset-local',
+        provider: 'internal_transcode',
+        storageKey: 'user-1/source/source.mp4',
+        publicUrl: '/api/assets/file/asset-local/source.mp4',
+      });
+    },
+  });
+
+  const providerUrl = new URL(result);
+  assert.equal(providerUrl.origin, 'http://127.0.0.1:3100');
+  assert.equal(providerUrl.pathname, '/api/assets/file/asset-local/source.mp4');
+  assert.equal(
+    verifyManagedAssetAccessKey(
+      providerUrl.searchParams.get('asset_key'),
+      { assetId: 'asset-local', userId: 'user-1' },
+      providerAccessEnv,
+    ),
+    true,
+  );
+});
+
+test('stable managed identities preserve unavailable and owner isolation checks', async () => {
+  let capabilityCalls = 0;
+  const appendAccessKey = () => {
+    capabilityCalls += 1;
+    return 'https://must-not-sign.test';
+  };
+
+  for (const asset of [
+    cosAsset({ id: 'asset-local', provider: 'internal', storageStatus: 'uploading' }),
+    cosAsset({ id: 'asset-local', provider: 'internal', storageStatus: 'deleted', deletedAt: 100 }),
+  ]) {
+    await assert.rejects(
+      () => resolveManagedAssetReadUrl('managed://asset-local', {
+        purpose: 'provider',
+        userId: 'user-1',
+        getAsset: async () => asset,
+        appendAccessKey,
+      }),
+      (error) => error?.code === 'managed_asset_unavailable',
+    );
+  }
+
+  for (const userId of ['other-user', '']) {
+    await assert.rejects(
+      () => resolveManagedAssetReadUrl('managed://asset-local', {
+        purpose: 'provider',
+        userId,
+        getAsset: async () => cosAsset({
+          id: 'asset-local',
+          provider: 'internal',
+          publicUrl: '/api/assets/file/asset-local/source.mp4',
+        }),
+        appendAccessKey,
+      }),
+      (error) => error?.code === 'managed_asset_forbidden',
+    );
+  }
+  assert.equal(capabilityCalls, 0);
+});
+
+test('stable managed identity syntax rejects query and fragment suffixes before asset lookup', async () => {
+  let getAssetCalls = 0;
+  for (const value of [
+    'managed://asset-local?asset_key=forged',
+    'managed://asset-local#fragment',
+    'managed:///asset-local',
+  ]) {
+    assert.equal(
+      await resolveManagedAssetReadUrl(value, {
+        purpose: 'provider',
+        userId: 'user-1',
+        getAsset: async () => {
+          getAssetCalls += 1;
+          return cosAsset();
+        },
+      }),
+      '',
+    );
+  }
+  assert.equal(getAssetCalls, 0);
+});
+
 test('historical KIE-labelled result assets use the authenticated loopback read path', async () => {
   const result = await resolveManagedAssetReadUrl('/api/assets/file/asset-kie/result.png', {
     purpose: 'provider',

@@ -1286,3 +1286,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 两个 LaunchAgent 的工作目录切到当前口播翻译 worktree，并执行 bootout/bootstrap/kickstart；`npm run doctor` 新增 3000/3100 监听 PID 的 cwd 与调用目录一致性门禁，端口健康但 worktree 不匹配时直接 WARN 并指出期望和实际目录。
 - Regression check: `node --test scripts/local-dev-utils.test.mjs`；`npm run doctor` 必须显示“3000/3100 运行目录与当前项目一致”；真实浏览器刷新后语言和音色 listbox 高度均为 360px、内部滚动，音色存在 30 个试听按钮。
 - Avoid next time: worktree 功能验收前必须同时核对端口 PID、进程 cwd、LaunchAgent `WorkingDirectory` 和浏览器实际 DOM；不能用 health 200 或“重启过”证明页面来自当前分支。常驻服务切换 worktree 后必须重新 bootstrap 或 kickstart，并把 cwd 身份纳入自动门禁。
+
+## 2026-07-31 - `managed://` 稳定身份必须先恢复为 owner 可读媒体再进入 provider 路由
+
+- Symptom: 云上口播翻译父任务完成 `input_prepared` 后报 `media_process_failed`；去文案子任务保持 running，但 Golden 后台没有新任务，Gemini 和 TTS 也都没有提交。
+- Environment: Tencent Cloud production / voiceover translation with text removal / Golden media staging.
+- Root cause: 子任务持久化的是无临时签名的 `managed://<assetId>` 稳定身份，而 provider 媒体路由只识别 `/api/assets/file/...`。它没有从稳定身份提取 asset ID、校验 active/owner 资产记录并恢复真实 MP4 路径，因而把身份串直接交给 FFprobe，在首个 provider POST 之前失败。
+- Fix: 托管素材身份解析器严格提取 safe asset ID；统一读取解析器继续执行 active、未删除和真实 owner 校验，再从资产记录恢复 `/api/assets/file/.../source.mp4` 并签发本机 capability。provider 暂存以恢复后的 URL 推导文件名和 MIME，不对外暴露 capability 或无凭证正式域名直链；resolver 缺失或返回空时必须在任何 fetch/upload 前 fail closed。
+- Regression check: `server/managedAssetReadResolver.test.mjs` 锁定 stable identity 到 owner-bound loopback MP4，以及跨账号、缺 user、inactive/deleted、query/hash 伪装输入全部拒绝；`server/providerAssetTransfer.test.mjs` 锁定 Golden 暂存收到 `video/mp4` 和 `.mp4` 文件名，并锁定 resolver 缺失/空结果时 fetch/upload 均为 0。发布后还必须用故障素材做不创建 provider 任务的解析/FFprobe 探针，再用单次确认的真实 canary 核对 Golden、Gemini、逐段 TTS 和最终 MP4。
+- Avoid next time: 稳定素材身份不是媒体 URL。任何 provider、FFprobe、FFmpeg 或下载消费者都必须先经过统一 owner-aware 解析；自动化同时覆盖身份解析、权限拒绝、文件名/MIME 和 provider 提交次数，不能只覆盖浏览器 `/api/assets/file/...` 路径。
