@@ -112,6 +112,38 @@ const createLocalLedger = (harness, overrides = {}) => createVoiceoverChildJobLe
   ...overrides,
 });
 
+test('deterministic voiceover child IDs fit the internal_jobs VARCHAR(24) contract', () => {
+  const parentJobId = '90f38769e8355105dd439b5f';
+  const childKeys = [
+    'golden:attempt:0',
+    'tts:0:attempt:0',
+    'tts:0:attempt:1',
+  ];
+  const childJobIds = childKeys.map((childKey) => (
+    buildVoiceoverChildJobId(parentJobId, childKey)
+  ));
+
+  assert.deepEqual(childJobIds, [
+    '3c1fa77df45be971d6a9cebe',
+    '9dba43db6e79542d72c62e6d',
+    '065c6e469bbb1809a6f9aed3',
+  ]);
+  assert.deepEqual(
+    childJobIds.map((childJobId) => childJobId.length),
+    [24, 24, 24],
+  );
+  assert.ok(childJobIds.every((childJobId) => /^[a-f0-9]{24}$/u.test(childJobId)));
+  assert.equal(
+    buildVoiceoverChildJobId(parentJobId, childKeys[0]),
+    childJobIds[0],
+  );
+  assert.equal(new Set(childJobIds).size, childJobIds.length);
+  assert.notEqual(
+    buildVoiceoverChildJobId('parent-job-other', childKeys[0]),
+    childJobIds[0],
+  );
+});
+
 test('parent ownership requires the complete server-owned child identity', () => {
   const job = {
     payload: {
@@ -1030,12 +1062,10 @@ const createMysqlLedgerHarness = ({ failInsert = false } = {}) => {
 
 test('mysql ledger serializes concurrent creation with one connection and one insert', async () => {
   const harness = createMysqlLedgerHarness();
-  let sequence = 0;
   const ledger = createVoiceoverChildJobLedger({
     mode: 'mysql',
     pool: harness.pool,
     now: () => 3_000,
-    createJobId: () => `mysql-child-${++sequence}`,
     env: { MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS: '7' },
   });
   const input = {
@@ -1048,6 +1078,8 @@ test('mysql ledger serializes concurrent creation with one connection and one in
 
   const [first, second] = await Promise.all([ledger.getOrCreate(input), ledger.getOrCreate(input)]);
   assert.equal(first.id, second.id);
+  assert.equal(first.id, '5fecb016b5b4d361282e642a');
+  assert.equal(harness.rows[0].id, first.id);
   assert.equal(harness.rows.length, 1);
   const lockCalls = harness.calls.filter((call) => /GET_LOCK/.test(call.sql));
   assert.equal(lockCalls.length, 2);
