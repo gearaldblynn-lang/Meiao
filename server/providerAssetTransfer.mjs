@@ -5,6 +5,7 @@ import {
   isVideoMediaUrl,
   shouldUploadGeminiMediaUrlForStableMime,
 } from './providerMediaRouting.mjs';
+import { extractManagedAssetIdentityId } from './managedAssetIdentity.mjs';
 
 export const MAX_PROVIDER_REMOTE_MEDIA_MB = 256;
 export const MAX_PROVIDER_REMOTE_MEDIA_BYTES = MAX_PROVIDER_REMOTE_MEDIA_MB * 1024 * 1024;
@@ -57,7 +58,11 @@ const normalizeOptions = (envOrOptions = {}, signal = null, options = {}) => {
 };
 
 export const isManagedAssetUrl = (value) =>
-  typeof value === 'string' && value.includes(MANAGED_ASSET_PATH_SEGMENT);
+  typeof value === 'string'
+  && (
+    value.includes(MANAGED_ASSET_PATH_SEGMENT)
+    || Boolean(extractManagedAssetIdentityId(value))
+  );
 
 export const getManagedAssetPath = (value) => {
   const normalized = String(value || '').trim();
@@ -426,6 +431,10 @@ export const downloadManagedAsset = async (assetUrl, envOrOptions = {}, signal =
   const normalizedOptions = normalizeOptions(envOrOptions, signal, options);
   const fetchWithTimeout = normalizedOptions.deps.fetchWithTimeout || fetch;
   const resolveManagedAssetReadUrl = normalizedOptions.deps.resolveManagedAssetReadUrl;
+  const stableManagedAssetId = extractManagedAssetIdentityId(assetUrl);
+  if (stableManagedAssetId && typeof resolveManagedAssetReadUrl !== 'function') {
+    throw createProviderError('managed_asset_unavailable', '内部素材稳定身份缺少安全读取解析器');
+  }
   const resolvedReadUrl = typeof resolveManagedAssetReadUrl === 'function'
     ? String(await resolveManagedAssetReadUrl(assetUrl, {
         purpose: 'provider',
@@ -433,6 +442,9 @@ export const downloadManagedAsset = async (assetUrl, envOrOptions = {}, signal =
         env: normalizedOptions.env,
       }) || '').trim()
     : '';
+  if (stableManagedAssetId && !resolvedReadUrl) {
+    throw createProviderError('managed_asset_unavailable', '内部素材稳定身份无法解析为可读地址');
+  }
   const downloadUrl = resolvedReadUrl || normalizeManagedAssetDownloadUrl(assetUrl);
   const response = await fetchWithTimeout(downloadUrl, {
     method: 'GET',
@@ -442,7 +454,7 @@ export const downloadManagedAsset = async (assetUrl, envOrOptions = {}, signal =
     throw createProviderError('provider_bad_request', `内部素材下载失败：HTTP ${response.status}`);
   }
 
-  const fileName = extractFileNameFromUrl(assetUrl);
+  const fileName = extractFileNameFromUrl(resolvedReadUrl || assetUrl);
   const mimeTypeHeader = response.headers?.get?.('content-type') || '';
   const mimeType = String(mimeTypeHeader || '').split(';')[0].trim() || inferMimeTypeFromName(fileName);
   const fileBuffer = await readRemoteMediaBufferWithLimit(response, '内部素材', {
@@ -461,19 +473,33 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
   const normalizedOptions = normalizeOptions(envOrOptions, signal, options);
   if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
   const resolveManagedAssetReadUrl = normalizedOptions.deps.resolveManagedAssetReadUrl;
+  const hasManagedAssetReadResolver = typeof resolveManagedAssetReadUrl === 'function';
   let resolvedManagedAssetReadUrl = '';
-  if (typeof resolveManagedAssetReadUrl === 'function') {
+  if (hasManagedAssetReadResolver) {
     const signedReadUrl = String(await resolveManagedAssetReadUrl(assetUrl, {
       purpose: 'provider',
       signal: normalizedOptions.signal,
       env: normalizedOptions.env,
     }) || '').trim();
     resolvedManagedAssetReadUrl = signedReadUrl;
-    if (signedReadUrl && !normalizedOptions.forceUpload && !normalizedOptions.stageResolvedManagedAsset) {
+    const resolvedReadUrlRequiresStaging = (() => {
+      if (!signedReadUrl) return false;
+      try {
+        return isLocalOrPrivateHostname(new URL(signedReadUrl).hostname);
+      } catch {
+        return false;
+      }
+    })();
+    if (
+      signedReadUrl
+      && !normalizedOptions.forceUpload
+      && !normalizedOptions.stageResolvedManagedAsset
+      && !resolvedReadUrlRequiresStaging
+    ) {
       return signedReadUrl;
     }
   }
-  if (!normalizedOptions.forceUpload && !resolvedManagedAssetReadUrl) {
+  if (!normalizedOptions.forceUpload && !resolvedManagedAssetReadUrl && !hasManagedAssetReadResolver) {
     const publicAssetUrl = resolveExternallyReachableManagedAssetUrl(assetUrl, normalizedOptions.env);
     if (publicAssetUrl) return publicAssetUrl;
   }

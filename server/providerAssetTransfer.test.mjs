@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { verifyManagedAssetAccessKey } from './managedAssetAccessKey.mjs';
+import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
 import {
   __testOnly_clearManagedAssetUploadCache,
   assertRemoteProviderMediaUrlAllowed,
@@ -89,6 +91,177 @@ test('generation and chat use the canonical HTTPS origin in direct-first mode', 
     await resolveProviderChatMediaUrl('/api/assets/file/a/source.png', { env, deps }),
     'https://meiaoyuntai.com/api/assets/file/a/source.png'
   );
+});
+
+test('generation and chat stage authenticated internal assets instead of exposing the loopback capability', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const calls = [];
+  const managedAssetUrl = 'https://meiaoyuntai.com/api/assets/file/model-asset/front.jpg';
+  const stagedUrl = 'https://tempfile.redpandaai.co/kieai/mayo-storage/internal/front.jpg';
+  const env = {
+    MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'managed-asset-provider-test-secret',
+    MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+    MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+    PORT: '3100',
+  };
+  const deps = {
+    resolveManagedAssetReadUrl: async (value, options) => {
+      calls.push(['resolve', value, options.purpose]);
+      return resolveManagedAssetReadUrl(value, {
+        ...options,
+        env,
+        getAsset: async () => ({
+          id: 'model-asset',
+          userId: 'model-admin',
+          module: 'virtual_model',
+          provider: 'internal',
+          storageStatus: 'active',
+          storageKey: 'model-admin/source/front.jpg',
+          publicUrl: managedAssetUrl,
+          deletedAt: null,
+        }),
+        authorizedSharedAssetIds: new Set(['model-asset']),
+      });
+    },
+    fetchWithTimeout: async (value) => {
+      const providerReadUrl = new URL(value);
+      calls.push([
+        'fetch',
+        providerReadUrl.origin,
+        providerReadUrl.pathname,
+        verifyManagedAssetAccessKey(
+          providerReadUrl.searchParams.get('asset_key'),
+          { assetId: 'model-asset', userId: 'model-admin' },
+          env,
+        ),
+      ]);
+      return createResponse(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), {
+        'content-type': 'image/jpeg',
+      });
+    },
+    uploadAssetViaKieWithFallback: async (payload) => {
+      calls.push(['upload', payload.mimeType, payload.fileBuffer.length]);
+      return { result: { fileUrl: stagedUrl } };
+    },
+  };
+  const resolved = await resolveProviderGenerationMediaUrl(managedAssetUrl, { env, deps });
+
+  assert.equal(resolved, stagedUrl);
+  __testOnly_clearManagedAssetUploadCache();
+  assert.equal(
+    await resolveProviderChatMediaUrl(managedAssetUrl, { env, deps }),
+    stagedUrl,
+  );
+  assert.equal(calls.filter(([kind]) => kind === 'resolve').length, 4);
+  assert.equal(calls.filter(([kind]) => kind === 'fetch').length, 2);
+  assert.equal(calls.filter(([kind]) => kind === 'upload').length, 2);
+  assert.ok(calls.some((call) => (
+    call[0] === 'fetch'
+    && call[1] === 'http://127.0.0.1:3100'
+    && call[2] === '/api/assets/file/model-asset/front.jpg'
+    && call[3] === true
+  )));
+  assert.ok(calls.every((call) => (
+    call[0] !== 'fetch'
+    || (
+      call[1] === 'http://127.0.0.1:3100'
+      && call[2] === '/api/assets/file/model-asset/front.jpg'
+      && call[3] === true
+    )
+  )));
+  assert.ok(calls.every((call) => call[0] !== 'upload' || (call[1] === 'image/jpeg' && call[2] === 4)));
+});
+
+test('voiceover Golden staging resolves a stable managed video identity before provider upload', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const uploads = [];
+  const managedIdentity = 'managed://voiceover-source';
+  const managedPublicUrl = '/api/assets/file/voiceover-source/source.mp4';
+  const stagedUrl = 'https://tempfile.redpandaai.co/kieai/mayo-storage/subtitle-removal/source.mp4';
+  const env = {
+    MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'managed-asset-provider-test-secret',
+    MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+    PORT: '3100',
+  };
+  const deps = {
+    resolveManagedAssetReadUrl: async (value, options) => resolveManagedAssetReadUrl(value, {
+      ...options,
+      env,
+      getAsset: async () => ({
+        id: 'voiceover-source',
+        userId: 'voiceover-user',
+        module: 'video',
+        provider: 'internal_transcode',
+        storageStatus: 'active',
+        storageKey: 'voiceover-user/source/source.mp4',
+        publicUrl: managedPublicUrl,
+        deletedAt: null,
+      }),
+      userId: 'voiceover-user',
+    }),
+    fetchWithTimeout: async (value) => {
+      const providerReadUrl = new URL(value);
+      assert.equal(providerReadUrl.origin, 'http://127.0.0.1:3100');
+      assert.equal(providerReadUrl.pathname, managedPublicUrl);
+      assert.equal(
+        verifyManagedAssetAccessKey(
+          providerReadUrl.searchParams.get('asset_key'),
+          { assetId: 'voiceover-source', userId: 'voiceover-user' },
+          env,
+        ),
+        true,
+      );
+      return createResponse(Buffer.from('voiceover-video'), {
+        'content-type': 'video/mp4',
+      });
+    },
+    uploadAssetViaKieWithFallback: async (payload) => {
+      uploads.push(payload);
+      return { result: { fileUrl: stagedUrl } };
+    },
+  };
+
+  const resolved = await resolveProviderGenerationMediaUrl(managedIdentity, {
+    env,
+    deps,
+    uploadPath: 'mayo-storage/subtitle-removal',
+  });
+
+  assert.equal(resolved, stagedUrl);
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].mimeType, 'video/mp4');
+  assert.match(uploads[0].fileName, /^source-[a-f0-9]{12}\.mp4$/u);
+});
+
+test('stable managed identities fail closed when the owner-aware resolver is missing or empty', async () => {
+  for (const resolveManagedAssetReadUrl of [undefined, async () => '']) {
+    __testOnly_clearManagedAssetUploadCache();
+    let fetchCalls = 0;
+    let uploadCalls = 0;
+    const deps = {
+      ...(resolveManagedAssetReadUrl ? { resolveManagedAssetReadUrl } : {}),
+      fetchWithTimeout: async () => {
+        fetchCalls += 1;
+        return createResponse(Buffer.from('not-owned-media'), {
+          'content-type': 'application/octet-stream',
+        });
+      },
+      uploadAssetViaKieWithFallback: async () => {
+        uploadCalls += 1;
+        return { result: { fileUrl: 'https://must-not-upload.test/source.bin' } };
+      },
+    };
+
+    await assert.rejects(
+      () => resolveProviderGenerationMediaUrl('managed://voiceover-source', {
+        env: { MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first' },
+        deps,
+      }),
+      (error) => error?.code === 'managed_asset_unavailable',
+    );
+    assert.equal(fetchCalls, 0);
+    assert.equal(uploadCalls, 0);
+  }
 });
 
 test('managed COS images are staged for generation while chat can use a fresh signed read URL', async () => {

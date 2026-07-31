@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { verifyManagedAssetAccessKey } from './managedAssetAccessKey.mjs';
 import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
 
 const cosAsset = (overrides = {}) => ({
@@ -15,6 +16,11 @@ const cosAsset = (overrides = {}) => ({
   deletedAt: null,
   ...overrides,
 });
+
+const providerAccessEnv = {
+  MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'managed-asset-provider-test-secret',
+  PORT: '3100',
+};
 
 test('active COS managed assets receive a fresh purpose-specific signed URL', async () => {
   const signCalls = [];
@@ -50,6 +56,7 @@ test('historical internal assets keep their existing local stream path', async (
   const result = await resolveManagedAssetReadUrl('/api/assets/file/asset-local/image.png', {
     purpose: 'provider',
     userId: 'user-1',
+    env: providerAccessEnv,
     getAsset: async () => cosAsset({
       id: 'asset-local',
       provider: 'internal',
@@ -58,7 +65,17 @@ test('historical internal assets keep their existing local stream path', async (
     createCosReadUrl: async () => { throw new Error('COS signer must not run'); },
   });
 
-  assert.equal(result, '');
+  const providerUrl = new URL(result);
+  assert.equal(providerUrl.origin, 'http://127.0.0.1:3100');
+  assert.equal(providerUrl.pathname, '/api/assets/file/asset-local/image.png');
+  assert.equal(
+    verifyManagedAssetAccessKey(
+      providerUrl.searchParams.get('asset_key'),
+      { assetId: 'asset-local', userId: 'user-1' },
+      providerAccessEnv,
+    ),
+    true,
+  );
 
   const browserResult = await resolveManagedAssetReadUrl('/api/assets/file/asset-local/image.png', {
     purpose: 'browser',
@@ -69,10 +86,103 @@ test('historical internal assets keep their existing local stream path', async (
   assert.equal(browserResult, '');
 });
 
-test('historical KIE-labelled result assets still use the local read path', async () => {
+test('stable managed identities resolve through the owned internal asset row', async () => {
+  const result = await resolveManagedAssetReadUrl('managed://asset-local', {
+    purpose: 'provider',
+    userId: 'user-1',
+    env: providerAccessEnv,
+    getAsset: async (pool, assetId) => {
+      assert.equal(pool, null);
+      assert.equal(assetId, 'asset-local');
+      return cosAsset({
+        id: 'asset-local',
+        provider: 'internal_transcode',
+        storageKey: 'user-1/source/source.mp4',
+        publicUrl: '/api/assets/file/asset-local/source.mp4',
+      });
+    },
+  });
+
+  const providerUrl = new URL(result);
+  assert.equal(providerUrl.origin, 'http://127.0.0.1:3100');
+  assert.equal(providerUrl.pathname, '/api/assets/file/asset-local/source.mp4');
+  assert.equal(
+    verifyManagedAssetAccessKey(
+      providerUrl.searchParams.get('asset_key'),
+      { assetId: 'asset-local', userId: 'user-1' },
+      providerAccessEnv,
+    ),
+    true,
+  );
+});
+
+test('stable managed identities preserve unavailable and owner isolation checks', async () => {
+  let capabilityCalls = 0;
+  const appendAccessKey = () => {
+    capabilityCalls += 1;
+    return 'https://must-not-sign.test';
+  };
+
+  for (const asset of [
+    cosAsset({ id: 'asset-local', provider: 'internal', storageStatus: 'uploading' }),
+    cosAsset({ id: 'asset-local', provider: 'internal', storageStatus: 'deleted', deletedAt: 100 }),
+  ]) {
+    await assert.rejects(
+      () => resolveManagedAssetReadUrl('managed://asset-local', {
+        purpose: 'provider',
+        userId: 'user-1',
+        getAsset: async () => asset,
+        appendAccessKey,
+      }),
+      (error) => error?.code === 'managed_asset_unavailable',
+    );
+  }
+
+  for (const userId of ['other-user', '']) {
+    await assert.rejects(
+      () => resolveManagedAssetReadUrl('managed://asset-local', {
+        purpose: 'provider',
+        userId,
+        getAsset: async () => cosAsset({
+          id: 'asset-local',
+          provider: 'internal',
+          publicUrl: '/api/assets/file/asset-local/source.mp4',
+        }),
+        appendAccessKey,
+      }),
+      (error) => error?.code === 'managed_asset_forbidden',
+    );
+  }
+  assert.equal(capabilityCalls, 0);
+});
+
+test('stable managed identity syntax rejects query and fragment suffixes before asset lookup', async () => {
+  let getAssetCalls = 0;
+  for (const value of [
+    'managed://asset-local?asset_key=forged',
+    'managed://asset-local#fragment',
+    'managed:///asset-local',
+  ]) {
+    assert.equal(
+      await resolveManagedAssetReadUrl(value, {
+        purpose: 'provider',
+        userId: 'user-1',
+        getAsset: async () => {
+          getAssetCalls += 1;
+          return cosAsset();
+        },
+      }),
+      '',
+    );
+  }
+  assert.equal(getAssetCalls, 0);
+});
+
+test('historical KIE-labelled result assets use the authenticated loopback read path', async () => {
   const result = await resolveManagedAssetReadUrl('/api/assets/file/asset-kie/result.png', {
     purpose: 'provider',
     userId: 'user-1',
+    env: providerAccessEnv,
     getAsset: async () => cosAsset({
       id: 'asset-kie',
       provider: 'kie',
@@ -81,13 +191,23 @@ test('historical KIE-labelled result assets still use the local read path', asyn
     createCosReadUrl: async () => { throw new Error('COS signer must not run'); },
   });
 
-  assert.equal(result, '');
+  const providerUrl = new URL(result);
+  assert.equal(providerUrl.origin, 'http://127.0.0.1:3100');
+  assert.equal(
+    verifyManagedAssetAccessKey(
+      providerUrl.searchParams.get('asset_key'),
+      { assetId: 'asset-kie', userId: 'user-1' },
+      providerAccessEnv,
+    ),
+    true,
+  );
 });
 
 test('server-validated public virtual-model assets can be read by a different task user', async () => {
   const result = await resolveManagedAssetReadUrl('/api/assets/file/asset-model-1/identity.png', {
     purpose: 'provider',
     userId: 'task-user',
+    env: providerAccessEnv,
     authorizedSharedAssetIds: new Set(['asset-model-1']),
     getAsset: async () => cosAsset({
       id: 'asset-model-1',
@@ -99,7 +219,16 @@ test('server-validated public virtual-model assets can be read by a different ta
     createCosReadUrl: async () => { throw new Error('COS signer must not run'); },
   });
 
-  assert.equal(result, '');
+  const providerUrl = new URL(result);
+  assert.equal(providerUrl.origin, 'http://127.0.0.1:3100');
+  assert.equal(
+    verifyManagedAssetAccessKey(
+      providerUrl.searchParams.get('asset_key'),
+      { assetId: 'asset-model-1', userId: 'model-admin' },
+      providerAccessEnv,
+    ),
+    true,
+  );
 });
 
 test('a shared allowlist never bypasses ownership for non-library assets', async () => {
