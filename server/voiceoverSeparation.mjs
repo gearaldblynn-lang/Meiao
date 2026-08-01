@@ -10,6 +10,7 @@ import { runVoiceoverProcess } from './voiceoverAudio.mjs';
 import { EXPECTED_MDX_YAML, loadDemucsManifest, verifyDemucsModelFiles } from '../scripts/install-voiceover-demucs.mjs';
 
 const REQUIRED_FILTERS = Object.freeze(['sidechaincompress', 'amix', 'adelay', 'afade', 'atempo', 'alimiter']);
+const MAX_READINESS_OUTPUT_BYTES = 64 * 1024;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = path.join(MODULE_DIR, '..', 'deploy', 'voiceover', 'demucs-models.json');
 const YAML_PATH = path.join(MODULE_DIR, '..', 'deploy', 'voiceover', 'mdx.yaml');
@@ -27,9 +28,28 @@ const DEMUCS_ENV_ALLOWLIST = Object.freeze([
   'NUMEXPR_NUM_THREADS',
 ]);
 const PINNED_PYTHON_RUNTIMES = Object.freeze({
-  'linux|x86_64': Object.freeze(['4.0.1', '2.7.1+cpu', '2.7.1+cpu', 'missing']),
-  'darwin|arm64': Object.freeze(['4.0.1', '2.7.1', '2.7.1', '0.13.1']),
+  'linux|x86_64': Object.freeze(['4.0.1', '2.7.1+cpu', '2.7.1+cpu', '0.13.1', 'soundfile', 'WAV', '48000', '2', 'PCM_16', '4800']),
+  'darwin|arm64': Object.freeze(['4.0.1', '2.7.1', '2.7.1', '0.13.1', 'soundfile', 'WAV', '48000', '2', 'PCM_16', '4800']),
 });
+const PYTHON_RUNTIME_PROBE = [
+  'import importlib.metadata as m',
+  'import os, platform, sys, tempfile',
+  'import soundfile as sf',
+  'import torch, torchaudio',
+  'backends = torchaudio.list_audio_backends()',
+  'if "soundfile" not in backends: raise RuntimeError("soundfile backend unavailable")',
+  'descriptor, output_path = tempfile.mkstemp(suffix=".wav")',
+  'os.close(descriptor)',
+  'try:',
+  '    samples = torch.zeros((2, 4800), dtype=torch.float32)',
+  '    torchaudio.save(output_path, samples, 48000, encoding="PCM_S", bits_per_sample=16, backend="soundfile")',
+  '    with sf.SoundFile(output_path) as audio:',
+  '        wav_metadata = (audio.format, str(audio.samplerate), str(audio.channels), audio.subtype, str(audio.frames))',
+  '    if wav_metadata != ("WAV", "48000", "2", "PCM_16", "4800"): raise RuntimeError("invalid WAV metadata")',
+  'finally:',
+  '    os.unlink(output_path)',
+  'print("|".join((sys.platform, platform.machine().lower(), m.version("demucs"), m.version("torch"), m.version("torchaudio"), m.version("soundfile"), "soundfile", *wav_metadata)))',
+].join('\n');
 
 let activeSeparations = 0;
 const separationQueue = [];
@@ -107,6 +127,7 @@ function runCommand(command, args, {
   timeoutMs = 30_000,
   spawnProcess = spawn,
   env,
+  maxOutputBytes = MAX_READINESS_OUTPUT_BYTES,
 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawnProcess(command, args, {
@@ -116,17 +137,36 @@ function runCommand(command, args, {
     });
     let stdout = '';
     let stderr = '';
+    let outputBytes = 0;
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const appendOutput = (field, chunk) => {
+      if (settled) return;
+      const text = String(chunk);
+      outputBytes += Buffer.byteLength(text);
+      if (outputBytes > maxOutputBytes) {
+        child.kill?.('SIGKILL');
+        finish(reject, new Error('voiceover readiness process output exceeded limit'));
+        return;
+      }
+      if (field === 'stdout') stdout += text;
+      else stderr += text;
+    };
     const timer = setTimeout(() => {
       child.kill?.('SIGKILL');
-      reject(new Error('voiceover readiness process timed out'));
+      finish(reject, new Error('voiceover readiness process timed out'));
     }, timeoutMs);
     timer.unref?.();
-    child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
-    child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
-    child.once('error', reject);
+    child.stdout?.on('data', (chunk) => appendOutput('stdout', chunk));
+    child.stderr?.on('data', (chunk) => appendOutput('stderr', chunk));
+    child.once('error', (error) => finish(reject, error));
     child.once('close', (exitCode) => {
-      clearTimeout(timer);
-      resolve({ exitCode, stdout, stderr });
+      finish(resolve, { exitCode, stdout, stderr });
     });
   });
 }
@@ -152,7 +192,11 @@ export async function checkVoiceoverSeparationReadiness({
   let ffmpegReady = false;
   try {
     if (config.separationPython) {
-      const result = await runProcess(config.separationPython, ['-c', 'import importlib.metadata as m, platform, sys, torch, torchaudio; print("|".join((sys.platform, platform.machine().lower(), m.version("demucs"), m.version("torch"), m.version("torchaudio"), m.version("soundfile") if sys.platform == "darwin" else "missing")))']);
+      const result = await runProcess(
+        config.separationPython,
+        ['-c', PYTHON_RUNTIME_PROBE],
+        { env: buildDemucsProcessEnv(env, config.separationPython) },
+      );
       pythonReady = (result?.exitCode ?? 1) === 0 && isPinnedPythonRuntime(result?.stdout);
     }
   } catch {}

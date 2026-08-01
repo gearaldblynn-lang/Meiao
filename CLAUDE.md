@@ -565,3 +565,8 @@
   根因:真实 canary 的 Golden attempt 1 已成功并只提交一次，上游结果也已托管为 22.221 秒 H.264/AAC、720x1280、fast-start MP4；但 Golden 返回的中间视频像素格式是兼容的 full-range `yuvj420p`。公共检查点探针把 provider 中间视频和最终交付视频共用同一条 `pixelFormat === 'yuv420p'` 规则，导致成功 child 已写入 `subtitle_removal/succeeded` 后，父任务在读取托管结果时以 `voiceover_checkpoint_asset_invalid` 失败，未进入 Gemini 或 TTS。
   修复:只对 `golden_video` 检查点额外接受 H.264 `yuvj420p`；容器、H.264、AAC、正尺寸、正时长、fast-start 和时长容差仍全部校验。`source_video`、`analysis_video`、`final_video` 继续严格要求 `yuv420p`，最终混流仍由 FFmpeg 重编码为 H.264/yuv420p/AAC/fast-start。
   如何避免:**第三方 provider 中间产物与用户最终交付产物必须分阶段定义媒体合同；不要因为二者都是 MP4 就共用最严格的像素格式白名单。放宽必须限定到精确阶段，并用真实 provider 元数据写正例，同时用最终阶段负例锁住交付格式不漂移。**
+
+- **#89 ✅ 本地已修、待发布(2026-08-01)· Demucs 模型推理成功但 Linux Torchaudio 没有 WAV 写入后端**
+  根因:Linux CPU 依赖锁只固定 Demucs、Torch 和 Torchaudio，没有安装 `soundfile`；生产 venv 的 `torchaudio.list_audio_backends()` 因此为空。readiness 只验证包版本、模型文件和 `get_model("mdx")`，真实 22.2215 秒 WAV 的四个模型推理全部完成后，直到保存 `vocals.wav` 才以 `Couldn't find appropriate backend` 退出。子进程又使用 `stdio:'ignore'`，业务日志只剩笼统的 `voiceover_separation_unavailable`。
+  修复:Linux 可复现依赖合同补入带哈希的 `soundfile==0.13.1` 及其传递依赖；Python readiness 固定 SoundFile 版本和 `soundfile` backend，并实际写入、回读一个 48 kHz 双声道 PCM_16 WAV，格式、采样率、声道、位深或帧数任一不符即 fail closed。所有 Python 探针都使用最小环境，stdout/stderr 合计上限 64 KiB。缺包、backend 不可用或 WAV 不可写会在任务开始前拒绝，不再消耗约 3 GiB 内存完成整段模型推理后才失败。依赖仍只允许运维在维护窗口通过 `install-voiceover-demucs.mjs --install` 安装，应用运行时不联网下载。
+  如何避免:**媒体模型 readiness 不能止于“包能 import、模型能 load”；凡运行链最后还要编码或落盘，必须把真实输出 backend 纳入固定运行时合同。平台依赖锁要覆盖同一能力，生产升级用哈希锁显式安装，运行时继续最小环境与零下载。**

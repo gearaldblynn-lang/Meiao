@@ -55,10 +55,12 @@ test('Linux CPU lock controls only PyPI and official PyTorch CPU sources and has
   assert.match(source, /^--extra-index-url https:\/\/download\.pytorch\.org\/whl\/cpu$/m);
   assert.match(source, /^torch==2\.7\.1\+cpu$/m);
   assert.match(source, /^torchaudio==2\.7\.1\+cpu$/m);
+  assert.match(source, /^soundfile==0\.13\.1$/m);
   assert.match(lock, /^--index-url https:\/\/pypi\.org\/simple$/m);
   assert.match(lock, /^--extra-index-url https:\/\/download\.pytorch\.org\/whl\/cpu$/m);
   assert.match(lock, /^torch==2\.7\.1\+cpu \\/m);
   assert.match(lock, /^torchaudio==2\.7\.1\+cpu \\/m);
+  assert.match(lock, /^soundfile==0\.13\.1 \\/m);
   assertEveryPinHasHashes(lock, 20);
   const buildLock = await readFile(new URL('../deploy/voiceover/build-requirements.lock', import.meta.url), 'utf8');
   assert.match(buildLock, /^setuptools==80\.9\.0 \\/m);
