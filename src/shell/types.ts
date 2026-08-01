@@ -95,6 +95,9 @@ export interface VoiceoverCheckpointV1 {
   originalAudioAssetId?: string;
   vocalAssetId?: string;
   backgroundAssetId?: string;
+  analysisEvidenceVersion?: number;
+  alignmentVersion?: number;
+  ttsAttemptBase?: number;
   subtitleRemoval?: { childJobId: string; providerTaskId?: string; resultAssetId?: string; attempt: number; status: 'queued' | 'submitted' | 'succeeded' | 'failed' };
   analysisAttempt: number;
   analysis?: { sourceLanguage: string; speakerCount: number; voiceProfile: VoiceoverVoiceProfile; segments: VoiceoverTranscriptSegment[] };

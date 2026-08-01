@@ -130,6 +130,30 @@ test('voiceover retry confirmation derives paid checkpoint attempts and catches 
   assert.equal(confirmationCalls, 1);
 });
 
+test('voiceover retry turns a dynamically discovered legacy checkpoint into confirmation', async () => {
+  let submitCalls = 0;
+  let confirmationCalls = 0;
+
+  await experience.runVoiceoverRetryRequest({
+    result: {
+      errorCode: 'provider_job_failed',
+      voiceoverCheckpoint: { stage: 'audio_aligned', ttsGroups: [] },
+    },
+    submit: async (options) => {
+      submitCalls += 1;
+      assert.equal(options.confirmNewProviderAttempt, false);
+      throw Object.assign(new Error('legacy checkpoint requires confirmation'), {
+        code: 'voiceover_checkpoint_upgrade_required',
+        status: 409,
+      });
+    },
+    requestConfirmation: () => { confirmationCalls += 1; },
+  });
+
+  assert.equal(submitCalls, 1);
+  assert.equal(confirmationCalls, 1);
+});
+
 test('voiceover player canonicalizes both media urls and never downloads a raw persisted url', () => {
   assert.equal(typeof experience.resolveSafeVoiceoverResultMedia, 'function');
   const safe = experience.resolveSafeVoiceoverResultMedia({
@@ -189,6 +213,7 @@ test('voiceover final download delegates the managed URL to the shared card down
 test('voiceover retry and cancellation use explicit safe in-app boundaries', () => {
   assert.match(experienceSource, /provider_submission_unknown/);
   assert.match(experienceSource, /voiceover_analysis_submission_unknown/);
+  assert.match(experienceSource, /voiceover_checkpoint_upgrade_required/);
   assert.match(cardSource, /<ConfirmDialog/);
   assert.match(cardSource, /confirmNewProviderAttempt:\s*true/);
   assert.doesNotMatch(cardSource, /window\.confirm/);

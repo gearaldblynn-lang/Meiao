@@ -485,11 +485,7 @@ export function calculateAtempo({
       atempo: ratio,
     });
   }
-  // Never slow a generated line down to fill its window. Short lines keep their
-  // natural delivery and the following segment still starts at its own durable
-  // timestamp. Longer lines are accelerated only within the configured safety
-  // ceiling, otherwise the job fails rather than truncating speech.
-  return Number(Math.max(ratio, minimum, 1).toFixed(9));
+  return Number(Math.max(ratio, minimum).toFixed(9));
 }
 
 function validateGroupWindows(groups, totalDurationMs, overlapToleranceMs) {
@@ -552,6 +548,11 @@ export function buildAlignmentArgs({
       durationSeconds,
       Number(group.actualDurationMs) / 1000 / ratio,
     );
+    const residualSilenceMs = Math.max(0, (
+      (group.endMs - group.startMs)
+      - (Number(group.actualDurationMs) / ratio)
+    ));
+    const delayMs = group.startMs + (residualSilenceMs / 2);
     const fadeSeconds = Math.min(fadeMs / 1000, alignedVoiceSeconds / 2);
     const fadeOutStart = Math.max(0, alignedVoiceSeconds - fadeSeconds);
     return [
@@ -560,7 +561,7 @@ export function buildAlignmentArgs({
       `atempo=${formatNumber(ratio)}`,
       `afade=t=in:st=0:d=${formatNumber(fadeSeconds)}`,
       `afade=t=out:st=${formatNumber(fadeOutStart)}:d=${formatNumber(fadeSeconds)}`,
-      `adelay=${formatNumber(group.startMs)}|${formatNumber(group.startMs)}[voice_${inputIndex}]`,
+      `adelay=${formatNumber(delayMs)}|${formatNumber(delayMs)}[voice_${inputIndex}]`,
     ].join(',');
   });
   filters.push(

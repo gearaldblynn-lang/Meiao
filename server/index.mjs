@@ -15572,7 +15572,7 @@ const handleMysqlRequest = async (req, res, url) => {
       status: 'started',
       meta: {
         jobId: job.id,
-        providerTaskId: retriedJob?.providerTaskId || job.providerTaskId || '',
+        providerTaskId: retriedJob?.providerTaskId || '',
         provider: retriedJob?.provider || job.provider,
       },
     });
@@ -15580,8 +15580,8 @@ const handleMysqlRequest = async (req, res, url) => {
       stage: 'retry',
       eventName: 'job_retry_requested',
       status: 'started',
-      providerSubmitted: Boolean(retriedJob?.providerTaskId || job.providerTaskId),
-      providerTaskId: retriedJob?.providerTaskId || job.providerTaskId || '',
+      providerSubmitted: Boolean(retriedJob?.providerTaskId),
+      providerTaskId: retriedJob?.providerTaskId || '',
       retryable: true,
       meta: buildJobRuntimeLogMeta({ job: retriedJob || job }),
     });
@@ -19298,7 +19298,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         status: 'started',
         meta: {
           jobId: job.id,
-          providerTaskId: job.providerTaskId || '',
+          providerTaskId: retriedJob?.providerTaskId || '',
           provider: job.provider,
           taskType: job.taskType,
           jobCreatedAt: job.createdAt,

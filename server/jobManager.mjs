@@ -1522,7 +1522,7 @@ export const requestRetryJob = async (pool, job, actor) => {
   const resetProviderTaskId = Boolean(actor?.resetProviderTaskId)
     || (
       isVoiceoverParent
-      && actor?.voiceoverRetryPlan?.kind === 'provider'
+      && ['provider', 'evidence_upgrade'].includes(actor?.voiceoverRetryPlan?.kind)
       && actor?.voiceoverRetryPlan?.userConfirmed === true
     );
   if (isVoiceoverParent && !['failed', 'cancelled'].includes(String(job?.status || ''))) {

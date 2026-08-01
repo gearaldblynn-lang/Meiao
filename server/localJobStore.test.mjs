@@ -1067,6 +1067,7 @@ test('local voiceover retry preserves checkpoint and only server-confirmed analy
         originalAudioAssetId: 'asset-audio',
         vocalAssetId: 'asset-vocal',
         backgroundAssetId: 'asset-background',
+        analysisEvidenceVersion: 1,
         analysisAttempt: 0,
       },
     },
@@ -1145,6 +1146,7 @@ test('local voiceover paid retry derives the next TTS attempt once from the dura
         originalAudioAssetId: 'asset-audio',
         vocalAssetId: 'asset-vocal',
         backgroundAssetId: 'asset-background',
+        analysisEvidenceVersion: 1,
         analysisAttempt: 0,
         analysis: {
           sourceLanguage: 'cmn',
@@ -1248,6 +1250,7 @@ test('local voiceover reuse follows the current provider attempt instead of hist
     originalAudioAssetId: 'asset-audio',
     vocalAssetId: 'asset-vocal',
     backgroundAssetId: 'asset-background',
+    analysisEvidenceVersion: 1,
     analysisAttempt: 0,
     analysis: {
       sourceLanguage: 'cmn',
@@ -1287,6 +1290,7 @@ test('local voiceover reuse follows the current provider attempt instead of hist
       },
     ],
     alignedAudioAssetId: 'asset-aligned',
+    alignmentVersion: 1,
   };
   const mixStore = createStore();
   mixStore.jobs = [createVoiceoverParent({
@@ -1316,6 +1320,7 @@ test('local voiceover reuse follows the current provider attempt instead of hist
     }],
   };
   delete queryCheckpoint.alignedAudioAssetId;
+  delete queryCheckpoint.alignmentVersion;
   const queryStore = createStore();
   queryStore.jobs = [createVoiceoverParent({
     status: 'failed',
@@ -1425,6 +1430,60 @@ test('local voiceover Golden reuse classifies recovery from the current child at
   );
 });
 
+test('local confirmed voiceover evidence upgrade clears the stale parent TTS provider task id', () => {
+  const store = createStore();
+  store.jobs = [createVoiceoverParent({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 3,
+    providerTaskId: 'provider-tts-stale',
+    errorCode: 'voiceover_checkpoint_upgrade_required',
+    result: {
+      audit: 'keep',
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'speech_analyzed',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-audio',
+        vocalAssetId: 'asset-vocal',
+        backgroundAssetId: 'asset-background',
+        analysisAttempt: 0,
+        analysis: {
+          sourceLanguage: 'cmn',
+          speakerCount: 1,
+          voiceProfile: {
+            pitch: 'medium',
+            brightness: 'balanced',
+            energy: 'balanced',
+            pace: 'natural',
+            accentDescription: 'clear',
+          },
+          segments: [{
+            id: 's1',
+            startMs: 0,
+            endMs: 800,
+            sourceText: '源文',
+            targetText: 'Translation',
+          }],
+        },
+      },
+    },
+  })];
+  const voiceoverRetryPlan = deriveVoiceoverRetryPlan(store.jobs[0], {
+    confirmNewProviderAttempt: true,
+  });
+
+  const retried = requestLocalRetryJob(store, 'voiceover-parent-1', {
+    voiceoverRetryPlan,
+  });
+
+  assert.equal(voiceoverRetryPlan.kind, 'evidence_upgrade');
+  assert.equal(retried.providerTaskId, '');
+  assert.equal(retried.result.audit, 'keep');
+  assert.equal(retried.result.voiceoverCheckpoint.stage, 'input_prepared');
+  assert.equal(retried.result.voiceoverCheckpoint.analysisAttempt, 1);
+});
+
 test('classic local worker awaits parent checkpoint before the next side effect and preserves it after failure', async () => {
   const store = createStore();
   store.users.push(createUser());
@@ -1439,6 +1498,7 @@ test('classic local worker awaits parent checkpoint before the next side effect 
         voiceoverCheckpoint: {
           stage: 'audio_extracted',
           originalAudioAssetId: 'asset-audio',
+          analysisEvidenceVersion: 1,
         },
       });
       assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');

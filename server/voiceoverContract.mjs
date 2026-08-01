@@ -8,6 +8,8 @@ import {
 } from '../src/utils/voiceoverCatalog.mjs';
 
 export const VOICEOVER_CHECKPOINT_VERSION = 1;
+export const VOICEOVER_ANALYSIS_EVIDENCE_VERSION = 1;
+export const VOICEOVER_ALIGNMENT_VERSION = 1;
 export const VOICEOVER_MAX_TTS_GROUPS = 100;
 
 export const VOICEOVER_DEFAULTS = Object.freeze({
@@ -70,7 +72,7 @@ const ERROR_CODES = new Set([
   'voiceover_language_unsupported', 'voiceover_analysis_invalid', 'voiceover_analysis_submission_unknown', 'voiceover_separation_unavailable',
   'voiceover_separation_timeout', 'voiceover_tts_input_too_large', 'voiceover_timing_out_of_range', 'provider_submission_unknown',
   'provider_balance_insufficient', 'provider_rate_limited', 'provider_timeout', 'voiceover_mix_failed', 'voiceover_result_persist_failed',
-  'voiceover_checkpoint_asset_invalid',
+  'voiceover_checkpoint_asset_invalid', 'voiceover_checkpoint_upgrade_required',
 ]);
 
 export function buildVoiceoverError(code, message, details = {}) {
@@ -359,7 +361,12 @@ const normalizeTtsGroups = (groups, validationOptions = normalizedValidationOpti
  */
 export function normalizeVoiceoverCheckpoint(value, options = {}) {
   const validationOptions = normalizedValidationOptions(options);
-  const allowed = new Set(['version', 'stage', 'baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'subtitleRemoval', 'analysis', 'translation', 'ttsGroups', 'alignedAudioAssetId', 'finalAssetId', 'analysisAttempt']);
+  const allowed = new Set([
+    'version', 'stage', 'baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId',
+    'backgroundAssetId', 'subtitleRemoval', 'analysis', 'translation', 'ttsGroups',
+    'alignedAudioAssetId', 'finalAssetId', 'analysisAttempt', 'analysisEvidenceVersion',
+    'alignmentVersion', 'ttsAttemptBase',
+  ]);
   assertKnownKeys(value, allowed, 'voiceover_checkpoint_invalid');
   if (Number(value.version) !== VOICEOVER_CHECKPOINT_VERSION || !STAGE_INDEX.has(value.stage) || !isAssetId(value.baseVideoAssetId)) {
     throw buildVoiceoverError('voiceover_checkpoint_invalid', '口播翻译检查点无效');
@@ -371,6 +378,46 @@ export function normalizeVoiceoverCheckpoint(value, options = {}) {
   const analysisAttempt = Number(value.analysisAttempt ?? 0);
   if (!Number.isInteger(analysisAttempt) || analysisAttempt < 0 || analysisAttempt > 100) throw buildVoiceoverError('voiceover_checkpoint_invalid', '分析尝试次数无效');
   output.analysisAttempt = analysisAttempt;
+  const ttsAttemptBase = Number(value.ttsAttemptBase ?? 0);
+  if (!Number.isInteger(ttsAttemptBase) || ttsAttemptBase < 0 || ttsAttemptBase > 100) {
+    throw buildVoiceoverError('voiceover_checkpoint_invalid', 'TTS 起始尝试次数无效');
+  }
+  if (value.ttsAttemptBase !== undefined || ttsAttemptBase > 0) output.ttsAttemptBase = ttsAttemptBase;
+  const allowLegacyProvenance = options.allowLegacyUpgrade === true
+    || (options.allowLegacyCompleted === true && value.stage === 'result_persisted');
+  const addProvenance = (key, minimumStage, expected, label) => {
+    const raw = value[key];
+    if (stageIndex < minimumStage) {
+      if (raw !== undefined) throw buildVoiceoverError('voiceover_checkpoint_invalid', `${label}阶段无效`);
+      return;
+    }
+    if (raw === undefined) {
+      if (!allowLegacyProvenance) {
+        throw buildVoiceoverError(
+          'voiceover_checkpoint_upgrade_required',
+          `旧版${label}需要重新处理`,
+          { statusCode: 409 },
+        );
+      }
+      return;
+    }
+    if (Number(raw) !== expected) {
+      throw buildVoiceoverError('voiceover_checkpoint_invalid', `${label}版本无效`);
+    }
+    output[key] = expected;
+  };
+  addProvenance(
+    'analysisEvidenceVersion',
+    STAGE_INDEX.get('audio_extracted'),
+    VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
+    '分析证据',
+  );
+  addProvenance(
+    'alignmentVersion',
+    STAGE_INDEX.get('audio_aligned'),
+    VOICEOVER_ALIGNMENT_VERSION,
+    '音频对齐',
+  );
   const addAsset = (key, minimumStage) => {
     if (value[key] !== undefined) {
       if (stageIndex < minimumStage || !isAssetId(value[key])) throw buildVoiceoverError('voiceover_checkpoint_invalid', '检查点素材无效');
@@ -488,7 +535,11 @@ export function mergeVoiceoverCheckpoint(current, patch = {}, options = {}) {
     throw buildVoiceoverError('voiceover_checkpoint_invalid', '检查点阶段不能回退');
   }
   const merged = { ...currentCheckpoint, ...patch, version: VOICEOVER_CHECKPOINT_VERSION, stage: nextStage };
-  for (const field of ['baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId', 'alignedAudioAssetId', 'finalAssetId']) {
+  for (const field of [
+    'baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId',
+    'alignedAudioAssetId', 'finalAssetId', 'analysisEvidenceVersion',
+    'alignmentVersion', 'ttsAttemptBase',
+  ]) {
     merged[field] = mergeDurableId(currentCheckpoint[field], patch[field], field);
   }
   merged.analysisAttempt = Math.max(currentCheckpoint.analysisAttempt, Number(patch.analysisAttempt ?? currentCheckpoint.analysisAttempt));
@@ -533,6 +584,99 @@ export function prepareVoiceoverRetryCheckpoint(checkpoint, retryPlan = {}, opti
     ...(current.vocalAssetId ? { vocalAssetId: current.vocalAssetId } : {}),
     ...(current.backgroundAssetId ? { backgroundAssetId: current.backgroundAssetId } : {}),
     ...(current.subtitleRemoval ? { subtitleRemoval: current.subtitleRemoval } : {}),
+    ...(current.analysisEvidenceVersion ? { analysisEvidenceVersion: current.analysisEvidenceVersion } : {}),
+    ...(current.ttsAttemptBase ? { ttsAttemptBase: current.ttsAttemptBase } : {}),
     analysisAttempt: current.analysisAttempt + 1,
+  }, options);
+}
+
+export function hasLegacyVoiceoverCheckpointProvenance(value) {
+  if (
+    !plainObject(value)
+    || Number(value.version) !== VOICEOVER_CHECKPOINT_VERSION
+    || !STAGE_INDEX.has(value.stage)
+  ) {
+    return false;
+  }
+  const stageIndex = STAGE_INDEX.get(value.stage);
+  return (
+    (
+      stageIndex >= STAGE_INDEX.get('audio_extracted')
+      && value.analysisEvidenceVersion === undefined
+    )
+    || (
+      stageIndex >= STAGE_INDEX.get('audio_aligned')
+      && value.alignmentVersion === undefined
+    )
+  );
+}
+
+export function prepareVoiceoverEvidenceUpgradeCheckpoint(
+  checkpoint,
+  retryPlan = {},
+  options = {},
+) {
+  if (!hasLegacyVoiceoverCheckpointProvenance(checkpoint)) {
+    throw buildVoiceoverError('voiceover_checkpoint_invalid', '当前检查点不需要证据升级');
+  }
+  const current = normalizeVoiceoverCheckpoint(checkpoint, {
+    ...options,
+    allowLegacyUpgrade: true,
+  });
+  const stageIndex = STAGE_INDEX.get(current.stage);
+  const analysisEvidenceStale = (
+    stageIndex >= STAGE_INDEX.get('audio_extracted')
+    && current.analysisEvidenceVersion === undefined
+  );
+  const alignmentStale = (
+    stageIndex >= STAGE_INDEX.get('audio_aligned')
+    && current.alignmentVersion === undefined
+  );
+
+  if (!analysisEvidenceStale && alignmentStale) {
+    const reusableTtsGroups = current.ttsGroups.map((group) => {
+      const {
+        actualDurationMs: _actualDurationMs,
+        atempo: _atempo,
+        ...durableIdentity
+      } = group;
+      return durableIdentity;
+    });
+    return normalizeVoiceoverCheckpoint({
+      ...current,
+      stage: 'tts_generating',
+      ttsGroups: reusableTtsGroups,
+      alignedAudioAssetId: undefined,
+      finalAssetId: undefined,
+      alignmentVersion: undefined,
+    }, options);
+  }
+
+  const analysisWasSubmitted = stageIndex >= STAGE_INDEX.get('speech_analysis_submitting');
+  if (analysisWasSubmitted && retryPlan.userConfirmed !== true) {
+    throw buildVoiceoverError(
+      'voiceover_checkpoint_upgrade_required',
+      '旧版口播分析可能已经产生费用，请确认后重新分析',
+      { statusCode: 409 },
+    );
+  }
+  const latestLegacyTtsAttempt = Math.max(
+    -1,
+    ...(current.ttsGroups || []).map((group) => Number(group.attempt)),
+  );
+  const ttsAttemptBase = Math.max(
+    Number(current.ttsAttemptBase || 0),
+    latestLegacyTtsAttempt + 1,
+  );
+  if (ttsAttemptBase > 100) {
+    throw buildVoiceoverError('voiceover_checkpoint_invalid', 'TTS 尝试次数已达到上限');
+  }
+  return normalizeVoiceoverCheckpoint({
+    version: VOICEOVER_CHECKPOINT_VERSION,
+    stage: current.subtitleRemoval ? 'subtitle_removal' : 'input_prepared',
+    baseVideoAssetId: current.baseVideoAssetId,
+    ...(current.subtitleRemoval ? { subtitleRemoval: current.subtitleRemoval } : {}),
+    ...(ttsAttemptBase > 0 ? { ttsAttemptBase } : {}),
+    analysisAttempt: current.analysisAttempt + (analysisWasSubmitted ? 1 : 0),
   }, options);
 }

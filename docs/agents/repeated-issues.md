@@ -1218,7 +1218,7 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Symptom: 本地真实口播翻译先出现背景音乐消失和慢速错位；尝试恢复背景后又出现旧人声重复、杂音和分离伪影。
 - Evidence: 原音轨和 Demucs vocal 都是 -8.7 LUFS，`no_vocals` 只有 -44.9 LUFS；旧 8.92 秒 TTS 被 `atempo=0.75` 放进 15.07 秒总窗，口播约 11.41 秒结束后留下 3.66 秒空白。修复后的同一真实父任务生成 4 个独立时间窗，实际倍率为 1.716/1.459/1.217/1.591，最终背景床为 -24.6 LUFS，H.264/AAC MP4 为 15.042 秒且 Range 206。
 - Root cause / fix: 架构级根因、修复和防复发合同见 `CLAUDE.md` #81。Demucs 只服务于旧口播识别；最终 FFmpeg 只允许底片画面和对齐后的新口播两个媒体输入，不再使用原音轨或背景 stem。补充供应商兼容：KIE 统一 task API 的 `queuing/generating` 都是正常非终态，必须继续查询原 task ID，不能抛错后诱导新建任务。
-- Regression check: `node --test server/voiceoverAnalysis.test.mjs server/voiceoverAudio.test.mjs server/providerKieTts.test.mjs server/voiceoverChildJobStore.test.mjs server/voiceoverTranslationRunner.test.mjs scripts/probe-voiceover-translation.test.mjs`；真实 fixture 频谱证明原音乐和旧人声频率消失、新口播频率存在；真实 canary 逐组核对时间窗、`actualDurationMs`、`atempo>=1`、最终时长/编码/fast-start 和鉴权 Range。
+- Regression check: `node --test server/voiceoverAnalysis.test.mjs server/voiceoverAudio.test.mjs server/providerKieTts.test.mjs server/voiceoverChildJobStore.test.mjs server/voiceoverTranslationRunner.test.mjs scripts/probe-voiceover-translation.test.mjs`；真实 fixture 频谱证明原音乐和旧人声频率消失、新口播频率存在；真实 canary 逐组核对时间窗、`actualDurationMs`、`minAtempo<=atempo<=maxAtempo`、窗口内实际起止位置、最终时长/编码/fast-start 和鉴权 Range。
 - Avoid next time: 技术验收与听感验收分开记录；“任务成功、两个 stem 都存在”不能证明最终音轨干净。产品明确要纯口播时，不做任何声源分离背景恢复。
 - Cloud release follow-up: 腾讯云 7.5 GiB 主机的常驻可用内存约 1.8 GiB，而一次 `mdx get_model` 峰值约 1.68 GiB。零停机 reload 同时保留新旧 Node 时，在新进程 bootstrap 再真实加载模型会触发全机换页抖动，SSH/health 都可能超时；延长超时或后台重试只会放大故障。服务启动和任务前置检查改为固定 Python 版本、模型字节/哈希、YAML 与 FFmpeg filters，发布前独立探针仍真实 `get_model`；实际分离只加载一次模型。发布必须等待公网 `voiceoverTranslation.ready=true`，不能只看 PM2 online 或独立探针成功。
 
@@ -1322,3 +1322,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: Linux `requirements.in`/哈希锁加入 `soundfile==0.13.1`；Python readiness 固定该版本和 `soundfile` backend，并实际写入、回读 48 kHz 双声道 PCM_16 WAV。全部 Python 探针只收到最小环境，输出累计超过 64 KiB 即终止。生产 venv 必须在无活动任务的维护窗口从新锁显式安装，再执行真实 readiness 和同父任务重试；应用运行时仍禁止下载依赖。
 - Regression check: `node --test scripts/install-voiceover-demucs.test.mjs server/voiceoverSeparation.test.mjs` 覆盖缺包、缺 backend、写入失败、真实子进程 WAV 元数据、最小环境及超限输出；发布前还需验证生产 runtime、真实 Demucs 分离输出、父任务复用既有 Golden 且不新增 provider 提交。
 - Avoid next time: 模型加载成功或 backend 名字存在都不等于流水线可产出文件。首次接入或平台锁变化时，readiness 必须真实写入并回读最终落盘格式；缺 backend 或写入异常要在模型推理前拒绝，不能靠真实任务暴露。
+
+## 2026-08-01 - 口播语义分析必须使用原视频证据，短 TTS 要在分段窗口内居中
+
+- Symptom: 真实中文商品演示被识别成西班牙语 AI 频道介绍，翻译成品内容与画面完全无关；三段英文口播虽落在大致窗口内，后两段仍分别提前约 2.72 秒和 2.68 秒结束。
+- Evidence: 父任务 `75fac841b819e03bbddf33e8` 的源画面与中文字幕明确展示壁挂脏衣篮安装、按压吸附和分类收纳；持久 ASR 却为 `Hola a todos...`、`tendencias de la inteligencia artificial`。三个 TTS child 的 `dialogueTurns` 与错误译文逐段完全一致，排除段落串线。旧分析媒体抽帧没有字幕，新实现用同一源视频和 vocal WAV 生成的分析媒体完整保留原中文字幕。真实 TTS 窗口/时长为 `4.0/3.28s`、`7.0/4.28s`、`6.0/3.32s`。
+- Root cause: `removeText=true` 时 Golden 去字幕结果同时被误用为原音提取源和分析视频画面，分析模型失去原字幕校验证据；提示词允许删除源细节；对齐算法又强制短音频 `atempo>=1` 并把所有剩余静音留在窗口末尾。
+- Fix: 音频提取与分析画面固定使用原视频，Golden 只用于最终无字幕画面；分析提示以音频为主、原可见字幕为辅助交叉校验，禁止臆造并保留全部指令、数量、否定和商品卖点。对齐倍率改为 `max(actual/target, minAtempo)`，剩余静音均分到语音前后；同三段真实 WAV 重放得到 `0.82/0.75/0.75`，后两段分别居中在约 `7.147-12.853s` 与 `15.787-20.213s`。
+- Regression check: `node --test server/voiceoverAnalysis.test.mjs server/voiceoverAudio.test.mjs server/voiceoverTranslationRunner.test.mjs`；本地真实媒体探针核对新分析抽帧保留字幕、TTS WAV SHA-256 与生产资产一致、每组倍率和居中起止位置。
+- Avoid next time: 去字幕属于最终视觉输出，不得提前污染 ASR 证据链。口播验收按“源语言和语义 -> TTS 文本身份 -> 分段实际起止 -> 最终媒体”逐层执行；任何单层成功都不能替代音画内容对应。

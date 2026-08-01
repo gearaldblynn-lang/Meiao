@@ -2248,6 +2248,7 @@ test('mysql voiceover retry preserves checkpoint and guards the failed-to-queued
     originalAudioAssetId: 'asset-audio',
     vocalAssetId: 'asset-vocal',
     backgroundAssetId: 'asset-background',
+    analysisEvidenceVersion: 1,
     analysisAttempt: 0,
   };
   const job = {
@@ -2335,6 +2336,84 @@ test('mysql confirmed voiceover provider retry clears the previous attempt provi
   const providerTaskIdIndex = assignments.findIndex((value) => value.startsWith('provider_task_id ='));
   assert.notEqual(providerTaskIdIndex, -1);
   assert.equal(queries[0].values[providerTaskIdIndex], null);
+});
+
+test('mysql confirmed voiceover evidence upgrade clears the stale parent TTS provider task id', async () => {
+  const job = {
+    id: 'parent-mysql-evidence-upgrade',
+    userId: 'user-1',
+    module: 'video',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'failed',
+    providerTaskId: 'provider-tts-stale',
+    payload: {
+      taskPurpose: 'voiceover_translation',
+      subFeature: 'voiceover_translation',
+      removeText: false,
+    },
+    result: {
+      audit: 'keep',
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'speech_analyzed',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-audio',
+        vocalAssetId: 'asset-vocal',
+        backgroundAssetId: 'asset-background',
+        analysisAttempt: 0,
+        analysis: {
+          sourceLanguage: 'cmn',
+          speakerCount: 1,
+          voiceProfile: {
+            pitch: 'medium',
+            brightness: 'balanced',
+            energy: 'balanced',
+            pace: 'natural',
+            accentDescription: 'clear',
+          },
+          segments: [{
+            id: 's1',
+            startMs: 0,
+            endMs: 800,
+            sourceText: '源文',
+            targetText: 'Translation',
+          }],
+        },
+      },
+    },
+    errorCode: 'voiceover_checkpoint_upgrade_required',
+  };
+  const voiceoverRetryPlan = deriveVoiceoverRetryPlan(job, {
+    confirmNewProviderAttempt: true,
+  });
+  const queries = [];
+  const pool = {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      return [{ affectedRows: 1 }];
+    },
+  };
+
+  await requestRetryJob(pool, job, { voiceoverRetryPlan });
+
+  assert.equal(voiceoverRetryPlan.kind, 'evidence_upgrade');
+  assert.equal(queries.length, 1);
+  const assignments = queries[0].sql
+    .split('SET ')[1]
+    .split(' WHERE')[0]
+    .split(',')
+    .map((value) => value.trim());
+  const providerTaskIdIndex = assignments.findIndex((value) => value.startsWith('provider_task_id ='));
+  assert.notEqual(providerTaskIdIndex, -1);
+  assert.equal(queries[0].values[providerTaskIdIndex], null);
+  const serializedResult = queries[0].values.find((value) => (
+    typeof value === 'string' && value.includes('"voiceoverCheckpoint"')
+  ));
+  const nextResult = JSON.parse(serializedResult);
+  assert.equal(nextResult.audit, 'keep');
+  assert.equal(nextResult.voiceoverCheckpoint.stage, 'input_prepared');
+  assert.equal(nextResult.voiceoverCheckpoint.analysisAttempt, 1);
 });
 
 test('mysql voiceover retry rejects active parents and accepts cancelled query-only recovery with an exact CAS', async () => {

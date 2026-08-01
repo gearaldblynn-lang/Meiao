@@ -96,10 +96,14 @@ test('analysis prompt is one RTCFE user message with one managed input_file befo
   assert.match(prompt, /English/);
   assert.match(prompt, /12000/);
   assert.match(prompt, /24 UTF-8 bytes per second/i);
-  assert.match(prompt, /shorten.*nonessential/i);
+  assert.match(prompt, /audio.*primary evidence/i);
+  assert.match(prompt, /visible.*subtitles.*cross-check/i);
+  assert.match(prompt, /preserve every instruction.*product claim/i);
   assert.match(prompt, /3 spoken words per second/i);
   assert.match(prompt, /timing fit is mandatory/i);
-  assert.match(prompt, /omit secondary modifiers/i);
+  assert.match(prompt, /semantic fidelity.*takes priority.*timing/i);
+  assert.match(prompt, /fail validation.*omit.*meaning/i);
+  assert.doesNotMatch(prompt, /omit secondary modifiers|do not copy every source detail/i);
   assert.doesNotMatch(prompt, /\b(?:gender|ethnicity|age|race)\b/i);
 });
 

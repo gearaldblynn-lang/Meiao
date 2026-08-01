@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 
 import {
   getVoiceoverConfig,
+  hasLegacyVoiceoverCheckpointProvenance,
   mergeVoiceoverCheckpoint,
   normalizeVoiceoverCheckpoint,
+  prepareVoiceoverEvidenceUpgradeCheckpoint,
   prepareVoiceoverRetryCheckpoint,
 } from './voiceoverContract.mjs';
 import {
@@ -963,6 +965,14 @@ export const deriveVoiceoverRetryPlan = (job, retryRequest = {}, options = {}) =
   }
   const request = normalizeVoiceoverRetryRequestBody(retryRequest);
   const checkpointOptions = resolveCheckpointOptions(normalized, options);
+  if (hasLegacyVoiceoverCheckpointProvenance(
+    normalized.result.voiceoverCheckpoint,
+  )) {
+    return {
+      kind: 'evidence_upgrade',
+      userConfirmed: request.confirmNewProviderAttempt,
+    };
+  }
   const checkpoint = normalizeVoiceoverCheckpoint(
     normalized.result.voiceoverCheckpoint,
     checkpointOptions,
@@ -1034,12 +1044,22 @@ export const prepareVoiceoverJobRetryResult = (job, voiceoverRetryPlan = {}, opt
     'voiceover_retry_invalid',
   );
   const checkpointOptions = resolveCheckpointOptions(normalized, options);
-  const current = normalizeVoiceoverCheckpoint(
-    normalized.result.voiceoverCheckpoint,
-    checkpointOptions,
-  );
   const kind = String(voiceoverRetryPlan.kind || 'reuse');
-  let voiceoverCheckpoint = current;
+  let current = null;
+  let voiceoverCheckpoint;
+  if (kind === 'evidence_upgrade') {
+    voiceoverCheckpoint = prepareVoiceoverEvidenceUpgradeCheckpoint(
+      normalized.result.voiceoverCheckpoint,
+      { userConfirmed: voiceoverRetryPlan.userConfirmed === true },
+      checkpointOptions,
+    );
+  } else {
+    current = normalizeVoiceoverCheckpoint(
+      normalized.result.voiceoverCheckpoint,
+      checkpointOptions,
+    );
+    voiceoverCheckpoint = current;
+  }
   if (kind === 'analysis') {
     if (!VOICEOVER_ANALYSIS_RETRY_ERROR_CODES.has(normalized.errorCode)) {
       throw createStoreError('voiceover_retry_invalid', '当前失败不需要新分析尝试。', 400);
@@ -1153,7 +1173,7 @@ export const prepareVoiceoverJobRetryResult = (job, voiceoverRetryPlan = {}, opt
         409,
       );
     }
-  } else {
+  } else if (kind !== 'evidence_upgrade') {
     throw createStoreError('voiceover_retry_invalid', '口播翻译重试计划无效。', 400);
   }
   return {

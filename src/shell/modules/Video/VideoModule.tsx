@@ -272,7 +272,7 @@ const VideoModule: React.FC<Props> = ({
     <ProjectListView
       title={isVoiceoverTranslation ? '口播翻译' : isSubtitleRemoval ? '视频去字幕' : '短视频生成'}
       description={isVoiceoverTranslation
-        ? '保留原画面与背景声音，将单人口播转换为目标语言'
+        ? '保留原画面，将单人口播转换为目标语言并替换原音轨'
         : isSubtitleRemoval
           ? '上传原视频并选择字幕区域，任务完成后可对比原片与结果'
           : '底部输入框负责配置与提交，中间区域只展示项目状态和结果'}

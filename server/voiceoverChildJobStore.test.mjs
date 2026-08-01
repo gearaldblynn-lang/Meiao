@@ -168,6 +168,7 @@ test('local parent checkpoint merges atomically and preserves unrelated result f
       voiceoverCheckpoint: {
         stage: 'audio_extracted',
         originalAudioAssetId: 'asset-audio',
+        analysisEvidenceVersion: 1,
       },
     },
     env: {},
@@ -189,7 +190,13 @@ test('local parent checkpoint rejects stale claims, wrong users, and invalid reg
         jobId: 'parent-job-1',
         userId: overrides.userId || 'user-1',
         startedAt: overrides.startedAt ?? 1_500,
-        resultPatch: { voiceoverCheckpoint: { stage: 'audio_extracted', originalAudioAssetId: 'asset-audio' } },
+        resultPatch: {
+          voiceoverCheckpoint: {
+            stage: 'audio_extracted',
+            originalAudioAssetId: 'asset-audio',
+            analysisEvidenceVersion: 1,
+          },
+        },
         env: {},
       }),
       (error) => error.code === 'job_state_changed',
@@ -253,6 +260,7 @@ test('mysql parent checkpoint uses the exact running claim guard and requires on
       voiceoverCheckpoint: {
         stage: 'audio_extracted',
         originalAudioAssetId: 'asset-audio',
+        analysisEvidenceVersion: 1,
       },
     },
     env: {},
@@ -816,6 +824,7 @@ test('server derives analysis and query-only retry plans without trusting parent
         originalAudioAssetId: 'asset-audio',
         vocalAssetId: 'asset-vocal',
         backgroundAssetId: 'asset-background',
+        analysisEvidenceVersion: 1,
         analysisAttempt: 0,
       },
     },
@@ -897,6 +906,7 @@ test('server derives analysis and query-only retry plans without trusting parent
         originalAudioAssetId: 'asset-audio',
         vocalAssetId: 'asset-vocal',
         backgroundAssetId: 'asset-background',
+        analysisEvidenceVersion: 1,
         analysisAttempt: 1,
         analysis: {
           sourceLanguage: 'en',
@@ -971,6 +981,106 @@ test('server derives analysis and query-only retry plans without trusting parent
   }), {
     kind: 'reuse',
   });
+});
+
+test('legacy semantic checkpoints require confirmation and retire old TTS child identities', () => {
+  const staleParent = validParent({
+    status: 'failed',
+    errorCode: 'voiceover_checkpoint_upgrade_required',
+    providerTaskId: 'provider-tts-old',
+    payload: validParentPayload({ removeText: true }),
+    result: {
+      auditMarker: 'preserve-me',
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'audio_aligned',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-audio-from-golden',
+        vocalAssetId: 'asset-vocal-old',
+        backgroundAssetId: 'asset-background-old',
+        subtitleRemoval: {
+          childJobId: 'golden-child-0',
+          providerTaskId: 'provider-golden-0',
+          resultAssetId: 'asset-golden',
+          attempt: 0,
+          status: 'succeeded',
+        },
+        analysisAttempt: 0,
+        analysis: {
+          sourceLanguage: 'es',
+          speakerCount: 1,
+          voiceProfile: {
+            pitch: 'medium',
+            brightness: 'balanced',
+            energy: 'balanced',
+            pace: 'natural',
+            accentDescription: 'clear',
+          },
+          segments: [{
+            id: 'segment-1',
+            startMs: 0,
+            endMs: 1_000,
+            sourceText: 'Contenido incorrecto',
+            targetText: 'Wrong content',
+          }],
+        },
+        translation: {
+          targetLanguage: 'en',
+          mode: 'natural',
+          selectedVoiceName: 'Kore',
+          segments: [{
+            id: 'segment-1',
+            startMs: 0,
+            endMs: 1_000,
+            sourceText: 'Contenido incorrecto',
+            targetText: 'Wrong content',
+          }],
+        },
+        ttsGroups: [{
+          index: 0,
+          attempt: 0,
+          childJobId: 'tts-child-old',
+          providerTaskId: 'provider-tts-old',
+          assetId: 'asset-tts-old',
+          status: 'succeeded',
+          startMs: 0,
+          endMs: 1_000,
+          actualDurationMs: 800,
+          atempo: 1,
+        }],
+        alignedAudioAssetId: 'asset-aligned-old',
+      },
+    },
+  });
+
+  const unconfirmed = deriveVoiceoverRetryPlan(staleParent, {
+    confirmNewProviderAttempt: false,
+  });
+  assert.deepEqual(unconfirmed, {
+    kind: 'evidence_upgrade',
+    userConfirmed: false,
+  });
+  assert.throws(
+    () => prepareVoiceoverJobRetryResult(staleParent, unconfirmed),
+    (error) => error?.code === 'voiceover_checkpoint_upgrade_required',
+  );
+
+  const confirmed = deriveVoiceoverRetryPlan(staleParent, {
+    confirmNewProviderAttempt: true,
+  });
+  const upgraded = prepareVoiceoverJobRetryResult(staleParent, confirmed);
+  assert.equal(upgraded.auditMarker, 'preserve-me');
+  assert.equal(upgraded.voiceoverCheckpoint.stage, 'subtitle_removal');
+  assert.equal(upgraded.voiceoverCheckpoint.analysisAttempt, 1);
+  assert.equal(upgraded.voiceoverCheckpoint.ttsAttemptBase, 1);
+  assert.equal(
+    upgraded.voiceoverCheckpoint.subtitleRemoval.providerTaskId,
+    'provider-golden-0',
+  );
+  assert.equal(upgraded.voiceoverCheckpoint.analysis, undefined);
+  assert.equal(upgraded.voiceoverCheckpoint.translation, undefined);
+  assert.equal(upgraded.voiceoverCheckpoint.ttsGroups, undefined);
+  assert.equal(upgraded.voiceoverCheckpoint.alignedAudioAssetId, undefined);
 });
 
 test('voiceover parent in provider recovery manual state rejects ordinary retry', () => {

@@ -809,6 +809,7 @@ test('local temporal activity awaits and preserves a parent result checkpoint be
         voiceoverCheckpoint: {
           stage: 'audio_extracted',
           originalAudioAssetId: 'asset-audio',
+          analysisEvidenceVersion: 1,
         },
       });
       assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
@@ -838,6 +839,7 @@ test('Temporal restart then cancel keeps a speech-analysis submission reservatio
     originalAudioAssetId: 'asset-original',
     vocalAssetId: 'asset-vocal',
     backgroundAssetId: 'asset-background',
+    analysisEvidenceVersion: 1,
     analysisAttempt: 0,
   };
   store.jobs = [parent];

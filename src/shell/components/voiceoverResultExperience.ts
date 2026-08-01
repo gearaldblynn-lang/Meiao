@@ -89,6 +89,7 @@ export const requiresVoiceoverRetryConfirmation = (
   if ([
     'provider_submission_unknown',
     'voiceover_analysis_submission_unknown',
+    'voiceover_checkpoint_upgrade_required',
     'voiceover_retry_confirmation_required',
   ].includes(String(result.errorCode || '').trim())) {
     return true;
@@ -133,7 +134,10 @@ export const runVoiceoverRetryRequest = async ({
     if (
       error
       && typeof error === 'object'
-      && String((error as { code?: unknown }).code || '') === 'voiceover_retry_confirmation_required'
+      && [
+        'voiceover_retry_confirmation_required',
+        'voiceover_checkpoint_upgrade_required',
+      ].includes(String((error as { code?: unknown }).code || ''))
     ) {
       requestConfirmation();
       return;

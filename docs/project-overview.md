@@ -38,10 +38,10 @@
 
 ### 短视频 / 口播翻译
 
-- 输入必须是当前登录账号拥有的梅奥托管视频。流程为本地 FFmpeg 提取音轨、本地非量化 Demucs `mdx` 分离人声用于识别、Gemini 单次分析与翻译、KIE Gemini 3.1 Flash TTS 按检测到的每个口播时间段独立合成、本地对齐，并用新口播完全替换原视频音轨，再把 H.264/AAC MP4 作为托管结果写回原任务卡。成品不保留原口播、背景音乐或环境声，后期可重新配乐。
-- 新口播不会为了填满时间窗而降速；短语音保持自然速度并按原时间戳放置，长语音按时间窗在上限内加速。混音同时使用 Demucs `no_vocals` 和原音轨左右声道差分，避免中心人声占满混音时把原背景音乐一起删除。
-- “同时去文案”是可选 Golden 阶段，默认区域为底部 30%。它会增加一次 Golden 计费边界；关闭该选项不会调用 Golden。
-- 本地和腾讯云都使用同一套 readiness、父子任务检查点和托管素材合同；正式发布必须在服务端确认 `voiceoverTranslation.ready=true`，并用最小真实任务验收分析、逐段 TTS、对齐、混音和最终资源链。
+- 输入必须是当前登录账号拥有的梅奥托管视频。流程为从原视频提取音轨、本地非量化 Demucs `mdx` 分离人声、Gemini 结合人声与原画面可见字幕完成单次分析和翻译、KIE Gemini 3.1 Flash TTS 按每个口播时间段独立合成、本地对齐，并用新口播完全替换原视频音轨，再把 H.264/AAC MP4 作为托管结果写回原任务卡。成品不保留原口播、背景音乐或环境声，后期可重新配乐。
+- 每段新口播按自己的持久时间窗独立对齐：长语音在 `maxAtempo` 内加速，短语音可在 `minAtempo` 内安全减速；仍短于时间窗时把剩余静音均分到语音前后。超出可理解速度范围时任务失败，不截断口播，也不删除或篡改语义来硬塞时长。
+- “同时去文案”是可选 Golden 阶段，默认区域为底部 30%。Golden 结果只作为最终无字幕底片，原视频始终是音频提取和语义分析证据；它会增加一次 Golden 计费边界，关闭该选项不会调用 Golden。
+- 本地和腾讯云都使用同一套 readiness、父子任务检查点和托管素材合同；旧分析证据或旧对齐算法的未完成检查点必须升级后重跑，不能静默复用。正式发布必须在服务端确认 `voiceoverTranslation.ready=true`，并用最小真实任务逐段验收原文、译文、TTS 文本身份、实际起止位置、画面动作和最终资源链。
 - 回滚只把 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=0` 并正常 reload，停止新提交；历史任务、原视频和已经托管的翻译结果继续可查看和下载。
 
 ## 3. 本地运行
@@ -248,7 +248,7 @@ npm run dev
 | `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY` | `1` | 整数 `1-2`；生产首发保持 `1` |
 | `MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS` | `3600000` | 整数 `300000-7200000` |
 | `MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS` | `120000` | 整数 `30000-180000`；仅发布前独立模型加载门禁，启动不加载 |
-| `MEIAO_VOICEOVER_MIN_ATEMPO` | `0.75` | `0.5-1`；只兼容旧检查点，新口播实际不低于 `1` |
+| `MEIAO_VOICEOVER_MIN_ATEMPO` | `0.75` | `0.5-1`；短口播可安全减速到该下限，并在原时间窗内居中 |
 | `MEIAO_VOICEOVER_MAX_ATEMPO` | `1.75` | `1-2` |
 | `MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS` | `8192` | 整数 `1-8192`，不得超过语音模型上限 |
 | `MEIAO_VOICEOVER_GROUP_GAP_MS` | `800` | 整数 `0-3000`；保留兼容，当前每个口播时间段独立 TTS |
@@ -290,7 +290,7 @@ fixture 只运行本机 FFmpeg/Demucs，验证 H.264/AAC 输入、人声/背景�
 
 远程探针使用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 作为梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 只能在当前 shell/命令临时注入并在执行后清除，不能写入任何 env 文件；`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 也只接受探针启动前的单次命令环境，持久化在 `.env.server` / `.env.local` 中会被忽略。live 和失败证据会输出安全的内部 `parentJobId` / `childJobId`；`--resume-child-task-id` 只接受该内部 `childJobId` 并直查 `/api/jobs/:id`，不会按 `providerTaskId` 搜索或扫描父任务列表。
 
-计费边界：本机 Demucs 只消耗腾讯云计算资源，没有第三方按次费用；Gemini 分析/翻译、KIE TTS，以及可选 Golden 都可能计费。技术验收（任务/检查点/托管素材、H.264/AAC、Range、重启恢复）与感知验收（原口播不可辨、背景保留、目标语言和节奏正确、画面不变）必须分别记录，自动化通过不能代替真人试听/观看。
+计费边界：本机 Demucs 只消耗腾讯云计算资源，没有第三方按次费用；Gemini 分析/翻译、KIE TTS，以及可选 Golden 都可能计费。技术验收（任务/检查点/托管素材、H.264/AAC、Range、重启恢复）、语义验收（原文、译文、TTS 文本和画面动作逐段对应）与感知验收（原口播、背景音乐和环境声均不可辨，目标语言、语速和起止位置正确，画面不变）必须分别记录，自动化通过不能代替真人试听/观看。
 
 ## 6. 验证入口
 

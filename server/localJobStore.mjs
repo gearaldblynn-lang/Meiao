@@ -443,7 +443,7 @@ export const requestLocalRetryJob = (store, jobId, options = {}) => {
   const updatedAt = now();
   const resetProviderTaskId = options.resetProviderTaskId === true
     || (
-      options.voiceoverRetryPlan?.kind === 'provider'
+      ['provider', 'evidence_upgrade'].includes(options.voiceoverRetryPlan?.kind)
       && options.voiceoverRetryPlan?.userConfirmed === true
     );
   const retryResult = current.taskType === 'voiceover_translate_video' && current.provider === 'internal'
