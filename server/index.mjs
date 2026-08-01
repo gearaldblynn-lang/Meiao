@@ -186,6 +186,7 @@ import {
 } from './voiceoverSeparation.mjs';
 import {
   alignVoiceoverGroups,
+  buildVoiceoverAnalysisAudioEvidence,
   buildVocalOnlyAnalysisVideo,
   extractVoiceoverAudio,
   mixVoiceoverResult,
@@ -4775,6 +4776,11 @@ const createVoiceoverRunnerDependencies = async (job, env) => {
     buildVocalOnlyVideo: ({ config, ...options }) => buildVocalOnlyAnalysisVideo({
       ...options,
       config,
+      deps: { env },
+    }),
+    buildAnalysisAudioEvidence: ({ config, ...options }) => buildVoiceoverAnalysisAudioEvidence({
+      ...options,
+      maxBytes: config.analysisInlineAudioMaxBytes,
       deps: { env },
     }),
     analyzeSpeech: async ({ messages, signal }) => {

@@ -32,6 +32,7 @@ import {
   isParentOwnedChildJob,
 } from './voiceoverChildJobStore.mjs';
 import { shouldReleaseJobCreditReservation } from './accountCredits.mjs';
+import { VOICEOVER_ANALYSIS_EVIDENCE_VERSION } from './voiceoverContract.mjs';
 
 const jobManagerSource = readFileSync(new URL('./jobManager.mjs', import.meta.url), 'utf8');
 const serverSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
@@ -2186,7 +2187,7 @@ test('mysql voiceover retry preserves checkpoint and guards the failed-to-queued
     originalAudioAssetId: 'asset-audio',
     vocalAssetId: 'asset-vocal',
     backgroundAssetId: 'asset-background',
-    analysisEvidenceVersion: 1,
+    analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
     analysisAttempt: 0,
   };
   const job = {

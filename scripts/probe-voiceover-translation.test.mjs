@@ -11,6 +11,7 @@ import {
   redactVoiceoverProbeText,
   runVoiceoverProbe,
 } from './probe-voiceover-translation.mjs';
+import { VOICEOVER_ANALYSIS_EVIDENCE_VERSION } from '../server/voiceoverContract.mjs';
 
 const readyLocal = Object.freeze({
   ready: true,
@@ -34,7 +35,7 @@ const canonicalVoiceoverCheckpoint = ({ removeText = false, ...overrides } = {})
     originalAudioAssetId: 'asset-original-audio',
     vocalAssetId: 'asset-vocals',
     backgroundAssetId: 'asset-background',
-    analysisEvidenceVersion: 1,
+    analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
     alignmentVersion: 1,
     analysisAttempt: 0,
     ...(removeText ? {

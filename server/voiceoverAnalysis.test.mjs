@@ -42,28 +42,46 @@ const parserOptions = (patch = {}) => ({
   overlapToleranceMs: 150,
   ...patch,
 });
+const INLINE_AUDIO_DATA = Buffer.from('voice-evidence').toString('base64');
+const analysisMessageOptions = (patch = {}) => ({
+  vocalAudioData: INLINE_AUDIO_DATA,
+  vocalAudioMimeType: 'audio/mp4',
+  vocalOnlyVideoUrl: 'https://managed.example/vocal-only.mp4',
+  targetLanguage: 'en',
+  translationMode: 'natural',
+  durationMs: 12_000,
+  ...patch,
+});
 
 const parse = (value, options) => parseVoiceoverAnalysis(
   typeof value === 'string' ? value : JSON.stringify(value),
   options || parserOptions(),
 );
 
-test('analysis prompt is one RTCFE user message with one managed input_file before one text item', () => {
+test('analysis prompt sends inline vocal audio as primary evidence and managed video as supporting evidence', () => {
   const vocalOnlyVideoUrl = 'https://managed.example/vocal-only.mp4?signature=redacted';
-  const messages = buildVoiceoverAnalysisMessages({
+  const messages = buildVoiceoverAnalysisMessages(analysisMessageOptions({
     vocalOnlyVideoUrl,
-    targetLanguage: 'en',
-    translationMode: 'natural',
-    durationMs: 12_000,
     maxTargetTextBytesPerSecond: 24,
-  });
+  }));
 
   assert.equal(messages.length, 1);
   assert.equal(messages[0].role, 'user');
-  assert.deepEqual(messages[0].content[0], { type: 'input_file', file_url: vocalOnlyVideoUrl });
-  assert.equal(messages[0].content[1].type, 'text');
-  assert.equal(messages[0].content.length, 2);
-  const prompt = messages[0].content[1].text;
+  assert.deepEqual(messages[0].content[0], {
+    type: 'input_file',
+    file_data: INLINE_AUDIO_DATA,
+    mime_type: 'audio/mp4',
+    filename: 'vocal-evidence.m4a',
+  });
+  assert.deepEqual(messages[0].content[1], {
+    type: 'input_file',
+    file_url: vocalOnlyVideoUrl,
+    filename: 'supporting-video.mp4',
+    mime_type: 'video/mp4',
+  });
+  assert.equal(messages[0].content[2].type, 'text');
+  assert.equal(messages[0].content.length, 3);
+  const prompt = messages[0].content[2].text;
   for (const heading of [
     'R Role',
     'T Task',
@@ -108,13 +126,12 @@ test('analysis prompt is one RTCFE user message with one managed input_file befo
 });
 
 test('natural and literal prompts preserve distinct translation priorities and safe timing', () => {
-  const base = {
-    vocalOnlyVideoUrl: 'https://managed.example/vocal-only.mp4',
-    targetLanguage: 'en',
-    durationMs: 12_000,
-  };
-  const natural = buildVoiceoverAnalysisMessages({ ...base, translationMode: 'natural' })[0].content[1].text;
-  const literal = buildVoiceoverAnalysisMessages({ ...base, translationMode: 'literal' })[0].content[1].text;
+  const natural = buildVoiceoverAnalysisMessages(analysisMessageOptions({
+    translationMode: 'natural',
+  }))[0].content[2].text;
+  const literal = buildVoiceoverAnalysisMessages(analysisMessageOptions({
+    translationMode: 'literal',
+  }))[0].content[2].text;
 
   assert.notEqual(natural, literal);
   assert.match(natural, /idiomatic/i);
@@ -128,12 +145,9 @@ test('natural and literal prompts preserve distinct translation priorities and s
 test('analysis prompt lists every supported source code, pins Mandarin to cmn, and uses no language-content example', () => {
   const allowedCodes = VOICEOVER_LANGUAGES.map(({ code }) => code).join(', ');
   for (const targetLanguage of ['ja', 'ko', 'cmn']) {
-    const prompt = buildVoiceoverAnalysisMessages({
-      vocalOnlyVideoUrl: 'https://managed.example/vocal-only.mp4',
+    const prompt = buildVoiceoverAnalysisMessages(analysisMessageOptions({
       targetLanguage,
-      translationMode: 'natural',
-      durationMs: 12_000,
-    })[0].content[1].text;
+    }))[0].content[2].text;
 
     assert.match(prompt, new RegExp(`Allowed sourceLanguage codes: ${allowedCodes.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.`));
     assert.match(prompt, /Mandarin Chinese must use sourceLanguage "cmn"/);
@@ -146,6 +160,8 @@ test('analysis prompt lists every supported source code, pins Mandarin to cmn, a
 test('analysis prompt rejects invalid input instead of constructing an ambiguous provider request', () => {
   assert.throws(
     () => buildVoiceoverAnalysisMessages({
+      vocalAudioData: INLINE_AUDIO_DATA,
+      vocalAudioMimeType: 'audio/mp4',
       vocalOnlyVideoUrl: '',
       targetLanguage: 'en',
       translationMode: 'natural',
@@ -154,22 +170,27 @@ test('analysis prompt rejects invalid input instead of constructing an ambiguous
     (error) => error.code === 'voiceover_analysis_invalid',
   );
   assert.throws(
-    () => buildVoiceoverAnalysisMessages({
-      vocalOnlyVideoUrl: 'https://managed.example/vocal-only.mp4',
+    () => buildVoiceoverAnalysisMessages(analysisMessageOptions({
       targetLanguage: 'zz',
-      translationMode: 'natural',
-      durationMs: 12_000,
-    }),
+    })),
     (error) => error.code === 'voiceover_language_unsupported',
   );
   assert.throws(
-    () => buildVoiceoverAnalysisMessages({
-      vocalOnlyVideoUrl: 'https://managed.example/vocal-only.mp4',
-      targetLanguage: 'en',
-      translationMode: 'natural',
-      durationMs: 12_000,
+    () => buildVoiceoverAnalysisMessages(analysisMessageOptions({
       maxTargetTextBytesPerSecond: 513,
-    }),
+    })),
+    (error) => error.code === 'voiceover_analysis_invalid',
+  );
+  assert.throws(
+    () => buildVoiceoverAnalysisMessages(analysisMessageOptions({
+      vocalAudioData: '',
+    })),
+    (error) => error.code === 'voiceover_analysis_invalid',
+  );
+  assert.throws(
+    () => buildVoiceoverAnalysisMessages(analysisMessageOptions({
+      vocalAudioMimeType: 'audio/wav',
+    })),
     (error) => error.code === 'voiceover_analysis_invalid',
   );
 });

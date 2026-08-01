@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
   VOICEOVER_BOUNDS,
   VOICEOVER_CHECKPOINT_VERSION,
   VOICEOVER_DEFAULTS,
@@ -46,7 +47,7 @@ const validCheckpoint = (overrides = {}) => ({
   originalAudioAssetId: 'asset-audio',
   vocalAssetId: 'asset-vocals',
   backgroundAssetId: 'asset-background',
-  analysisEvidenceVersion: 1,
+  analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
   analysisAttempt: 0,
   ...overrides,
 });
@@ -59,6 +60,7 @@ test('invalid capacity values fall back to conservative defaults', () => {
     MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS: '9000',
     MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND: '513',
     MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS: '1',
+    MEIAO_GEMINI_INLINE_DATA_MAX_BYTES: '1',
   });
   assert.equal(config.separationConcurrency, 1);
   assert.equal(config.minAtempo, 0.75);
@@ -66,6 +68,8 @@ test('invalid capacity values fall back to conservative defaults', () => {
   assert.equal(config.maxTargetTextBytesPerSecond, 24);
   assert.equal(config.maxAtempo, 1.75);
   assert.equal(config.readinessModelTimeoutMs, 120_000);
+  assert.equal(config.analysisInlineAudioMaxBytes, 12 * 1024 * 1024);
+  assert.equal(VOICEOVER_ANALYSIS_EVIDENCE_VERSION, 2);
   assert.equal(VOICEOVER_DEFAULTS.maxTargetTextBytesPerSecond, 24);
   assert.equal(VOICEOVER_DEFAULTS.maxAtempo, 1.75);
   assert.deepEqual(VOICEOVER_BOUNDS.maxTargetTextBytesPerSecond, [16, 512]);
@@ -76,6 +80,9 @@ test('invalid capacity values fall back to conservative defaults', () => {
   assert.equal(getVoiceoverConfig({
     MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS: '90000',
   }).readinessModelTimeoutMs, 90_000);
+  assert.equal(getVoiceoverConfig({
+    MEIAO_GEMINI_INLINE_DATA_MAX_BYTES: String(8 * 1024 * 1024),
+  }).analysisInlineAudioMaxBytes, 8 * 1024 * 1024);
 });
 
 test('public voice catalog exposes only validated deployable preview urls', () => {
@@ -154,13 +161,13 @@ test('checkpoint stages are monotonic and carry only fields available at each st
 
 test('current checkpoints carry analysis evidence and alignment algorithm provenance', () => {
   const separated = normalizeVoiceoverCheckpoint(validCheckpoint());
-  assert.equal(separated.analysisEvidenceVersion, 1);
+  assert.equal(separated.analysisEvidenceVersion, VOICEOVER_ANALYSIS_EVIDENCE_VERSION);
 
   const aligned = normalizeVoiceoverCheckpoint(checkpointAt('audio_aligned', {
-    analysisEvidenceVersion: 1,
+    analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
     alignmentVersion: 1,
   }));
-  assert.equal(aligned.analysisEvidenceVersion, 1);
+  assert.equal(aligned.analysisEvidenceVersion, VOICEOVER_ANALYSIS_EVIDENCE_VERSION);
   assert.equal(aligned.alignmentVersion, 1);
 
   assert.throws(
@@ -171,7 +178,7 @@ test('current checkpoints carry analysis evidence and alignment algorithm proven
   );
   assert.throws(
     () => normalizeVoiceoverCheckpoint(checkpointAt('audio_aligned', {
-      analysisEvidenceVersion: 1,
+      analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
       alignmentVersion: undefined,
     })),
     (error) => error.code === 'voiceover_checkpoint_upgrade_required',
@@ -198,7 +205,7 @@ test('no-Golden checkpoint progression omits subtitle removal while Golden requi
   checkpoint = mergeVoiceoverCheckpoint(checkpoint, {
     stage: 'audio_extracted',
     originalAudioAssetId: 'asset-audio',
-    analysisEvidenceVersion: 1,
+    analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
   }, options);
   checkpoint = mergeVoiceoverCheckpoint(checkpoint, { stage: 'voice_separated', vocalAssetId: 'asset-vocals', backgroundAssetId: 'asset-background' }, options);
   checkpoint = mergeVoiceoverCheckpoint(checkpoint, { stage: 'speech_analysis_submitting' }, options);
@@ -228,7 +235,7 @@ test('no-Golden options reject Golden stages and checkpoint data in normalizatio
   assert.equal(mergeVoiceoverCheckpoint(normalizeVoiceoverCheckpoint(goldenStage, { removeText: true }), {
     stage: 'audio_extracted',
     originalAudioAssetId: 'asset-audio',
-    analysisEvidenceVersion: 1,
+    analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
   }, { removeText: true }).subtitleRemoval.childJobId, 'subtitle-child-1');
 });
 
@@ -390,7 +397,7 @@ function checkpointAt(stage, overrides = {}) {
     backgroundAssetId: 'asset-background',
     analysisAttempt: 0,
     ...(['audio_extracted', 'voice_separated', 'speech_analysis_submitting', 'speech_analyzed', 'translated', 'tts_generating', 'audio_aligned', 'result_persisted'].includes(stage)
-      ? { analysisEvidenceVersion: 1 }
+      ? { analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION }
       : {}),
     ...(STAGE_WITH_ANALYSIS.has(stage) ? { analysis: validAnalysis() } : {}),
     ...(STAGE_WITH_TRANSLATION.has(stage) ? { translation: validTranslation() } : {}),
@@ -412,7 +419,7 @@ function noGoldenCheckpointAt(stage, overrides = {}) {
     backgroundAssetId: ['voice_separated', 'speech_analysis_submitting', 'speech_analyzed', 'translated', 'tts_generating', 'audio_aligned', 'result_persisted'].includes(stage) ? 'asset-background' : undefined,
     analysisAttempt: 0,
     ...(['audio_extracted', 'voice_separated', 'speech_analysis_submitting', 'speech_analyzed', 'translated', 'tts_generating', 'audio_aligned', 'result_persisted'].includes(stage)
-      ? { analysisEvidenceVersion: 1 }
+      ? { analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION }
       : {}),
     ...(STAGE_WITH_ANALYSIS.has(stage) ? { analysis: validAnalysis() } : {}),
     ...(STAGE_WITH_TRANSLATION.has(stage) ? { translation: validTranslation() } : {}),

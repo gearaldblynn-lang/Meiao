@@ -28,6 +28,7 @@ import {
   isParentOwnedChildJob,
 } from './voiceoverChildJobStore.mjs';
 import { shouldReleaseJobCreditReservation } from './accountCredits.mjs';
+import { VOICEOVER_ANALYSIS_EVIDENCE_VERSION } from './voiceoverContract.mjs';
 
 const createStore = () => ({
   users: [],
@@ -1020,7 +1021,7 @@ test('local voiceover retry preserves checkpoint and only server-confirmed analy
         originalAudioAssetId: 'asset-audio',
         vocalAssetId: 'asset-vocal',
         backgroundAssetId: 'asset-background',
-        analysisEvidenceVersion: 1,
+        analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
         analysisAttempt: 0,
       },
     },
@@ -1099,7 +1100,7 @@ test('local voiceover paid retry derives the next TTS attempt once from the dura
         originalAudioAssetId: 'asset-audio',
         vocalAssetId: 'asset-vocal',
         backgroundAssetId: 'asset-background',
-        analysisEvidenceVersion: 1,
+        analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
         analysisAttempt: 0,
         analysis: {
           sourceLanguage: 'cmn',
@@ -1203,7 +1204,7 @@ test('local voiceover reuse follows the current provider attempt instead of hist
     originalAudioAssetId: 'asset-audio',
     vocalAssetId: 'asset-vocal',
     backgroundAssetId: 'asset-background',
-    analysisEvidenceVersion: 1,
+    analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
     analysisAttempt: 0,
     analysis: {
       sourceLanguage: 'cmn',
@@ -1451,7 +1452,7 @@ test('classic local worker awaits parent checkpoint before the next side effect 
         voiceoverCheckpoint: {
           stage: 'audio_extracted',
           originalAudioAssetId: 'asset-audio',
-          analysisEvidenceVersion: 1,
+          analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
         },
       });
       assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');

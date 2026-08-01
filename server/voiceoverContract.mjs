@@ -6,9 +6,14 @@ import {
   getVoiceoverLanguage,
   getVoiceoverVoice,
 } from '../src/utils/voiceoverCatalog.mjs';
+import {
+  GEMINI_INLINE_DATA_BOUNDS,
+  GEMINI_INLINE_DATA_DEFAULT_MAX_BYTES,
+  getGeminiInlineDataMaxBytes,
+} from './geminiInlineData.mjs';
 
 export const VOICEOVER_CHECKPOINT_VERSION = 1;
-export const VOICEOVER_ANALYSIS_EVIDENCE_VERSION = 1;
+export const VOICEOVER_ANALYSIS_EVIDENCE_VERSION = 2;
 export const VOICEOVER_ALIGNMENT_VERSION = 1;
 export const VOICEOVER_MAX_TTS_GROUPS = 100;
 
@@ -18,6 +23,7 @@ export const VOICEOVER_DEFAULTS = Object.freeze({
   separationConcurrency: 1,
   separationTimeoutMs: 3_600_000,
   readinessModelTimeoutMs: 120_000,
+  analysisInlineAudioMaxBytes: GEMINI_INLINE_DATA_DEFAULT_MAX_BYTES,
   minAtempo: 0.75,
   maxAtempo: 1.75,
   ttsMaxInputTokens: 8192,
@@ -35,6 +41,7 @@ export const VOICEOVER_BOUNDS = Object.freeze({
   separationConcurrency: Object.freeze([1, 2]),
   separationTimeoutMs: Object.freeze([300_000, 7_200_000]),
   readinessModelTimeoutMs: Object.freeze([30_000, 180_000]),
+  analysisInlineAudioMaxBytes: GEMINI_INLINE_DATA_BOUNDS,
   minAtempo: Object.freeze([0.5, 1]),
   maxAtempo: Object.freeze([1, 2]),
   ttsMaxInputTokens: Object.freeze([1, 8192]),
@@ -111,6 +118,7 @@ export function getVoiceoverConfig(env = {}) {
       VOICEOVER_BOUNDS.readinessModelTimeoutMs,
       true,
     ),
+    analysisInlineAudioMaxBytes: getGeminiInlineDataMaxBytes(env),
     minAtempo: boundedNumber(env.MEIAO_VOICEOVER_MIN_ATEMPO, VOICEOVER_DEFAULTS.minAtempo, VOICEOVER_BOUNDS.minAtempo),
     maxAtempo: boundedNumber(env.MEIAO_VOICEOVER_MAX_ATEMPO, VOICEOVER_DEFAULTS.maxAtempo, VOICEOVER_BOUNDS.maxAtempo),
     ttsMaxInputTokens: boundedNumber(env.MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS, VOICEOVER_DEFAULTS.ttsMaxInputTokens, VOICEOVER_BOUNDS.ttsMaxInputTokens, true),
@@ -391,7 +399,9 @@ export function normalizeVoiceoverCheckpoint(value, options = {}) {
       if (raw !== undefined) throw buildVoiceoverError('voiceover_checkpoint_invalid', `${label}阶段无效`);
       return;
     }
-    if (raw === undefined) {
+    const numericRaw = Number(raw);
+    const legacyVersion = Number.isSafeInteger(numericRaw) && numericRaw > 0 && numericRaw < expected;
+    if (raw === undefined || legacyVersion) {
       if (!allowLegacyProvenance) {
         throw buildVoiceoverError(
           'voiceover_checkpoint_upgrade_required',
@@ -401,7 +411,7 @@ export function normalizeVoiceoverCheckpoint(value, options = {}) {
       }
       return;
     }
-    if (Number(raw) !== expected) {
+    if (numericRaw !== expected) {
       throw buildVoiceoverError('voiceover_checkpoint_invalid', `${label}版本无效`);
     }
     output[key] = expected;
@@ -602,7 +612,14 @@ export function hasLegacyVoiceoverCheckpointProvenance(value) {
   return (
     (
       stageIndex >= STAGE_INDEX.get('audio_extracted')
-      && value.analysisEvidenceVersion === undefined
+      && (
+        value.analysisEvidenceVersion === undefined
+        || (
+          Number.isSafeInteger(Number(value.analysisEvidenceVersion))
+          && Number(value.analysisEvidenceVersion) > 0
+          && Number(value.analysisEvidenceVersion) < VOICEOVER_ANALYSIS_EVIDENCE_VERSION
+        )
+      )
     )
     || (
       stageIndex >= STAGE_INDEX.get('audio_aligned')
