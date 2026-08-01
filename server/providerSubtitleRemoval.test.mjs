@@ -41,6 +41,7 @@ const fakeProviderDeps = ({
   nowValues,
   onSubmitBody = () => {},
   resolvedReadUrl = 'https://managed.example/video.mp4?access=short-lived',
+  resolvedProviderUrl = 'https://provider.example/staged.mp4',
 } = {}) => {
   const calls = { submit: 0, query: 0, sleep: 0 };
   const statuses = [...progress];
@@ -50,6 +51,10 @@ const fakeProviderDeps = ({
     resolveManagedAssetReadUrl: async (value) => {
       events.push(`resolve:${value}`);
       return resolvedReadUrl;
+    },
+    resolveProviderSourceUrl: async (value) => {
+      events.push(`stage:${value}`);
+      return resolvedProviderUrl;
     },
     probeVideo: async (value) => {
       events.push(`probe:${value}`);
@@ -110,9 +115,10 @@ test('new job resolves and probes managed media, then checkpoints before its fir
     deps,
   });
 
-  assert.deepEqual(events.slice(0, 5), [
+  assert.deepEqual(events.slice(0, 6), [
     'resolve:/api/assets/file/source-video',
     'probe:https://managed.example/video.mp4?access=short-lived',
+    'stage:/api/assets/file/source-video',
     'submit',
     'checkpoint:provider-1',
     'query',
@@ -126,23 +132,58 @@ test('new job resolves and probes managed media, then checkpoints before its fir
   assert.equal(result.result.costRemove, 24);
 });
 
-test('existing provider task id is query-only', async () => {
-  const deps = fakeProviderDeps({ progress: ['success'] });
+test('existing provider task id is query-only and does not touch source media', async () => {
+  const events = [];
+  const deps = fakeProviderDeps({ progress: ['success'], events });
+  deps.resolveProviderSourceUrl = async (value) => {
+    events.push(`stage:${value}`);
+    return 'https://provider.example/staged.mp4';
+  };
   const result = await runSubtitleRemovalJob({
-    job: newSubtitleJob({ providerTaskId: 'provider-existing' }),
+    job: newSubtitleJob({
+      providerTaskId: 'provider-existing',
+      payload: {
+        ...newSubtitleJob().payload,
+        sizeBytes: 15.2 * 1024 * 1024,
+        durationSeconds: 9.01,
+        width: 720,
+        height: 1280,
+      },
+    }),
     env: enabledEnv(),
     deps,
   });
 
   assert.equal(deps.calls.submit, 0);
   assert.equal(deps.calls.query, 1);
+  assert.deepEqual(events, ['query']);
   assert.equal(result.providerTaskId, 'provider-existing');
+});
+
+test('new jobs fail closed when external staging is unavailable', async () => {
+  const deps = fakeProviderDeps();
+  delete deps.resolveProviderSourceUrl;
+
+  await assert.rejects(
+    runSubtitleRemovalJob({
+      job: newSubtitleJob(),
+      env: enabledEnv(),
+      deps,
+    }),
+    (error) => error?.code === 'provider_internal_error'
+      && error?.providerStage === 'preparing_input'
+      && error?.providerStatus === 'dependency_missing',
+  );
+
+  assert.equal(deps.calls.submit, 0);
+  assert.equal(deps.calls.query, 0);
 });
 
 test('internal managed video falls back to its public stream URL when the COS resolver returns empty', async () => {
   const events = [];
   const sourceUrl = 'https://meiao.example/api/assets/file/asset-local/source.mp4';
   const deps = fakeProviderDeps({ events, resolvedReadUrl: '' });
+  deps.resolveProviderSourceUrl = async () => 'https://provider.example/staged.mp4';
 
   const result = await runSubtitleRemovalJob({
     job: newSubtitleJob({ payload: {
@@ -160,14 +201,15 @@ test('internal managed video falls back to its public stream URL when the COS re
   assert.equal(result.providerTaskId, 'provider-1');
 });
 
-test('local internal video is staged to an externally reachable URL before Golden receives it', async () => {
+test('local internal video is probed through its owned read URL before Golden staging', async () => {
   const events = [];
-  const sourceUrl = 'http://127.0.0.1:3100/api/assets/file/asset-local/source.mp4';
+  const sourceUrl = 'managed://asset-local';
+  const controlledReadUrl = 'http://127.0.0.1:3100/api/assets/file/asset-local/source.mp4?asset_key=test';
   const stagedUrl = 'https://file.aiquickdraw.com/mayo-storage/internal/source-staged.mp4';
   let submittedUrl = '';
   const deps = fakeProviderDeps({
     events,
-    resolvedReadUrl: '',
+    resolvedReadUrl: controlledReadUrl,
     onSubmitBody: (body) => { submittedUrl = body.url; },
   });
   deps.resolveProviderSourceUrl = async (value) => {
@@ -184,15 +226,18 @@ test('local internal video is staged to an externally reachable URL before Golde
     deps,
   });
 
-  assert.deepEqual(events.slice(0, 2), [
+  assert.deepEqual(events.slice(0, 4), [
+    `resolve:${sourceUrl}`,
+    `probe:${controlledReadUrl}`,
     `stage:${sourceUrl}`,
-    `probe:${stagedUrl}`,
+    'submit',
   ]);
   assert.equal(submittedUrl, stagedUrl);
 });
 
 test('submit network ambiguity stops without retrying the paid request', async () => {
   const deps = fakeProviderDeps({ submitError: new TypeError('fetch failed') });
+  deps.resolveProviderSourceUrl = async () => 'https://provider.example/staged.mp4';
   await assert.rejects(
     runSubtitleRemovalJob({ job: newSubtitleJob(), env: enabledEnv(), deps }),
     (error) => error?.code === 'provider_submission_unknown'
@@ -203,12 +248,39 @@ test('submit network ambiguity stops without retrying the paid request', async (
   assert.equal(deps.calls.query, 0);
 });
 
-test('provider balance and terminal failure are humanized', async () => {
+test('provider id checkpoint failure retains the paid Golden task identity', async () => {
+  const deps = fakeProviderDeps();
+
   await assert.rejects(
     runSubtitleRemovalJob({
       job: newSubtitleJob(),
       env: enabledEnv(),
-      deps: fakeProviderDeps({ submitBody: { code: -25, msg: 'balance' } }),
+      onProviderTaskId: async () => {
+        throw Object.assign(new Error('child ledger changed'), {
+          code: 'job_state_changed',
+        });
+      },
+      deps,
+    }),
+    (error) => error?.code === 'provider_internal_error'
+      && error?.providerTaskId === 'provider-1'
+      && error?.providerStage === 'provider_checkpoint'
+      && error?.providerStatus === 'checkpoint_failed'
+      && error?.checkpointErrorCode === 'job_state_changed',
+  );
+
+  assert.equal(deps.calls.submit, 1);
+  assert.equal(deps.calls.query, 0);
+});
+
+test('provider balance and terminal failure are humanized', async () => {
+  const balanceDeps = fakeProviderDeps({ submitBody: { code: -25, msg: 'balance' } });
+  balanceDeps.resolveProviderSourceUrl = async () => 'https://provider.example/staged.mp4';
+  await assert.rejects(
+    runSubtitleRemovalJob({
+      job: newSubtitleJob(),
+      env: enabledEnv(),
+      deps: balanceDeps,
     }),
     (error) => error?.code === 'provider_balance_insufficient',
   );

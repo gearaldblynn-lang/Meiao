@@ -954,6 +954,13 @@ export const deriveVoiceoverRetryPlan = (job, retryRequest = {}, options = {}) =
   ) {
     throw createStoreError('voiceover_retry_invalid', '口播翻译重试检查点缺失。', 409);
   }
+  if (normalized.errorCode === 'provider_recovery_manual') {
+    throw createStoreError(
+      'provider_recovery_manual',
+      '当前 provider 任务身份需要人工核验，不能普通重试。',
+      409,
+    );
+  }
   const request = normalizeVoiceoverRetryRequestBody(retryRequest);
   const checkpointOptions = resolveCheckpointOptions(normalized, options);
   const checkpoint = normalizeVoiceoverCheckpoint(

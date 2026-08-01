@@ -294,6 +294,7 @@ test('executeProviderJob recovers MaxForAI video by GET without a second create 
 test('executeProviderJob routes Golden subtitle removal through managed probe, checkpoint, and polling', async () => {
   const requests = [];
   const checkpoints = [];
+  let submittedUrl = '';
   const result = await executeProviderJob({
     id: 'subtitle-job-1',
     taskType: 'subtitle_remove_video',
@@ -310,12 +311,14 @@ test('executeProviderJob routes Golden subtitle removal through managed probe, c
     onProviderTaskId: async (taskId) => checkpoints.push(taskId),
     assetTransferDeps: {
       resolveManagedAssetReadUrl: async () => 'https://managed.example/source.mp4?access=short',
+      resolveProviderSourceUrl: async () => 'https://provider.example/staged.mp4',
       probeVideo: async () => ({ durationSeconds: 3, sizeBytes: 1024, width: 720, height: 1280 }),
       sleep: async () => {},
       now: () => 0,
       fetchImpl: async (_url, init = {}) => {
         const body = JSON.parse(String(init.body || '{}'));
         requests.push(body.biz);
+        if (body.biz === 'aiRemoveSubtitleSubmitTask') submittedUrl = body.url;
         return body.biz === 'aiRemoveSubtitleSubmitTask'
           ? createJsonResponse({ code: 0, data: { taskId: 'golden-1' } })
           : createJsonResponse({ code: 0, data: [{ taskId: 'golden-1', status: 'success', resultUrl: 'https://provider.example/result.mp4' }] });
@@ -325,6 +328,7 @@ test('executeProviderJob routes Golden subtitle removal through managed probe, c
 
   assert.deepEqual(requests, ['aiRemoveSubtitleSubmitTask', 'aiRemoveSubtitleProgress']);
   assert.deepEqual(checkpoints, ['golden-1']);
+  assert.equal(submittedUrl, 'https://provider.example/staged.mp4');
   assert.equal(result.providerTaskId, 'golden-1');
   assert.equal(result.result.videoUrl, 'https://provider.example/result.mp4');
 });

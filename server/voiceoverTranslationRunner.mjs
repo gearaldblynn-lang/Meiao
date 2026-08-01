@@ -25,6 +25,23 @@ const CHILD_DEFINITIVE_FAILURE_CODES = new Set([
   'voiceover_tts_input_too_large',
 ]);
 const DEFAULT_VOICEOVER_SOURCE_MAX_BYTES = 200 * 1024 * 1024;
+
+const shouldFailGoldenChild = (child, error, signal) => {
+  if (
+    signal?.aborted
+    || error?.cancelled === true
+    || error?.name === 'AbortError'
+    || error?.code === 'request_cancelled'
+  ) {
+    return false;
+  }
+  if (error?.code === 'provider_job_failed') return true;
+  if (child?.providerTaskId || error?.providerTaskId) return false;
+  if (error?.code === 'provider_submission_unknown' || error?.submissionUnknown === true) {
+    return false;
+  }
+  return true;
+};
 const MIN_VOICEOVER_SOURCE_MAX_BYTES = 1024 * 1024;
 const MAX_VOICEOVER_SOURCE_MAX_BYTES = 1024 * 1024 * 1024;
 
@@ -693,6 +710,70 @@ export async function runVoiceoverTranslationJob({
             height: Number(source.height),
           },
         });
+        const parentProviderTaskId = String(job.providerTaskId || '').trim();
+        if (parentProviderTaskId) {
+          const childProviderTaskId = String(child.providerTaskId || '').trim();
+          const expectedChildKey = `golden:attempt:${attempt}`;
+          const subtitleCheckpoint = checkpoint.subtitleRemoval;
+          const checkpointMatches = (
+            checkpoint.stage === 'input_prepared'
+            && attempt === 0
+            && !subtitleCheckpoint
+          ) || (
+            checkpoint.stage === 'subtitle_removal'
+            && Number(subtitleCheckpoint?.attempt) === attempt
+            && String(subtitleCheckpoint?.childJobId || '') === String(child.id || '')
+            && ['queued', 'submitted'].includes(String(subtitleCheckpoint?.status || ''))
+            && (
+              !subtitleCheckpoint?.providerTaskId
+              || subtitleCheckpoint.providerTaskId === parentProviderTaskId
+            )
+          );
+          const childIdentityMatches = (
+            String(child.userId || '') === String(job.userId || '')
+            && child.taskType === 'subtitle_remove_video'
+            && child.provider === 'golden_subtitle'
+            && child.payload?.executionOwner === 'parent'
+            && String(child.payload?.parentJobId || '') === String(job.id || '')
+            && child.payload?.childKey === expectedChildKey
+            && child.payload?.clientSubmissionKey === `voiceover-child:${job.id}:${expectedChildKey}`
+          );
+          const providerIdentityMatches = (
+            !childProviderTaskId
+            || childProviderTaskId === parentProviderTaskId
+          );
+          if (
+            !checkpointMatches
+            || !childIdentityMatches
+            || !providerIdentityMatches
+            || !['running', 'succeeded', 'failed'].includes(String(child.status || ''))
+            || (
+              child.status !== 'running'
+              && childProviderTaskId !== parentProviderTaskId
+            )
+          ) {
+            throw Object.assign(new Error('Golden provider 恢复身份不一致，需要人工核验。'), {
+              code: 'provider_recovery_manual',
+              providerTaskId: parentProviderTaskId,
+              providerStage: 'provider_checkpoint',
+              providerStatus: 'checkpoint_identity_mismatch',
+            });
+          }
+          if (child.status === 'running') {
+            if (!childProviderTaskId) {
+              child = await childJobs.checkpointProviderTaskId(child.id, parentProviderTaskId);
+            }
+            if (
+              subtitleCheckpoint?.providerTaskId !== parentProviderTaskId
+              || subtitleCheckpoint?.status !== 'submitted'
+            ) {
+              await persistStage({
+                stage: 'subtitle_removal',
+                subtitleRemoval: goldenCheckpoint(child, { attempt, status: 'submitted' }),
+              }, durationMs);
+            }
+          }
+        }
         if (child.status === 'failed') {
           if (checkpoint.subtitleRemoval?.status !== 'failed') {
             await persistStage({
@@ -766,7 +847,7 @@ export async function runVoiceoverTranslationJob({
               expectedDurationMs: durationMs,
             });
           } catch (error) {
-            if (CHILD_DEFINITIVE_FAILURE_CODES.has(error?.code)) {
+            if (shouldFailGoldenChild(child, error, signal)) {
               const failedChild = await childJobs.markFailed(child.id, error).catch(() => null);
               if (failedChild?.status === 'failed') {
                 child = failedChild;

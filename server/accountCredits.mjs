@@ -187,6 +187,18 @@ const isVoiceoverParentJob = (job) => (
   && String(job?.provider || '') === 'internal'
 );
 
+export const shouldResetProviderTaskIdForRetry = ({
+  job,
+  reservationAction = '',
+  voiceoverRetryPlan = null,
+} = {}) => {
+  if (isVoiceoverParentJob(job)) {
+    return voiceoverRetryPlan?.kind === 'provider'
+      && voiceoverRetryPlan?.userConfirmed === true;
+  }
+  return reservationAction === 'reserve';
+};
+
 const getVoiceoverCheckpoint = (job) => {
   const rawResult = job?.result ?? job?.result_json;
   let result = rawResult;
