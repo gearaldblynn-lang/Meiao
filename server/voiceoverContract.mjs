@@ -13,7 +13,7 @@ import {
 } from './geminiInlineData.mjs';
 
 export const VOICEOVER_CHECKPOINT_VERSION = 1;
-export const VOICEOVER_ANALYSIS_EVIDENCE_VERSION = 2;
+export const VOICEOVER_ANALYSIS_EVIDENCE_VERSION = 3;
 export const VOICEOVER_ALIGNMENT_VERSION = 1;
 export const VOICEOVER_MAX_TTS_GROUPS = 100;
 
