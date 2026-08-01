@@ -10,9 +10,11 @@ import {
   buildVoiceoverError,
   getVoiceoverConfig,
   getVoiceoverPublicConfig,
+  hasLegacyVoiceoverCheckpointProvenance,
   mergeVoiceoverCheckpoint,
   normalizeVoiceoverCheckpoint,
   normalizeVoiceoverPayload,
+  prepareVoiceoverEvidenceUpgradeCheckpoint,
   prepareVoiceoverRetryCheckpoint,
   validateVoiceoverAnalysis,
 } from './voiceoverContract.mjs';
@@ -69,7 +71,7 @@ test('invalid capacity values fall back to conservative defaults', () => {
   assert.equal(config.maxAtempo, 1.75);
   assert.equal(config.readinessModelTimeoutMs, 120_000);
   assert.equal(config.analysisInlineAudioMaxBytes, 12 * 1024 * 1024);
-  assert.equal(VOICEOVER_ANALYSIS_EVIDENCE_VERSION, 2);
+  assert.equal(VOICEOVER_ANALYSIS_EVIDENCE_VERSION, 3);
   assert.equal(VOICEOVER_DEFAULTS.maxTargetTextBytesPerSecond, 24);
   assert.equal(VOICEOVER_DEFAULTS.maxAtempo, 1.75);
   assert.deepEqual(VOICEOVER_BOUNDS.maxTargetTextBytesPerSecond, [16, 512]);
@@ -183,6 +185,53 @@ test('current checkpoints carry analysis evidence and alignment algorithm proven
     })),
     (error) => error.code === 'voiceover_checkpoint_upgrade_required',
   );
+});
+
+test('explicit analysis evidence v2 checkpoints follow upgrade and completed-read contracts', () => {
+  const localEvidence = checkpointAt('voice_separated', {
+    analysisEvidenceVersion: 2,
+  });
+  assert.equal(hasLegacyVoiceoverCheckpointProvenance(localEvidence), true);
+  const autoUpgraded = prepareVoiceoverEvidenceUpgradeCheckpoint(localEvidence, {
+    userConfirmed: false,
+  });
+  assert.equal(autoUpgraded.stage, 'input_prepared');
+  assert.equal(autoUpgraded.analysisAttempt, 0);
+
+  const submitted = checkpointAt('tts_generating', {
+    analysisEvidenceVersion: 2,
+  });
+  assert.equal(hasLegacyVoiceoverCheckpointProvenance(submitted), true);
+  assert.throws(
+    () => prepareVoiceoverEvidenceUpgradeCheckpoint(submitted, {
+      userConfirmed: false,
+    }),
+    (error) => (
+      error.code === 'voiceover_checkpoint_upgrade_required'
+      && error.statusCode === 409
+    ),
+  );
+  const confirmed = prepareVoiceoverEvidenceUpgradeCheckpoint(submitted, {
+    userConfirmed: true,
+  });
+  assert.equal(confirmed.stage, 'input_prepared');
+  assert.equal(confirmed.analysisAttempt, 1);
+  assert.equal(confirmed.ttsAttemptBase, 1);
+  assert.equal(confirmed.ttsGroups, undefined);
+
+  const completed = checkpointAt('result_persisted', {
+    analysisEvidenceVersion: 2,
+  });
+  assert.equal(hasLegacyVoiceoverCheckpointProvenance(completed), true);
+  assert.throws(
+    () => normalizeVoiceoverCheckpoint(completed),
+    (error) => error.code === 'voiceover_checkpoint_upgrade_required',
+  );
+  const historicalResult = normalizeVoiceoverCheckpoint(completed, {
+    allowLegacyCompleted: true,
+  });
+  assert.equal(historicalResult.stage, 'result_persisted');
+  assert.equal(historicalResult.finalAssetId, 'asset-final');
 });
 
 test('each progressed stage requires its durable prerequisite checkpoint data', () => {

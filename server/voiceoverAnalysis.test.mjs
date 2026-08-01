@@ -121,6 +121,13 @@ test('analysis prompt sends inline vocal audio as primary evidence and managed v
   assert.match(prompt, /timing fit is mandatory/i);
   assert.match(prompt, /semantic fidelity.*takes priority.*timing/i);
   assert.match(prompt, /fail validation.*omit.*meaning/i);
+  assert.match(prompt, /startMs.*first actually audible/i);
+  assert.match(prompt, /endMs.*last actually audible/i);
+  assert.match(prompt, /leave.*silence.*unassigned/i);
+  assert.match(prompt, /never stretch.*fill the video/i);
+  assert.match(prompt, /do not force adjacent segments.*share.*boundary/i);
+  assert.match(prompt, /subtitle changes.*visual action changes.*semantic boundary/i);
+  assert.match(prompt, /do not round or regularize timestamps/i);
   assert.doesNotMatch(prompt, /omit secondary modifiers|do not copy every source detail/i);
   assert.doesNotMatch(prompt, /\b(?:gender|ethnicity|age|race)\b/i);
 });

@@ -1505,3 +1505,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 音频提取与分析画面固定使用原视频，Golden 只用于最终无字幕画面；分析提示以音频为主、原可见字幕为辅助交叉校验，禁止臆造并保留全部指令、数量、否定和商品卖点。对齐倍率改为 `max(actual/target, minAtempo)`，剩余静音均分到语音前后；同三段真实 WAV 重放得到 `0.82/0.75/0.75`，后两段分别居中在约 `7.147-12.853s` 与 `15.787-20.213s`。
 - Regression check: `node --test server/voiceoverAnalysis.test.mjs server/voiceoverAudio.test.mjs server/voiceoverTranslationRunner.test.mjs`；本地真实媒体探针核对新分析抽帧保留字幕、TTS WAV SHA-256 与生产资产一致、每组倍率和居中起止位置。
 - Avoid next time: 去字幕属于最终视觉输出，不得提前污染 ASR 证据链。口播验收按“源语言和语义 -> TTS 文本身份 -> 分段实际起止 -> 最终媒体”逐层执行；任何单层成功都不能替代音画内容对应。
+
+## 2026-08-02 - 口播时间窗必须保留真实静音和动作边界，不能连续铺满视频
+
+- Symptom: 新 canary 已正确识别中文脏衣篮口播，原文、英文译文和 6 个 TTS child 的实际文本逐段一致，最终 MP4 也没有旧人声或背景音；但第 5 句安装网兜仍播到约 `17.54s`，画面在约 `16.37s` 已进入按大小分类收纳，第 6 句到约 `17.98s` 才开始，语义动作延迟约 1.6 秒。
+- Evidence: 父任务 `a481ee4548872173fff21be1` 的 6 个窗口从 `100ms` 到 `22221ms` 全部首尾相接；原 vocal 在约 `15.15-15.34s` 有真实句间静音，18 帧画面对照在 `16.37s` 已显示下一句字幕和动作。6 段原始 TTS 经 `1.162/1.533/1.176/1.241/1.241/1.737` 加速后均严格落入错误窗口。最终视频与源视频 H.264 码流 SHA-256 一致，最终音频与 aligned narration 相关性 `0.968`，与旧 vocal/background 仅 `0.015/0.003`，排除了旧声或背景重复混入。
+- Root cause: Gemini 分析提示只要求整数毫秒、顺序合法和同一画面动作，没有定义实际可听的起止点、必须保留句间静音或禁止规则化连续分段；schema 校验只能证明时间戳合法，不能证明时间戳来自媒体证据。
+- Fix: 提示要求 `startMs/endMs` 对应本句第一/最后实际可听语音，真实静音必须留空，相邻段仅在语音连续时共享边界，禁止把时间戳规则化或拉伸填满视频；字幕变化和画面动作变化用于交叉验证语义边界。分析证据版本升级到 3，使旧未完成检查点在重试时重新分析而不复用旧时间轴。
+- Regression check: `server/voiceoverAnalysis.test.mjs` 锁定实际语音起止、静音留空、非强制相邻、字幕/动作交叉校验和禁止规则化；`server/voiceoverContract.test.mjs` 锁定证据版本 3；`node --test server/voiceover*.test.mjs scripts/probe-voiceover-translation.test.mjs` 为 207/207。
+- Avoid next time: 逐段验收必须同时看语义、TTS 文本、原始时长、倍率、实际开口/收尾与画面动作。连续铺满整段视频或规则化时间戳应视为时间证据风险，不能用任务成功、总时长正确或音轨干净替代。
