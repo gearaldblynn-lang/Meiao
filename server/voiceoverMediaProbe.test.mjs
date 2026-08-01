@@ -181,3 +181,56 @@ test('voiceover resume probe enforces stage-specific WAV and MP4 contracts', asy
     (error) => error?.code === 'voiceover_checkpoint_asset_invalid',
   );
 });
+
+test('voiceover media probe accepts Golden full-range H.264 intermediate video', async () => {
+  const metadata = {
+    durationSeconds: 22.220998,
+    sizeBytes: 7_592_215,
+    formatNames: ['mov', 'mp4'],
+    containerBrand: 'isom',
+    videoCodec: 'h264',
+    pixelFormat: 'yuvj420p',
+    width: 720,
+    height: 1280,
+    audioCodec: 'aac',
+    sampleRate: 44_100,
+    channels: 2,
+    hasVideo: true,
+    hasAudio: true,
+    fastStart: true,
+  };
+
+  assert.equal((await probeVoiceoverManagedMedia({
+    filePath: '/private/golden.mp4',
+    expectedKind: 'golden_video',
+    expectedDurationMs: 22_221,
+    durationToleranceMs: 100,
+    probe: async () => metadata,
+  })).pixelFormat, 'yuvj420p');
+});
+
+test('voiceover media probe keeps final delivery video on yuv420p', async () => {
+  await assert.rejects(
+    probeVoiceoverManagedMedia({
+      filePath: '/private/final-full-range.mp4',
+      expectedKind: 'final_video',
+      probe: async () => ({
+        durationSeconds: 22.220998,
+        sizeBytes: 7_592_215,
+        formatNames: ['mov', 'mp4'],
+        containerBrand: 'isom',
+        videoCodec: 'h264',
+        pixelFormat: 'yuvj420p',
+        width: 720,
+        height: 1280,
+        audioCodec: 'aac',
+        sampleRate: 44_100,
+        channels: 2,
+        hasVideo: true,
+        hasAudio: true,
+        fastStart: true,
+      }),
+    }),
+    (error) => error?.code === 'voiceover_checkpoint_asset_invalid',
+  );
+});

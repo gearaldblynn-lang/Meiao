@@ -1478,3 +1478,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 始终先用 `resolveManagedAssetReadUrl` 的受控源做 FFprobe；媒体合同通过后再通过必需的 `resolveProviderSourceUrl` 暂存，暂存地址只进入 Golden 提交体。已有 provider task id 的恢复在任何媒体依赖检查前分流，只查询同一任务。Golden POST 已返回 task id 但 child checkpoint 失败时，错误保留该 ID 和 checkpoint 阶段。普通 retry 只在父 checkpoint、Golden child、attempt 和 provider ID 完全匹配时把父 ID 回填 child 并写成 `subtitle_removal/submitted`；冲突进入 `provider_recovery_manual`。口播 `reuse` 不受积分 reservation action 影响并保留父 ID，只有用户确认新的 provider attempt 才清旧 ID。Golden 独立判断 child 生命周期：无 provider id 的确定性提交前失败写成 `failed`；提交未知、checkpoint 失败、各类取消和已有 provider id 的查询错误保持非终态，只有上游明确失败才结束 child。
 - Regression check: `server/providerSubtitleRemoval.test.mjs` 锁定 `resolve -> probe owned source -> stage -> submit` 顺序、提交 URL、缺 staging 零 POST、checkpoint 失败保留 task id，以及恢复时 resolve/probe/stage 全为 0；`server/voiceoverTranslationRunner.test.mjs` 锁定真实 local retry route 在无 reservation 时仍保留父 ID、回填 child、Golden POST 总数为 1 并查询原 ID，同时覆盖媒体探测、空暂存结果、暂存素材不可用、身份冲突、查询错误和无 code 的 `AbortError`；`server/accountCredits.test.mjs` 锁定 MySQL/本地 route 共用 retry reset 判据。
 - Avoid next time: 服务端可验证地址和 provider 可消费地址是两个合同，必须分别命名、分别验收。父任务、child、checkpoint、attempt、积分 reservation 与 retry plan 也必须分别对账；`reserve/reuse` 不能跨层推导 provider ID 是否应清空。创建和恢复先按 provider task id 分流；所有提交前失败同时核对父任务和内部 child 的耐久终态，已有 provider id 的查询故障不能误判为终态。
+
+## 2026-08-01 - Golden provider 中间视频不能套用最终交付像素格式合同
+
+- Symptom: 同一个口播 canary 的 Golden attempt 1 已成功，child 和父检查点均保存唯一 provider task ID 与托管结果素材，但父任务紧接着以 `voiceover_checkpoint_asset_invalid` 失败，未进入 Gemini/TTS。
+- Environment: Tencent Cloud production / voiceover translation with text removal / Golden succeeded checkpoint restore.
+- Root cause: Golden 返回文件是完整可读的 22.221 秒 H.264/AAC、720x1280、fast-start MP4，像素格式为 full-range `yuvj420p`。公共检查点探针要求所有视频阶段都必须是 `yuv420p`，把可供服务端继续处理的 provider 中间文件误当作最终交付文件拒绝。
+- Fix: 仅 `golden_video` 阶段额外接受 H.264 `yuvj420p`；H.264、AAC、MP4、fast-start、尺寸、时长和容差合同保持不变。`source_video`、`analysis_video`、`final_video` 继续严格要求 `yuv420p`，最终混流仍重编码为 H.264/yuv420p/AAC。
+- Regression check: `server/voiceoverMediaProbe.test.mjs` 使用真实 canary 元数据锁定 Golden `yuvj420p` 正例，并锁定同一元数据作为 `final_video` 时仍返回 `voiceover_checkpoint_asset_invalid`。
+- Avoid next time: provider 中间文件与用户最终交付文件分阶段定义媒体合同；任何兼容放宽只落在精确阶段，并同时增加最终交付负例，避免兼容修复扩散成输出格式漂移。
