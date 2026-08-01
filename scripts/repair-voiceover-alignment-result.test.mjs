@@ -8,6 +8,7 @@ import {
   assertRepairConfirmation,
   buildRepairedVoiceoverResult,
   hydrateRepairEvidenceIdentities,
+  runWithRepairPool,
 } from './repair-voiceover-alignment-result.mjs';
 
 const parentJobId = 'a481ee4548872173fff21be1';
@@ -220,6 +221,34 @@ test('repair confirmation must exactly name the paid parent job', () => {
   assert.doesNotThrow(() => assertRepairConfirmation({
     [ALIGNMENT_REPAIR_CONFIRM_ENV]: parentJobId,
   }, parentJobId));
+});
+
+test('repair keeps the database pool open until the operation settles', async () => {
+  const events = [];
+  let resolveOperation;
+  const operationGate = new Promise((resolve) => {
+    resolveOperation = resolve;
+  });
+  const resultPromise = runWithRepairPool({
+    end: async () => {
+      events.push('pool-ended');
+    },
+  }, async () => {
+    events.push('operation-started');
+    await operationGate;
+    events.push('operation-finished');
+    return 'done';
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['operation-started']);
+  resolveOperation();
+  assert.equal(await resultPromise, 'done');
+  assert.deepEqual(events, [
+    'operation-started',
+    'operation-finished',
+    'pool-ended',
+  ]);
 });
 
 test('repair result replaces only aligned/final assets and semantic timing', () => {

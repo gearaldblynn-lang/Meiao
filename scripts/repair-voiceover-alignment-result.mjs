@@ -861,6 +861,14 @@ const rollbackRepair = async (pool, options) => {
   }
 };
 
+export async function runWithRepairPool(pool, operation) {
+  try {
+    return await operation();
+  } finally {
+    await pool.end();
+  }
+}
+
 export async function runCli(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   options.parentJobId = assertSafeId(options.parentJobId, 'parentJobId');
@@ -870,7 +878,7 @@ export async function runCli(argv = process.argv.slice(2)) {
     connectionLimit: 2,
     queueLimit: 0,
   });
-  try {
+  return runWithRepairPool(pool, async () => {
     if (options.rollbackBackupPath) return rollbackRepair(pool, options);
     options.expectedFinalAssetId = assertSafeId(
       options.expectedFinalAssetId,
@@ -907,9 +915,7 @@ export async function runCli(argv = process.argv.slice(2)) {
       };
     }
     return applyRepair(pool, options, inputs.evidence, fileValidation);
-  } finally {
-    await pool.end();
-  }
+  });
 }
 
 const isMain = process.argv[1]
