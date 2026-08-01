@@ -85,6 +85,7 @@ import {
   releaseLocalAccountCredits,
   reserveLocalAccountCredits,
   settleLocalAccountCredits,
+  shouldResetProviderTaskIdForRetry,
   shouldReleaseJobCreditReservation,
   stripCreditReservationFromPayload,
 } from './accountCredits.mjs';
@@ -15545,7 +15546,11 @@ const handleMysqlRequest = async (req, res, url) => {
           max_retries: submissionPolicy.maxCreateRetries ?? currentJob.maxRetries,
         });
         await requestRetryJob(connection, { ...currentJob, payload: retryPayload }, {
-          resetProviderTaskId: reservationAction === 'reserve',
+          resetProviderTaskId: shouldResetProviderTaskIdForRetry({
+            job: currentJob,
+            reservationAction,
+            voiceoverRetryPlan,
+          }),
           ...(isVoiceoverParent ? { voiceoverRetryPlan } : {}),
         });
       }), { timeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env) });
@@ -19277,7 +19282,11 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       retriedJob = requestLocalRetryJob(store, jobId, {
         payload: retryPayload,
         maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
-        resetProviderTaskId: reservationAction === 'reserve',
+        resetProviderTaskId: shouldResetProviderTaskIdForRetry({
+          job,
+          reservationAction,
+          voiceoverRetryPlan,
+        }),
         ...(isVoiceoverParent ? { voiceoverRetryPlan } : {}),
       });
       appendLocalLog(store, {

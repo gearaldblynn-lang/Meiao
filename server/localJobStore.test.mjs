@@ -1135,6 +1135,7 @@ test('local voiceover paid retry derives the next TTS attempt once from the dura
     startedAt: null,
     finishedAt: 3,
     errorCode: 'provider_submission_unknown',
+    providerTaskId: 'provider-tts-attempt-0',
     result: {
       audit: 'keep',
       voiceoverCheckpoint: {
@@ -1206,6 +1207,7 @@ test('local voiceover paid retry derives the next TTS attempt once from the dura
     voiceoverRetryPlan: confirmedPlan,
   });
   assert.equal(retried.status, 'queued');
+  assert.equal(retried.providerTaskId, '');
   assert.deepEqual(
     retried.result.voiceoverCheckpoint.ttsGroups.map(({ attempt, childJobId, status }) => ({
       attempt,

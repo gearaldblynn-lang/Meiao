@@ -17,6 +17,11 @@ import {
   deriveVoiceoverRetryPlan,
   prepareVoiceoverJobRetryResult,
 } from './voiceoverChildJobStore.mjs';
+import {
+  getJobCreditRetryReservationAction,
+  shouldResetProviderTaskIdForRetry,
+} from './accountCredits.mjs';
+import { requestLocalRetryJob } from './localJobStore.mjs';
 import { probeVoiceoverManagedMedia } from './voiceoverMediaProbe.mjs';
 
 const VALID_ANALYSIS = {
@@ -1606,6 +1611,462 @@ test('definitive Golden failure is durable and a confirmed retry advances to att
     attempt: 1,
     status: 'queued',
   });
+});
+
+test('Golden media preparation failure durably ends its child before provider submission', async (t) => {
+  const job = createParentJob({
+    payload: {
+      removeText: true,
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
+    },
+  });
+  const store = { jobs: [structuredClone(job)] };
+  const childJobs = createVoiceoverChildJobLedger({
+    mode: 'local',
+    readLocalStore: () => store,
+    mutateLocalStore: async (operation) => operation(store),
+    createJobId: () => 'real-golden-media-failed-0',
+    now: (() => {
+      let value = 27_000;
+      return () => ++value;
+    })(),
+  });
+  const harness = await createHarness({
+    job,
+    overrides: {
+      childJobs,
+      runGolden: async () => {
+        throw Object.assign(new Error('Golden source probe failed'), {
+          code: 'media_process_failed',
+          providerStage: 'preparing_input',
+        });
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.code === 'media_process_failed',
+  );
+
+  const child = store.jobs.find((item) => item.payload?.childKey === 'golden:attempt:0');
+  assert.equal(child?.status, 'failed');
+  assert.equal(child?.providerTaskId, '');
+  assert.equal(child?.errorCode, 'media_process_failed');
+  assert.deepEqual(harness.checkpoints.at(-1).subtitleRemoval, {
+    childJobId: 'real-golden-media-failed-0',
+    attempt: 0,
+    status: 'failed',
+  });
+});
+
+for (const scenario of [
+  {
+    name: 'empty Golden staging result',
+    childId: 'real-golden-empty-stage-failed-0',
+    code: 'provider_internal_error',
+    message: 'Golden staging returned no URL',
+  },
+  {
+    name: 'unavailable managed staging asset',
+    childId: 'real-golden-stage-unavailable-0',
+    code: 'managed_asset_unavailable',
+    message: 'Golden staging asset is unavailable',
+  },
+]) {
+  test(`${scenario.name} durably ends its child before provider submission`, async (t) => {
+    const job = createParentJob({
+      payload: {
+        removeText: true,
+        subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
+      },
+    });
+    const store = { jobs: [structuredClone(job)] };
+    const childJobs = createVoiceoverChildJobLedger({
+      mode: 'local',
+      readLocalStore: () => store,
+      mutateLocalStore: async (operation) => operation(store),
+      createJobId: () => scenario.childId,
+      now: (() => {
+        let value = 28_000;
+        return () => ++value;
+      })(),
+    });
+    const harness = await createHarness({
+      job,
+      overrides: {
+        childJobs,
+        runGolden: async () => {
+          throw Object.assign(new Error(scenario.message), {
+            code: scenario.code,
+            providerStage: 'preparing_input',
+          });
+        },
+      },
+    });
+    t.after(harness.cleanup);
+
+    await assert.rejects(
+      harness.result(),
+      (error) => error?.code === scenario.code,
+    );
+
+    const child = store.jobs.find((item) => item.payload?.childKey === 'golden:attempt:0');
+    assert.equal(child?.status, 'failed');
+    assert.equal(child?.providerTaskId, '');
+    assert.equal(child?.errorCode, scenario.code);
+    assert.deepEqual(harness.checkpoints.at(-1).subtitleRemoval, {
+      childJobId: scenario.childId,
+      attempt: 0,
+      status: 'failed',
+    });
+  });
+}
+
+test('Golden query failure with a provider id remains recoverable and query-only', async (t) => {
+  const job = createParentJob({
+    payload: {
+      removeText: true,
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
+    },
+  });
+  const store = { jobs: [structuredClone(job)] };
+  const childJobs = createVoiceoverChildJobLedger({
+    mode: 'local',
+    readLocalStore: () => store,
+    mutateLocalStore: async (operation) => operation(store),
+    createJobId: () => 'real-golden-query-recoverable',
+    now: (() => {
+      let value = 29_000;
+      return () => ++value;
+    })(),
+  });
+  const harness = await createHarness({
+    job,
+    overrides: {
+      childJobs,
+      runGolden: async ({ onProviderTaskId }) => {
+        await onProviderTaskId('provider-golden-query-recoverable');
+        throw Object.assign(new Error('Golden query network failed'), {
+          code: 'provider_network_error',
+          providerTaskId: 'provider-golden-query-recoverable',
+          providerStage: 'provider_wait',
+        });
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.code === 'provider_network_error',
+  );
+
+  const child = store.jobs.find((item) => item.payload?.childKey === 'golden:attempt:0');
+  assert.equal(child?.status, 'running');
+  assert.equal(child?.providerTaskId, 'provider-golden-query-recoverable');
+  assert.deepEqual(harness.checkpoints.at(-1).subtitleRemoval, {
+    childJobId: 'real-golden-query-recoverable',
+    providerTaskId: 'provider-golden-query-recoverable',
+    attempt: 0,
+    status: 'submitted',
+  });
+});
+
+test('Golden provider checkpoint failure cannot turn its real child into a retryable failure', async (t) => {
+  const job = createParentJob({
+    payload: {
+      removeText: true,
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
+    },
+  });
+  const store = { jobs: [structuredClone(job)] };
+  const ledger = createVoiceoverChildJobLedger({
+    mode: 'local',
+    readLocalStore: () => store,
+    mutateLocalStore: async (operation) => operation(store),
+    createJobId: () => 'real-golden-checkpoint-unknown',
+    now: (() => {
+      let value = 29_500;
+      return () => ++value;
+    })(),
+  });
+  const childJobs = {
+    ...ledger,
+    checkpointProviderTaskId: async () => {
+      throw Object.assign(new Error('child ledger changed'), {
+        code: 'job_state_changed',
+      });
+    },
+  };
+  const harness = await createHarness({
+    job,
+    overrides: {
+      childJobs,
+      runGolden: async ({ onProviderTaskId }) => {
+        try {
+          await onProviderTaskId('provider-golden-checkpoint-unknown');
+        } catch (error) {
+          throw Object.assign(new Error('Golden checkpoint failed'), {
+            code: 'provider_internal_error',
+            providerTaskId: 'provider-golden-checkpoint-unknown',
+            providerStage: 'provider_checkpoint',
+            providerStatus: 'checkpoint_failed',
+            checkpointErrorCode: error?.code,
+          });
+        }
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.code === 'provider_internal_error'
+      && error?.providerTaskId === 'provider-golden-checkpoint-unknown',
+  );
+
+  const child = store.jobs.find((item) => item.payload?.childKey === 'golden:attempt:0');
+  assert.equal(child?.status, 'running');
+  assert.equal(child?.providerTaskId, '');
+  assert.equal(child?.errorCode, '');
+});
+
+test('Golden retry recovers a parent-persisted task id after child checkpoint failure without another paid POST', async (t) => {
+  const providerTaskId = 'provider-golden-parent-checkpoint';
+  const job = createParentJob({
+    payload: {
+      removeText: true,
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
+    },
+  });
+  const store = { jobs: [structuredClone(job)] };
+  const ledger = createVoiceoverChildJobLedger({
+    mode: 'local',
+    readLocalStore: () => store,
+    mutateLocalStore: async (operation) => operation(store),
+    createJobId: () => 'real-golden-parent-checkpoint',
+    now: (() => {
+      let value = 29_600;
+      return () => ++value;
+    })(),
+  });
+  let providerPosts = 0;
+  let providerQueries = 0;
+  const firstHarness = await createHarness({
+    job,
+    overrides: {
+      childJobs: {
+        ...ledger,
+        checkpointProviderTaskId: async () => {
+          throw Object.assign(new Error('child checkpoint unavailable'), {
+            code: 'job_state_changed',
+          });
+        },
+      },
+      runGolden: async ({ job: child, onProviderTaskId }) => {
+        assert.equal(child.providerTaskId, '');
+        providerPosts += 1;
+        try {
+          await onProviderTaskId(providerTaskId);
+        } catch (error) {
+          throw Object.assign(new Error('Golden checkpoint failed'), {
+            code: 'provider_internal_error',
+            providerTaskId,
+            providerStage: 'provider_checkpoint',
+            providerStatus: 'checkpoint_failed',
+            checkpointErrorCode: error?.code,
+          });
+        }
+      },
+    },
+  });
+  t.after(firstHarness.cleanup);
+
+  await assert.rejects(
+    firstHarness.result(),
+    (error) => error?.providerTaskId === providerTaskId,
+  );
+
+  const failedParent = createParentJob({
+    payload: job.payload,
+    status: 'failed',
+    providerTaskId,
+    errorCode: 'provider_internal_error',
+    result: {
+      voiceoverCheckpoint: firstHarness.checkpoints.at(-1),
+    },
+  });
+  const retryPlan = deriveVoiceoverRetryPlan(failedParent);
+  assert.deepEqual(retryPlan, { kind: 'reuse' });
+  store.jobs[store.jobs.findIndex((item) => item.id === job.id)] = structuredClone(failedParent);
+  const reservationAction = getJobCreditRetryReservationAction({
+    job: failedParent,
+    reservationProcessed: false,
+    providerTaskRecoverable: false,
+    voiceoverRetryPlan: retryPlan,
+  });
+  assert.equal(reservationAction, 'reserve', 'unlimited accounts have no durable reservation');
+  const retriedJob = requestLocalRetryJob(store, job.id, {
+    voiceoverRetryPlan: retryPlan,
+    resetProviderTaskId: shouldResetProviderTaskIdForRetry({
+      job: failedParent,
+      reservationAction,
+      voiceoverRetryPlan: retryPlan,
+    }),
+  });
+  assert.equal(retriedJob.providerTaskId, providerTaskId);
+  const claimedJob = { ...retriedJob, status: 'running' };
+  store.jobs[store.jobs.findIndex((item) => item.id === job.id)] = structuredClone(claimedJob);
+
+  const secondHarness = await createHarness({
+    job: claimedJob,
+    overrides: {
+      childJobs: ledger,
+      runGolden: async ({ job: child }) => {
+        if (!child.providerTaskId) {
+          providerPosts += 1;
+          throw Object.assign(new Error('duplicate paid Golden POST'), {
+            code: 'provider_internal_error',
+          });
+        }
+        providerQueries += 1;
+        assert.equal(child.providerTaskId, providerTaskId);
+        throw Object.assign(new Error('query interrupted after recovery'), {
+          code: 'provider_network_error',
+          providerTaskId: child.providerTaskId,
+          providerStage: 'provider_wait',
+        });
+      },
+    },
+  });
+  t.after(secondHarness.cleanup);
+
+  await assert.rejects(
+    secondHarness.result(),
+    (error) => error?.code === 'provider_network_error',
+  );
+
+  const child = store.jobs.find((item) => item.payload?.childKey === 'golden:attempt:0');
+  assert.equal(providerPosts, 1);
+  assert.equal(providerQueries, 1);
+  assert.equal(child?.providerTaskId, providerTaskId);
+  assert.deepEqual(secondHarness.checkpoints.at(-1).subtitleRemoval, {
+    childJobId: 'real-golden-parent-checkpoint',
+    providerTaskId,
+    attempt: 0,
+    status: 'submitted',
+  });
+});
+
+test('Golden parent and child provider id mismatch requires manual recovery before provider access', async (t) => {
+  const job = createParentJob({
+    payload: {
+      removeText: true,
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
+    },
+    providerTaskId: 'provider-golden-parent',
+    result: { voiceoverCheckpoint: checkpointAt('input_prepared') },
+  });
+  const store = { jobs: [structuredClone(job)] };
+  const childJobs = createVoiceoverChildJobLedger({
+    mode: 'local',
+    readLocalStore: () => store,
+    mutateLocalStore: async (operation) => operation(store),
+    createJobId: () => 'real-golden-provider-conflict',
+    now: (() => {
+      let value = 29_700;
+      return () => ++value;
+    })(),
+  });
+  let child = await childJobs.getOrCreate({
+    parentJob: job,
+    childKey: 'golden:attempt:0',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: {
+      taskPurpose: 'subtitle_removal',
+      subFeature: 'voiceover_translation',
+      sourceAssetId: 'asset-source',
+      sourceUrl: 'managed://asset-source',
+      subtitleRegionNormalized: job.payload.subtitleRegionNormalized,
+      shellProjectId: job.payload.shellProjectId,
+      shellProjectName: job.payload.shellProjectName,
+      shellResultId: job.payload.shellResultId,
+      batchId: job.id,
+      batchIndex: 0,
+      batchCount: 1,
+      sizeBytes: 1_024,
+      durationSeconds: 4,
+      width: 1080,
+      height: 1920,
+    },
+  });
+  child = await childJobs.checkpointProviderTaskId(child.id, 'provider-golden-child');
+  assert.equal(child.providerTaskId, 'provider-golden-child');
+  let providerCalls = 0;
+  const harness = await createHarness({
+    job,
+    overrides: {
+      childJobs,
+      runGolden: async () => {
+        providerCalls += 1;
+        throw new Error('provider must not be accessed after identity conflict');
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.code === 'provider_recovery_manual'
+      && error?.providerTaskId === 'provider-golden-parent',
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal((await childJobs.get(child.id)).providerTaskId, 'provider-golden-child');
+});
+
+test('Golden AbortError before provider submission keeps its real child nonterminal', async (t) => {
+  const job = createParentJob({
+    payload: {
+      removeText: true,
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
+    },
+  });
+  const store = { jobs: [structuredClone(job)] };
+  const childJobs = createVoiceoverChildJobLedger({
+    mode: 'local',
+    readLocalStore: () => store,
+    mutateLocalStore: async (operation) => operation(store),
+    createJobId: () => 'real-golden-probe-aborted',
+    now: (() => {
+      let value = 29_750;
+      return () => ++value;
+    })(),
+  });
+  const harness = await createHarness({
+    job,
+    overrides: {
+      childJobs,
+      runGolden: async () => {
+        throw Object.assign(new Error('probe aborted'), {
+          name: 'AbortError',
+        });
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.name === 'AbortError',
+  );
+
+  const child = store.jobs.find((item) => item.payload?.childKey === 'golden:attempt:0');
+  assert.equal(child?.status, 'running');
+  assert.equal(child?.providerTaskId, '');
+  assert.equal(child?.errorCode, '');
 });
 
 test('Golden replay backfills a failed child that committed before its parent checkpoint', async (t) => {

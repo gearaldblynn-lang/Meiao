@@ -973,6 +973,28 @@ test('server derives analysis and query-only retry plans without trusting parent
   });
 });
 
+test('voiceover parent in provider recovery manual state rejects ordinary retry', () => {
+  const parent = validParent({
+    status: 'failed',
+    providerTaskId: 'provider-golden-manual',
+    errorCode: 'provider_recovery_manual',
+    payload: validParentPayload({ removeText: true }),
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'input_prepared',
+        baseVideoAssetId: 'asset-source',
+        analysisAttempt: 0,
+      },
+    },
+  });
+
+  assert.throws(
+    () => deriveVoiceoverRetryPlan(parent),
+    (error) => error?.code === 'provider_recovery_manual',
+  );
+});
+
 const createMysqlLedgerHarness = ({ failInsert = false } = {}) => {
   const parent = validParent();
   const rows = [];

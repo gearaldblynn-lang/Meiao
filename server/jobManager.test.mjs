@@ -28,7 +28,10 @@ import {
   shouldMysqlWorkerProcessTaskEngine,
   withMysqlSubmissionLock,
 } from './jobManager.mjs';
-import { isParentOwnedChildJob } from './voiceoverChildJobStore.mjs';
+import {
+  deriveVoiceoverRetryPlan,
+  isParentOwnedChildJob,
+} from './voiceoverChildJobStore.mjs';
 import { shouldReleaseJobCreditReservation } from './accountCredits.mjs';
 
 const jobManagerSource = readFileSync(new URL('./jobManager.mjs', import.meta.url), 'utf8');
@@ -2279,6 +2282,59 @@ test('mysql voiceover retry preserves checkpoint and guards the failed-to-queued
   assert.equal(nextResult.audit, 'keep');
   assert.equal(nextResult.voiceoverCheckpoint.stage, 'voice_separated');
   assert.equal(nextResult.voiceoverCheckpoint.analysisAttempt, 1);
+});
+
+test('mysql confirmed voiceover provider retry clears the previous attempt provider task id', async () => {
+  const job = {
+    id: 'parent-mysql-provider-retry',
+    userId: 'user-1',
+    module: 'video',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'failed',
+    providerTaskId: 'provider-golden-attempt-0',
+    payload: {
+      taskPurpose: 'voiceover_translation',
+      subFeature: 'voiceover_translation',
+      removeText: true,
+    },
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'subtitle_removal',
+        baseVideoAssetId: 'asset-base',
+        subtitleRemoval: {
+          childJobId: 'golden-child-attempt-0',
+          attempt: 0,
+          status: 'failed',
+        },
+        analysisAttempt: 0,
+      },
+    },
+    errorCode: 'provider_job_failed',
+  };
+  const voiceoverRetryPlan = deriveVoiceoverRetryPlan(job, {
+    confirmNewProviderAttempt: true,
+  });
+  const queries = [];
+  const pool = {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      return [{ affectedRows: 1 }];
+    },
+  };
+
+  await requestRetryJob(pool, job, { voiceoverRetryPlan });
+
+  assert.equal(queries.length, 1);
+  const assignments = queries[0].sql
+    .split('SET ')[1]
+    .split(' WHERE')[0]
+    .split(',')
+    .map((value) => value.trim());
+  const providerTaskIdIndex = assignments.findIndex((value) => value.startsWith('provider_task_id ='));
+  assert.notEqual(providerTaskIdIndex, -1);
+  assert.equal(queries[0].values[providerTaskIdIndex], null);
 });
 
 test('mysql voiceover retry rejects active parents and accepts cancelled query-only recovery with an exact CAS', async () => {

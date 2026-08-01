@@ -1517,9 +1517,14 @@ export const resolveSubmissionUnknownJob = async ({
 export const requestRetryJob = async (pool, job, actor) => {
   assertGenericJobMutationAllowed(job);
   const updatedAt = now();
-  const resetProviderTaskId = Boolean(actor?.resetProviderTaskId);
   const isVoiceoverParent = String(job?.taskType || '') === 'voiceover_translate_video'
     && String(job?.provider || '') === 'internal';
+  const resetProviderTaskId = Boolean(actor?.resetProviderTaskId)
+    || (
+      isVoiceoverParent
+      && actor?.voiceoverRetryPlan?.kind === 'provider'
+      && actor?.voiceoverRetryPlan?.userConfirmed === true
+    );
   if (isVoiceoverParent && !['failed', 'cancelled'].includes(String(job?.status || ''))) {
     throw Object.assign(new Error('只有失败或已取消的口播翻译父任务可以重试。'), {
       code: 'job_state_changed',

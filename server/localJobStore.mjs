@@ -441,6 +441,11 @@ export const requestLocalRetryJob = (store, jobId, options = {}) => {
     });
   }
   const updatedAt = now();
+  const resetProviderTaskId = options.resetProviderTaskId === true
+    || (
+      options.voiceoverRetryPlan?.kind === 'provider'
+      && options.voiceoverRetryPlan?.userConfirmed === true
+    );
   const retryResult = current.taskType === 'voiceover_translate_video' && current.provider === 'internal'
     ? prepareVoiceoverJobRetryResult(current, options.voiceoverRetryPlan, {
       env: options.env,
@@ -464,7 +469,7 @@ export const requestLocalRetryJob = (store, jobId, options = {}) => {
     runId: '',
     workflowExecutionMode: '',
     updatedAt,
-    ...(options.resetProviderTaskId ? { providerTaskId: '', retryCount: 0 } : {}),
+    ...(resetProviderTaskId ? { providerTaskId: '', retryCount: 0 } : {}),
   });
 
   store.jobs[index] = next;

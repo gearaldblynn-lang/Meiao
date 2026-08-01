@@ -13,6 +13,7 @@ import {
   releaseLocalAccountCredits,
   reserveLocalAccountCredits,
   settleLocalAccountCredits,
+  shouldResetProviderTaskIdForRetry,
   shouldReleaseJobCreditReservation,
 } from './accountCredits.mjs';
 
@@ -710,6 +711,36 @@ test('voiceover retry reuses one pending parent reservation for confirmed new pr
   }), 'reserve');
 });
 
+test('voiceover retry reset follows the provider attempt plan instead of the credit reservation action', () => {
+  const voiceoverJob = {
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+  };
+  assert.equal(shouldResetProviderTaskIdForRetry({
+    job: voiceoverJob,
+    reservationAction: 'reserve',
+    voiceoverRetryPlan: { kind: 'reuse' },
+  }), false);
+  assert.equal(shouldResetProviderTaskIdForRetry({
+    job: voiceoverJob,
+    reservationAction: 'reuse',
+    voiceoverRetryPlan: { kind: 'provider', userConfirmed: true },
+  }), true);
+  assert.equal(shouldResetProviderTaskIdForRetry({
+    job: voiceoverJob,
+    reservationAction: 'reserve',
+    voiceoverRetryPlan: { kind: 'provider', userConfirmed: false },
+  }), false);
+  assert.equal(shouldResetProviderTaskIdForRetry({
+    job: { taskType: 'kie_image', provider: 'kie' },
+    reservationAction: 'reserve',
+  }), true);
+  assert.equal(shouldResetProviderTaskIdForRetry({
+    job: { taskType: 'kie_image', provider: 'kie' },
+    reservationAction: 'reuse',
+  }), false);
+});
+
 test('retry after a released reservation requires a new reservation before submit', () => {
   const store = createLimitedStore();
   const original = reserveLocalAccountCredits(store, 'user-1', {
@@ -769,7 +800,11 @@ test('cancel and retry routes enforce reservation lifecycle before queueing work
   assert.match(serverSource, /withMysqlSubmissionLock\([\s\S]{0,200}withMysqlTransaction\(connection/);
   assert.match(serverSource, /payload_json:\s*JSON\.stringify\(retryPayload\)[\s\S]*requestRetryJob/);
   assert.match(serverSource, /requestLocalRetryJob\(store, jobId, \{[\s\S]*payload: retryPayload/);
-  assert.equal((serverSource.match(/resetProviderTaskId:\s*reservationAction === 'reserve'/g) || []).length, 2);
+  assert.equal(
+    (serverSource.match(/resetProviderTaskId:\s*shouldResetProviderTaskIdForRetry\(\{/g) || []).length,
+    2,
+  );
+  assert.equal((serverSource.match(/resetProviderTaskId:\s*reservationAction === 'reserve'/g) || []).length, 0);
 });
 
 test('voiceover retry routes accept only the bounded confirmation body and derive plans under storage locks', () => {

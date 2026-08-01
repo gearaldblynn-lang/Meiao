@@ -6,6 +6,10 @@ import {
   normalizeSubtitleRemovalProgressResponse,
   normalizeSubtitleRemovalSubmitResponse,
 } from './subtitleRemovalContract.mjs';
+import {
+  clampSubtitleRegion,
+  subtitleRegionToPixels,
+} from '../src/utils/subtitleRemovalRegion.mjs';
 
 const REQUEST_TIMEOUT_MS = 60_000;
 
@@ -117,6 +121,24 @@ const postJson = async ({ url, token, body, signal, fetchImpl, stage, providerTa
   }
 };
 
+const getResultRegion = (job, validated) => {
+  if (validated) {
+    return {
+      subtitleRegionNormalized: validated.region,
+      subtitleRegionPixels: validated.subtitleRegionPixels,
+    };
+  }
+  const region = clampSubtitleRegion(job?.payload?.subtitleRegionNormalized);
+  const width = Math.round(Number(job?.payload?.width || 0));
+  const height = Math.round(Number(job?.payload?.height || 0));
+  return {
+    subtitleRegionNormalized: region,
+    ...(width > 0 && height > 0
+      ? { subtitleRegionPixels: subtitleRegionToPixels(region, width, height) }
+      : {}),
+  };
+};
+
 export async function runSubtitleRemovalJob({
   job,
   env = process.env,
@@ -134,12 +156,6 @@ export async function runSubtitleRemovalJob({
       { providerStage: 'configuration', providerStatus: 'unavailable' },
     );
   }
-  if (typeof deps.resolveManagedAssetReadUrl !== 'function' || typeof deps.probeVideo !== 'function') {
-    throw createSubtitleRemovalError('provider_internal_error', '去字幕视频准备服务不可用', {
-      providerStage: 'preparing_input',
-      providerStatus: 'dependency_missing',
-    });
-  }
   const fetchImpl = deps.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
     throw createSubtitleRemovalError('provider_internal_error', '去字幕网络服务不可用');
@@ -147,33 +163,51 @@ export async function runSubtitleRemovalJob({
   const sleep = deps.sleep || defaultSleep;
   const now = deps.now || Date.now;
   const sourceUrl = String(job?.payload?.sourceUrl || '').trim();
-  const resolvedReadUrl = typeof deps.resolveProviderSourceUrl === 'function'
-    ? await deps.resolveProviderSourceUrl(sourceUrl, { signal })
-    : await deps.resolveManagedAssetReadUrl(sourceUrl, {
+  let providerTaskId = String(job?.providerTaskId || '').trim();
+  let validated;
+
+  if (!providerTaskId) {
+    if (
+      typeof deps.resolveManagedAssetReadUrl !== 'function'
+      || typeof deps.probeVideo !== 'function'
+      || typeof deps.resolveProviderSourceUrl !== 'function'
+    ) {
+      throw createSubtitleRemovalError('provider_internal_error', '去字幕视频准备服务不可用', {
+        providerStage: 'preparing_input',
+        providerStatus: 'dependency_missing',
+      });
+    }
+    const resolvedReadUrl = await deps.resolveManagedAssetReadUrl(sourceUrl, {
       purpose: 'provider',
       signal,
     });
-  const readableUrl = String(resolvedReadUrl || sourceUrl).trim();
-  throwIfAborted(signal);
-  const metadata = await deps.probeVideo(readableUrl, signal);
-  const validated = assertSubtitleRemovalInput({
-    sourceUrl: readableUrl,
-    sizeBytes: metadata?.sizeBytes,
-    durationSeconds: metadata?.durationSeconds,
-    width: metadata?.width,
-    height: metadata?.height,
-    region: job?.payload?.subtitleRegionNormalized,
-  });
-  const startedAt = now();
-  let providerTaskId = String(job?.providerTaskId || '').trim();
-
-  if (!providerTaskId) {
+    const readableUrl = String(resolvedReadUrl || sourceUrl).trim();
+    throwIfAborted(signal);
+    const metadata = await deps.probeVideo(readableUrl, signal);
+    validated = assertSubtitleRemovalInput({
+      sourceUrl: readableUrl,
+      sizeBytes: metadata?.sizeBytes,
+      durationSeconds: metadata?.durationSeconds,
+      width: metadata?.width,
+      height: metadata?.height,
+      region: job?.payload?.subtitleRegionNormalized,
+    });
+    const providerSourceUrl = String(
+      await deps.resolveProviderSourceUrl(sourceUrl, { signal }) || '',
+    ).trim();
+    if (!providerSourceUrl) {
+      throw createSubtitleRemovalError('provider_internal_error', '去字幕视频暂存失败', {
+        providerStage: 'preparing_input',
+        providerStatus: 'staged_url_missing',
+      });
+    }
+    throwIfAborted(signal);
     const submitResponse = await postJson({
       url: config.baseUrl,
       token,
       body: buildSubtitleRemovalSubmitBody({
         safeTaskId: job?.id,
-        sourceUrl: readableUrl,
+        sourceUrl: providerSourceUrl,
         sizeBytes: validated.sizeBytes,
         durationSeconds: validated.durationSeconds,
         width: validated.width,
@@ -186,9 +220,26 @@ export async function runSubtitleRemovalJob({
     });
     const submitted = normalizeSubtitleRemovalSubmitResponse(submitResponse);
     providerTaskId = submitted.providerTaskId;
-    await onProviderTaskId(providerTaskId);
+    try {
+      await onProviderTaskId(providerTaskId);
+    } catch (error) {
+      throw createSubtitleRemovalError(
+        'provider_internal_error',
+        `Golden 去字幕任务已创建，但任务编号持久化失败：${error?.message || '未知错误'}`,
+        {
+          cause: error,
+          checkpointErrorCode: String(error?.code || ''),
+          providerTaskId,
+          providerStage: 'provider_checkpoint',
+          providerStatus: 'checkpoint_failed',
+          retryable: false,
+        },
+      );
+    }
   }
 
+  const startedAt = now();
+  const resultRegion = getResultRegion(job, validated);
   while (true) {
     throwIfAborted(signal);
     if (now() - startedAt > config.timeoutMs) {
@@ -216,8 +267,7 @@ export async function runSubtitleRemovalJob({
         result: {
           videoUrl: progress.resultUrl,
           sourceUrl,
-          subtitleRegionNormalized: validated.region,
-          subtitleRegionPixels: validated.subtitleRegionPixels,
+          ...resultRegion,
           sourceProjectId: String(job?.payload?.sourceProjectId || '').trim() || undefined,
           sourceResultId: String(job?.payload?.sourceResultId || '').trim() || undefined,
           providerTaskId,
