@@ -12,6 +12,12 @@ test('口播独立模型加载门禁超时同步到模板、项目总览和部�
   }
 });
 
+test('Gemini 内联音频大小门禁同步到模板、项目总览和部署文档', () => {
+  for (const source of [envExample, projectOverview, deployDoc]) {
+    assert.match(source, /MEIAO_GEMINI_INLINE_DATA_MAX_BYTES/);
+  }
+});
+
 test('第4期多工具 env 旋钮同步到模板、项目总览和部署文档', () => {
   assert.match(envExample, /AGENT_TOOL_MAX_ROUNDS/);
   assert.match(envExample, /OPENAI_COMPATIBLE_RESPONSES_PATH/);

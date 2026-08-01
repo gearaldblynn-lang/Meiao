@@ -23,6 +23,7 @@ import {
 } from './accountCredits.mjs';
 import { requestLocalRetryJob } from './localJobStore.mjs';
 import { probeVoiceoverManagedMedia } from './voiceoverMediaProbe.mjs';
+import { VOICEOVER_ANALYSIS_EVIDENCE_VERSION } from './voiceoverContract.mjs';
 
 const VALID_ANALYSIS = {
   sourceLanguage: 'cmn',
@@ -350,7 +351,7 @@ const checkpointAt = (stage) => {
     checkpoint.vocalAssetId = 'asset-vocal';
     checkpoint.backgroundAssetId = 'asset-background';
   }
-  if (rank >= 1) checkpoint.analysisEvidenceVersion = 1;
+  if (rank >= 1) checkpoint.analysisEvidenceVersion = VOICEOVER_ANALYSIS_EVIDENCE_VERSION;
   if (rank >= 4) checkpoint.analysis = VALID_ANALYSIS;
   if (rank >= 5) {
     checkpoint.translation = {
@@ -516,6 +517,15 @@ const createHarness = async ({
       await writeOutput(outputPath);
       return { durationMs: 4_000 };
     },
+    buildAnalysisAudioEvidence: async () => {
+      events.push('build-analysis-audio-evidence');
+      return {
+        data: Buffer.from('voice-evidence').toString('base64'),
+        mimeType: 'audio/mp4',
+        sizeBytes: 14,
+        durationMs: 4_000,
+      };
+    },
     analyzeSpeech: async () => {
       events.push('gemini-analysis');
       return { content: analysisContent };
@@ -620,6 +630,7 @@ test('orchestrates the checkpoint-driven happy path in durable side-effect order
     'demucs',
     'persist:voice_separated',
     'build-vocal-only-video',
+    'build-analysis-audio-evidence',
     'persist:speech_analysis_submitting',
     'gemini-analysis',
     'persist:speech_analyzed',
@@ -647,6 +658,65 @@ test('orchestrates the checkpoint-driven happy path in durable side-effect order
     finalAssetId: 'asset-final',
   });
   assert.equal(harness.events.at(-1), 'cleanup');
+});
+
+test('inline analysis audio remains ephemeral and never enters checkpoints or logs', async (t) => {
+  const sensitiveAudioData = Buffer.from('sensitive-inline-audio').toString('base64');
+  const logs = [];
+  let submittedMessages;
+  const harness = await createHarness({
+    overrides: {
+      buildAnalysisAudioEvidence: async () => ({
+        data: sensitiveAudioData,
+        mimeType: 'audio/mp4',
+        sizeBytes: 22,
+        durationMs: 4_000,
+      }),
+      analyzeSpeech: async ({ messages }) => {
+        submittedMessages = messages;
+        return { content: jsonAnalysis() };
+      },
+      logger: {
+        info: (entry) => logs.push(entry),
+        error: (entry) => logs.push(entry),
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await harness.result();
+
+  assert.match(JSON.stringify(submittedMessages), new RegExp(sensitiveAudioData));
+  assert.doesNotMatch(JSON.stringify(harness.checkpoints), new RegExp(sensitiveAudioData));
+  assert.doesNotMatch(JSON.stringify(harness.checkpointContexts), new RegExp(sensitiveAudioData));
+  assert.doesNotMatch(JSON.stringify(logs), new RegExp(sensitiveAudioData));
+});
+
+test('oversized inline analysis audio stops before submitting checkpoint or provider request', async (t) => {
+  let analysisCalls = 0;
+  const harness = await createHarness({
+    overrides: {
+      buildAnalysisAudioEvidence: async () => {
+        throw Object.assign(new Error('inline evidence exceeds limit'), {
+          code: 'voiceover_analysis_invalid',
+        });
+      },
+      analyzeSpeech: async () => {
+        analysisCalls += 1;
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error?.code === 'voiceover_analysis_invalid',
+  );
+  assert.equal(analysisCalls, 0);
+  assert.equal(
+    harness.checkpoints.some((checkpoint) => checkpoint.stage === 'speech_analysis_submitting'),
+    false,
+  );
 });
 
 test('uses one normalized config snapshot and rejects dense target text before child or provider effects', async (t) => {

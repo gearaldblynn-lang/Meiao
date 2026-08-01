@@ -6,20 +6,34 @@ import { buildVoiceoverAnalysisMessages } from '../../server/voiceoverAnalysis.m
 const source = readFileSync(new URL('./videoStoryboardService.ts', import.meta.url), 'utf8');
 const planningSource = readFileSync(new URL('../utils/videoStoryboardPlanning.ts', import.meta.url), 'utf8');
 
-test('voiceover analysis reuses the current storyboard input_file and file_url video contract', () => {
+test('voiceover supporting video reuses the current storyboard input_file and file_url contract', () => {
   const fileUrl = 'https://managed.example/vocal-only.mp4';
+  const audioData = Buffer.from('voice-evidence').toString('base64');
   const messages = buildVoiceoverAnalysisMessages({
+    vocalAudioData: audioData,
+    vocalAudioMimeType: 'audio/mp4',
     vocalOnlyVideoUrl: fileUrl,
     targetLanguage: 'en',
     translationMode: 'natural',
     durationMs: 12_000,
   });
-  const voiceoverFileItem = messages[0].content.find((item) => item.type === 'input_file');
+  const voiceoverFileItems = messages[0].content.filter((item) => item.type === 'input_file');
   const storyboardFileContract = source.match(
     /type:\s*'input_file',\s*file_url:\s*safeReferenceVideoUrl,/,
   )?.[0] || '';
 
-  assert.deepEqual(voiceoverFileItem, { type: 'input_file', file_url: fileUrl });
+  assert.deepEqual(voiceoverFileItems[0], {
+    type: 'input_file',
+    file_data: audioData,
+    mime_type: 'audio/mp4',
+    filename: 'vocal-evidence.m4a',
+  });
+  assert.deepEqual(voiceoverFileItems[1], {
+    type: 'input_file',
+    file_url: fileUrl,
+    filename: 'supporting-video.mp4',
+    mime_type: 'video/mp4',
+  });
   assert.match(storyboardFileContract, /type:\s*'input_file'/);
   assert.match(storyboardFileContract, /file_url:\s*safeReferenceVideoUrl/);
 });

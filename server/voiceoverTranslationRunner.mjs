@@ -987,18 +987,29 @@ export async function runVoiceoverTranslationJob({
         signal,
       });
       const analysisMedia = await persistLocal(analysisVideoPath, 'speech_analysis_media');
-      await persistStage({
-        stage: 'speech_analysis_submitting',
-      }, durationMs);
-      throwIfAborted(signal);
-      const analyzeSpeech = requireDependency(deps, 'analyzeSpeech');
+      const buildAnalysisAudioEvidence = requireDependency(deps, 'buildAnalysisAudioEvidence');
+      const analysisAudioPath = await prepareOutputPath('analysis', 'vocal-evidence.m4a');
+      const analysisAudio = await buildAnalysisAudioEvidence({
+        vocalPath: vocal.path,
+        outputPath: analysisAudioPath,
+        maxBytes: config.analysisInlineAudioMaxBytes,
+        config,
+        signal,
+      });
       const messages = (deps.buildAnalysisMessages || buildVoiceoverAnalysisMessages)({
+        vocalAudioData: analysisAudio.data,
+        vocalAudioMimeType: analysisAudio.mimeType,
         vocalOnlyVideoUrl: analysisMedia.url,
         targetLanguage: payload.targetLanguage,
         translationMode: payload.translationMode,
         durationMs,
         maxTargetTextBytesPerSecond: config.maxTargetTextBytesPerSecond,
       });
+      await persistStage({
+        stage: 'speech_analysis_submitting',
+      }, durationMs);
+      throwIfAborted(signal);
+      const analyzeSpeech = requireDependency(deps, 'analyzeSpeech');
       const analysisOutput = await analyzeSpeech({
         messages,
         vocalOnlyVideoUrl: analysisMedia.url,

@@ -54,6 +54,10 @@ import {
   providerErrorCodeFromText,
 } from './providerErrorText.mjs';
 import { assertSeedanceReferenceMediaContract } from './seedanceReferenceMediaContract.mjs';
+import {
+  getGeminiInlineDataMaxBytes,
+  normalizeGeminiInlineData,
+} from './geminiInlineData.mjs';
 
 const KIE_CREATE_TASK_URL = 'https://api.kie.ai/api/v1/jobs/createTask';
 const KIE_RECORD_INFO_URL = 'https://api.kie.ai/api/v1/jobs/recordInfo';
@@ -646,6 +650,24 @@ const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
   }
 
   if (item.type === 'input_file') {
+    if (item.file_data !== undefined && isKieGemini35FlashModel(options.model)) {
+      let inlineData;
+      try {
+        inlineData = normalizeGeminiInlineData({
+          data: item.file_data,
+          mimeType: item.mime_type || item.mimeType,
+          maxBytes: getGeminiInlineDataMaxBytes(env),
+        });
+      } catch {
+        throw createProviderError('provider_bad_request', 'Gemini inline data 无效或超过大小上限');
+      }
+      return {
+        type: 'input_file',
+        file_data: inlineData.data,
+        mime_type: inlineData.mimeType,
+        ...(item.filename || item.name ? { filename: item.filename || item.name } : {}),
+      };
+    }
     const rawUrl = item.file_url || item.url || '';
     const fileUrl = await resolveMediaUrl(rawUrl);
     if (strategy === 'input_file_url') {
@@ -826,6 +848,14 @@ const buildGeminiFlashContent = (items) =>
 const buildGeminiNativePart = (item) => {
   if (item.type === 'text' || item.type === 'input_text') {
     return { text: item.text || '' };
+  }
+  if (item.file_data) {
+    return {
+      inline_data: {
+        mime_type: item.mime_type || item.mimeType,
+        data: item.file_data,
+      },
+    };
   }
   const fileUri = String(item.file_url || item.source?.url || item.image_url?.url || item.image_url || item.url || '').trim();
   if (fileUri) {

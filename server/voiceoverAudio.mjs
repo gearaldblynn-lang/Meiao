@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 
 import {
   inspectMp4Container,
@@ -19,6 +19,9 @@ const MAX_STDERR_BYTES = 64 * 1024;
 const fail = (message, details = {}) => buildVoiceoverError('voiceover_mix_failed', message, details);
 const timingFailure = (message, details = {}) => (
   buildVoiceoverError('voiceover_timing_out_of_range', message, details)
+);
+const analysisEvidenceFailure = (message, details = {}) => (
+  buildVoiceoverError('voiceover_analysis_invalid', message, details)
 );
 
 function boundedInteger(value, fallback, minimum, maximum) {
@@ -357,6 +360,25 @@ export function buildVocalOnlyVideoArgs(sourceVideoPath, vocalPath, outputPath) 
   ];
 }
 
+export function buildAnalysisAudioEvidenceArgs(vocalPath, outputPath) {
+  assertAbsoluteFilePath(vocalPath, '人声轨');
+  assertAbsoluteFilePath(outputPath, '分析音频');
+  assertDistinctOutput(outputPath, [vocalPath]);
+  return [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-i', vocalPath,
+    '-map', '0:a:0',
+    '-vn',
+    '-ac', '1',
+    '-ar', '16000',
+    '-c:a', 'aac',
+    '-b:a', '48k',
+    '-movflags', '+faststart',
+    '-f', 'mp4',
+    outputPath,
+  ];
+}
+
 function assertPcmWorkTrack(metadata, expectedChannels) {
   if (
     metadata.audioCodec !== 'pcm_s16le'
@@ -455,6 +477,56 @@ export async function buildVocalOnlyAnalysisVideo({
       : 100,
     deps,
     signal,
+  });
+}
+
+export async function buildVoiceoverAnalysisAudioEvidence({
+  vocalPath,
+  outputPath,
+  maxBytes,
+  signal,
+  deps = {},
+}) {
+  const normalizedMaxBytes = Number(maxBytes);
+  if (!Number.isSafeInteger(normalizedMaxBytes) || normalizedMaxBytes <= 0) {
+    throw analysisEvidenceFailure('分析音频大小门限无效');
+  }
+  const args = buildAnalysisAudioEvidenceArgs(vocalPath, outputPath);
+  const vocal = await probeMedia(vocalPath, deps, { requireAudio: true, signal });
+  assertPcmWorkTrack(vocal, 2);
+  const tools = runtime(deps);
+  await runCheckedFfmpeg(tools, args, signal);
+  const output = await probeMedia(outputPath, deps, { requireAudio: true, signal });
+  if (
+    output.audioCodec !== 'aac'
+    || output.sampleRate !== 16000
+    || output.channels !== 1
+    || !output.formatNames.some((name) => name === 'mov' || name === 'mp4' || name === 'm4a')
+  ) {
+    throw analysisEvidenceFailure('分析音频编码格式无效');
+  }
+  const fileInfo = await tools.statFile(outputPath);
+  const declaredSize = Number(fileInfo?.size || 0);
+  if (!Number.isSafeInteger(declaredSize) || declaredSize <= 0 || declaredSize > normalizedMaxBytes) {
+    throw analysisEvidenceFailure('分析音频超过内联证据大小上限', {
+      sizeBytes: declaredSize,
+      maxBytes: normalizedMaxBytes,
+    });
+  }
+  const fileBytes = await (deps.readFile || readFile)(outputPath);
+  const buffer = Buffer.isBuffer(fileBytes) ? fileBytes : Buffer.from(fileBytes);
+  if (!buffer.length || buffer.length > normalizedMaxBytes || buffer.length !== declaredSize) {
+    throw analysisEvidenceFailure('分析音频字节校验失败', {
+      sizeBytes: buffer.length,
+      declaredSize,
+      maxBytes: normalizedMaxBytes,
+    });
+  }
+  return Object.freeze({
+    data: buffer.toString('base64'),
+    mimeType: 'audio/mp4',
+    sizeBytes: buffer.length,
+    durationMs: output.durationMs,
   });
 }
 

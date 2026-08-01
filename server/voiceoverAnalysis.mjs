@@ -82,6 +82,23 @@ const validateManagedVideoUrl = (value) => {
   return candidate;
 };
 
+const validateInlineAudio = (data, mimeType) => {
+  const normalizedData = String(data || '').trim();
+  const normalizedMimeType = String(mimeType || '').trim().toLowerCase();
+  if (
+    !normalizedData
+    || normalizedData.length % 4 !== 0
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(normalizedData)
+    || normalizedMimeType !== 'audio/mp4'
+  ) {
+    throw invalidAnalysis('受控人声音频证据无效');
+  }
+  return {
+    data: normalizedData,
+    mimeType: normalizedMimeType,
+  };
+};
+
 const freezeSegment = (segment) => Object.freeze({
   id: segment.id,
   startMs: segment.startMs,
@@ -112,12 +129,15 @@ const assertNoUnknownFields = (value, allowed) => {
 };
 
 export function buildVoiceoverAnalysisMessages({
+  vocalAudioData,
+  vocalAudioMimeType,
   vocalOnlyVideoUrl,
   targetLanguage,
   translationMode,
   durationMs,
   maxTargetTextBytesPerSecond,
 } = {}) {
+  const vocalAudio = validateInlineAudio(vocalAudioData, vocalAudioMimeType);
   const fileUrl = validateManagedVideoUrl(vocalOnlyVideoUrl);
   const language = validateTargetLanguage(targetLanguage);
   const mode = validateTranslationMode(translationMode);
@@ -132,12 +152,12 @@ export function buildVoiceoverAnalysisMessages({
     'You are a precise single-speaker speech analyst and spoken-language translator for video localization.',
     '',
     'T Task',
-    `Analyze the attached vocal-only video, transcribe each spoken segment, and translate it into ${language.englishName} (${language.code}).`,
+    `Analyze the attached inline vocal audio, transcribe each spoken segment, and translate it into ${language.englishName} (${language.code}).`,
     'Return timestamps in integer milliseconds and describe only non-sensitive voice characteristics needed to choose a preset synthetic voice.',
     '',
     'C Context / Constraint',
-    `1. The attached file is the only analysis input and its exact duration is ${safeDurationMs} ms.`,
-    '2. Audio is the primary evidence for speech. Use original visible subtitles only as supporting evidence to cross-check noisy or ambiguous separated audio.',
+    `1. The attached inline audio and supporting video are the only analysis inputs and their exact duration is ${safeDurationMs} ms.`,
+    '2. The inline audio is the primary evidence for speech. Use visible subtitles in the supporting video only to cross-check noisy or ambiguous separated audio.',
     '3. Never invent generic content or substitute a plausible topic when evidence is unclear. Mark only genuinely audible speech as segments.',
     '4. Do not merge different speakers or infer personal identity or sensitive attributes. voiceProfile is limited to pitch, brightness, energy, pace, and a short non-sensitive accentDescription.',
     `5. ${modeConstraint}`,
@@ -167,7 +187,18 @@ export function buildVoiceoverAnalysisMessages({
     Object.freeze({
       role: 'user',
       content: Object.freeze([
-        Object.freeze({ type: 'input_file', file_url: fileUrl }),
+        Object.freeze({
+          type: 'input_file',
+          file_data: vocalAudio.data,
+          mime_type: vocalAudio.mimeType,
+          filename: 'vocal-evidence.m4a',
+        }),
+        Object.freeze({
+          type: 'input_file',
+          file_url: fileUrl,
+          filename: 'supporting-video.mp4',
+          mime_type: 'video/mp4',
+        }),
         Object.freeze({ type: 'text', text: prompt }),
       ]),
     }),

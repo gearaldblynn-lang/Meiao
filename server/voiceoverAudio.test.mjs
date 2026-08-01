@@ -10,9 +10,11 @@ import test from 'node:test';
 import {
   alignVoiceoverGroups,
   buildAlignmentArgs,
+  buildAnalysisAudioEvidenceArgs,
   buildExtractAudioArgs,
   buildFinalMixArgs,
   buildVocalOnlyVideoArgs,
+  buildVoiceoverAnalysisAudioEvidence,
   calculateAtempo,
   extractVoiceoverAudio,
   mixVoiceoverResult,
@@ -29,6 +31,7 @@ const audioProbe = ({
   codec = 'pcm_s16le',
   sampleRate = '48000',
   channels = 2,
+  formatName = 'wav',
 } = {}) => JSON.stringify({
   streams: [{
     codec_type: 'audio',
@@ -36,7 +39,7 @@ const audioProbe = ({
     sample_rate: sampleRate,
     channels,
   }],
-  format: { duration, format_name: 'wav', size: '1000' },
+  format: { duration, format_name: formatName, size: '1000' },
 });
 
 const videoProbe = ({
@@ -83,6 +86,67 @@ test('vocal-only analysis input copies video, replaces audio, and enables fastst
   assert.ok(args.includes('+faststart'));
   assert.ok(args.includes('-shortest'));
   assert.equal(args.includes('0:a:0'), false);
+});
+
+test('analysis audio evidence is mono low-bitrate AAC in an M4A container', () => {
+  const args = buildAnalysisAudioEvidenceArgs('/tmp/vocals.wav', '/tmp/evidence.m4a');
+  assert.deepEqual(args, [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-i', '/tmp/vocals.wav',
+    '-map', '0:a:0',
+    '-vn',
+    '-ac', '1',
+    '-ar', '16000',
+    '-c:a', 'aac',
+    '-b:a', '48k',
+    '-movflags', '+faststart',
+    '-f', 'mp4',
+    '/tmp/evidence.m4a',
+  ]);
+});
+
+test('analysis audio evidence returns canonical base64 and rejects bytes above the configured limit', async () => {
+  const bytes = Buffer.from('voice');
+  const runProcess = async (command, args) => {
+    if (command.endsWith('ffmpeg')) return { exitCode: 0, stdout: '', stderr: '' };
+    const filePath = args.at(-1);
+    return {
+      exitCode: 0,
+      stdout: filePath.endsWith('.m4a')
+        ? audioProbe({ codec: 'aac', sampleRate: '16000', channels: 1, formatName: 'mov,mp4,m4a,3gp,3g2,mj2' })
+        : audioProbe(),
+    };
+  };
+  const deps = {
+    ffmpegPath: '/private/ffmpeg',
+    ffprobePath: '/private/ffprobe',
+    statFile: async (filePath) => ({ size: filePath.endsWith('.m4a') ? bytes.length : 1_000 }),
+    readFile: async () => bytes,
+    runProcess,
+  };
+
+  const evidence = await buildVoiceoverAnalysisAudioEvidence({
+    vocalPath: '/tmp/vocals.wav',
+    outputPath: '/tmp/evidence.m4a',
+    maxBytes: bytes.length,
+    deps,
+  });
+  assert.deepEqual(evidence, {
+    data: bytes.toString('base64'),
+    mimeType: 'audio/mp4',
+    sizeBytes: bytes.length,
+    durationMs: 3_000,
+  });
+
+  await assert.rejects(
+    buildVoiceoverAnalysisAudioEvidence({
+      vocalPath: '/tmp/vocals.wav',
+      outputPath: '/tmp/evidence.m4a',
+      maxBytes: bytes.length - 1,
+      deps,
+    }),
+    (error) => error.code === 'voiceover_analysis_invalid',
+  );
 });
 
 test('probe parser fails closed on malformed JSON and absent audio', () => {

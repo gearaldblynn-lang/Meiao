@@ -11,6 +11,7 @@ import {
   persistMysqlVoiceoverParentCheckpoint,
   prepareVoiceoverJobRetryResult,
 } from './voiceoverChildJobStore.mjs';
+import { VOICEOVER_ANALYSIS_EVIDENCE_VERSION } from './voiceoverContract.mjs';
 
 const validParentPayload = (overrides = {}) => ({
   taskPurpose: 'voiceover_translation',
@@ -168,7 +169,7 @@ test('local parent checkpoint merges atomically and preserves unrelated result f
       voiceoverCheckpoint: {
         stage: 'audio_extracted',
         originalAudioAssetId: 'asset-audio',
-        analysisEvidenceVersion: 1,
+        analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
       },
     },
     env: {},
@@ -194,7 +195,7 @@ test('local parent checkpoint rejects stale claims, wrong users, and invalid reg
           voiceoverCheckpoint: {
             stage: 'audio_extracted',
             originalAudioAssetId: 'asset-audio',
-            analysisEvidenceVersion: 1,
+            analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
           },
         },
         env: {},
@@ -260,7 +261,7 @@ test('mysql parent checkpoint uses the exact running claim guard and requires on
       voiceoverCheckpoint: {
         stage: 'audio_extracted',
         originalAudioAssetId: 'asset-audio',
-        analysisEvidenceVersion: 1,
+        analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
       },
     },
     env: {},
@@ -824,7 +825,7 @@ test('server derives analysis and query-only retry plans without trusting parent
         originalAudioAssetId: 'asset-audio',
         vocalAssetId: 'asset-vocal',
         backgroundAssetId: 'asset-background',
-        analysisEvidenceVersion: 1,
+        analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
         analysisAttempt: 0,
       },
     },
@@ -906,7 +907,7 @@ test('server derives analysis and query-only retry plans without trusting parent
         originalAudioAssetId: 'asset-audio',
         vocalAssetId: 'asset-vocal',
         backgroundAssetId: 'asset-background',
-        analysisEvidenceVersion: 1,
+        analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
         analysisAttempt: 1,
         analysis: {
           sourceLanguage: 'en',

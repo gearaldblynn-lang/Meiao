@@ -3382,6 +3382,117 @@ test('executeProviderJob routes gemini 3.5 flash through kie native gemini strea
   }
 });
 
+test('executeProviderJob maps inline file data to Gemini native inline_data without media upload', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  const audioData = Buffer.from('voice').toString('base64');
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    return createJsonResponse({
+      candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] } }],
+      modelVersion: 'gemini-3-5-flash',
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        module: 'video',
+        subFeature: 'voiceover_translation',
+        taskType: 'kie_chat',
+        provider: 'kie',
+        payload: {
+          model: 'gemini-3-5-flash',
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'input_file',
+                file_data: audioData,
+                mime_type: 'audio/mp4',
+                filename: 'vocal-evidence.m4a',
+              },
+              {
+                type: 'input_file',
+                file_url: 'https://managed.example/supporting-video.mp4',
+                mime_type: 'video/mp4',
+              },
+              { type: 'text', text: 'Transcribe faithfully.' },
+            ],
+          }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal,
+    );
+
+    assert.equal(result.result.content, 'ok');
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].url, /streamGenerateContent/);
+    assert.equal(requests.some((item) => item.url.includes('/file-stream-upload')), false);
+    const requestBody = JSON.parse(String(requests[0].init.body));
+    const parts = requestBody.contents[0].parts;
+    assert.deepEqual(parts[0], {
+      inline_data: {
+        mime_type: 'audio/mp4',
+        data: audioData,
+      },
+    });
+    assert.deepEqual(parts[1], {
+      file_data: {
+        mime_type: 'video/mp4',
+        file_uri: 'https://managed.example/supporting-video.mp4',
+      },
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob rejects oversized Gemini inline data before provider fetch', async () => {
+  const originalFetch = global.fetch;
+  let fetchCalls = 0;
+  const oversizedData = Buffer.alloc(1025, 1).toString('base64');
+  global.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error('provider fetch must not run');
+  };
+
+  try {
+    await assert.rejects(
+      executeProviderJob(
+        {
+          module: 'video',
+          subFeature: 'voiceover_translation',
+          taskType: 'kie_chat',
+          provider: 'kie',
+          payload: {
+            model: 'gemini-3-5-flash',
+            messages: [{
+              role: 'user',
+              content: [{
+                type: 'input_file',
+                file_data: oversizedData,
+                mime_type: 'audio/mp4',
+              }],
+            }],
+          },
+        },
+        {
+          KIE_API_KEY: 'test-key',
+          MEIAO_GEMINI_INLINE_DATA_MAX_BYTES: '1024',
+        },
+        new AbortController().signal,
+      ),
+      (error) => error?.code === 'provider_bad_request' && /inline/i.test(error.message),
+    );
+    assert.equal(fetchCalls, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob rejects Google prohibited-use text instead of completing a video storyboard job', async () => {
   __testOnly_clearManagedAssetUploadCache();
   const originalFetch = global.fetch;

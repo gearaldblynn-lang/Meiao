@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createLocalJobRecord, getLocalJobById } from './localJobStore.mjs';
 import { createLocalTemporalActivities, createMysqlTemporalActivities } from './temporalWorker.mjs';
 import { shouldReleaseJobCreditReservation } from './accountCredits.mjs';
+import { VOICEOVER_ANALYSIS_EVIDENCE_VERSION } from './voiceoverContract.mjs';
 
 const temporalWorkflowSource = readFileSync(new URL('./temporal/workflows.mjs', import.meta.url), 'utf8');
 
@@ -809,7 +810,7 @@ test('local temporal activity awaits and preserves a parent result checkpoint be
         voiceoverCheckpoint: {
           stage: 'audio_extracted',
           originalAudioAssetId: 'asset-audio',
-          analysisEvidenceVersion: 1,
+          analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
         },
       });
       assert.equal(store.jobs[0].result.voiceoverCheckpoint.stage, 'audio_extracted');
@@ -839,7 +840,7 @@ test('Temporal restart then cancel keeps a speech-analysis submission reservatio
     originalAudioAssetId: 'asset-original',
     vocalAssetId: 'asset-vocal',
     backgroundAssetId: 'asset-background',
-    analysisEvidenceVersion: 1,
+    analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
     analysisAttempt: 0,
   };
   store.jobs = [parent];
