@@ -64,10 +64,13 @@ export const probeVoiceoverManagedMedia = async ({
     && sampleRate > 0
     && Number.isFinite(channels)
     && channels > 0;
+  const pixelFormat = String(metadata?.pixelFormat || '').trim().toLowerCase();
+  const hasCompatiblePixelFormat = pixelFormat === 'yuv420p'
+    || (expectedKind === 'golden_video' && pixelFormat === 'yuvj420p');
   const videoTypeValid = Boolean(
     metadata?.hasVideo === true
     && metadata?.videoCodec === 'h264'
-    && metadata?.pixelFormat === 'yuv420p'
+    && hasCompatiblePixelFormat
     && Number(metadata?.width) > 0
     && Number(metadata?.height) > 0
     && hasMp4Format
