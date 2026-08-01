@@ -1313,3 +1313,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 仅 `golden_video` 阶段额外接受 H.264 `yuvj420p`；H.264、AAC、MP4、fast-start、尺寸、时长和容差合同保持不变。`source_video`、`analysis_video`、`final_video` 继续严格要求 `yuv420p`，最终混流仍重编码为 H.264/yuv420p/AAC。
 - Regression check: `server/voiceoverMediaProbe.test.mjs` 使用真实 canary 元数据锁定 Golden `yuvj420p` 正例，并锁定同一元数据作为 `final_video` 时仍返回 `voiceover_checkpoint_asset_invalid`。
 - Avoid next time: provider 中间文件与用户最终交付文件分阶段定义媒体合同；任何兼容放宽只落在精确阶段，并同时增加最终交付负例，避免兼容修复扩散成输出格式漂移。
+
+## 2026-08-01 - Demucs readiness 必须覆盖 Torchaudio 的真实 WAV 写入后端
+
+- Symptom: Golden 成功并恢复到 `audio_extracted` 后，父任务以 `voiceover_separation_unavailable` 失败；readiness 仍显示 Python、模型和 FFmpeg 全绿。
+- Evidence: 生产输入是可读的 22.2215 秒、48 kHz、双声道 PCM s16 WAV，数据库字节数与 SHA-256 和磁盘一致。独立同参数 Demucs 运行完成四个 `mdx` 模型推理后，在 `torchaudio.save(vocals.wav)` 抛出 `Couldn't find appropriate backend`；生产 venv 的 `torchaudio.list_audio_backends()` 为空。把 `soundfile==0.13.1` 临时安装到隔离 target 后，Torchaudio 暴露 `soundfile` backend 并成功写入 48 kHz 双声道 WAV。
+- Root cause: Linux CPU 依赖锁遗漏 SoundFile，readiness 又只证明包、模型和 FFmpeg 存在，没有证明 Demucs 的输出编码 backend 可用。详细架构合同见 `CLAUDE.md` #89。
+- Fix: Linux `requirements.in`/哈希锁加入 `soundfile==0.13.1`；Python readiness 固定该版本和 `soundfile` backend，并实际写入、回读 48 kHz 双声道 PCM_16 WAV。全部 Python 探针只收到最小环境，输出累计超过 64 KiB 即终止。生产 venv 必须在无活动任务的维护窗口从新锁显式安装，再执行真实 readiness 和同父任务重试；应用运行时仍禁止下载依赖。
+- Regression check: `node --test scripts/install-voiceover-demucs.test.mjs server/voiceoverSeparation.test.mjs` 覆盖缺包、缺 backend、写入失败、真实子进程 WAV 元数据、最小环境及超限输出；发布前还需验证生产 runtime、真实 Demucs 分离输出、父任务复用既有 Golden 且不新增 provider 提交。
+- Avoid next time: 模型加载成功或 backend 名字存在都不等于流水线可产出文件。首次接入或平台锁变化时，readiness 必须真实写入并回读最终落盘格式；缺 backend 或写入异常要在模型推理前拒绝，不能靠真实任务暴露。

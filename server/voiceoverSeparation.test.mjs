@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { readFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -12,6 +14,8 @@ import { resolvePackagedFfprobePath } from './mediaTranscodeService.mjs';
 
 const manifest = { schemaVersion: 1, model: 'mdx', files: [{ name: 'model.th', size: 4, sha256: 'a'.repeat(64), url: 'https://example.invalid/model.th' }] };
 const mdxYaml = `models: ['0d19c1c6', '7ecf8ec1', 'c511e2ab', '7d865c68']\nweights: [\n  [1., 1., 0., 0.],\n  [0., 1., 0., 0.],\n  [1., 0., 1., 1.],\n  [1., 0., 1., 1.],\n]\nsegment: 44\n`;
+const linuxRuntimeProbe = 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|0.13.1|soundfile|WAV|48000|2|PCM_16|4800\n';
+const darwinRuntimeProbe = 'darwin|arm64|4.0.1|2.7.1|2.7.1|0.13.1|soundfile|WAV|48000|2|PCM_16|4800\n';
 
 const completeEnv = (extra = {}) => ({
   MEIAO_VOICEOVER_TRANSLATION_ENABLED: '1',
@@ -28,10 +32,10 @@ const readyDeps = (extra = {}) => ({
   readFile: async () => mdxYaml,
   verifyDemucsModelFiles: async () => ({ ready: true, files: [] }),
   runProcess: async (_command, args) => args.includes('-filters')
-    ? { exitCode: 0, stdout: ' ... sidechaincompress ... amix ... adelay ... afade ... atempo ... alimiter ... ' }
-    : args[0] === '-c' && args[1].includes('demucs.pretrained')
-      ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-      : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' },
+      ? { exitCode: 0, stdout: ' ... sidechaincompress ... amix ... adelay ... afade ... atempo ... alimiter ... ' }
+      : args[0] === '-c' && args[1].includes('demucs.pretrained')
+        ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
+      : { exitCode: 0, stdout: linuxRuntimeProbe },
   normalizeStem: async ({ outputPath }) => outputPath,
   ...extra,
 });
@@ -42,6 +46,114 @@ function fakeChild() {
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   return child;
+}
+
+function pinnedFixtureVersions() {
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    return { demucs: '4.0.1', torch: '2.7.1', torchaudio: '2.7.1', soundfile: '0.13.1' };
+  }
+  if (process.platform === 'linux' && process.arch === 'x64') {
+    return { demucs: '4.0.1', torch: '2.7.1+cpu', torchaudio: '2.7.1+cpu', soundfile: '0.13.1' };
+  }
+  throw new Error(`unsupported voiceover test runtime: ${process.platform}/${process.arch}`);
+}
+
+async function createPythonRuntimeFixture({
+  includeSoundfile = true,
+  backends = ['soundfile'],
+  failWrite = false,
+} = {}) {
+  const root = await mkdtemp(path.join(tmpdir(), 'meiao-voiceover-python-runtime-'));
+  const moduleDir = path.join(root, 'modules');
+  const pythonPath = path.join(root, 'fixture-python');
+  const ffmpegPath = path.join(root, 'fixture-ffmpeg');
+  const metadataPath = path.join(root, 'wav-metadata.txt');
+  const versions = pinnedFixtureVersions();
+  await mkdir(moduleDir, { recursive: true });
+  for (const [name, version] of Object.entries(versions)) {
+    if (name === 'soundfile' && !includeSoundfile) continue;
+    const distInfo = path.join(moduleDir, `${name}-0.dist-info`);
+    await mkdir(distInfo, { recursive: true });
+    await writeFile(path.join(distInfo, 'METADATA'), `Metadata-Version: 2.1\nName: ${name}\nVersion: ${version}\n`);
+  }
+  await writeFile(path.join(moduleDir, 'torch.py'), `
+float32 = "float32"
+def zeros(shape, dtype=None):
+    return {"shape": shape, "dtype": dtype}
+`);
+  await writeFile(path.join(moduleDir, 'torchaudio.py'), `
+import wave
+BACKENDS = ${JSON.stringify(backends)}
+FAIL_WRITE = ${failWrite ? 'True' : 'False'}
+def list_audio_backends():
+    return list(BACKENDS)
+def save(uri, src, sample_rate, channels_first=True, format=None, encoding=None, bits_per_sample=None, buffer_size=4096, backend=None, compression=None):
+    if FAIL_WRITE:
+        raise RuntimeError("fixture write failure")
+    if backend != "soundfile" or sample_rate != 48000 or encoding != "PCM_S" or bits_per_sample != 16:
+        raise RuntimeError("invalid save contract")
+    with wave.open(uri, "wb") as output:
+        output.setnchannels(2)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(b"\\x00\\x00" * 2 * 4800)
+`);
+  if (includeSoundfile) {
+    await writeFile(path.join(moduleDir, 'soundfile.py'), `
+import wave
+class SoundFile:
+    def __init__(self, file_path):
+        self._input = wave.open(file_path, "rb")
+        self.channels = self._input.getnchannels()
+        self.samplerate = self._input.getframerate()
+        self.frames = self._input.getnframes()
+        self.format = "WAV"
+        self.subtype = "PCM_16" if self._input.getsampwidth() == 2 else "UNKNOWN"
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, traceback):
+        self._input.close()
+        with open(${JSON.stringify(metadataPath)}, "w", encoding="utf-8") as marker:
+            marker.write(f"{self.samplerate}|{self.channels}|{self.subtype}|{self.frames}")
+`);
+  }
+  await writeFile(pythonPath, `#!/usr/bin/env python3
+import sys
+fixture_root = ${JSON.stringify(moduleDir)}
+sys.path[:] = [fixture_root] + [
+    entry for entry in sys.path
+    if entry and "site-packages" not in entry and "dist-packages" not in entry
+]
+if len(sys.argv) < 3 or sys.argv[1] != "-c":
+    raise SystemExit(2)
+exec(compile(sys.argv[2], "<fixture-python>", "exec"), {"__name__": "__main__"})
+`);
+  await writeFile(ffmpegPath, '#!/bin/sh\nprintf "sidechaincompress amix adelay afade atempo alimiter\\n"\n');
+  await chmod(pythonPath, 0o755);
+  await chmod(ffmpegPath, 0o755);
+  return {
+    root,
+    pythonPath,
+    ffmpegPath,
+    metadataPath,
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
+
+async function runRealPythonReadiness(fixture) {
+  return checkVoiceoverSeparationReadiness({
+    env: completeEnv({
+      MEIAO_VOICEOVER_SEPARATION_PYTHON: fixture.pythonPath,
+      MEIAO_FFMPEG_PATH: fixture.ffmpegPath,
+    }),
+    verifyModelLoad: false,
+    deps: {
+      manifest,
+      yamlText: mdxYaml,
+      readFile: async () => mdxYaml,
+      verifyDemucsModelFiles: async () => ({ ready: true, files: [] }),
+    },
+  });
 }
 
 test('normalizes Demucs stems to the canonical 48 kHz stereo PCM work-track contract', () => {
@@ -118,7 +230,7 @@ test('runtime readiness accepts the pinned macOS arm64 package versions', async 
         ? { exitCode: 0, stdout: ' ... sidechaincompress ... amix ... adelay ... afade ... atempo ... alimiter ... ' }
         : args[0] === '-c' && args[1].includes('demucs.pretrained')
           ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-          : { exitCode: 0, stdout: 'darwin|arm64|4.0.1|2.7.1|2.7.1|0.13.1\n' },
+          : { exitCode: 0, stdout: darwinRuntimeProbe },
     }),
   });
   assert.deepEqual(readiness, {
@@ -138,11 +250,123 @@ test('runtime readiness rejects macOS arm64 without the pinned soundfile backend
         ? { exitCode: 0, stdout: ' ... sidechaincompress ... amix ... adelay ... afade ... atempo ... alimiter ... ' }
         : args[0] === '-c' && args[1].includes('demucs.pretrained')
           ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-          : { exitCode: 0, stdout: 'darwin|arm64|4.0.1|2.7.1|2.7.1|missing\n' },
+          : { exitCode: 0, stdout: 'darwin|arm64|4.0.1|2.7.1|2.7.1|missing|missing\n' },
     }),
   });
   assert.equal(readiness.pythonReady, false);
   assert.equal(readiness.ready, false);
+});
+
+test('runtime readiness rejects Linux without the pinned soundfile audio backend', async () => {
+  const readiness = await checkVoiceoverSeparationReadiness({
+    env: completeEnv(),
+    deps: readyDeps({
+      runProcess: async (_command, args) => args.includes('-filters')
+        ? { exitCode: 0, stdout: ' ... sidechaincompress ... amix ... adelay ... afade ... atempo ... alimiter ... ' }
+        : args[0] === '-c' && args[1].includes('demucs.pretrained')
+          ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
+          : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing|missing\n' },
+    }),
+  });
+  assert.equal(readiness.pythonReady, false);
+  assert.equal(readiness.ready, false);
+});
+
+test('runtime readiness uses a real Python subprocess to reject a missing SoundFile package', async () => {
+  const fixture = await createPythonRuntimeFixture({ includeSoundfile: false });
+  try {
+    const readiness = await runRealPythonReadiness(fixture);
+    assert.equal(readiness.pythonReady, false);
+    assert.equal(readiness.ready, false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runtime readiness uses a real Python subprocess to reject a missing SoundFile backend', async () => {
+  const fixture = await createPythonRuntimeFixture({ backends: [] });
+  try {
+    const readiness = await runRealPythonReadiness(fixture);
+    assert.equal(readiness.pythonReady, false);
+    assert.equal(readiness.ready, false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runtime readiness rejects an advertised SoundFile backend that cannot write WAV', async () => {
+  const fixture = await createPythonRuntimeFixture({ failWrite: true });
+  try {
+    const readiness = await runRealPythonReadiness(fixture);
+    assert.equal(readiness.pythonReady, false);
+    assert.equal(readiness.ready, false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runtime readiness writes and inspects a real 48 kHz stereo PCM WAV in a Python subprocess', async () => {
+  const fixture = await createPythonRuntimeFixture();
+  try {
+    const readiness = await runRealPythonReadiness(fixture);
+    assert.equal(readiness.pythonReady, true);
+    assert.equal(readiness.ready, true);
+    assert.equal(await readFile(fixture.metadataPath, 'utf8'), '48000|2|PCM_16|4800');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runtime readiness rejects malformed Python probe output', async () => {
+  const readiness = await checkVoiceoverSeparationReadiness({
+    env: completeEnv(),
+    verifyModelLoad: false,
+    deps: readyDeps({
+      runProcess: async (_command, args) => args.includes('-filters')
+        ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
+        : { exitCode: 0, stdout: 'linux|x86_64|malformed\n' },
+    }),
+  });
+  assert.equal(readiness.pythonReady, false);
+  assert.equal(readiness.ready, false);
+});
+
+test('runtime readiness kills a Python probe before oversized output can continue', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'meiao-voiceover-python-overflow-'));
+  const pythonPath = path.join(root, 'fixture-python');
+  const ffmpegPath = path.join(root, 'fixture-ffmpeg');
+  const markerPath = path.join(root, 'continued-after-overflow');
+  await writeFile(pythonPath, `#!/usr/bin/env python3
+import sys
+import time
+sys.stdout.write("x" * 70000)
+sys.stdout.flush()
+time.sleep(0.25)
+with open(${JSON.stringify(markerPath)}, "w", encoding="utf-8") as marker:
+    marker.write("continued")
+`);
+  await writeFile(ffmpegPath, '#!/bin/sh\nprintf "sidechaincompress amix adelay afade atempo alimiter\\n"\n');
+  await chmod(pythonPath, 0o755);
+  await chmod(ffmpegPath, 0o755);
+  try {
+    const readiness = await checkVoiceoverSeparationReadiness({
+      env: completeEnv({
+        MEIAO_VOICEOVER_SEPARATION_PYTHON: pythonPath,
+        MEIAO_FFMPEG_PATH: ffmpegPath,
+      }),
+      verifyModelLoad: false,
+      deps: {
+        manifest,
+        yamlText: mdxYaml,
+        readFile: async () => mdxYaml,
+        verifyDemucsModelFiles: async () => ({ ready: true, files: [] }),
+      },
+    });
+    assert.equal(readiness.pythonReady, false);
+    await assert.rejects(access(markerPath), (error) => error?.code === 'ENOENT');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('separation propagates the parent normalized config snapshot to readiness', async () => {
@@ -188,20 +412,28 @@ test('readiness validates Python imports, the exact Demucs version, and required
       return args.includes('-filters')
         ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
         : args[1].includes('demucs.pretrained') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-        : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' };
+        : { exitCode: 0, stdout: linuxRuntimeProbe };
     } }),
   });
   assert.deepEqual(readiness, { ready: true, code: null, pythonReady: true, modelReady: true, ffmpegReady: true });
-  assert.deepEqual(calls.map((call) => call.args), [
-    ['-c', 'import importlib.metadata as m, platform, sys, torch, torchaudio; print("|".join((sys.platform, platform.machine().lower(), m.version("demucs"), m.version("torch"), m.version("torchaudio"), m.version("soundfile") if sys.platform == "darwin" else "missing")))'],
-    ['-c', 'import sys; from pathlib import Path; from demucs.pretrained import get_model; get_model("mdx", Path(sys.argv[1])); print("mdx-load-ok")', '/configured/models'],
-    ['-hide_banner', '-filters'],
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].args[0], '-c');
+  assert.match(calls[0].args[1], /torchaudio\.list_audio_backends/);
+  assert.match(calls[0].args[1], /torchaudio\.save/);
+  assert.match(calls[0].args[1], /sf\.SoundFile/);
+  assert.deepEqual(calls[1].args, [
+    '-c',
+    'import sys; from pathlib import Path; from demucs.pretrained import get_model; get_model("mdx", Path(sys.argv[1])); print("mdx-load-ok")',
+    '/configured/models',
   ]);
-  assert.equal(calls[1].options.env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '1');
+  assert.deepEqual(calls[2].args, ['-hide_banner', '-filters']);
+  for (const call of calls.filter(({ command }) => command === '/configured/venv/bin/python')) {
+    assert.equal(call.options.env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '1');
+    assert.equal('TORCH_FORCE_WEIGHTS_ONLY_LOAD' in call.options.env, false);
+    assert.equal('KIE_API_KEY' in call.options.env, false);
+    assert.equal('MEIAO_DB_PASSWORD' in call.options.env, false);
+  }
   assert.equal(calls[1].options.timeoutMs, 120_000);
-  assert.equal('TORCH_FORCE_WEIGHTS_ONLY_LOAD' in calls[1].options.env, false);
-  assert.equal('KIE_API_KEY' in calls[1].options.env, false);
-  assert.equal('MEIAO_DB_PASSWORD' in calls[1].options.env, false);
   assert.equal(env.TORCH_FORCE_WEIGHTS_ONLY_LOAD, '1');
   assert.equal(env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD, '0');
   assert.doesNotMatch(JSON.stringify(readiness), /\/configured\/|secret|token|https?:/i);
@@ -217,7 +449,7 @@ test('runtime health verifies pinned files without allocating the Demucs model a
         calls.push({ args, options });
         return args.includes('-filters')
           ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
-          : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' };
+          : { exitCode: 0, stdout: linuxRuntimeProbe };
       },
     }),
   });
@@ -246,7 +478,7 @@ test('readiness fails closed when package versions or FFmpeg filters drift', asy
     deps: readyDeps({ runProcess: async (_command, args) => args.includes('-filters')
       ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
       : args[1].includes('demucs.pretrained') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-      : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1|2.7.1|missing\n' } }),
+      : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1|2.7.1|0.13.1|soundfile|WAV|48000|2|PCM_16|4800\n' } }),
   });
   assert.deepEqual(versionDrift, { ready: false, code: 'voiceover_separation_unavailable', pythonReady: false, modelReady: true, ffmpegReady: true });
   const filterDrift = await checkVoiceoverSeparationReadiness({
@@ -254,7 +486,7 @@ test('readiness fails closed when package versions or FFmpeg filters drift', asy
     deps: readyDeps({ runProcess: async (_command, args) => args.includes('-filters')
       ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo' }
       : args[1].includes('demucs.pretrained') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-      : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' } }),
+      : { exitCode: 0, stdout: linuxRuntimeProbe } }),
   });
   assert.deepEqual(filterDrift, { ready: false, code: 'voiceover_separation_unavailable', pythonReady: true, modelReady: true, ffmpegReady: false });
 });
@@ -268,7 +500,7 @@ test('readiness requires the installed mdx.yaml and the local Demucs load gate',
     env: completeEnv(), deps: readyDeps({ runProcess: async (_command, args) => args.includes('-filters')
       ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
       : args[1].includes('demucs.pretrained') ? { exitCode: 1, stdout: '' }
-      : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' } }),
+      : { exitCode: 0, stdout: linuxRuntimeProbe } }),
   });
   assert.equal(badLoad.modelReady, false);
 });
@@ -283,7 +515,7 @@ test('readiness uses the packaged FFmpeg resolver when the environment has no ov
         calls.push(command);
         return args.includes('-filters') ? { exitCode: 0, stdout: 'sidechaincompress amix adelay afade atempo alimiter' }
           : args[1].includes('demucs.pretrained') ? { exitCode: 0, stdout: 'mdx-load-ok\n' }
-          : { exitCode: 0, stdout: 'linux|x86_64|4.0.1|2.7.1+cpu|2.7.1+cpu|missing\n' };
+          : { exitCode: 0, stdout: linuxRuntimeProbe };
       },
     }),
   });
