@@ -144,6 +144,21 @@ test('temporal engine keeps durable running jobs owned by temporal after restart
   assert.match(temporalWorkerSource, /safeHeartbeat\(heartbeat, \{ jobId: refreshedJob\.id, stage: 'provider_submit', providerTaskId: value \}\)/);
 });
 
+test('retry logs use only the post-retry provider identity', () => {
+  const mysqlRetryLogging = serverSource.match(
+    /const retriedJob = await getJobById\(pool, job\.id\);[\s\S]*?json\(res, 200, \{ ok: true \}\);/,
+  )?.[0] || '';
+  const localRetryLogging = serverSource.match(
+    /retriedJob = requestLocalRetryJob\(store, jobId,[\s\S]*?writeLocalStore\(store\);/,
+  )?.[0] || '';
+
+  assert.match(mysqlRetryLogging, /providerTaskId: retriedJob\?\.providerTaskId \|\| ''/);
+  assert.match(mysqlRetryLogging, /providerSubmitted: Boolean\(retriedJob\?\.providerTaskId\)/);
+  assert.doesNotMatch(mysqlRetryLogging, /retriedJob\?\.providerTaskId \|\| job\.providerTaskId/);
+  assert.match(localRetryLogging, /providerTaskId: retriedJob\?\.providerTaskId \|\| ''/);
+  assert.doesNotMatch(localRetryLogging, /providerTaskId: job\.providerTaskId/);
+});
+
 test('local temporal engine starts a real worker and does not also trigger the inline worker', () => {
   assert.match(serverSource, /createLocalTemporalActivities/);
   assert.match(serverSource, /startMeiaoTemporalWorker/);

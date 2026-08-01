@@ -350,6 +350,7 @@ const checkpointAt = (stage) => {
     checkpoint.vocalAssetId = 'asset-vocal';
     checkpoint.backgroundAssetId = 'asset-background';
   }
+  if (rank >= 1) checkpoint.analysisEvidenceVersion = 1;
   if (rank >= 4) checkpoint.analysis = VALID_ANALYSIS;
   if (rank >= 5) {
     checkpoint.translation = {
@@ -373,6 +374,7 @@ const checkpointAt = (stage) => {
     }];
   }
   if (rank >= 7) checkpoint.alignedAudioAssetId = 'asset-aligned';
+  if (rank >= 7) checkpoint.alignmentVersion = 1;
   if (rank >= 8) checkpoint.finalAssetId = 'asset-final';
   return checkpoint;
 };
@@ -816,6 +818,133 @@ test('resumes each durable checkpoint at the next allowed side effect', async (t
     ));
     assert.equal(relevant[0], expectedFirst, stage);
   }
+});
+
+test('legacy analyzed and aligned checkpoints fail closed before process or provider work', async (t) => {
+  for (const stage of ['speech_analyzed', 'translated', 'tts_generating', 'audio_aligned']) {
+    let sideEffects = 0;
+    const legacyCheckpoint = checkpointAt(stage);
+    delete legacyCheckpoint.analysisEvidenceVersion;
+    delete legacyCheckpoint.alignmentVersion;
+    const harness = await createHarness({
+      job: createParentJob({
+        result: { voiceoverCheckpoint: legacyCheckpoint },
+      }),
+      overrides: {
+        createWorkRoot: async () => {
+          sideEffects += 1;
+          throw new Error('legacy checkpoint must fail before creating a work root');
+        },
+        analyzeSpeech: async () => {
+          sideEffects += 1;
+        },
+        runTts: async () => {
+          sideEffects += 1;
+        },
+        alignAudio: async () => {
+          sideEffects += 1;
+        },
+        mixAudio: async () => {
+          sideEffects += 1;
+        },
+      },
+    });
+    t.after(harness.cleanup);
+
+    await assert.rejects(
+      harness.result(),
+      (error) => error?.code === 'voiceover_checkpoint_upgrade_required',
+      stage,
+    );
+    assert.equal(sideEffects, 0, stage);
+  }
+});
+
+test('legacy local evidence checkpoints rewind to source extraction before continuing', async (t) => {
+  for (const stage of ['audio_extracted', 'voice_separated']) {
+    const legacyCheckpoint = checkpointAt(stage);
+    delete legacyCheckpoint.analysisEvidenceVersion;
+    const harness = await createHarness({
+      job: createParentJob({
+        result: { voiceoverCheckpoint: legacyCheckpoint },
+      }),
+    });
+    t.after(harness.cleanup);
+
+    await harness.result();
+    const firstProcessingEvent = harness.events.find((event) => (
+      ['extract-audio', 'demucs', 'build-vocal-only-video', 'analyze', 'align', 'mix'].includes(event)
+    ));
+    assert.equal(firstProcessingEvent, 'extract-audio', stage);
+  }
+});
+
+test('alignment-only legacy checkpoint recalculates derived timing without another provider call', async (t) => {
+  const legacyCheckpoint = checkpointAt('audio_aligned');
+  delete legacyCheckpoint.alignmentVersion;
+  legacyCheckpoint.ttsGroups[0].actualDurationMs = 1_000;
+  legacyCheckpoint.ttsGroups[0].atempo = 1;
+  let providerCalls = 0;
+  const harness = await createHarness({
+    job: createParentJob({
+      result: { voiceoverCheckpoint: legacyCheckpoint },
+    }),
+    overrides: {
+      resolveOwnedAsset: async ({ assetId, sourceUrl, userId, destinationPath }) => {
+        const requestedId = assetId || String(sourceUrl || '').replace(/^managed:\/\//u, '');
+        await mkdir(path.dirname(destinationPath), { recursive: true });
+        await writeFile(destinationPath, requestedId);
+        return {
+          assetId: requestedId,
+          url: requestedId === 'asset-final' ? 'managed-final-url' : `managed://${requestedId}`,
+          path: destinationPath,
+          userId,
+          durationMs: requestedId === 'asset-tts-0' ? 750 : 4_000,
+          hasAudio: true,
+          sizeBytes: 1_024,
+          width: 1080,
+          height: 1920,
+        };
+      },
+      childJobs: {
+        getOrCreate: async () => ({
+          id: 'child-tts-0',
+          status: 'succeeded',
+          providerTaskId: 'provider-tts-0',
+          result: {
+            assetId: 'asset-tts-0',
+            audioUrl: 'managed://asset-tts-0',
+            durationMs: 750,
+          },
+        }),
+      },
+      runTts: async () => {
+        providerCalls += 1;
+        throw new Error('alignment-only upgrade must not create another provider task');
+      },
+      alignAudio: async ({ outputPath }) => {
+        harness.events.push('align');
+        await mkdir(path.dirname(outputPath), { recursive: true });
+        await writeFile(outputPath, 'aligned');
+        return {
+          durationMs: 4_000,
+          groups: [{ index: 0, actualDurationMs: 750, atempo: 0.75 }],
+        };
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await harness.result();
+
+  assert.equal(providerCalls, 0);
+  const aligned = harness.checkpoints.findLast((checkpoint) => checkpoint.stage === 'audio_aligned');
+  assert.equal(aligned.alignmentVersion, 1);
+  assert.equal(aligned.ttsGroups[0].childJobId, 'child-tts-0');
+  assert.equal(aligned.ttsGroups[0].providerTaskId, 'provider-tts-0');
+  assert.equal(aligned.ttsGroups[0].assetId, 'asset-tts-0');
+  assert.equal(aligned.ttsGroups[0].actualDurationMs, 750);
+  assert.equal(aligned.ttsGroups[0].atempo, 0.75);
 });
 
 test('speech_analysis_submitting fails closed without another Gemini call', async (t) => {
@@ -1355,6 +1484,8 @@ test('redacting logger never receives transcript, provider URL, or local path', 
 test('recovers Golden success from the child ledger after a parent-checkpoint crash without rerunning Golden', async (t) => {
   let goldenCalls = 0;
   let extractedFrom = '';
+  let analyzedFrom = '';
+  let mixedFrom = '';
   const job = createParentJob({
     payload: {
       removeText: true,
@@ -1424,6 +1555,16 @@ test('recovers Golden success from the child ledger after a parent-checkpoint cr
         await mkdir(path.dirname(outputWavPath), { recursive: true });
         await writeFile(outputWavPath, 'audio');
       },
+      buildVocalOnlyVideo: async ({ sourceVideoPath, outputPath }) => {
+        analyzedFrom = String(await import('node:fs/promises').then(({ readFile }) => readFile(sourceVideoPath, 'utf8')));
+        await mkdir(path.dirname(outputPath), { recursive: true });
+        await writeFile(outputPath, 'analysis');
+      },
+      mixAudio: async ({ baseVideoPath, outputPath }) => {
+        mixedFrom = String(await import('node:fs/promises').then(({ readFile }) => readFile(baseVideoPath, 'utf8')));
+        await mkdir(path.dirname(outputPath), { recursive: true });
+        await writeFile(outputPath, 'final');
+      },
     },
   });
   t.after(harness.cleanup);
@@ -1431,7 +1572,9 @@ test('recovers Golden success from the child ledger after a parent-checkpoint cr
   const output = await harness.result();
   assert.equal(output.result.videoUrl, 'managed-final-url');
   assert.equal(goldenCalls, 0);
-  assert.equal(extractedFrom, 'asset-golden');
+  assert.equal(extractedFrom, 'asset-source');
+  assert.equal(analyzedFrom, 'asset-source');
+  assert.equal(mixedFrom, 'asset-golden');
   assert.equal(harness.checkpoints.find((item) => item.stage === 'subtitle_removal')?.subtitleRemoval?.resultAssetId, 'asset-golden');
   assert.equal(harness.checkpoints.at(-1).baseVideoAssetId, 'asset-source');
 });

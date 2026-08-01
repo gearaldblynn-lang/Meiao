@@ -46,6 +46,7 @@ const validCheckpoint = (overrides = {}) => ({
   originalAudioAssetId: 'asset-audio',
   vocalAssetId: 'asset-vocals',
   backgroundAssetId: 'asset-background',
+  analysisEvidenceVersion: 1,
   analysisAttempt: 0,
   ...overrides,
 });
@@ -151,6 +152,32 @@ test('checkpoint stages are monotonic and carry only fields available at each st
   assert.throws(() => normalizeVoiceoverCheckpoint(validCheckpoint({ stage: 'input_prepared', vocalAssetId: 'asset-vocals' })), (error) => error.code === 'voiceover_checkpoint_invalid');
 });
 
+test('current checkpoints carry analysis evidence and alignment algorithm provenance', () => {
+  const separated = normalizeVoiceoverCheckpoint(validCheckpoint());
+  assert.equal(separated.analysisEvidenceVersion, 1);
+
+  const aligned = normalizeVoiceoverCheckpoint(checkpointAt('audio_aligned', {
+    analysisEvidenceVersion: 1,
+    alignmentVersion: 1,
+  }));
+  assert.equal(aligned.analysisEvidenceVersion, 1);
+  assert.equal(aligned.alignmentVersion, 1);
+
+  assert.throws(
+    () => normalizeVoiceoverCheckpoint(validCheckpoint({
+      analysisEvidenceVersion: undefined,
+    })),
+    (error) => error.code === 'voiceover_checkpoint_upgrade_required',
+  );
+  assert.throws(
+    () => normalizeVoiceoverCheckpoint(checkpointAt('audio_aligned', {
+      analysisEvidenceVersion: 1,
+      alignmentVersion: undefined,
+    })),
+    (error) => error.code === 'voiceover_checkpoint_upgrade_required',
+  );
+});
+
 test('each progressed stage requires its durable prerequisite checkpoint data', () => {
   const goldenOptions = { removeText: true };
   assert.throws(() => normalizeVoiceoverCheckpoint({ version: 1, stage: 'subtitle_removal', baseVideoAssetId: 'asset-base', analysisAttempt: 0 }, goldenOptions), (error) => error.code === 'voiceover_checkpoint_invalid');
@@ -168,13 +195,21 @@ test('each progressed stage requires its durable prerequisite checkpoint data', 
 test('no-Golden checkpoint progression omits subtitle removal while Golden requires it', () => {
   const options = { removeText: false };
   let checkpoint = normalizeVoiceoverCheckpoint(noGoldenCheckpointAt('input_prepared'), options);
-  checkpoint = mergeVoiceoverCheckpoint(checkpoint, { stage: 'audio_extracted', originalAudioAssetId: 'asset-audio' }, options);
+  checkpoint = mergeVoiceoverCheckpoint(checkpoint, {
+    stage: 'audio_extracted',
+    originalAudioAssetId: 'asset-audio',
+    analysisEvidenceVersion: 1,
+  }, options);
   checkpoint = mergeVoiceoverCheckpoint(checkpoint, { stage: 'voice_separated', vocalAssetId: 'asset-vocals', backgroundAssetId: 'asset-background' }, options);
   checkpoint = mergeVoiceoverCheckpoint(checkpoint, { stage: 'speech_analysis_submitting' }, options);
   checkpoint = mergeVoiceoverCheckpoint(checkpoint, { stage: 'speech_analyzed', analysis: validAnalysis() }, options);
   checkpoint = mergeVoiceoverCheckpoint(checkpoint, { stage: 'translated', translation: validTranslation() }, options);
   checkpoint = mergeVoiceoverCheckpoint(checkpoint, { stage: 'tts_generating', ttsGroups: [validTtsGroup(0)] }, options);
-  checkpoint = mergeVoiceoverCheckpoint(checkpoint, { stage: 'audio_aligned', alignedAudioAssetId: 'asset-aligned-audio' }, options);
+  checkpoint = mergeVoiceoverCheckpoint(checkpoint, {
+    stage: 'audio_aligned',
+    alignedAudioAssetId: 'asset-aligned-audio',
+    alignmentVersion: 1,
+  }, options);
   checkpoint = mergeVoiceoverCheckpoint(checkpoint, { stage: 'result_persisted', finalAssetId: 'asset-final' }, options);
   assert.equal(checkpoint.stage, 'result_persisted');
   assert.equal(checkpoint.subtitleRemoval, undefined);
@@ -190,7 +225,11 @@ test('no-Golden options reject Golden stages and checkpoint data in normalizatio
   const separated = normalizeVoiceoverCheckpoint(noGoldenCheckpointAt('voice_separated'));
   assert.throws(() => mergeVoiceoverCheckpoint(separated, { subtitleRemoval: validSubtitleRemoval() }, { removeText: false }), (error) => error.code === 'voiceover_checkpoint_invalid');
   assert.equal(normalizeVoiceoverCheckpoint(goldenStage, { removeText: true }).subtitleRemoval.childJobId, 'subtitle-child-1');
-  assert.equal(mergeVoiceoverCheckpoint(normalizeVoiceoverCheckpoint(goldenStage, { removeText: true }), { stage: 'audio_extracted', originalAudioAssetId: 'asset-audio' }, { removeText: true }).subtitleRemoval.childJobId, 'subtitle-child-1');
+  assert.equal(mergeVoiceoverCheckpoint(normalizeVoiceoverCheckpoint(goldenStage, { removeText: true }), {
+    stage: 'audio_extracted',
+    originalAudioAssetId: 'asset-audio',
+    analysisEvidenceVersion: 1,
+  }, { removeText: true }).subtitleRemoval.childJobId, 'subtitle-child-1');
 });
 
 test('checkpoint merging is deep and monotonic for TTS group state and durable anchors', () => {
@@ -350,10 +389,14 @@ function checkpointAt(stage, overrides = {}) {
     vocalAssetId: 'asset-vocals',
     backgroundAssetId: 'asset-background',
     analysisAttempt: 0,
+    ...(['audio_extracted', 'voice_separated', 'speech_analysis_submitting', 'speech_analyzed', 'translated', 'tts_generating', 'audio_aligned', 'result_persisted'].includes(stage)
+      ? { analysisEvidenceVersion: 1 }
+      : {}),
     ...(STAGE_WITH_ANALYSIS.has(stage) ? { analysis: validAnalysis() } : {}),
     ...(STAGE_WITH_TRANSLATION.has(stage) ? { translation: validTranslation() } : {}),
     ...(STAGE_WITH_TTS_GROUPS.has(stage) ? { ttsGroups: [validTtsGroup(0)] } : {}),
     ...(STAGE_WITH_ALIGNED_AUDIO.has(stage) ? { alignedAudioAssetId: 'asset-aligned-audio' } : {}),
+    ...(STAGE_WITH_ALIGNED_AUDIO.has(stage) ? { alignmentVersion: 1 } : {}),
     ...(stage === 'result_persisted' ? { finalAssetId: 'asset-final' } : {}),
     ...overrides,
   };
@@ -368,10 +411,14 @@ function noGoldenCheckpointAt(stage, overrides = {}) {
     vocalAssetId: ['voice_separated', 'speech_analysis_submitting', 'speech_analyzed', 'translated', 'tts_generating', 'audio_aligned', 'result_persisted'].includes(stage) ? 'asset-vocals' : undefined,
     backgroundAssetId: ['voice_separated', 'speech_analysis_submitting', 'speech_analyzed', 'translated', 'tts_generating', 'audio_aligned', 'result_persisted'].includes(stage) ? 'asset-background' : undefined,
     analysisAttempt: 0,
+    ...(['audio_extracted', 'voice_separated', 'speech_analysis_submitting', 'speech_analyzed', 'translated', 'tts_generating', 'audio_aligned', 'result_persisted'].includes(stage)
+      ? { analysisEvidenceVersion: 1 }
+      : {}),
     ...(STAGE_WITH_ANALYSIS.has(stage) ? { analysis: validAnalysis() } : {}),
     ...(STAGE_WITH_TRANSLATION.has(stage) ? { translation: validTranslation() } : {}),
     ...(STAGE_WITH_TTS_GROUPS.has(stage) ? { ttsGroups: [validTtsGroup(0)] } : {}),
     ...(STAGE_WITH_ALIGNED_AUDIO.has(stage) ? { alignedAudioAssetId: 'asset-aligned-audio' } : {}),
+    ...(STAGE_WITH_ALIGNED_AUDIO.has(stage) ? { alignmentVersion: 1 } : {}),
     ...(stage === 'result_persisted' ? { finalAssetId: 'asset-final' } : {}),
     ...overrides,
   };

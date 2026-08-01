@@ -1,5 +1,7 @@
 # Video Voiceover Translation Implementation Plan
 
+> **状态：已废止，仅保留历史记录。** 2026-08-01 起，活动合同以 `docs/project-overview.md`、`docs/release-and-handoff.md`、`docs/tencent-cloud-deploy.md` 及 `CLAUDE.md` 的口播翻译根因条目为准。本计划中保留背景声音、短口播不减速和混入 `no_vocals` 的要求不得继续实施或验收。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在「短视频」中交付独立的「口播翻译」子功能：把当前用户拥有的单人口播视频自动识别、翻译并改用 Gemini 3.1 Flash TTS 口播，同时保留背景音乐、环境音和音效，并可选复用 Golden 去文案。

@@ -225,13 +225,13 @@ test('calculateAtempo uses actual duration divided by target duration with inclu
   }), 1.2);
   assert.equal(calculateAtempo({
     actualDurationMs: 750, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35,
-  }), 1);
+  }), 0.75);
   assert.equal(calculateAtempo({
     actualDurationMs: 1350, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35,
   }), 1.35);
   assert.equal(calculateAtempo({
     actualDurationMs: 500, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.35,
-  }), 1);
+  }), 0.75);
   assert.equal(calculateAtempo({
     actualDurationMs: 1750, targetDurationMs: 1000, minAtempo: 0.75, maxAtempo: 1.75,
   }), 1.75);
@@ -249,6 +249,29 @@ test('calculateAtempo rejects out-of-range and invalid numeric inputs', () => {
       (error) => error.code === 'voiceover_timing_out_of_range',
     );
   }
+});
+
+test('alignment safely slows and centers a short narration inside its speech window', () => {
+  const { filterGraph } = buildAlignmentArgs({
+    groups: [{
+      index: 0,
+      startMs: 1_000,
+      endMs: 2_000,
+      audioPath: '/tmp/short.wav',
+      actualDurationMs: 500,
+    }],
+    outputPath: '/tmp/aligned.wav',
+    totalDurationMs: 3_000,
+    config: {
+      minAtempo: 0.75,
+      maxAtempo: 1.35,
+      fadeMs: 40,
+      overlapToleranceMs: 0,
+    },
+  });
+
+  assert.match(filterGraph, /atempo=0\.75/);
+  assert.match(filterGraph, /adelay=1166\.666666667\|1166\.666666667/);
 });
 
 test('alignment graph places ordered groups on an exact zero bed with clamped fades', () => {
@@ -496,6 +519,67 @@ function goertzel(samples, sampleRate, frequency) {
   }
   return Math.sqrt(q1 * q1 + q2 * q2 - q1 * q2 * coeff) / samples.length;
 }
+
+function rmsBetween(samples, sampleRate, startSeconds, endSeconds) {
+  const start = Math.max(0, Math.floor(startSeconds * sampleRate));
+  const end = Math.min(samples.length, Math.ceil(endSeconds * sampleRate));
+  let sum = 0;
+  for (let index = start; index < end; index += 1) {
+    sum += samples[index] * samples[index];
+  }
+  return Math.sqrt(sum / Math.max(1, end - start));
+}
+
+test('real alignment centers slowed speech energy inside its durable window', {
+  skip: ffmpegPath && ffprobePath ? false : 'packaged FFmpeg/FFprobe unavailable',
+  timeout: 30_000,
+}, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'voiceover-centered-alignment-'));
+  const speech = path.join(dir, 'speech.wav');
+  const aligned = path.join(dir, 'aligned.wav');
+  const pcm = path.join(dir, 'aligned.f32le');
+  try {
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'sine=frequency=1200:sample_rate=48000:duration=0.5',
+      '-ac', '1', '-c:a', 'pcm_s16le', speech,
+    ]);
+    const metadata = await alignVoiceoverGroups({
+      groups: [{
+        index: 0,
+        startMs: 1_000,
+        endMs: 2_000,
+        audioPath: speech,
+      }],
+      outputPath: aligned,
+      totalDurationMs: 3_000,
+      config: {
+        minAtempo: 0.75,
+        maxAtempo: 1.35,
+        fadeMs: 40,
+        overlapToleranceMs: 0,
+        durationToleranceMs: 120,
+      },
+      deps: { ffmpegPath, ffprobePath },
+    });
+    assert.equal(metadata.groups[0].atempo, 0.75);
+
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', aligned, '-map', '0:a:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', pcm,
+    ]);
+    const raw = await readFile(pcm);
+    const samples = new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4);
+    const centerEnergy = rmsBetween(samples, 48_000, 1.25, 1.75);
+    const leadingEnergy = rmsBetween(samples, 48_000, 0, 1.05);
+    const trailingEnergy = rmsBetween(samples, 48_000, 1.95, 3);
+    assert.ok(centerEnergy > 0.03, `center=${centerEnergy}`);
+    assert.ok(leadingEnergy < centerEnergy * 0.01, `leading=${leadingEnergy}, center=${centerEnergy}`);
+    assert.ok(trailingEnergy < centerEnergy * 0.01, `trailing=${trailingEnergy}, center=${centerEnergy}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test('packaged FFmpeg fixture removes every source-audio component and keeps only translated narration', {
   skip: ffmpegPath && ffprobePath ? false : 'packaged FFmpeg/FFprobe unavailable',

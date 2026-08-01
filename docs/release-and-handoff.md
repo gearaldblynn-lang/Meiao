@@ -102,7 +102,7 @@
 - `npm run probe:voiceover-translation -- --readiness`、`--fixture-path` 和两个 `--resume-*` 模式均不得创建 provider 任务。live 只接受用户明确确认的 managed asset ID，并要求一次性 `MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1`；`--remove-text` 需第二次确认额外 Golden 成本。
 - 远程探针的非敏感 `MEIAO_VOICEOVER_PROBE_BASE_URL` 可按候选环境配置；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。敏感 `MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 只允许当前 shell 临时输入，单次 `MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 只允许命令前缀；二者不得持久化，env 文件中的确认会被忽略。
 - live 证据只公开内部 `parentJobId` / `childJobId` 和有界检查点摘要。`--resume-child-task-id` 必须使用该内部 `childJobId` 直接只读查询，不能用 `providerTaskId`，也不能扫描父任务列表或重新 create。
-- 发布验收拆分：自动化/技术证据不能替代真人试听和浏览器验收。技术栏记录检查点、托管素材、编码、Range、刷新/服务重启恢复；感知栏记录原口播抑制、背景保留、语言、节奏与画面一致性。
+- 发布验收拆分：自动化/技术证据不能替代语义核对、真人试听和浏览器验收。技术栏记录检查点、托管素材、编码、Range、刷新/服务重启恢复；语义栏逐段记录原文、译文、TTS 文本身份和画面动作；感知栏记录原口播、背景音乐与环境声均被移除，以及目标语言、语速、起止位置和画面一致性。
 - 回滚只禁用新提交，历史卡片和结果继续可读。生产 CPU、内存、磁盘、分离并发、模型目录、部署和真实付费 canary 均属于新的授权边界。
 
 ## 10. 维护要求

@@ -416,9 +416,9 @@ unset MEIAO_VOICEOVER_PROBE_SESSION_TOKEN
 
 发布后分别记录两类验收：
 
-- 技术：parent/child 检查点、每个分析时间段独立且仅一次 TTS create、每组 `actualDurationMs/atempo>=1`、托管最终素材、H.264/AAC、fast-start、HTTP Range、刷新与本地服务重启恢复。KIE `waiting/queuing/generating` 必须继续查询原 task ID。
-- 音频：量化原混音、Demucs vocal、`no_vocals`、中心消除差分背景床和最终混音；两个 stem 文件存在不能替代背景响度检查。
-- 感知：原口播不再可辨、背景音乐/环境声保留、目标语言正确、语速时序可接受、画面未改变。技术通过不能代替真人试听/观看。
+- 技术：parent/child 检查点、每个分析时间段独立且仅一次 TTS create、每组 `actualDurationMs/atempo` 在配置上下限内、窗口内实际起止位置、托管最终素材、H.264/AAC、fast-start、HTTP Range、刷新与本地服务重启恢复。KIE `waiting/queuing/generating` 必须继续查询原 task ID。
+- 音频：量化原混音、Demucs vocal、每段 TTS 和最终混音；最终频谱必须证明原人声、背景音乐和分离伪影均未重新混入，只保留新口播。两个 stem 文件存在不能替代最终音轨检查。
+- 感知：源语言与逐段语义对应画面动作，原口播和背景声不再可辨，目标语言正确，每段语速和起止位置可接受；去字幕时最终画面无原字幕，但分析媒体必须保留原可见字幕作为辅助证据。技术通过不能代替真人试听/观看。
 
 ## 启动
 ```bash

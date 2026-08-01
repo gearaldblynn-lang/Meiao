@@ -34,6 +34,8 @@ const canonicalVoiceoverCheckpoint = ({ removeText = false, ...overrides } = {})
     originalAudioAssetId: 'asset-original-audio',
     vocalAssetId: 'asset-vocals',
     backgroundAssetId: 'asset-background',
+    analysisEvidenceVersion: 1,
+    alignmentVersion: 1,
     analysisAttempt: 0,
     ...(removeText ? {
       subtitleRemoval: {

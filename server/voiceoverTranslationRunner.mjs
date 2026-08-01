@@ -8,12 +8,16 @@ import {
   parseVoiceoverAnalysis,
 } from './voiceoverAnalysis.mjs';
 import {
+  VOICEOVER_ALIGNMENT_VERSION,
+  VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
   VOICEOVER_CHECKPOINT_VERSION,
   buildVoiceoverError,
   getVoiceoverConfig,
+  hasLegacyVoiceoverCheckpointProvenance,
   mergeVoiceoverCheckpoint,
   normalizeVoiceoverCheckpoint,
   normalizeVoiceoverPayload,
+  prepareVoiceoverEvidenceUpgradeCheckpoint,
 } from './voiceoverContract.mjs';
 
 const CHILD_DEFINITIVE_FAILURE_CODES = new Set([
@@ -496,9 +500,28 @@ export async function runVoiceoverTranslationJob({
     minAtempo: config.minAtempo,
     maxAtempo: config.maxAtempo,
   };
-  let checkpoint = job?.result?.voiceoverCheckpoint
-    ? normalizeVoiceoverCheckpoint(job.result.voiceoverCheckpoint, checkpointOptions)
-    : null;
+  const rawCheckpoint = job?.result?.voiceoverCheckpoint || null;
+  let checkpointWasAutoUpgraded = false;
+  let checkpoint = null;
+  if (rawCheckpoint) {
+    if (hasLegacyVoiceoverCheckpointProvenance(rawCheckpoint)) {
+      if (rawCheckpoint.stage === 'result_persisted') {
+        checkpoint = normalizeVoiceoverCheckpoint(rawCheckpoint, {
+          ...checkpointOptions,
+          allowLegacyCompleted: true,
+        });
+      } else {
+        checkpoint = prepareVoiceoverEvidenceUpgradeCheckpoint(
+          rawCheckpoint,
+          { userConfirmed: false },
+          checkpointOptions,
+        );
+        checkpointWasAutoUpgraded = true;
+      }
+    } else {
+      checkpoint = normalizeVoiceoverCheckpoint(rawCheckpoint, checkpointOptions);
+    }
+  }
 
   const createWorkRoot = requireDependency(deps, 'createWorkRoot');
   const cleanupWorkRoot = requireDependency(deps, 'cleanupWorkRoot');
@@ -646,6 +669,18 @@ export async function runVoiceoverTranslationJob({
       }, durationMs);
     } else if (checkpoint.baseVideoAssetId !== source.assetId) {
       throw buildVoiceoverError('voiceover_checkpoint_invalid', '检查点源素材与当前父任务不一致');
+    }
+    if (checkpointWasAutoUpgraded) {
+      checkpoint = normalizeVoiceoverCheckpoint(checkpoint, checkpointOptions);
+      await onResultCheckpoint(
+        { voiceoverCheckpoint: checkpoint },
+        { voiceoverConfig: config },
+      );
+      safelyLog(deps.logger, 'info', {
+        event: 'voiceover_checkpoint_provenance_upgraded',
+        jobId: job.id,
+        stage: checkpoint.stage,
+      });
     }
 
     if (checkpoint.stage === 'result_persisted') {
@@ -871,9 +906,9 @@ export async function runVoiceoverTranslationJob({
       throwIfAborted(signal);
       const extractAudio = requireDependency(deps, 'extractAudio');
       const outputWavPath = await prepareOutputPath('audio', 'original.wav');
-      await assertVoiceoverWorkPath(canonicalRoot, baseVideo.path, { mustExist: true });
+      await assertVoiceoverWorkPath(canonicalRoot, source.path, { mustExist: true });
       await extractAudio({
-        inputVideoPath: baseVideo.path,
+        inputVideoPath: source.path,
         outputWavPath,
         signal,
         config,
@@ -882,6 +917,7 @@ export async function runVoiceoverTranslationJob({
       await persistStage({
         stage: 'audio_extracted',
         originalAudioAssetId: originalAudio.assetId,
+        analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
       }, durationMs);
     } else {
       originalAudio = await resolveIntoWorkRoot({
@@ -941,10 +977,10 @@ export async function runVoiceoverTranslationJob({
       throwIfAborted(signal);
       const buildVocalOnlyVideo = requireDependency(deps, 'buildVocalOnlyVideo');
       const analysisVideoPath = await prepareOutputPath('analysis', 'vocal-only.mp4');
-      await assertVoiceoverWorkPath(canonicalRoot, baseVideo.path, { mustExist: true });
+      await assertVoiceoverWorkPath(canonicalRoot, source.path, { mustExist: true });
       await assertVoiceoverWorkPath(canonicalRoot, vocal.path, { mustExist: true });
       await buildVocalOnlyVideo({
-        sourceVideoPath: baseVideo.path,
+        sourceVideoPath: source.path,
         vocalPath: vocal.path,
         outputPath: analysisVideoPath,
         config,
@@ -1043,7 +1079,7 @@ export async function runVoiceoverTranslationJob({
           'TTS 检查点时间窗与当前分段计划不一致',
         );
       }
-      const attempt = Number(existingAttempt?.attempt ?? 0);
+      const attempt = Number(existingAttempt?.attempt ?? checkpoint.ttsAttemptBase ?? 0);
       const childKey = `tts:${index}:attempt:${attempt}`;
       let child = existingAttempt?.status === 'succeeded' && existingAttempt?.assetId
         ? {
@@ -1205,6 +1241,7 @@ export async function runVoiceoverTranslationJob({
       await persistStage({
         stage: 'audio_aligned',
         alignedAudioAssetId: alignedAudio.assetId,
+        alignmentVersion: VOICEOVER_ALIGNMENT_VERSION,
         ttsGroups: alignedCheckpoints,
       }, durationMs);
     } else {
