@@ -707,6 +707,179 @@ export async function alignVoiceoverGroups({
   };
 }
 
+function validateContinuousTurns(
+  turns,
+  totalDurationMs,
+  sourceDurationMs,
+  overlapToleranceMs,
+) {
+  if (!Array.isArray(turns) || !turns.length || turns.length > VOICEOVER_MAX_TTS_GROUPS) {
+    throw timingFailure('没有可安全对齐的连续口播组');
+  }
+  const total = Number(totalDurationMs);
+  const sourceDuration = Number(sourceDurationMs);
+  const tolerance = Number(overlapToleranceMs);
+  if (!Number.isFinite(total) || total <= 0
+    || !Number.isFinite(sourceDuration) || sourceDuration <= 0
+    || !Number.isFinite(tolerance) || tolerance < 0) {
+    throw timingFailure('连续口播时间轴参数无效');
+  }
+  let previous = null;
+  return turns.map((turn, position) => {
+    const index = Number(turn?.index);
+    const startMs = Number(turn?.startMs);
+    const endMs = Number(turn?.endMs);
+    const sourceStartMs = Number(turn?.sourceStartMs);
+    const sourceEndMs = Number(turn?.sourceEndMs);
+    const actualDurationMs = Number(turn?.actualDurationMs);
+    if (!Number.isInteger(index) || index !== position
+      || !Number.isInteger(startMs) || !Number.isInteger(endMs)
+      || startMs < 0 || endMs <= startMs || endMs > total
+      || !Number.isInteger(sourceStartMs) || !Number.isInteger(sourceEndMs)
+      || sourceStartMs < 0 || sourceEndMs <= sourceStartMs
+      || sourceEndMs > sourceDuration
+      || !Number.isInteger(actualDurationMs)
+      || actualDurationMs !== sourceEndMs - sourceStartMs
+      || (previous && previous.endMs - startMs > tolerance)
+      || (previous && sourceStartMs < previous.sourceEndMs)) {
+      throw timingFailure('连续口播声学边界无效', {
+        index,
+        startMs,
+        endMs,
+        sourceStartMs,
+        sourceEndMs,
+      });
+    }
+    const normalized = {
+      index,
+      startMs,
+      endMs,
+      sourceStartMs,
+      sourceEndMs,
+      actualDurationMs,
+    };
+    previous = normalized;
+    return normalized;
+  });
+}
+
+export function buildContinuousAlignmentArgs({
+  audioPath,
+  turns,
+  outputPath,
+  totalDurationMs,
+  sourceDurationMs,
+  config = {},
+}) {
+  const sourcePath = assertAbsoluteFilePath(audioPath, '连续口播音频');
+  assertAbsoluteFilePath(outputPath, '对齐音频');
+  assertDistinctOutput(outputPath, [sourcePath]);
+  const normalized = validateContinuousTurns(
+    turns,
+    totalDurationMs,
+    sourceDurationMs,
+    Number(config.overlapToleranceMs ?? 0),
+  );
+  const fadeMs = Number(config.fadeMs ?? 40);
+  if (!Number.isFinite(fadeMs) || fadeMs < 0) throw timingFailure('淡入淡出配置无效');
+  const groups = normalized.map((turn) => {
+    const atempo = calculateAtempo({
+      actualDurationMs: turn.actualDurationMs,
+      targetDurationMs: turn.endMs - turn.startMs,
+      minAtempo: config.minAtempo,
+      maxAtempo: config.maxAtempo,
+    });
+    return { ...turn, atempo };
+  });
+  const filters = [
+    `[0:a]aresample=48000,pan=mono|c0=c0,asplit=${groups.length}`
+      + groups.map(({ index }) => `[continuous_${index}]`).join(''),
+  ];
+  for (const group of groups) {
+    const alignedVoiceSeconds = Math.min(
+      (group.endMs - group.startMs) / 1000,
+      group.actualDurationMs / 1000 / group.atempo,
+    );
+    const residualSilenceMs = Math.max(
+      0,
+      (group.endMs - group.startMs) - (group.actualDurationMs / group.atempo),
+    );
+    const delayMs = group.startMs + (residualSilenceMs / 2);
+    const fadeSeconds = Math.min(fadeMs / 1000, alignedVoiceSeconds / 2);
+    const fadeOutStart = Math.max(0, alignedVoiceSeconds - fadeSeconds);
+    filters.push([
+      `[continuous_${group.index}]atrim=start=${formatNumber(group.sourceStartMs / 1000)}`
+        + `:end=${formatNumber(group.sourceEndMs / 1000)}`,
+      'asetpts=PTS-STARTPTS',
+      `atempo=${formatNumber(group.atempo)}`,
+      `afade=t=in:st=0:d=${formatNumber(fadeSeconds)}`,
+      `afade=t=out:st=${formatNumber(fadeOutStart)}:d=${formatNumber(fadeSeconds)}`,
+      `adelay=${formatNumber(delayMs)}|${formatNumber(delayMs)}[voice_${group.index}]`,
+    ].join(','));
+  }
+  const totalSeconds = Number(totalDurationMs) / 1000;
+  filters.push(
+    `anullsrc=r=48000:cl=mono,atrim=duration=${formatNumber(totalSeconds)},volume=0[bed]`,
+  );
+  const mixInputs = ['[bed]', ...groups.map(({ index }) => `[voice_${index}]`)].join('');
+  filters.push(
+    `${mixInputs}amix=inputs=${groups.length + 1}:duration=longest:normalize=0,`
+    + `atrim=duration=${formatNumber(totalSeconds)},aresample=48000,`
+    + 'aformat=sample_fmts=s16:channel_layouts=mono[out]',
+  );
+  const filterGraph = filters.join(';');
+  return {
+    args: [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', sourcePath,
+      '-filter_complex', filterGraph,
+      '-map', '[out]',
+      '-ar', '48000',
+      '-ac', '1',
+      '-c:a', 'pcm_s16le',
+      outputPath,
+    ],
+    filterGraph,
+    groups,
+  };
+}
+
+export async function alignContinuousVoiceover({
+  audioPath,
+  turns,
+  outputPath,
+  totalDurationMs,
+  config = {},
+  signal,
+  deps = {},
+}) {
+  assertAbsoluteFilePath(audioPath, '连续口播音频');
+  assertAbsoluteFilePath(outputPath, '对齐音频');
+  assertDistinctOutput(outputPath, [audioPath]);
+  const source = await probeMedia(audioPath, deps, { requireAudio: true, signal });
+  const built = buildContinuousAlignmentArgs({
+    audioPath,
+    turns,
+    outputPath,
+    totalDurationMs,
+    sourceDurationMs: source.durationMs,
+    config,
+  });
+  const tools = runtime(deps);
+  await runCheckedFfmpeg(tools, built.args, signal);
+  const output = await probeMedia(outputPath, deps, { requireAudio: true, signal });
+  assertPcmWorkTrack(output, 1);
+  const tolerance = Number(config.durationToleranceMs ?? 100);
+  if (!Number.isFinite(tolerance) || tolerance < 0
+    || Math.abs(output.durationMs - Number(totalDurationMs)) > tolerance) {
+    throw fail('连续对齐口播音轨时长无效');
+  }
+  return {
+    ...output,
+    groups: built.groups,
+  };
+}
+
 export function buildFinalMixArgs({
   baseVideoPath,
   narrationPath,

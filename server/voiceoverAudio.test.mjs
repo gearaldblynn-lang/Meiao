@@ -9,7 +9,9 @@ import test from 'node:test';
 
 import {
   alignVoiceoverGroups,
+  alignContinuousVoiceover,
   buildAlignmentArgs,
+  buildContinuousAlignmentArgs,
   buildAnalysisAudioEvidenceArgs,
   buildExtractAudioArgs,
   buildFinalMixArgs,
@@ -392,6 +394,167 @@ test('alignment rejects unordered, duplicate, out-of-bounds, and unsafe-overlap 
     );
     assert.equal(calls, 0);
   }
+});
+
+test('continuous alignment reads one normalized source and trims every acoustic turn', () => {
+  const { args, filterGraph, groups } = buildContinuousAlignmentArgs({
+    audioPath: '/tmp/continuous.wav',
+    turns: [
+      {
+        index: 0,
+        startMs: 100,
+        endMs: 1_100,
+        sourceStartMs: 100,
+        sourceEndMs: 1_300,
+        actualDurationMs: 1_200,
+      },
+      {
+        index: 1,
+        startMs: 1_300,
+        endMs: 2_300,
+        sourceStartMs: 1_500,
+        sourceEndMs: 2_000,
+        actualDurationMs: 500,
+      },
+    ],
+    outputPath: '/tmp/aligned.wav',
+    totalDurationMs: 3_000,
+    sourceDurationMs: 2_500,
+    config: {
+      minAtempo: 0.75,
+      maxAtempo: 1.35,
+      fadeMs: 40,
+      overlapToleranceMs: 0,
+    },
+  });
+  assert.deepEqual(args.flatMap((value, index) => (
+    value === '-i' ? [args[index + 1]] : []
+  )), ['/tmp/continuous.wav']);
+  assert.match(filterGraph, /^\[0:a\]aresample=48000,pan=mono\|c0=c0,asplit=2\[continuous_0\]\[continuous_1\];/);
+  assert.match(filterGraph, /\[continuous_0\]atrim=start=0\.1:end=1\.3,asetpts=PTS-STARTPTS,atempo=1\.2/);
+  assert.match(filterGraph, /\[continuous_1\]atrim=start=1\.5:end=2,asetpts=PTS-STARTPTS,atempo=0\.75/);
+  assert.match(filterGraph, /adelay=1466\.666666667\|1466\.666666667\[voice_1\]/);
+  assert.match(filterGraph, /aformat=sample_fmts=s16:channel_layouts=mono\[out\]/);
+  assert.ok(args.includes('48000'));
+  assert.ok(args.includes('pcm_s16le'));
+  assert.deepEqual(groups.map(({ index, atempo }) => ({ index, atempo })), [
+    { index: 0, atempo: 1.2 },
+    { index: 1, atempo: 0.75 },
+  ]);
+});
+
+test('continuous alignment rejects guessed, overlapping, or out-of-source acoustic cuts', () => {
+  const valid = {
+    index: 0,
+    startMs: 0,
+    endMs: 1_000,
+    sourceStartMs: 100,
+    sourceEndMs: 900,
+    actualDurationMs: 800,
+  };
+  for (const turns of [
+    [{ ...valid, actualDurationMs: 700 }],
+    [{ ...valid, sourceEndMs: 2_100, actualDurationMs: 2_000 }],
+    [
+      valid,
+      {
+        ...valid,
+        index: 1,
+        startMs: 1_100,
+        endMs: 2_000,
+        sourceStartMs: 800,
+        sourceEndMs: 1_200,
+        actualDurationMs: 400,
+      },
+    ],
+    [
+      valid,
+      {
+        ...valid,
+        index: 1,
+        startMs: 900,
+        endMs: 1_500,
+        sourceStartMs: 1_000,
+        sourceEndMs: 1_400,
+        actualDurationMs: 400,
+      },
+    ],
+  ]) {
+    assert.throws(
+      () => buildContinuousAlignmentArgs({
+        audioPath: '/tmp/continuous.wav',
+        turns,
+        outputPath: '/tmp/aligned.wav',
+        totalDurationMs: 2_000,
+        sourceDurationMs: 2_000,
+        config: {
+          minAtempo: 0.75,
+          maxAtempo: 1.35,
+          fadeMs: 40,
+          overlapToleranceMs: 0,
+        },
+      }),
+      (error) => error.code === 'voiceover_timing_out_of_range',
+    );
+  }
+});
+
+test('continuous alignment probes one source, returns durable evidence, and validates PCM output', async () => {
+  let probeCalls = 0;
+  let ffmpegArgs;
+  const metadata = await alignContinuousVoiceover({
+    audioPath: '/tmp/continuous.wav',
+    turns: [{
+      index: 0,
+      startMs: 500,
+      endMs: 1_500,
+      sourceStartMs: 100,
+      sourceEndMs: 1_100,
+      actualDurationMs: 1_000,
+    }],
+    outputPath: '/tmp/aligned.wav',
+    totalDurationMs: 3_000,
+    config: {
+      minAtempo: 0.75,
+      maxAtempo: 1.35,
+      fadeMs: 40,
+      overlapToleranceMs: 0,
+      durationToleranceMs: 100,
+    },
+    deps: {
+      ffmpegPath: '/private/ffmpeg',
+      ffprobePath: '/private/ffprobe',
+      statFile: async () => ({ size: 1 }),
+      runProcess: async (command, args) => {
+        if (command.endsWith('ffmpeg')) {
+          ffmpegArgs = args;
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        probeCalls += 1;
+        return {
+          exitCode: 0,
+          stdout: audioProbe({
+            duration: probeCalls === 1 ? '2' : '3',
+            channels: probeCalls === 1 ? 2 : 1,
+          }),
+          stderr: '',
+        };
+      },
+    },
+  });
+  assert.equal(probeCalls, 2);
+  assert.deepEqual(ffmpegArgs.flatMap((value, index) => (
+    value === '-i' ? [ffmpegArgs[index + 1]] : []
+  )), ['/tmp/continuous.wav']);
+  assert.deepEqual(metadata.groups, [{
+    index: 0,
+    startMs: 500,
+    endMs: 1_500,
+    sourceStartMs: 100,
+    sourceEndMs: 1_100,
+    actualDurationMs: 1_000,
+    atempo: 1,
+  }]);
 });
 
 test('unsafe timing is rejected after probe without spawning alignment ffmpeg', async () => {
