@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildVoiceoverAnalysisMessages,
+  buildVoiceoverContinuousTtsPlan,
   buildVoiceoverTtsGroups,
   estimateVoiceoverTtsInputTokens,
   parseVoiceoverAnalysis,
@@ -484,6 +485,64 @@ test('UTF-8 estimator is the conservative serialized provider-input byte upper b
       scene: padded.scene,
       sample_context: padded.sampleContext,
     }), 'utf8'),
+  );
+});
+
+test('continuous TTS planning preserves every turn in one deterministic provider request', () => {
+  const segments = [
+    validSegment({ id: 's1', startMs: 100, endMs: 500, targetText: 'First.' }),
+    validSegment({ id: 's2', startMs: 900, endMs: 1_300, targetText: 'Second.' }),
+    validSegment({ id: 's3', startMs: 2_500, endMs: 2_900, targetText: 'Third.' }),
+  ];
+  const snapshot = structuredClone(segments);
+  const plan = buildVoiceoverContinuousTtsPlan({
+    segments,
+    selectedVoiceName: 'Kore',
+    maxInputTokens: 8_192,
+  });
+
+  assert.deepEqual(plan.segmentIds, ['s1', 's2', 's3']);
+  assert.deepEqual(plan.segments, snapshot);
+  assert.deepEqual(plan.dialogueTurns, [
+    { speaker: 'Speaker 1', text: 'First.' },
+    { speaker: 'Speaker 1', text: 'Second.' },
+    { speaker: 'Speaker 1', text: 'Third.' },
+  ]);
+  assert.equal(plan.voiceName, 'Kore');
+  assert.equal(plan.temperature, 0);
+  assert.match(plan.scene, /continuous/i);
+  assert.match(plan.sampleContext, /same narrator/i);
+  assert.match(plan.sampleContext, /clear pause/i);
+  assert.ok(plan.estimatedInputTokens <= 8_192);
+  assert.equal(Object.isFrozen(plan), true);
+  assert.equal(Object.isFrozen(plan.segments), true);
+  assert.equal(Object.isFrozen(plan.segments[0]), true);
+  assert.equal(Object.isFrozen(plan.dialogueTurns), true);
+  assert.equal(Object.isFrozen(plan.dialogueTurns[0]), true);
+  assert.deepEqual(segments, snapshot);
+  assert.doesNotMatch(JSON.stringify(plan), /(?:https?:\/\/|\/tmp\/|file:)/);
+});
+
+test('continuous TTS planning rejects the full request before submission when it exceeds the model budget', () => {
+  const segments = [
+    validSegment({ id: 's1', startMs: 0, endMs: 1_000, targetText: 'First.' }),
+    validSegment({ id: 's2', startMs: 1_100, endMs: 2_000, targetText: 'Second.' }),
+  ];
+  const oneTurnBudget = estimateVoiceoverTtsInputTokens({
+    voiceName: 'Kore',
+    dialogueTurns: [{ speaker: 'Speaker 1', text: 'First.' }],
+    temperature: 0,
+    scene: 'Continuous translated product narration with natural, controlled pacing.',
+    sampleContext: 'Use the same narrator for every dialogue turn. Preserve exact text and order. Leave a clear pause between turns.',
+  });
+
+  assert.throws(
+    () => buildVoiceoverContinuousTtsPlan({
+      segments,
+      selectedVoiceName: 'Kore',
+      maxInputTokens: oneTurnBudget,
+    }),
+    (error) => error?.code === 'voiceover_tts_input_too_large',
   );
 });
 

@@ -17,6 +17,8 @@ const MAX_JSON_NESTING_DEPTH = 32;
 const SPEAKER = 'Speaker 1';
 const GROUP_SCENE = 'Translated product voiceover with natural, controlled pacing.';
 const GROUP_SAMPLE_CONTEXT = 'Use one consistent narrator and preserve punctuation and pauses.';
+const CONTINUOUS_SCENE = 'Continuous translated product narration with natural, controlled pacing.';
+const CONTINUOUS_SAMPLE_CONTEXT = 'Use the same narrator for every dialogue turn. Preserve exact text and order. Leave a clear pause between turns.';
 const ALLOWED_SOURCE_LANGUAGE_CODES = VOICEOVER_LANGUAGES.map(({ code }) => code).join(', ');
 const JSON_FENCE = /^```json[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu;
 const ANALYSIS_KEYS = new Set(['sourceLanguage', 'speakerCount', 'voiceProfile', 'segments']);
@@ -497,6 +499,65 @@ const buildGroupData = (segments, voiceName) => {
     estimatedInputTokens,
   };
 };
+
+export function buildVoiceoverContinuousTtsPlan({
+  segments,
+  selectedVoiceName,
+  maxInputTokens,
+} = {}) {
+  const voiceName = String(selectedVoiceName || '').trim();
+  if (!getVoiceoverVoice(voiceName)) throw invalidAnalysis('音色选择无效');
+  const inputLimit = validateGroupingBound(
+    maxInputTokens,
+    [VOICEOVER_BOUNDS.ttsMaxInputTokens[0], VOICEOVER_MODEL_MAX_INPUT_TOKENS],
+    'TTS 输入预算',
+  );
+  const normalized = validateVoiceoverAnalysis({
+    sourceLanguage: 'en',
+    speakerCount: 1,
+    voiceProfile: {
+      pitch: 'medium',
+      brightness: 'balanced',
+      energy: 'balanced',
+      pace: 'natural',
+      accentDescription: '',
+    },
+    segments,
+  }, {
+    durationMs: Number.MAX_SAFE_INTEGER,
+    overlapToleranceMs: VOICEOVER_BOUNDS.overlapToleranceMs[1],
+  }).segments;
+  assertMonotonicSegments(normalized);
+  const immutableSegments = Object.freeze(normalized.map(freezeSegment));
+  const dialogueTurns = Object.freeze(immutableSegments.map((segment) => Object.freeze({
+    speaker: SPEAKER,
+    text: segment.targetText,
+  })));
+  const temperature = 0;
+  const estimatedInputTokens = estimateVoiceoverTtsInputTokens({
+    voiceName,
+    dialogueTurns,
+    temperature,
+    scene: CONTINUOUS_SCENE,
+    sampleContext: CONTINUOUS_SAMPLE_CONTEXT,
+  });
+  if (estimatedInputTokens > inputLimit) {
+    throw buildVoiceoverError(
+      'voiceover_tts_input_too_large',
+      '完整口播超过当前语音模型输入上限',
+    );
+  }
+  return Object.freeze({
+    segmentIds: Object.freeze(immutableSegments.map((segment) => segment.id)),
+    segments: immutableSegments,
+    voiceName,
+    dialogueTurns,
+    temperature,
+    scene: CONTINUOUS_SCENE,
+    sampleContext: CONTINUOUS_SAMPLE_CONTEXT,
+    estimatedInputTokens,
+  });
+}
 
 export function buildVoiceoverTtsGroups({
   segments,
