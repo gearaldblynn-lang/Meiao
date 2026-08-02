@@ -6,9 +6,11 @@ import React, {
 } from 'react';
 import { RotateCcw, ScanLine, Trash2, X } from 'lucide-react';
 import { Dialog, DialogContent, DialogTitle } from '../../shell/components/ui/dialog';
+import { validateTranslationRegionEditIntents } from './translationRegionEditIntent.mjs';
 import {
   MAX_TRANSLATION_EDIT_INSTRUCTION_LENGTH,
   MAX_TRANSLATION_EDIT_REGIONS,
+  TRANSLATION_EDIT_REGION_COLORS,
   clipTranslationEditRegionsToImageBounds,
   clientPointToImageRatio,
   cancelTranslationRegionInteraction,
@@ -65,13 +67,14 @@ type PointerInteraction = {
   handle?: ResizeHandle;
 };
 
-const REGION_COLORS = ['#2563eb', '#d97706', '#059669', '#dc2626', '#7c3aed'];
 const HANDLES: ResizeHandle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const INSTRUCTION_ERROR_CODES = new Set([
   'missing_instruction',
   'invalid_instruction_type',
   'instruction_too_long',
   'total_instruction_too_long',
+  'unrecognized_instruction',
+  'missing_replacement_text',
 ]);
 
 const VALIDATION_MESSAGES: Record<string, string> = {
@@ -81,6 +84,8 @@ const VALIDATION_MESSAGES: Record<string, string> = {
   invalid_instruction_type: '区域说明格式不正确',
   instruction_too_long: `单个区域说明不能超过 ${MAX_TRANSLATION_EDIT_INSTRUCTION_LENGTH} 字`,
   total_instruction_too_long: '区域说明总长度超出限制',
+  unrecognized_instruction: '请输入“文案改成xxx”或“删除此区域内的文案”',
+  missing_replacement_text: '请填写修改后的文案',
   invalid_region_coordinates: '区域坐标无效，请重新框选',
   region_too_small: '选区过小，请放大后再提交',
   overlapping_regions: '选区之间不能重叠',
@@ -453,6 +458,14 @@ const TranslationRegionEditDialogSession: React.FC<TranslationRegionEditDialogPr
         focusValidationTarget(code, validation.regionId);
         return;
       }
+      const intentValidation = validateTranslationRegionEditIntents(validation.regions);
+      if (!intentValidation.ok) {
+        const code = intentValidation.code || 'unrecognized_instruction';
+        setValidationCode(code);
+        onValidationError?.({ code, regionId: intentValidation.regionId });
+        focusValidationTarget(code, intentValidation.regionId);
+        return;
+      }
       setValidationCode('');
       setSubmitError('');
       const result = await runTranslationRegionSubmit(() => (
@@ -559,7 +572,9 @@ const TranslationRegionEditDialogSession: React.FC<TranslationRegionEditDialogPr
                 <div className="translation-region-layer" style={imageRect}>
                   {regions.map((region) => {
                     const active = selectedId === region.id;
-                    const color = REGION_COLORS[(region.index - 1) % REGION_COLORS.length];
+                    const color = TRANSLATION_EDIT_REGION_COLORS[
+                      (region.index - 1) % TRANSLATION_EDIT_REGION_COLORS.length
+                    ];
                     return (
                       <div
                         key={region.id}
@@ -621,7 +636,9 @@ const TranslationRegionEditDialogSession: React.FC<TranslationRegionEditDialogPr
               )}
               {regions.map((region) => {
                 const active = selectedId === region.id;
-                const color = REGION_COLORS[(region.index - 1) % REGION_COLORS.length];
+                const color = TRANSLATION_EDIT_REGION_COLORS[
+                  (region.index - 1) % TRANSLATION_EDIT_REGION_COLORS.length
+                ];
                 return (
                   <div
                     key={region.id}

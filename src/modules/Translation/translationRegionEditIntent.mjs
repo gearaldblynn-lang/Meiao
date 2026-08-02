@@ -1,7 +1,9 @@
 const ERASE_INSTRUCTION_PATTERN = /(?:删除|删掉|清除|清空|去掉|去除|移除|擦除|抹掉|消除|remove|delete|erase|clear)/i;
 const ERASE_CLAUSE_SEPARATOR_PATTERN = /[\n,，。；;!?！？]+|(?:但是|但|而是)|\b(?:but|however)\b/i;
 const NEGATED_ERASE_PATTERN = /(?:不要|不再|不应|不得|不可|不能|不必|无需|无须|禁止|请勿|勿|别|不是|并非|do\s+not|don't|dont|never|without)/i;
-const TEXT_REPLACEMENT_PATTERN = /(?:文案|文字|标题|内容|copy|text)?\s*(?:改为|改成|修改为|替换为|换成|变为|写成|设为|change\s+to|replace\s+with)\s*[“"']?([^，。；;,\n"'”]+)[”"']?/i;
+const REPLACEMENT_VERB_PATTERN = /(?:文案|文字|标题|内容|copy|text)?\s*(?:改为|改成|修改为|替换为|换成|变为|写成|设为|change\s+to|replace\s+with)/i;
+const STYLE_SUFFIX_PATTERN = /(?:[，,；;]\s*)((?:字体|字号|字重|颜色|字间距|行间距|对齐|居中|左对齐|右对齐|加粗|粗体|保持单行|改成两行|变成两行)[\s\S]*)$/i;
+const QUOTE_PAIRS = [['“', '”'], ['"', '"'], ["'", "'"]];
 const TWO_LINE_PATTERN = /(?:两行|2\s*行|two\s+lines?)/i;
 
 const COLOR_BY_KEYWORD = [
@@ -31,6 +33,69 @@ export const isTranslationRegionEraseInstruction = (instruction = '') => (
     .some((clause) => ERASE_INSTRUCTION_PATTERN.test(clause) && !NEGATED_ERASE_PATTERN.test(clause))
 );
 
+const splitQuotedTarget = (value = '') => {
+  const source = String(value || '').trim().replace(/^[：:\s]+/, '');
+  for (const [open, close] of QUOTE_PAIRS) {
+    if (!source.startsWith(open)) continue;
+    const closeIndex = source.indexOf(close, open.length);
+    if (closeIndex < 0) continue;
+    return {
+      targetText: source.slice(open.length, closeIndex).trim(),
+      styleInstruction: source.slice(closeIndex + close.length).replace(/^[，,；;\s]+/, '').trim(),
+    };
+  }
+  return null;
+};
+
+const splitUnquotedTarget = (value = '') => {
+  const source = String(value || '').trim().replace(/^[：:\s]+/, '');
+  const styleMatch = source.match(STYLE_SUFFIX_PATTERN);
+  if (!styleMatch || styleMatch.index === undefined) return { targetText: source };
+  return {
+    targetText: source.slice(0, styleMatch.index).trim(),
+    styleInstruction: styleMatch[1].trim(),
+  };
+};
+
+export const parseTranslationRegionEditIntent = (instruction = '') => {
+  const source = String(instruction || '').trim();
+  const replacement = source.match(REPLACEMENT_VERB_PATTERN);
+  if (replacement && replacement.index !== undefined) {
+    const tail = source.slice(replacement.index + replacement[0].length);
+    const parsed = splitQuotedTarget(tail) || splitUnquotedTarget(tail);
+    const targetText = String(parsed.targetText || '').trim();
+    if (!targetText) return { ok: false, code: 'missing_replacement_text' };
+    const styleInstruction = String(parsed.styleInstruction || '').trim();
+    return {
+      ok: true,
+      operation: 'replace_text',
+      targetText,
+      ...(styleInstruction ? { styleInstruction } : {}),
+    };
+  }
+  if (isTranslationRegionEraseInstruction(source)) {
+    return { ok: true, operation: 'delete_text' };
+  }
+  return { ok: false, code: 'unrecognized_instruction' };
+};
+
+export const validateTranslationRegionEditIntents = (regions = []) => {
+  const intents = [];
+  for (const region of Array.isArray(regions) ? regions : []) {
+    const intent = parseTranslationRegionEditIntent(region?.instruction);
+    if (!intent.ok) {
+      return {
+        ok: false,
+        code: intent.code,
+        regionId: String(region?.id || ''),
+        intents: [],
+      };
+    }
+    intents.push(intent);
+  }
+  return { ok: true, intents };
+};
+
 export const isTranslationRegionPureEraseTask = (regions = []) => (
   Array.isArray(regions)
   && regions.length > 0
@@ -44,15 +109,9 @@ export const buildTranslationRegionEraseGuidance = () => (
   '删除类任务：清除该编号框内所有被要求删除的文字、图标、装饰或其他内容；不得残留任何文字笔画、字形轮廓、灰色残影或半透明边缘；不要生成任何新文字、符号或装饰性替代内容；用周围背景的颜色、渐变、纹理和曲线进行无痕修复补齐，让该区域看起来像从未有过文字或这些内容。'
 );
 
-const normalizeQuotedText = (value = '') => String(value || '')
-  .trim()
-  .replace(/^[“"']+|[”"']+$/g, '')
-  .trim();
-
 const extractReplacementText = (instruction = '') => {
-  const source = String(instruction || '').trim();
-  const match = source.match(TEXT_REPLACEMENT_PATTERN);
-  const text = normalizeQuotedText(match?.[1] || '');
+  const intent = parseTranslationRegionEditIntent(instruction);
+  const text = intent.ok && intent.operation === 'replace_text' ? intent.targetText : '';
   if (!text || NON_TEXT_REPLACEMENT_VALUES.has(text.replace(/\s+/g, ''))) return '';
   return text;
 };

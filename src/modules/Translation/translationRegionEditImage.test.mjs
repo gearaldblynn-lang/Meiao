@@ -123,7 +123,7 @@ const region = (overrides = {}) => ({
   ...overrides,
 });
 
-test('region guide draws the natural-size image, two red boxes, and labels 1/2 as PNG', async () => {
+test('region guide draws the natural-size image, indexed colors, and labels 1/2 as PNG', async () => {
   const env = createCanvasEnvironment();
   const restore = env.install();
   const image = createImage(100, 80);
@@ -143,8 +143,8 @@ test('region guide draws the natural-size image, two red boxes, and labels 1/2 a
     assert.equal(result.blob.type, 'image/png');
     assert.deepEqual({ width: result.width, height: result.height }, { width: 100, height: 80 });
     assert.deepEqual(canvas.calls.drawImage[0], [image, 0, 0, 100, 80]);
-    assert.deepEqual(canvas.calls.strokeRect.map((call) => call.strokeStyle), ['#ef4444', '#ef4444']);
-    assert.deepEqual(canvas.calls.fillRect.map((call) => call.fillStyle), ['#ef4444', '#ef4444']);
+    assert.deepEqual(canvas.calls.strokeRect.map((call) => call.strokeStyle), ['#2563eb', '#d97706']);
+    assert.deepEqual(canvas.calls.fillRect.map((call) => call.fillStyle), ['#2563eb', '#d97706']);
     assert.deepEqual(canvas.calls.fillText.map((call) => call.args[0]), ['1', '2']);
     assert.deepEqual(canvas.calls.fillText.map((call) => call.fillStyle), ['#ffffff', '#ffffff']);
   } finally {
@@ -169,7 +169,7 @@ test('region guide converts normalized coordinates to exact image pixels', async
   }
 });
 
-test('region guide masks erase regions so source text is not visible to the model', async () => {
+test('region guide keeps deletion content visible and only draws its border and number badge', async () => {
   const env = createCanvasEnvironment();
   const restore = env.install();
 
@@ -189,10 +189,9 @@ test('region guide masks erase regions so source text is not visible to the mode
     });
 
     const canvas = env.canvases[0];
-    assert.deepEqual(canvas.calls.fillRect[0].args, [50, 25, 100, 25]);
-    assert.equal(canvas.calls.fillRect[0].fillStyle, 'rgba(239, 68, 68, 0.34)');
+    assert.equal(canvas.calls.fillRect.length, 1, 'only the number badge should be filled');
     assert.deepEqual(canvas.calls.strokeRect[0].args, [50, 25, 100, 25]);
-    assert.equal(canvas.calls.fillRect[1].fillStyle, '#ef4444');
+    assert.equal(canvas.calls.fillRect[0].fillStyle, '#2563eb');
   } finally {
     restore();
   }
@@ -219,7 +218,7 @@ test('region guide does not apply an erase fill to combined replacement instruct
 
     const canvas = env.canvases[0];
     assert.equal(canvas.calls.fillRect.length, 1, 'only the number badge should be filled');
-    assert.equal(canvas.calls.fillRect[0].fillStyle, '#ef4444');
+    assert.equal(canvas.calls.fillRect[0].fillStyle, '#2563eb');
   } finally {
     restore();
   }

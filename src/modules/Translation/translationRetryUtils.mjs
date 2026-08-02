@@ -160,13 +160,19 @@ export const buildTranslationGenerationPrompt = ({
 
     const scopeRules = getTranslationScopePromptRules(translationScope);
     return [
-      '角色：商业图像文案翻译与修复助手。',
+      '角色：商业图像文案精准重绘助手。',
       `任务：根据 AI优化结果生成${normalizedSubFeatureLabel}成品图，按策划输出的“xxx”本地化为“xxx”执行文案替换。`,
       '约束：',
       '1. 所有替换文案必须逐字照抄 AI优化结果中右侧引号内的本地化文案，禁止改写、翻译、增删、替换字符。',
       ...scopeRules.map((rule, index) => `${index + 2}. ${rule}`),
       `${scopeRules.length + 2}. 参数、尺寸、温度、数量等数值信息必须准确保留；表格/参数/尺码类图片保持原表格行列、单元格位置和边框，仅替换对应短标签。`,
       `${scopeRules.length + 3}. 不新增原图不存在的信息或虚假卖点。`,
+      `${scopeRules.length + 4}. 保持原图的画面尺寸与比例、商品和场景、整体构图以及全部非目标内容不变。`,
+      `${scopeRules.length + 5}. 保持原有文案位置、字体风格、字号层级、字重、字体颜色、行距、字间距、对齐方式、文案底框、装饰线条、指示线和标注点；文案过长时优先按原版式自然换行，不得擅自缩小到难以阅读。`,
+      `${scopeRules.length + 6}. 替换区域必须先完整清除对应旧文字再写入新文字，并与原有背景自然融合；不得出现旧文字残留、白边、遮挡或明显修补痕迹。`,
+      `${scopeRules.length + 7}. 禁止修改商品外观、颜色、材质、纹理、包装信息和其他非目标元素。`,
+      `${scopeRules.length + 8}. 禁止添加水印、Logo、无关文字或装饰。`,
+      `${scopeRules.length + 9}. 所有替换文字必须完整、清晰，无错字、乱码或字符变形。`,
       `要求：严格执行以下本次新生成的 AI优化结果，输出最终图片。\n${normalizedPlanningText}`,
     ].join('\n');
   }

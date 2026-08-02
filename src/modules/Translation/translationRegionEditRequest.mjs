@@ -1,4 +1,3 @@
-import { isTranslationRegionPureEraseTask } from './translationRegionEditIntent.mjs';
 import { buildTranslationRegionEditPrompt } from './translationRegionEditPrompt.mjs';
 
 const requireImageUrl = (value, label) => {
@@ -12,14 +11,13 @@ export const buildTranslationRegionEditRequest = ({
   guideImageUrl = '',
   regions = [],
 } = {}) => {
-  const guideUrl = requireImageUrl(guideImageUrl, 'guideImageUrl');
-  const pureErase = isTranslationRegionPureEraseTask(regions);
-  const imageUrls = pureErase
-    ? [guideUrl]
-    : [requireImageUrl(sourceImageUrl, 'sourceImageUrl'), guideUrl];
+  const imageUrls = [
+    requireImageUrl(sourceImageUrl, 'sourceImageUrl'),
+    requireImageUrl(guideImageUrl, 'guideImageUrl'),
+  ];
 
   return {
-    mode: pureErase ? 'pure_erase_single_image' : 'standard_dual_image',
+    mode: 'standard_dual_image',
     imageUrls,
     prompt: buildTranslationRegionEditPrompt({ regions }),
   };

@@ -1152,6 +1152,20 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
           : undefined,
       )
     : result.imageUrl;
+  if (result.status === 'success' && result.imageUrl && finalImageUrl && finalImageUrl !== result.imageUrl) {
+    const backendJobId = String(result.backendJobId || '').trim();
+    if (backendJobId) {
+      try {
+        await updateInternalJobResult(backendJobId, {
+          imageUrl: finalImageUrl,
+          originalProviderImageUrl: result.imageUrl,
+          providerImageUrl: result.imageUrl,
+        });
+      } catch (error) {
+        console.warn('[MEIAO] shell result job final image update failed', error);
+      }
+    }
+  }
   return { ...result, imageUrl: finalImageUrl, prompt: useNativeTranslationPrompt ? input.prompt || customPrompt : customPrompt };
 };
 

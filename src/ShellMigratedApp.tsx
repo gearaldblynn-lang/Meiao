@@ -100,6 +100,7 @@ import { buildGenerationSubmissionKey } from './utils/generationSubmissionKey';
 import { fetchImageBlobWithProxy } from './utils/browserImageLoader.mjs';
 import { createRuntimeId } from './utils/runtimeId.mjs';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
+import { reconcileTranslationPlanningBatchConsistency } from './modules/Translation/translationPlanningLanguage.mjs';
 import {
   buildTranslationRegionEditLogMeta,
   copyTranslationEditVersionFields,
@@ -119,8 +120,10 @@ import {
   validateTranslationEditRegions,
 } from './modules/Translation/translationRegionEditUtils.mjs';
 import { buildTranslationRegionEditRequest } from './modules/Translation/translationRegionEditRequest.mjs';
+import { validateTranslationRegionEditIntents } from './modules/Translation/translationRegionEditIntent.mjs';
 import { compositeTranslationRegionEdit, createTranslationRegionGuide } from './modules/Translation/translationRegionEditImage.mjs';
 import { resolveTranslationInitialCanvasSize } from './modules/Translation/translationRegionEditSize.mjs';
+import { formatTranslationProjectName, getNextTranslationProjectSequence } from './modules/Translation/translationProjectPresentation';
 import {
   acquireTranslationRetryScopeLock,
   buildTranslationGenerationPrompt,
@@ -219,6 +222,8 @@ type TranslationRegionCompositeInput = {
   loadImage?: (url: string, signal?: AbortSignal) => Promise<unknown>;
   signal?: AbortSignal;
 };
+
+const DIRECT_TRANSLATION_EDIT_PROCESSING_MODE = 'direct_full_image_v1' as const;
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -5983,6 +5988,20 @@ const AppContent: React.FC<{
     );
     const immediateCreatedAt = Date.now();
     const immediateTranslationCount = isTranslationSubmit ? Math.max(initialTranslationMaterials.length, 1) : batchCount;
+    const immediateTranslationProjectSequence = isTranslationSubmit
+      ? getNextTranslationProjectSequence(projectsRef.current, {
+        createdAt: immediateCreatedAt,
+        subFeature: targetSubFeature,
+      })
+      : 0;
+    const immediateTranslationProjectName = isTranslationSubmit
+      ? formatTranslationProjectName({
+        createdAt: immediateCreatedAt,
+        sequence: immediateTranslationProjectSequence,
+        subFeature: targetSubFeature,
+        count: immediateTranslationCount,
+      })
+      : '';
     const immediateTranslationProjectId = isTranslationSubmit
       ? `translation-${immediateCreatedAt}-${Math.random().toString(36).slice(2, 7)}`
       : '';
@@ -6026,13 +6045,12 @@ const AppContent: React.FC<{
             ? `proj-plan-${immediateCreatedAt}`
             : 'proj-' + Date.now(),
         name: isTranslationSubmit
-          ? (immediateTranslationCount > 1
-            ? `${translationSubFeatureLabel || MODULE_NAMES[targetModule]} · ${immediateTranslationCount}张`
-            : (translationSubFeatureLabel || MODULE_NAMES[targetModule]))
+          ? immediateTranslationProjectName
           : projectName,
         module: targetModule,
         status: isOneClickSubmit || isProductRestoreSubmit ? 'planning' : 'generating',
         createdAt: immediateCreatedAt,
+        createdAtPrecise: true,
         results: targetModule === AppModuleObj.TRANSLATION
           ? Array.from({ length: immediateTranslationCount }, (_, index) => {
             const material = initialTranslationMaterials[index] as Material | undefined;
@@ -6226,7 +6244,6 @@ const AppContent: React.FC<{
       const projectId = immediateProject?.id || `translation-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const createdAtTs = immediateProject?.createdAt || Date.now();
       const createdAt = createdAtTs;
-      const projectTitle = translationSubFeatureLabel || MODULE_NAMES[targetModule];
       const totalCount = translationSourceMaterials.length;
       const translationFileItems: TranslationBatchFile[] = translationSourceMaterials.map((material, index) => {
         const id = `${projectId}-file-${index + 1}`;
@@ -6244,7 +6261,7 @@ const AppContent: React.FC<{
           aspectRatio: generationParams.ratio || generationParams.aspectRatio || 'auto',
           subFeature: targetSubFeature,
           projectId,
-          projectName: projectTitle,
+          projectName: immediateTranslationProjectName,
           projectCreatedAt: createdAtTs,
           createdAt: createdAtTs,
           sourceOrder: index,
@@ -6258,10 +6275,11 @@ const AppContent: React.FC<{
 
       const translationProject: Project = {
         id: projectId,
-        name: totalCount > 1 ? `${projectTitle} · ${totalCount}张` : projectTitle,
+        name: immediateTranslationProjectName,
         module: targetModule,
         status: 'generating',
         createdAt,
+        createdAtPrecise: true,
         results: translationFileItems.map((item) => translationFileToResult(item, createdAt)),
         taskCount: totalCount,
         completedCount: 0,
@@ -6333,6 +6351,7 @@ const AppContent: React.FC<{
 
       const useTranslationPlanningAnalysis = targetSubFeature !== 'remove_text'
         && ['AI优化', '策划分析'].includes(generationParams.translationGenerationMode);
+      const translationPlanningBatchRegistry = new Map<string, string>();
 
       const buildTranslationPrompt = (material: TranslationBatchFile, index: number, matchedRatio: string, planningAnalysis = '') => (
         buildTranslationGenerationPrompt({
@@ -6504,7 +6523,10 @@ const AppContent: React.FC<{
 	                };
 	                syncTranslationProject(translationFileItems);
 	              });
-	              planningAnalysis = analysisResult.description;
+	              planningAnalysis = reconcileTranslationPlanningBatchConsistency({
+	                content: analysisResult.description,
+	                registry: translationPlanningBatchRegistry,
+	              });
 	              planningTaskId = analysisResult.taskId || planningTaskId;
 	              planningCreditsConsumed = analysisResult.creditsConsumed;
 	              translationFileItems[index] = {
@@ -11100,6 +11122,7 @@ const AppContent: React.FC<{
     let latestProviderTaskId = '';
     let latestCreditsConsumed: number | undefined;
     let generation: Awaited<ReturnType<typeof processWithKieAi>> | undefined;
+    let directOutputValidation: 'not_started' | 'rejected' | 'passed' = 'not_started';
     let sourceVersionId = '';
     let subFeature = '';
     let validatedRegions: TranslationEditRegion[] = [];
@@ -11166,6 +11189,8 @@ const AppContent: React.FC<{
       const validation = validateTranslationEditRegions(input?.regions);
       if (!validation.ok) throw new Error(`修改区域无效：${validation.code}`);
       validatedRegions = validation.regions as TranslationEditRegion[];
+      const intentValidation = validateTranslationRegionEditIntents(validatedRegions);
+      if (!intentValidation.ok) throw new Error(`修改指令无效：${intentValidation.code}`);
 
       if (!getCurrentScopedImageModel(AppModuleObj.TRANSLATION, subFeature)) {
         await resolveSharedStateBaseForWrite();
@@ -11174,6 +11199,9 @@ const AppContent: React.FC<{
       const latestResult = latestProject?.results.find((item) => item.id === resultId);
       const latestSubFeature = latestProject?.subFeature || '';
       const latestValidation = validateTranslationEditRegions(input?.regions);
+      const latestIntentValidation = latestValidation.ok
+        ? validateTranslationRegionEditIntents(latestValidation.regions)
+        : { ok: false };
       if (
         !latestProject
         || latestProject.module !== AppModuleObj.TRANSLATION
@@ -11184,6 +11212,7 @@ const AppContent: React.FC<{
         || latestResult.status !== 'completed'
         || !latestResult.imageUrl
         || !latestValidation.ok
+        || !latestIntentValidation.ok
       ) throw new Error('修改目标或区域已变化，请重新打开后再试');
       project = latestProject;
       result = latestResult;
@@ -11213,6 +11242,7 @@ const AppContent: React.FC<{
       if (!initialCanvas) throw new Error('无法确认原始出海翻译尺寸，请重新生成后再修改');
       const pending = commitMutation({
         kind: 'start', projectId, resultId, versionId, sourceVersionId,
+        translationEditProcessingMode: DIRECT_TRANSLATION_EDIT_PROCESSING_MODE,
         regions: validatedRegions, createdAt: Date.now(),
         canvasWidth: initialCanvas.width,
         canvasHeight: initialCanvas.height,
@@ -11351,6 +11381,7 @@ const AppContent: React.FC<{
             translationEditVersionId: versionId,
             translationEditSourceVersionId: sourceVersionId,
             translationEditRegions: validatedRegions,
+            translationEditProcessingMode: DIRECT_TRANSLATION_EDIT_PROCESSING_MODE,
             preserveInputImageOrder: true,
             skipPromptCleanupSuffix: true,
             finalSize: { width: initialCanvas.width, height: initialCanvas.height },
@@ -11375,52 +11406,21 @@ const AppContent: React.FC<{
       }
 
       const rawGeneratedUrl = generation.imageUrl;
-      const rawSuccessMutation = {
-        kind: 'raw_success', projectId, resultId, versionId,
-        pendingProtectedSourceUrl: rawGeneratedUrl,
-        backendJobId: generation.backendJobId || latestBackendJobId,
-        taskId: generation.taskId || latestProviderTaskId,
-        creditsConsumed: generation.creditsConsumed,
-      };
-      const rawCommitted = commitMutation(rawSuccessMutation);
-      if (!rawCommitted) throw new Error('修改结果已失效，未记录后端生成结果');
-      await persistMutation(rawCommitted);
-      controller.signal.throwIfAborted();
-
-      const protectedEdit = await compositeTranslationRegionEdit({
-        sourceUrl: sourceVersionPublicUrl,
-        generatedUrl: rawGeneratedUrl,
-        targetWidth: initialCanvas.width,
-        targetHeight: initialCanvas.height,
-        regions: validatedRegions,
-      } as Parameters<typeof compositeTranslationRegionEdit>[0]);
-      controller.signal.throwIfAborted();
-      const protectedDimensions = await getImageDimensions(protectedEdit.blob);
+      directOutputValidation = 'rejected';
+      const generatedDimensions = await getImageDimensionsFromUrl(rawGeneratedUrl);
       if (
-        protectedDimensions.width !== initialCanvas.width
-        || protectedDimensions.height !== initialCanvas.height
+        generatedDimensions.width !== initialCanvas.width
+        || generatedDimensions.height !== initialCanvas.height
       ) {
-        throw new Error(`修改结果尺寸不一致，已停止保存。期望 ${initialCanvas.width}×${initialCanvas.height}，实际 ${protectedDimensions.width}×${protectedDimensions.height}`);
+        throw new Error(`修改结果尺寸不一致，已停止保存。期望 ${initialCanvas.width}×${initialCanvas.height}，实际 ${generatedDimensions.width}×${generatedDimensions.height}`);
       }
+      directOutputValidation = 'passed';
       controller.signal.throwIfAborted();
-      const protectedFile = new File(
-        [protectedEdit.blob],
-        `translation-region-edit-${versionId}.png`,
-        { type: 'image/png' },
-      );
-      const protectedUpload = await uploadInternalAssetStream({
-        module: AppModuleObj.TRANSLATION,
-        file: protectedFile,
-        fileName: protectedFile.name,
-        signal: controller.signal,
-      });
-      controller.signal.throwIfAborted();
-      const finalImageUrl = String(protectedUpload.fileUrl || '').trim();
-      if (!finalImageUrl) throw new Error('保护合成图上传失败');
 
       const successMutation = {
         kind: 'success', projectId, resultId, versionId,
-        imageUrl: finalImageUrl,
+        translationEditProcessingMode: DIRECT_TRANSLATION_EDIT_PROCESSING_MODE,
+        imageUrl: rawGeneratedUrl,
         backendJobId: generation.backendJobId || latestBackendJobId,
         taskId: generation.taskId || latestProviderTaskId,
         creditsConsumed: generation.creditsConsumed,
@@ -11464,6 +11464,9 @@ const AppContent: React.FC<{
           backendJobId: generation?.backendJobId || latestBackendJobId,
           taskId: generation?.taskId || latestProviderTaskId,
           creditsConsumed: generation?.creditsConsumed ?? latestCreditsConsumed,
+          ...(directOutputValidation === 'rejected'
+            ? { translationEditTerminalReason: 'client_output_rejected' }
+            : {}),
         };
         const failedOutcome = reduceTranslationRegionEditProjectMutation(projectsRef.current, failureMutation);
         const failedCandidate = failedOutcome.updated && failedOutcome.project && failedOutcome.result
@@ -11542,6 +11545,7 @@ const AppContent: React.FC<{
     const cancelMutation = {
       kind: 'cancel', projectId, resultId, versionId,
       backendJobId: storedBackendJobId || undefined,
+      translationEditTerminalReason: 'user_cancelled',
       error: '修改已取消',
     };
     const commitCancelMutation = () => {

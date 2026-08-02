@@ -12,16 +12,15 @@ const eraseRegion = {
   instruction: '删除区域内的文字',
 };
 
-test('pure erase submits only the marked guide image', () => {
+test('pure erase submits source image then marked guide image', () => {
   const request = buildTranslationRegionEditRequest({
     sourceImageUrl: 'source.png',
     guideImageUrl: 'guide.png',
     regions: [eraseRegion],
   });
 
-  assert.equal(request.mode, 'pure_erase_single_image');
-  assert.deepEqual(request.imageUrls, ['guide.png']);
-  assert.match(request.prompt, /图 1（图1）是带编号删除区域标记的当前图片/);
+  assert.equal(request.mode, 'standard_dual_image');
+  assert.deepEqual(request.imageUrls, ['source.png', 'guide.png']);
 });
 
 test('replacement and mixed edits preserve source then guide input order', () => {
@@ -33,7 +32,7 @@ test('replacement and mixed edits preserve source then guide input order', () =>
   const mixed = buildTranslationRegionEditRequest({
     sourceImageUrl: 'source.png',
     guideImageUrl: 'guide.png',
-    regions: [eraseRegion, { ...eraseRegion, index: 2, xRatio: 0.6, instruction: '调整排版' }],
+    regions: [eraseRegion, { ...eraseRegion, index: 2, xRatio: 0.6, instruction: '文案改成产品亮点' }],
   });
 
   assert.equal(replacement.mode, 'standard_dual_image');

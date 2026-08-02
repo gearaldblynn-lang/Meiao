@@ -7314,6 +7314,7 @@ const buildTranslationEditJob = ({
   result = null,
   errorMessage = '',
   providerTaskId = 'translation-edit-provider-task',
+  processingMode,
 } = {}) => ({
   id,
   module: 'translation',
@@ -7328,6 +7329,7 @@ const buildTranslationEditJob = ({
     subFeature,
     translationEditVersionId: 'translation-edit-v2',
     translationEditSourceVersionId: `${resultId}-base`,
+    ...(processingMode ? { translationEditProcessingMode: processingMode } : {}),
     translationEditRegions: [{
       id: 'region-1',
       index: 1,
@@ -7411,6 +7413,114 @@ test('shell data adapter stores only the raw succeeded edit url as pending prote
   assert.equal(version?.canvasWidth, 1200);
   assert.equal(version?.canvasHeight, 1600);
   assert.deepEqual(snapshot.tasks, []);
+});
+
+test('shell data adapter completes direct full-image edit jobs with the model output', () => {
+  const state = { shellProjects: [buildTranslationEditProject()] };
+  const job = buildTranslationEditJob({
+    status: 'succeeded',
+    processingMode: 'direct_full_image_v1',
+    result: {
+      imageUrl: 'https://provider.example.com/direct-edit-v2.png',
+      creditsConsumed: 3,
+    },
+  });
+
+  const snapshot = buildShellDataSnapshot(state, [job]);
+  const { result, version } = getTranslationEditTarget(snapshot);
+
+  assert.equal(result?.imageUrl, 'https://provider.example.com/direct-edit-v2.png');
+  assert.equal(version?.status, 'completed');
+  assert.equal(version?.translationEditProcessingMode, 'direct_full_image_v1');
+  assert.equal(version?.imageUrl, 'https://provider.example.com/direct-edit-v2.png');
+  assert.equal(version?.pendingProtectedSourceUrl, undefined);
+  assert.equal(version?.backendJobId, job.id);
+  assert.equal(version?.creditsConsumed, 3);
+  assert.deepEqual(snapshot.tasks, []);
+});
+
+test('shell data adapter fails direct full-image success records that have no image', () => {
+  const state = { shellProjects: [buildTranslationEditProject()] };
+  const job = buildTranslationEditJob({
+    status: 'succeeded',
+    processingMode: 'direct_full_image_v1',
+    result: { creditsConsumed: 3 },
+  });
+
+  const snapshot = buildShellDataSnapshot(state, [job]);
+  const { result, version } = getTranslationEditTarget(snapshot);
+
+  assert.equal(result?.imageUrl, 'https://example.com/main-protected-v1.png');
+  assert.equal(version?.status, 'error');
+  assert.equal(version?.translationEditProcessingMode, 'direct_full_image_v1');
+  assert.match(version?.error || '', /未返回.*图片/);
+  assert.equal(version?.pendingProtectedSourceUrl, undefined);
+});
+
+test('shell data adapter does not revive a locally terminal direct edit after provider success', () => {
+  for (const translationEditTerminalReason of ['user_cancelled', 'client_output_rejected']) {
+    const state = {
+      shellProjects: [buildTranslationEditProject({
+        targetVersion: {
+          status: 'error',
+          error: translationEditTerminalReason === 'user_cancelled'
+            ? '修改已取消'
+            : '修改结果尺寸不一致，已停止保存',
+          translationEditProcessingMode: 'direct_full_image_v1',
+          translationEditTerminalReason,
+        },
+      })],
+    };
+    const job = buildTranslationEditJob({
+      status: 'succeeded',
+      processingMode: 'direct_full_image_v1',
+      result: {
+        imageUrl: 'https://provider.example.com/direct-edit-v2.png',
+        creditsConsumed: 3,
+      },
+    });
+
+    const snapshot = buildShellDataSnapshot(state, [job]);
+    const { result, version } = getTranslationEditTarget(snapshot);
+
+    assert.equal(result?.imageUrl, 'https://example.com/main-protected-v1.png');
+    assert.equal(version?.status, 'error');
+    assert.equal(version?.translationEditTerminalReason, translationEditTerminalReason);
+    assert.equal(version?.imageUrl, undefined);
+    assert.match(version?.error || '', /取消|尺寸不一致/);
+    assert.equal(version?.backendJobId, job.id);
+    assert.equal(version?.taskId, job.providerTaskId);
+    assert.equal(version?.creditsConsumed, 3);
+    assert.deepEqual(snapshot.tasks, []);
+  }
+});
+
+test('shell data adapter still lets an unmarked direct error recover from provider success', () => {
+  const state = {
+    shellProjects: [buildTranslationEditProject({
+      targetVersion: {
+        status: 'error',
+        error: '前端暂时失去连接',
+        translationEditProcessingMode: 'direct_full_image_v1',
+      },
+    })],
+  };
+  const job = buildTranslationEditJob({
+    status: 'succeeded',
+    processingMode: 'direct_full_image_v1',
+    result: {
+      imageUrl: 'https://provider.example.com/direct-edit-v2.png',
+      creditsConsumed: 3,
+    },
+  });
+
+  const snapshot = buildShellDataSnapshot(state, [job]);
+  const { result, version } = getTranslationEditTarget(snapshot);
+
+  assert.equal(result?.imageUrl, 'https://provider.example.com/direct-edit-v2.png');
+  assert.equal(version?.status, 'completed');
+  assert.equal(version?.imageUrl, 'https://provider.example.com/direct-edit-v2.png');
+  assert.equal(version?.error, undefined);
 });
 
 test('shell data adapter marks a failed translation edit version without replacing its result', () => {

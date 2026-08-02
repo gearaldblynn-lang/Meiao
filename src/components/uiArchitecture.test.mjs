@@ -3207,6 +3207,42 @@ test('shell generation results keep the final submitted prompt instead of only t
   assert.match(shellApp, /prompt: result\.prompt \|\| promptSummary \|\| batchPrompt/);
 });
 
+test('translation project names normalize before project filters sorting and render limits', () => {
+  const projectListView = read('../shell/components/ProjectListView.tsx');
+  const normalizeIndex = projectListView.indexOf('normalizeTranslationProjectNames(displayProjects)');
+  const filterIndex = projectListView.indexOf('const filteredProjects = useMemo');
+  const sortIndex = projectListView.indexOf('sortProjectsNewestFirst(filteredProjects)');
+  const sliceIndex = projectListView.indexOf('orderedProjects.slice(0, visibleProjectCount)');
+
+  assert.match(projectListView, /import \{ normalizeTranslationProjectNames \}/);
+  assert.ok(normalizeIndex >= 0, 'translation project display names should be normalized');
+  assert.ok(normalizeIndex < filterIndex, 'normalization should happen before date and status filters');
+  assert.ok(filterIndex < sortIndex, 'newest-first sorting should happen after filtering');
+  assert.ok(sortIndex < sliceIndex, 'sorting should happen before the render limit');
+});
+
+test('translation creation coordinates planning copy per batch and uses stable project names', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const start = shellApp.indexOf('if (targetModule === AppModuleObj.TRANSLATION)');
+  const end = shellApp.indexOf('if (targetModule === AppModuleObj.ONE_CLICK)', start);
+  const translationCreationSource = shellApp.slice(start, end);
+  const batchRegistryIndex = translationCreationSource.indexOf('const translationPlanningBatchRegistry = new Map<string, string>()');
+  const workerIndex = translationCreationSource.indexOf('const runWorker = async () =>');
+  const reconcileIndex = translationCreationSource.indexOf('planningAnalysis = reconcileTranslationPlanningBatchConsistency');
+  const persistPlanningIndex = translationCreationSource.indexOf('translationPlanningText: planningAnalysis');
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(shellApp, /getNextTranslationProjectSequence\(/);
+  assert.match(shellApp, /formatTranslationProjectName\(/);
+  assert.match(shellApp, /name: immediateTranslationProjectName/);
+  assert.match(translationCreationSource, /projectName: immediateTranslationProjectName/);
+  assert.match(translationCreationSource, /createdAtPrecise: true/);
+  assert.ok(batchRegistryIndex >= 0, 'translation planning should create one batch registry');
+  assert.ok(batchRegistryIndex < workerIndex, 'the batch registry must be shared by all workers');
+  assert.ok(reconcileIndex >= 0, 'planning content should be reconciled before generation');
+  assert.ok(reconcileIndex < persistPlanningIndex, 'reconciled planning must be persisted instead of the uncoordinated response');
+});
+
 test('project card preview prefers completed media over failed or pending placeholders', () => {
   const projectCard = read('../shell/components/ProjectCard.tsx');
 
@@ -3797,6 +3833,44 @@ test('translation result retry appends lineage history and executes paid work se
   assert.match(shellApp, /persistTranslationFilesToSharedState[\s\S]*persistProjectToSharedState/);
   assert.match(shellApp, /resolveFailedTranslationRetryLifecycle/);
   assert.doesNotMatch(shellApp, /出海翻译仅失败项会单独重试/);
+});
+
+test('translation region edit submits one direct full-image job and keeps legacy recovery isolated', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const handlerStart = shellApp.indexOf('const handleTranslationRegionEdit = useCallback');
+  const handlerEnd = shellApp.indexOf('const handleCancelTranslationRegionEdit = useCallback', handlerStart);
+  const handler = shellApp.slice(handlerStart, handlerEnd);
+  const recoveryStart = shellApp.indexOf('const translationRegionEditProtectionLocksRef');
+  const recovery = shellApp.slice(recoveryStart, handlerStart);
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  assert.match(shellApp, /const DIRECT_TRANSLATION_EDIT_PROCESSING_MODE = 'direct_full_image_v1' as const/);
+  assert.match(shellApp, /validateTranslationRegionEditIntents/);
+  assert.match(handler, /const intentValidation = validateTranslationRegionEditIntents\(validatedRegions\)/);
+  assert.match(handler, /const latestIntentValidation = latestValidation\.ok[\s\S]*?validateTranslationRegionEditIntents\(latestValidation\.regions\)/);
+  assert.match(handler, /translationEditProcessingMode: DIRECT_TRANSLATION_EDIT_PROCESSING_MODE/);
+  assert.equal((handler.match(/processWithKieAi\(/g) || []).length, 1);
+  assert.match(handler, /preserveInputImageOrder: true/);
+  assert.match(handler, /skipPromptCleanupSuffix: true/);
+  assert.match(handler, /finalSize: \{ width: initialCanvas\.width, height: initialCanvas\.height \}/);
+  assert.match(handler, /getImageDimensionsFromUrl\(rawGeneratedUrl\)/);
+  assert.match(handler, /directOutputValidation = 'rejected'[\s\S]*?getImageDimensionsFromUrl\(rawGeneratedUrl\)/);
+  assert.match(handler, /generatedDimensions\.width !== initialCanvas\.width[\s\S]*?generatedDimensions\.height !== initialCanvas\.height/);
+  assert.match(handler, /directOutputValidation = 'passed'/);
+  assert.match(handler, /translationEditTerminalReason: 'client_output_rejected'/);
+  assert.match(handler, /kind: 'success'[\s\S]*?imageUrl: rawGeneratedUrl/);
+  assert.doesNotMatch(handler, /kind: 'raw_success'/);
+  assert.doesNotMatch(handler, /compositeTranslationRegionEdit\(/);
+  assert.doesNotMatch(handler, /protectedEdit|protectedUpload|protectedFile/);
+
+  assert.match(recovery, /compositeTranslationRegionEdit/);
+  assert.match(recovery, /runTranslationRegionEditProtectionRecovery/);
+  assert.doesNotMatch(recovery, /processWithKieAi/);
+
+  const cancelStart = shellApp.indexOf('const handleCancelTranslationRegionEdit = useCallback');
+  const cancelEnd = shellApp.indexOf('const handleFissionResult = useCallback', cancelStart);
+  const cancelHandler = shellApp.slice(cancelStart, cancelEnd);
+  assert.match(cancelHandler, /translationEditTerminalReason: 'user_cancelled'/);
 });
 
 test('video subtitle removal workspace creates bounded durable jobs under one batch card', () => {

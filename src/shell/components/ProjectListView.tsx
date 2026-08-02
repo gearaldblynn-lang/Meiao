@@ -7,6 +7,7 @@ import SubFeatureTabs from './SubFeatureTabs';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { buildTaskFallbackProjects, sortProjectsNewestFirst } from '../../adapters/shellScopeFilters';
 import type { Project, SubFeatureOption, Task } from '../../ShellMigratedApp';
+import { normalizeTranslationProjectNames } from '../../modules/Translation/translationProjectPresentation';
 import type { TranslationEditRegion, VideoStoryboardProject } from '../../types';
 
 interface Props {
@@ -82,6 +83,10 @@ const ProjectListView: React.FC<Props> = ({
     () => [...taskFallbackProjects, ...projects],
     [taskFallbackProjects, projects],
   );
+  const normalizedDisplayProjects = useMemo(
+    () => normalizeTranslationProjectNames(displayProjects),
+    [displayProjects],
+  );
 
   const parseProjectDate = (project: Project) => {
     const raw = project.completedAt || project.createdAt;
@@ -94,7 +99,7 @@ const ProjectListView: React.FC<Props> = ({
   const filteredProjects = useMemo(() => {
     const now = new Date();
     now.setHours(23, 59, 59, 999);
-    return displayProjects.filter((project) => {
+    return normalizedDisplayProjects.filter((project) => {
       if (statusFilter !== 'all' && project.status !== statusFilter) return false;
       if (dateFilter === 'all') return true;
       const date = parseProjectDate(project);
@@ -105,7 +110,7 @@ const ProjectListView: React.FC<Props> = ({
       if (dateFilter === '30d') return diffDays <= 30;
       return true;
     });
-  }, [displayProjects, dateFilter, statusFilter]);
+  }, [normalizedDisplayProjects, dateFilter, statusFilter]);
 
   const orderedProjects = useMemo(() => sortProjectsNewestFirst(filteredProjects), [filteredProjects]);
   const visibleProjects = useMemo(() => orderedProjects.slice(0, visibleProjectCount), [orderedProjects, visibleProjectCount]);

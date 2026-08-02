@@ -224,10 +224,15 @@ export interface TranslationEditRegion {
   instruction: string;
 }
 
+export type TranslationEditProcessingMode = 'protected_composite_v1' | 'direct_full_image_v1';
+export type TranslationEditTerminalReason = 'user_cancelled' | 'client_output_rejected';
+
 export interface TranslationEditVersion {
   id: string;
   imageUrl?: string;
   sourceVersionId?: string;
+  translationEditProcessingMode?: TranslationEditProcessingMode;
+  translationEditTerminalReason?: TranslationEditTerminalReason;
   canvasWidth?: number;
   canvasHeight?: number;
   createdAt: number;

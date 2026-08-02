@@ -9,6 +9,8 @@ import { buildRetouchAnalysisFallback, shouldUseRetouchAnalysisFallback } from "
 import { buildProductRestoreAnalysisPrompt, parseProductRestoreAnalysis } from "../modules/Retouch/productRestoreContract.mjs";
 import { normalizeKnownProductRestoreCredits } from "../utils/productRestoreAnalysisCredits";
 import { assertModelReplaceMaterialCounts, parseModelReplacePreflightContent } from "../utils/modelReplacePreflight.mjs";
+import { runTranslationPlanningWithLanguageGuard } from "../modules/Translation/translationPlanningLanguage.mjs";
+import { resolveTranslationTargetMarket } from "../modules/Translation/translationTargetMarket.mjs";
 
 const estimatePromptTokens = (items: Array<{ type: string; text?: string }>) =>
   items.reduce((sum, item) => sum + Math.ceil((item.text || '').length / 4), 0);
@@ -1084,7 +1086,7 @@ export const analyzeTranslationCopyForGeneration = async ({
   imageUrl,
   targetLanguage,
   translationScope,
-  subFeature: _subFeature,
+  subFeature,
   apiConfig,
   signal,
   onJobCreated,
@@ -1100,49 +1102,78 @@ export const analyzeTranslationCopyForGeneration = async ({
   jobMetadata?: Record<string, unknown>;
 }): Promise<{ description: string; message: string; creditsConsumed?: number; taskId?: string }> => {
   const target = String(targetLanguage || 'English').trim() || 'English';
+  const targetMarket = resolveTranslationTargetMarket(target);
+  const normalizedSubFeature = String(subFeature || '').trim().toLowerCase();
+  const copyContextLabel = normalizedSubFeature === 'detail' || normalizedSubFeature.includes('详情')
+    ? '详情页图片'
+    : normalizedSubFeature === 'main' || normalizedSubFeature.includes('主图')
+      ? '商品主图'
+      : '电商商品图片';
   const isGlobalTranslation = String(translationScope || '').trim() === 'global_translation'
     || String(translationScope || '').includes('全局');
   const scopeConstraints = isGlobalTranslation
     ? [
-        `翻译范围：全局翻译。图片中所有可读文案均翻译为${target}，包括营销文案、包装、标签、参数、警示、说明、压印、贴纸或屏幕文字。`,
-        'Logo、Logo 组成文字、商标图形和产品型号保持不变；参数、尺寸、温度、数量、比例、容量、日期等数值事实和单位必须准确保留。',
-        '不得猜测不可读文字；不得新增原图不存在的信息或虚假卖点、认证、功效、法律信息、成分、警示或参数。',
+        `处理范围：全局翻译。图片中所有可读文案都必须全部识别并检查，仅在必要时重写为${target}，包括营销文案、包装、标签、参数、警示、说明、压印、贴纸或屏幕文字。`,
+        'Logo、Logo 组成文字、商标图形和产品型号保持不变，不作为策划重写对象。',
       ]
     : [
-        '除产品/包装表面文字、装饰性/氛围/非核心英文外，其余文案均翻译；核心卖点、标题和购买决策信息仍按目标语言处理。',
-        '参数、尺寸、温度、数量等数值信息必须准确保留；表格/参数/尺码类仅输出短标签，不扩写成句。',
-        '产品主体、包装、logo、画面主题和版式位置保持不变；产品/包装表面文字、实拍压印文字视为图片内容，不翻译、不重绘、不移动。',
+        '处理范围：产品隔离。除产品/包装表面文字、装饰性或氛围性非核心英文外，其余文案都必须全部识别并检查，仅在必要时重写；核心卖点、标题和购买决策信息必须使用目标语言。',
+        '产品/包装表面文字、实拍压印文字和原图 logo 保持不变，不作为策划重写对象。',
       ];
   const scopeConstraintBlock = scopeConstraints.map((line, index) => `${index + 1}. ${line}`).join('\n');
-  const prompt = `R Role 角色
-你是商业图像文案翻译与修复助手，只翻译画面中的营销文案。
+  const buildPrompt = (correction = '') => `R Role 角色
+你是目标市场的母语电商本地化文案总监，负责把图片中的已有文案编辑为当地消费者熟悉、自然、可信的通用电商表达。你的任务不是逐句翻译，也不负责修图或生成图片。
 
 T Task 任务
-提取图片文案，分析并翻译为本地化语言。
+目标语言：${target}。
+目标市场：${targetMarket}。
+当前图片类型：${copyContextLabel}。
+在本次单次调用内部依次完成：
+1. 识别原文和真实卖点，判断每条文案实际含义。
+2. 判断每条文案角色：主标题、副标题、卖点短语、图标标签、功能说明、参数或警示。
+3. 检查原文是否存在语法或拼写错误、中文直译感、不自然语序、名词堆叠、指代不清、语义重复、表达冗长、广告表达吸引力不足、说明书语气过重、夸大宣传或绝对化承诺。
+4. 需要改写时，先提炼文案实际含义并摆脱原句结构，再按目标市场母语消费者的语言逻辑和通用电商表达习惯重新写作，不基于原句逐词替换。广告表达吸引力不足时，只能优化措辞、节奏和信息层级，不得新增事实、承诺或卖点。
 
 C Constraint 约束
 ${scopeConstraintBlock}
-${scopeConstraints.length + 1}. 译文不得逐词硬翻，必须先理解卖点含义，在不新增原图不存在的信息或虚假卖点的前提下，本地化改写为${target}消费者熟悉的电商表达；可调整语序、拆分或合并表达，符合${target}电商语气，避免翻译腔。
+${scopeConstraints.length + 1}. 不得猜测不可读文字；不能可靠识别时，将对应文字列为保持不变，不得编造原文或目标文案。
+${scopeConstraints.length + 2}. 原文语言与目标语言相同时仍必须执行本地化质量检查，不得因为语种相同而跳过处理。原文已经自然、准确且适合目标市场时，只进行必要修改，并允许成品文案与原文相同；不得为了体现优化而强制改写、替换近义词或改变语气。
+${scopeConstraints.length + 3}. 需要改写时，禁止照搬原文语序、句法结构和不自然的名词拼接；允许按当地表达习惯调整语序、拆分或合并表达。
+${scopeConstraints.length + 4}. 标题应根据当前图片类型和文案实际角色选择对应规则：主图标题应简洁、有节奏并具有购买沟通价值；详情页区块标题应准确概括当前卖点或内容，不得为了广告感强行写成主图口号；参数或警示标题优先准确清晰。标题不得写成冗长说明句或翻译句。
+${scopeConstraints.length + 5}. 副标题自然补充卖点，不得机械重复主标题；使用当地消费者熟悉的搭配、助词、时态和语气，禁止翻译腔和不完整的生硬省略。
+${scopeConstraints.length + 6}. 卖点短语和图标标签保持短小；功能说明清晰可信；表格、参数和尺码类内容只使用准确短标签，不扩写成营销句。
+${scopeConstraints.length + 7}. 参数、数字和单位默认原样保留，不得换算数值或计量单位，不得改变数字字符、正负号、小数位、日期含义或单位字符；只允许调整周边空格、标点和不改变字符的视觉排版。警示文字不得改变事实含义或风险等级。
+${scopeConstraints.length + 8}. 自然、正确和信息完整优先于字符数；在不损害表达的前提下，使目标文案行数和视觉占用面积尽量接近原文。文案过长时优先去除重复和非必要修饰，不通过删除必要助词、谓语或指代对象强行压缩。
+${scopeConstraints.length + 9}. 不得新增原图没有的功效、认证、材质、产地、健康功效、使用效果、价格或促销信息，也不得编造其他卖点和事实。
+${scopeConstraints.length + 10}. 每条“本地化为”右侧引号内的成品文案只能使用目标语言；左侧保留识别到的原文。决定保留原文时仍输出原文与相同成品文案的映射，不得漏掉。
+${scopeConstraints.length + 11}. 映射结构、字段名称和其他结构说明可以使用中文，但结构说明语言不得作为成品文案语言。
+${correction ? `${scopeConstraints.length + 12}. ${correction}` : ''}
 
 F Format 格式
-用中文逐条输出：
+最终只能逐条输出以下结构化结果；禁止输出 Markdown、解释、分析、候选、评分、commentary、final_answer 或其他过程文本：
 - “xxx”本地化为“xxx”
-- “产品主体/包装实物表面的原文案、压印文字或原图 logo”保持不变`;
-  const analysis = await requestAnalysisResponseDetailed([
-    { type: 'text', text: prompt },
-    { type: 'image_url', image_url: { url: imageUrl } },
-  ], apiConfig, signal, onJobCreated, {
-    ...jobMetadata,
-    taskPurpose: String(jobMetadata.taskPurpose || 'translation_copy_analysis'),
+- “产品主体/包装实物表面的原文案、压印文字或原图 logo”保持不变
+
+E Example 示例
+- “<识别到的原图文案>”本地化为“<使用目标语言改写的自然电商文案>”`;
+  const planning = await runTranslationPlanningWithLanguageGuard({
     targetLanguage: target,
-    translationScope: isGlobalTranslation ? 'global_translation' : 'product_isolation',
+    request: async ({ correction }) => requestAnalysisResponseDetailed([
+      { type: 'text', text: buildPrompt(correction) },
+      { type: 'image_url', image_url: { url: imageUrl } },
+    ], apiConfig, signal, onJobCreated, {
+      ...jobMetadata,
+      taskPurpose: String(jobMetadata.taskPurpose || 'translation_copy_analysis'),
+      targetLanguage: target,
+      translationScope: isGlobalTranslation ? 'global_translation' : 'product_isolation',
+    }),
   });
 
   return {
-    description: analysis.content.trim(),
-    message: analysis.content.trim() ? '出海翻译策划分析完成' : '出海翻译策划分析未返回可用内容',
-    creditsConsumed: analysis.creditsConsumed,
-    taskId: analysis.taskId,
+    description: planning.content.trim(),
+    message: planning.content.trim() ? '出海翻译策划分析完成' : '出海翻译策划分析未返回可用内容',
+    creditsConsumed: planning.creditsConsumed,
+    taskId: planning.taskId,
   };
 };
 

@@ -3,6 +3,7 @@ export const MIN_TRANSLATION_EDIT_REGION_RATIO = 0.02;
 export const TRANSLATION_EDIT_EDGE_HIT_SLOP_PX = 12;
 export const MAX_TRANSLATION_EDIT_INSTRUCTION_LENGTH = 1000;
 export const MAX_TRANSLATION_EDIT_TOTAL_INSTRUCTION_LENGTH = 4000;
+export const TRANSLATION_EDIT_REGION_COLORS = ['#2563eb', '#d97706', '#059669', '#dc2626', '#7c3aed'];
 
 const cleanRatio = (value) => Math.round(value * 1e12) / 1e12;
 const clampRatio = (value, min = 0, max = 1) => cleanRatio(Math.min(max, Math.max(min, value)));
@@ -502,6 +503,11 @@ const getInitialTranslationEditCanvasDimensions = (source) => ({
     : {}),
 });
 
+const TERMINAL_TRANSLATION_EDIT_REASONS = new Set([
+  'user_cancelled',
+  'client_output_rejected',
+]);
+
 const cloneTranslationEditVersion = (version) => {
   const cloned = {
     ...version,
@@ -519,7 +525,16 @@ const mergeTranslationEditVersion = (existing, incoming) => {
   if (existing?.status === 'completed' && incoming?.status !== 'completed') {
     return cloneTranslationEditVersion(existing);
   }
-  if (existing?.status === 'error' && incoming?.status === 'generating') {
+  if (
+    existing?.status === 'error'
+    && (
+      incoming?.status === 'generating'
+      || (
+        incoming?.status === 'completed'
+        && TERMINAL_TRANSLATION_EDIT_REASONS.has(existing?.translationEditTerminalReason)
+      )
+    )
+  ) {
     const terminal = cloneTranslationEditVersion(existing);
     for (const key of ['backendJobId', 'taskId', 'creditsConsumed']) {
       if (!hasTranslationEditVersionValue(terminal[key]) && hasTranslationEditVersionValue(incoming?.[key])) {
@@ -617,6 +632,7 @@ const listTranslationRegionEditProtectionCandidates = (projects = []) => {
           || version?.status !== 'generating'
           || String(version?.imageUrl || '').trim()
           || !pendingProtectedSourceUrl
+          || version?.translationEditProcessingMode === 'direct_full_image_v1'
         ) continue;
         const key = `${projectId}:${resultId}:${versionId}`;
         if (seen.has(key)) continue;
@@ -700,6 +716,9 @@ export const startTranslationEditVersion = (result, input) => [
   {
     id: input.versionId,
     sourceVersionId: input.sourceVersionId,
+    ...(input.translationEditProcessingMode
+      ? { translationEditProcessingMode: input.translationEditProcessingMode }
+      : {}),
     ...getTranslationEditCanvasDimensions({
       canvasWidth: input.canvasWidth,
       canvasHeight: input.canvasHeight,
@@ -829,6 +848,9 @@ export const reduceTranslationRegionEditProjectMutation = (projects = [], input 
       const terminalPatch = {
         ...(input.backendJobId ? { backendJobId: input.backendJobId } : {}),
         ...(input.taskId ? { taskId: input.taskId } : {}),
+        ...(TERMINAL_TRANSLATION_EDIT_REASONS.has(input.translationEditTerminalReason)
+          ? { translationEditTerminalReason: input.translationEditTerminalReason }
+          : {}),
         ...(input.creditsConsumed !== undefined && Number.isFinite(Number(input.creditsConsumed))
           ? { creditsConsumed: Number(input.creditsConsumed) }
           : {}),

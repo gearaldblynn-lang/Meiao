@@ -4,8 +4,81 @@ import assert from 'node:assert/strict';
 import {
   isTranslationRegionEraseInstruction,
   isTranslationRegionPureEraseTask,
+  parseTranslationRegionEditIntent,
   resolveTranslationRegionTextRenderPlan,
+  validateTranslationRegionEditIntents,
 } from './translationRegionEditIntent.mjs';
+
+test('parses quoted and unquoted replacement copy without truncating punctuation', () => {
+  assert.deepEqual(
+    parseTranslationRegionEditIntent('此区域内文案改成“产品亮点”'),
+    { ok: true, operation: 'replace_text', targetText: '产品亮点' },
+  );
+  assert.deepEqual(
+    parseTranslationRegionEditIntent('文案替换为自动沥水，积水直接导入水槽'),
+    { ok: true, operation: 'replace_text', targetText: '自动沥水，积水直接导入水槽' },
+  );
+});
+
+test('splits only an explicit style suffix from unquoted replacement copy', () => {
+  assert.deepEqual(
+    parseTranslationRegionEditIntent('文案改成产品亮点，字体改成红色并居中'),
+    {
+      ok: true,
+      operation: 'replace_text',
+      targetText: '产品亮点',
+      styleInstruction: '字体改成红色并居中',
+    },
+  );
+  assert.deepEqual(
+    parseTranslationRegionEditIntent('文案改成自动沥水，积水直接导入水槽'),
+    { ok: true, operation: 'replace_text', targetText: '自动沥水，积水直接导入水槽' },
+  );
+});
+
+test('replacement wins over deletion and pure deletion remains available', () => {
+  assert.deepEqual(
+    parseTranslationRegionEditIntent('删除原文并改成产品亮点'),
+    { ok: true, operation: 'replace_text', targetText: '产品亮点' },
+  );
+  assert.deepEqual(
+    parseTranslationRegionEditIntent('删除此区域内的文案'),
+    { ok: true, operation: 'delete_text' },
+  );
+});
+
+test('rejects empty replacements, unknown instructions, and negated deletion', () => {
+  assert.deepEqual(
+    parseTranslationRegionEditIntent('文案改成'),
+    { ok: false, code: 'missing_replacement_text' },
+  );
+  assert.deepEqual(
+    parseTranslationRegionEditIntent('把这里处理好看一点'),
+    { ok: false, code: 'unrecognized_instruction' },
+  );
+  assert.deepEqual(
+    parseTranslationRegionEditIntent('不要删除此区域内的文案'),
+    { ok: false, code: 'unrecognized_instruction' },
+  );
+});
+
+test('validates new submission intents without changing geometry validation', () => {
+  const valid = validateTranslationRegionEditIntents([
+    { id: 'replace', instruction: '文案改成产品亮点' },
+    { id: 'delete', instruction: '删除此区域内的文案' },
+  ]);
+  assert.equal(valid.ok, true);
+  assert.deepEqual(valid.intents.map((intent) => intent.operation), ['replace_text', 'delete_text']);
+
+  assert.deepEqual(
+    validateTranslationRegionEditIntents([{ id: 'missing', instruction: '文案改成' }]),
+    { ok: false, code: 'missing_replacement_text', regionId: 'missing', intents: [] },
+  );
+  assert.deepEqual(
+    validateTranslationRegionEditIntents([{ id: 'unknown', instruction: '处理得更好看' }]),
+    { ok: false, code: 'unrecognized_instruction', regionId: 'unknown', intents: [] },
+  );
+});
 
 test('resolves explicit text replacement into a model text generation plan', () => {
   const plan = resolveTranslationRegionTextRenderPlan({

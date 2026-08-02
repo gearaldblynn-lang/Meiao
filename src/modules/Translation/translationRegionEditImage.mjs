@@ -1,4 +1,7 @@
-import { normalizeTranslationEditRegions } from './translationRegionEditUtils.mjs';
+import {
+  TRANSLATION_EDIT_REGION_COLORS,
+  normalizeTranslationEditRegions,
+} from './translationRegionEditUtils.mjs';
 import {
   isTranslationRegionBackgroundCleanupInstruction,
   isTranslationRegionEraseInstruction,
@@ -124,18 +127,12 @@ export const createTranslationRegionGuide = async ({
     const badgeSize = Math.max(20, Math.round(Math.min(width, height) * 0.06));
 
     drawableRegions.forEach(({ region, rect }) => {
-      if (
-        isTranslationRegionEraseInstruction(region.instruction)
-        && !resolveTranslationRegionTextRenderPlan(region)
-      ) {
-        context.save();
-        context.fillStyle = 'rgba(239, 68, 68, 0.34)';
-        context.fillRect(rect.x, rect.y, rect.width, rect.height);
-        context.restore();
-      }
+      const color = TRANSLATION_EDIT_REGION_COLORS[
+        (Math.max(1, Number(region.index) || 1) - 1) % TRANSLATION_EDIT_REGION_COLORS.length
+      ];
 
       context.save();
-      context.strokeStyle = '#ef4444';
+      context.strokeStyle = color;
       context.lineWidth = borderWidth;
       context.strokeRect(rect.x, rect.y, rect.width, rect.height);
       context.restore();
@@ -143,7 +140,7 @@ export const createTranslationRegionGuide = async ({
       const badgeX = clamp(rect.x, 0, Math.max(0, width - badgeSize));
       const badgeY = clamp(rect.y, 0, Math.max(0, height - badgeSize));
       context.save();
-      context.fillStyle = '#ef4444';
+      context.fillStyle = color;
       context.fillRect(badgeX, badgeY, badgeSize, badgeSize);
       context.fillStyle = '#ffffff';
       context.font = `bold ${Math.max(12, Math.round(badgeSize * 0.62))}px sans-serif`;

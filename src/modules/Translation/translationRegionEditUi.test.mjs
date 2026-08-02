@@ -368,6 +368,16 @@ test('dialog source locks the dedicated translation-region contract and interact
   }
 });
 
+test('dialog validates replacement and deletion semantics only when submitting a new edit', async () => {
+  const source = await readFile(componentUrl, 'utf8');
+
+  assert.match(source, /validateTranslationRegionEditIntents/);
+  assert.match(source, /unrecognized_instruction:\s*'请输入“文案改成xxx”或“删除此区域内的文案”'/);
+  assert.match(source, /missing_replacement_text:\s*'请填写修改后的文案'/);
+  assert.match(source, /INSTRUCTION_ERROR_CODES[\s\S]*?'unrecognized_instruction'[\s\S]*?'missing_replacement_text'/);
+  assert.match(source, /const intentValidation = validateTranslationRegionEditIntents\(validation\.regions\)/);
+});
+
 test('dialog synchronously locks async submission and always releases it for retry', async () => {
   const source = await readFile(componentUrl, 'utf8');
 

@@ -1951,6 +1951,16 @@ const mergeTranslationRegionEditJobs = (
     const rawResultUrl = succeeded ? getResultUrl(job) : '';
     const succeededWithoutResult = succeeded && !rawResultUrl;
     const failed = job.status === 'failed' || job.status === 'cancelled' || succeededWithoutResult;
+    const rawProcessingMode = String(
+      payload.translationEditProcessingMode
+      || targetVersion.translationEditProcessingMode
+      || '',
+    ).trim();
+    const processingMode = rawProcessingMode === 'direct_full_image_v1'
+      || rawProcessingMode === 'protected_composite_v1'
+      ? rawProcessingMode
+      : undefined;
+    const directFullImage = processingMode === 'direct_full_image_v1';
     const regions = Array.isArray(payload.translationEditRegions)
       ? payload.translationEditRegions
       : targetVersion.regions;
@@ -1958,15 +1968,24 @@ const mergeTranslationRegionEditJobs = (
       id: versionId,
       sourceVersionId: String(payload.translationEditSourceVersionId || '').trim() || targetVersion.sourceVersionId,
       createdAt: targetVersion.createdAt || toCreatedMs(job.createdAt),
-      status: failed ? 'error' : 'generating',
+      status: failed ? 'error' : directFullImage && succeeded ? 'completed' : 'generating',
       regions,
+      ...(processingMode ? { translationEditProcessingMode: processingMode } : {}),
       taskId: providerTaskId,
       backendJobId: String(job.id || '').trim() || undefined,
       creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
-      ...(rawResultUrl ? { pendingProtectedSourceUrl: rawResultUrl } : {}),
+      ...(directFullImage && rawResultUrl
+        ? { imageUrl: rawResultUrl }
+        : rawResultUrl
+          ? { pendingProtectedSourceUrl: rawResultUrl }
+          : {}),
       ...(failed ? {
         error: String(
-          (succeededWithoutResult ? '修改任务已完成，但未返回可保护的图片结果' : '')
+          (succeededWithoutResult
+            ? directFullImage
+              ? '修改任务已完成，但未返回图片结果'
+              : '修改任务已完成，但未返回可保护的图片结果'
+            : '')
           || job.errorMessage
           || job.errorCode
           || (job.status === 'cancelled' ? '修改任务已取消' : '修改失败')

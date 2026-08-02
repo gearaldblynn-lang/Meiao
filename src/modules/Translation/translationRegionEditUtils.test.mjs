@@ -141,6 +141,14 @@ test('pending raw output without a source version id is classified as unrecovera
   );
 });
 
+test('direct full-image versions never enter legacy protected-composite recovery', () => {
+  const project = createRecoveryProject();
+  project.results[0].translationEditVersions[1].translationEditProcessingMode = 'direct_full_image_v1';
+
+  assert.deepEqual(listRecoverableTranslationRegionEdits([project]), []);
+  assert.deepEqual(listUnrecoverableTranslationRegionEdits([project]), []);
+});
+
 test('recovery candidate normalizes absent job identity and credits to undefined', () => {
   const project = createRecoveryProject();
   const pending = project.results[0].translationEditVersions[1];
@@ -766,13 +774,14 @@ test('translation edit cancellation requires exact ownership and preserves the p
 
   const cancelled = reduceTranslationRegionEditProjectMutation(projects, {
     kind: 'cancel', projectId: 'project-1', resultId: 'result-1', versionId: 'v2',
-    backendJobId: 'backend-v2', error: '修改已取消',
+    backendJobId: 'backend-v2', translationEditTerminalReason: 'user_cancelled', error: '修改已取消',
   });
   assert.equal(cancelled.updated, true);
   assert.equal(cancelled.result.imageUrl, 'protected-v1.png');
   assert.equal(cancelled.result.status, 'completed');
   assert.equal(cancelled.version.status, 'error');
   assert.equal(cancelled.version.error, '修改已取消');
+  assert.equal(cancelled.version.translationEditTerminalReason, 'user_cancelled');
 
   const foreignCancel = reduceTranslationRegionEditProjectMutation(projects, {
     kind: 'cancel', projectId: 'project-1', resultId: 'result-1', versionId: 'v2',
@@ -1429,6 +1438,7 @@ test('starting from an old version appends a generating version with lineage and
   const input = Object.freeze({
     versionId: 'v3',
     sourceVersionId: 'v1',
+    translationEditProcessingMode: 'direct_full_image_v1',
     canvasWidth: 1200,
     canvasHeight: 1600,
     regions,
@@ -1443,6 +1453,7 @@ test('starting from an old version appends a generating version with lineage and
   assert.deepEqual(versions[2], {
     id: 'v3',
     sourceVersionId: 'v1',
+    translationEditProcessingMode: 'direct_full_image_v1',
     canvasWidth: 1200,
     canvasHeight: 1600,
     createdAt: 300,

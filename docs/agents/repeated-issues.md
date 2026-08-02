@@ -1158,3 +1158,21 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 翻译执行计划统一读取共享模型能力；支持 `auto` 的模型原样透传 `auto`，不再预映射为 1:4。原图输出在任何非等比缩放前比较自动旋转后的真实几何，超过 2% 即阻止发布；远程 URL 与 MaxForAI base64 两条结果路径都把原始输出保存为 quarantine 证据，并以 `image_output_aspect_ratio_mismatch` 终止用户可见成功。该类错误明确标记 provider 已完成，MySQL/Temporal/local 四条 worker 路径结算已发生的费用、保存结果证据，重启对账也保持 settle，不能悬挂预留或错误退款。
 - Regression check: `node --test server/imagePostProcess.test.mjs server/assetStore.test.mjs server/jobRuntime.test.mjs server/providerErrorHumanize.test.mjs server/temporalWorker.test.mjs server/localJobStore.test.mjs server/maxforaiIntegration.test.mjs src/modules/Translation/translationProcessingUtils.test.mjs src/modules/Translation/translationRetryUtils.test.mjs`；`npm run verify`；`npm run doctor`。回归必须锁定 899×1750 → 312×840 不执行拉伸、匹配比例仍可等比还原、EXIF orientation 6 使用旋转后尺寸、0.98/1.02 边界、KIE 有 task ID 与 MaxForAI 无 task ID 都保存 quarantine 且 settle、base64 不绕过校验。
 - Avoid next time: 模型尺寸/比例能力只能有一个权威来源，不得在业务模块复制 provider 支持列表；未知或不支持的参数不能静默丢弃。真实图片验收必须同时核对用户选择、最终 job payload、provider 原始宽高、托管结果宽高和内容几何，不能把“像素尺寸相等”当成“比例正确”。任何发生在 provider 成功之后的本地合同拒绝都必须有独立的失败、证据留存和计费结算语义。
+
+## 2026-07-29 - 出海翻译区域修改的处理模式必须显式持久化
+
+- Symptom: 新的整图直出结果可能被误当作历史 raw output 再送入矩形保护合成，或历史待保护结果被直接发布。
+- Environment: local integration / Translation main and detail region edit / KIE image edit.
+- Root cause: 新旧流程共用 `shellPurpose: translation_region_edit`，但 job status 和 image URL 只能表达任务终态，无法证明结果应当整图直出还是继续执行历史保护合成。
+- Fix: 新任务和版本显式携带 `translationEditProcessingMode: direct_full_image_v1`，一次提交固定使用原图与编号框选图，成功且尺寸等于源画布时直接完成。只有历史无模式且存在 `pendingProtectedSourceUrl` 的任务进入保护合成恢复；`protected_composite_v1` 继续作为显式历史模式保留。用户取消或客户端输出校验拒绝分别持久化 `user_cancelled` / `client_output_rejected`，hydration 不得用迟到的 provider success 复活这两类终态，但仍补齐 job、provider 和实际积分身份。
+- Regression check: `node --experimental-strip-types --test src/modules/Translation/translationRegionEditIntent.test.mjs src/modules/Translation/translationRegionEditUtils.test.mjs src/modules/Translation/translationRegionEditUi.test.mjs src/modules/Translation/translationRegionEditImage.test.mjs src/modules/Translation/translationRegionEditPrompt.test.mjs src/modules/Translation/translationRegionEditRequest.test.mjs src/adapters/shellDataAdapter.test.mjs src/adapters/shellPersistence.test.mjs src/components/uiArchitecture.test.mjs`；`node --test server/imagePostProcess.test.mjs server/appStateMerge.test.mjs`；`npm run verify`。
+- Avoid next time: 不得从人类可读文案、结果 URL 或任务终态猜后处理语义。任何会改变成功结果发布方式的处理模式，都必须在任务创建时写入显式字段，并贯穿版本、job payload、持久化和 hydration；历史兼容路径必须由独立回归锁定。
+
+## 2026-08-02 - 原尺寸后处理结果必须回写后端 job
+
+- Symptom: 出海翻译选择原尺寸时，本次页面先显示后处理后的正确图片；刷新后却可能恢复成 provider 原始结果，尺寸或比例再次漂移。
+- Environment: local integration / Translation original-size post-processing / shell job hydration.
+- Root cause: 前端完成原尺寸后处理后只更新了项目内存和 app state，后端 job 的 `result` 仍保存 provider 原始 URL。刷新 hydration 重新读取 job 时，旧 URL 会覆盖已处理结果。
+- Fix: 后处理改变最终图片 URL 后，立即 PATCH 对应后端 job 的 `result`，并保留原 job、provider 和积分身份；PATCH 失败不得把已经正确展示的本地结果回退成 provider 原图。
+- Regression check: `node --experimental-strip-types --test src/adapters/shellWorkflowTranslationOriginalSize.test.mjs`；`npm run verify`。回归必须锁定 URL 未改变时零 PATCH、URL 改变时只 PATCH 一次且使用最终 URL。
+- Avoid next time: 任何客户端或服务端后处理只要改变了最终可发布资产，就必须同时更新项目状态和 job 真相源。页面当前显示正确不能替代刷新后的 hydration 回放。

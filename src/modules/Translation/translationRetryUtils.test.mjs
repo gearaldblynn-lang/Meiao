@@ -598,7 +598,8 @@ test('buildTranslationGenerationPrompt uses the newly generated optimization pla
     batchCount: 2,
   });
 
-  assert.match(prompt, /角色：商业图像文案翻译与修复助手/);
+  assert.match(prompt, /角色：商业图像文案精准重绘助手/);
+  assert.doesNotMatch(prompt, /角色：商业图像文案翻译与修复助手/);
   assert.match(prompt, /根据 AI优化结果生成主图翻译成品图/);
   assert.match(prompt, /所有替换文案必须逐字照抄 AI优化结果中右侧引号内的本地化文案/);
   assert.match(prompt, /产品主体、包装、logo、画面主题和版式位置保持不变/);
@@ -606,6 +607,14 @@ test('buildTranslationGenerationPrompt uses the newly generated optimization pla
   assert.match(prompt, /参数、尺寸、温度、数量等数值信息必须准确保留/);
   assert.match(prompt, /表格\/参数\/尺码类图片保持原表格行列、单元格位置和边框/);
   assert.match(prompt, /不新增原图不存在的信息或虚假卖点/);
+  assert.match(prompt, /保持原图的画面尺寸与比例、商品和场景、整体构图/);
+  assert.match(prompt, /文案位置、字体风格、字号层级、字重、字体颜色/);
+  assert.match(prompt, /行距、字间距、对齐方式、文案底框、装饰线条、指示线和标注点/);
+  assert.match(prompt, /先完整清除对应旧文字再写入新文字/);
+  assert.match(prompt, /不得出现旧文字残留、白边、遮挡或明显修补痕迹/);
+  assert.match(prompt, /禁止修改商品外观、颜色、材质、纹理、包装信息和其他非目标元素/);
+  assert.match(prompt, /禁止添加水印、Logo、无关文字或装饰/);
+  assert.match(prompt, /所有替换文字必须完整、清晰，无错字、乱码或字符变形/);
   assert.match(prompt, /本次新生成的 AI优化结果/);
   assert.match(prompt, new RegExp(planningText));
 });
