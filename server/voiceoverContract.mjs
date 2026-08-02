@@ -80,8 +80,9 @@ const ERROR_CODES = new Set([
   'voiceover_language_unsupported', 'voiceover_analysis_invalid', 'voiceover_analysis_submission_unknown', 'voiceover_separation_unavailable',
   'voiceover_separation_timeout', 'voiceover_tts_input_too_large', 'voiceover_timing_out_of_range', 'provider_submission_unknown',
   'provider_balance_insufficient', 'provider_rate_limited', 'provider_timeout', 'voiceover_mix_failed', 'voiceover_result_persist_failed',
-  'voiceover_checkpoint_asset_invalid', 'voiceover_checkpoint_upgrade_required',
-]);
+    'voiceover_checkpoint_asset_invalid', 'voiceover_checkpoint_upgrade_required',
+    'voiceover_alignment_unavailable', 'voiceover_forced_alignment_failed',
+  ]);
 
 export function buildVoiceoverError(code, message, details = {}) {
   const error = new Error(String(message || '口播翻译处理失败'));
