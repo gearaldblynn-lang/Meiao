@@ -15,6 +15,7 @@ import {
 export const VOICEOVER_CHECKPOINT_VERSION = 1;
 export const VOICEOVER_ANALYSIS_EVIDENCE_VERSION = 3;
 export const VOICEOVER_ALIGNMENT_VERSION = 1;
+export const VOICEOVER_TTS_RENDER_VERSION = 2;
 export const VOICEOVER_MAX_TTS_GROUPS = 100;
 
 export const VOICEOVER_DEFAULTS = Object.freeze({
@@ -202,8 +203,14 @@ const normalizedValidationOptions = (options = {}) => {
   });
 };
 
-const requiredCheckpointFields = (stageIndex, options) => Object.freeze([
-  ...CHECKPOINT_REQUIRED_FIELDS[stageIndex],
+const requiredCheckpointFields = (stageIndex, options, ttsRenderVersion) => Object.freeze([
+  ...CHECKPOINT_REQUIRED_FIELDS[stageIndex].filter((field) => field !== 'ttsGroups'),
+  ...(stageIndex >= STAGE_INDEX.get('tts_generating')
+    ? [ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION ? 'ttsBatch' : 'ttsGroups']
+    : []),
+  ...(ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION && stageIndex >= STAGE_INDEX.get('audio_aligned')
+    ? ['ttsGroups']
+    : []),
   ...(options.removeText && stageIndex >= STAGE_INDEX.get('subtitle_removal') ? ['subtitleRemoval'] : []),
 ]);
 
@@ -342,7 +349,7 @@ const normalizeTranslation = (value, validationOptions = normalizedValidationOpt
   return { targetLanguage, mode, selectedVoiceName, segments: normalizeSegments(value.segments, { ...validationOptions, code: 'voiceover_checkpoint_invalid' }) };
 };
 
-const normalizeTtsGroups = (groups, validationOptions = normalizedValidationOptions()) => {
+const normalizeLegacyTtsGroups = (groups, validationOptions = normalizedValidationOptions()) => {
   if (!Array.isArray(groups) || !groups.length || groups.length > VOICEOVER_MAX_TTS_GROUPS) throw buildVoiceoverError('voiceover_checkpoint_invalid', 'TTS 分组无效');
   const identities = new Set();
   return groups.map((group) => {
@@ -363,6 +370,89 @@ const normalizeTtsGroups = (groups, validationOptions = normalizedValidationOpti
   });
 };
 
+const normalizeTtsBatch = (value) => {
+  assertKnownKeys(value, new Set([
+    'attempt', 'childJobId', 'providerTaskId', 'assetId', 'status', 'actualDurationMs',
+  ]), 'voiceover_checkpoint_invalid');
+  const attempt = Number(value.attempt ?? 0);
+  const status = String(value.status || '');
+  const actualDurationMs = value.actualDurationMs === undefined
+    ? undefined
+    : Number(value.actualDurationMs);
+  if (!Number.isInteger(attempt) || attempt < 0 || attempt > 100
+    || !isAssetId(value.childJobId)
+    || !['queued', 'submitted', 'succeeded', 'failed'].includes(status)
+    || (value.providerTaskId && !isAssetId(value.providerTaskId))
+    || (value.assetId && !isAssetId(value.assetId))
+    || (actualDurationMs !== undefined && (!Number.isInteger(actualDurationMs) || actualDurationMs <= 0))
+    || (status === 'succeeded' && (
+      !value.providerTaskId
+      || !value.assetId
+      || actualDurationMs === undefined
+    ))) {
+    throw buildVoiceoverError('voiceover_checkpoint_invalid', '连续 TTS 批次无效');
+  }
+  return {
+    attempt,
+    childJobId: value.childJobId,
+    ...(value.providerTaskId ? { providerTaskId: value.providerTaskId } : {}),
+    ...(value.assetId ? { assetId: value.assetId } : {}),
+    status,
+    ...(actualDurationMs !== undefined ? { actualDurationMs } : {}),
+  };
+};
+
+const normalizeAcousticTtsGroups = (
+  groups,
+  translation,
+  validationOptions = normalizedValidationOptions(),
+) => {
+  if (!Array.isArray(groups)
+    || !groups.length
+    || groups.length > VOICEOVER_MAX_TTS_GROUPS
+    || groups.length !== translation.segments.length) {
+    throw buildVoiceoverError('voiceover_checkpoint_invalid', '连续 TTS 声学分组无效');
+  }
+  let previousSourceEndMs = -Infinity;
+  return groups.map((group, position) => {
+    assertKnownKeys(group, new Set([
+      'index', 'startMs', 'endMs', 'sourceStartMs', 'sourceEndMs',
+      'actualDurationMs', 'atempo',
+    ]), 'voiceover_checkpoint_invalid');
+    const index = Number(group.index);
+    const startMs = Number(group.startMs);
+    const endMs = Number(group.endMs);
+    const sourceStartMs = Number(group.sourceStartMs);
+    const sourceEndMs = Number(group.sourceEndMs);
+    const actualDurationMs = Number(group.actualDurationMs);
+    const atempo = Number(group.atempo);
+    const target = translation.segments[position];
+    if (!Number.isInteger(index) || index !== position
+      || !Number.isInteger(startMs) || !Number.isInteger(endMs)
+      || startMs !== target.startMs || endMs !== target.endMs
+      || !Number.isInteger(sourceStartMs) || !Number.isInteger(sourceEndMs)
+      || sourceStartMs < 0 || sourceEndMs <= sourceStartMs
+      || sourceStartMs < previousSourceEndMs
+      || !Number.isInteger(actualDurationMs)
+      || actualDurationMs !== sourceEndMs - sourceStartMs
+      || !Number.isFinite(atempo)
+      || atempo < validationOptions.minAtempo
+      || atempo > validationOptions.maxAtempo) {
+      throw buildVoiceoverError('voiceover_checkpoint_invalid', '连续 TTS 声学分组无效');
+    }
+    previousSourceEndMs = sourceEndMs;
+    return {
+      index,
+      startMs,
+      endMs,
+      sourceStartMs,
+      sourceEndMs,
+      actualDurationMs,
+      atempo,
+    };
+  });
+};
+
 /**
  * Validates a durable worker checkpoint. `options.removeText` must come from the
  * normalized parent payload, never from browser data persisted in the checkpoint.
@@ -371,7 +461,8 @@ export function normalizeVoiceoverCheckpoint(value, options = {}) {
   const validationOptions = normalizedValidationOptions(options);
   const allowed = new Set([
     'version', 'stage', 'baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId',
-    'backgroundAssetId', 'subtitleRemoval', 'analysis', 'translation', 'ttsGroups',
+    'backgroundAssetId', 'subtitleRemoval', 'analysis', 'translation', 'ttsRenderVersion',
+    'ttsBatch', 'ttsGroups',
     'alignedAudioAssetId', 'finalAssetId', 'analysisAttempt', 'analysisEvidenceVersion',
     'alignmentVersion', 'ttsAttemptBase',
   ]);
@@ -382,7 +473,19 @@ export function normalizeVoiceoverCheckpoint(value, options = {}) {
   if (!validationOptions.removeText && (value.stage === 'subtitle_removal' || value.subtitleRemoval !== undefined)) {
     throw buildVoiceoverError('voiceover_checkpoint_invalid', '未启用去文案时不能写入 Golden 检查点');
   }
-  const stageIndex = STAGE_INDEX.get(value.stage); const output = { version: 1, stage: value.stage, baseVideoAssetId: value.baseVideoAssetId };
+  const stageIndex = STAGE_INDEX.get(value.stage);
+  const ttsRenderVersion = value.ttsRenderVersion === undefined
+    ? 1
+    : Number(value.ttsRenderVersion);
+  if (![1, VOICEOVER_TTS_RENDER_VERSION].includes(ttsRenderVersion)) {
+    throw buildVoiceoverError('voiceover_checkpoint_invalid', 'TTS 渲染版本无效');
+  }
+  const output = {
+    version: 1,
+    stage: value.stage,
+    baseVideoAssetId: value.baseVideoAssetId,
+    ttsRenderVersion,
+  };
   const analysisAttempt = Number(value.analysisAttempt ?? 0);
   if (!Number.isInteger(analysisAttempt) || analysisAttempt < 0 || analysisAttempt > 100) throw buildVoiceoverError('voiceover_checkpoint_invalid', '分析尝试次数无效');
   output.analysisAttempt = analysisAttempt;
@@ -451,15 +554,39 @@ export function normalizeVoiceoverCheckpoint(value, options = {}) {
     if (stageIndex < 6 || !output.analysis) throw buildVoiceoverError('voiceover_checkpoint_invalid', '翻译阶段无效');
     output.translation = normalizeTranslation(value.translation, validationOptions);
   }
+  if (value.ttsBatch !== undefined) {
+    if (ttsRenderVersion !== VOICEOVER_TTS_RENDER_VERSION
+      || stageIndex < STAGE_INDEX.get('tts_generating')
+      || !output.translation) {
+      throw buildVoiceoverError('voiceover_checkpoint_invalid', '连续 TTS 批次阶段无效');
+    }
+    output.ttsBatch = normalizeTtsBatch(value.ttsBatch);
+  }
   if (value.ttsGroups !== undefined) {
     if (stageIndex < 7 || !output.translation) throw buildVoiceoverError('voiceover_checkpoint_invalid', 'TTS 阶段无效');
-    output.ttsGroups = normalizeTtsGroups(value.ttsGroups, validationOptions);
+    if (ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION) {
+      if (stageIndex < STAGE_INDEX.get('audio_aligned')) {
+        throw buildVoiceoverError('voiceover_checkpoint_invalid', '连续 TTS 声学分组阶段无效');
+      }
+      output.ttsGroups = normalizeAcousticTtsGroups(
+        value.ttsGroups,
+        output.translation,
+        validationOptions,
+      );
+    } else {
+      output.ttsGroups = normalizeLegacyTtsGroups(value.ttsGroups, validationOptions);
+    }
+  }
+  if (ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION
+    && stageIndex >= STAGE_INDEX.get('audio_aligned')
+    && output.ttsBatch?.status !== 'succeeded') {
+    throw buildVoiceoverError('voiceover_checkpoint_invalid', '连续 TTS 尚未成功');
   }
   if (value.finalAssetId !== undefined) {
     if (stageIndex < 9 || !isAssetId(value.finalAssetId)) throw buildVoiceoverError('voiceover_checkpoint_invalid', '结果阶段无效');
     output.finalAssetId = value.finalAssetId;
   }
-  for (const field of requiredCheckpointFields(stageIndex, validationOptions)) {
+  for (const field of requiredCheckpointFields(stageIndex, validationOptions, ttsRenderVersion)) {
     if (output[field] === undefined || (Array.isArray(output[field]) && output[field].length === 0)) {
       throw buildVoiceoverError('voiceover_checkpoint_invalid', `阶段缺少 ${field}`);
     }
@@ -496,6 +623,26 @@ const mergeChildCheckpoint = (current, patch) => {
   };
 };
 
+const mergeTtsBatch = (current, patch) => {
+  if (patch === undefined) return current;
+  const next = normalizeTtsBatch(patch);
+  if (current === undefined) return next;
+  return {
+    attempt: mergeDurableId(current.attempt, next.attempt, 'ttsBatch.attempt'),
+    childJobId: mergeDurableId(current.childJobId, next.childJobId, 'ttsBatch.childJobId'),
+    ...(mergeDurableId(current.providerTaskId, next.providerTaskId, 'ttsBatch.providerTaskId')
+      ? { providerTaskId: mergeDurableId(current.providerTaskId, next.providerTaskId, 'ttsBatch.providerTaskId') }
+      : {}),
+    ...(mergeDurableId(current.assetId, next.assetId, 'ttsBatch.assetId')
+      ? { assetId: mergeDurableId(current.assetId, next.assetId, 'ttsBatch.assetId') }
+      : {}),
+    status: mergeStatus(current.status, next.status),
+    ...(mergeDurableId(current.actualDurationMs, next.actualDurationMs, 'ttsBatch.actualDurationMs') !== undefined
+      ? { actualDurationMs: mergeDurableId(current.actualDurationMs, next.actualDurationMs, 'ttsBatch.actualDurationMs') }
+      : {}),
+  };
+};
+
 const mergeTtsGroup = (current, next) => ({
   index: current.index,
   attempt: current.attempt,
@@ -511,7 +658,7 @@ const mergeTtsGroup = (current, next) => ({
 
 const mergeTtsGroups = (current, patch, options) => {
   if (patch === undefined) return current;
-  const normalizedPatch = normalizeTtsGroups(patch, options);
+  const normalizedPatch = normalizeLegacyTtsGroups(patch, options);
   const currentGroups = current || [];
   const merged = new Map(currentGroups.map((group) => [`${group.index}:${group.attempt}`, group]));
   for (const next of normalizedPatch) {
@@ -548,7 +695,7 @@ export function mergeVoiceoverCheckpoint(current, patch = {}, options = {}) {
   for (const field of [
     'baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId',
     'alignedAudioAssetId', 'finalAssetId', 'analysisEvidenceVersion',
-    'alignmentVersion', 'ttsAttemptBase',
+    'alignmentVersion', 'ttsAttemptBase', 'ttsRenderVersion',
   ]) {
     merged[field] = mergeDurableId(currentCheckpoint[field], patch[field], field);
   }
@@ -566,7 +713,15 @@ export function mergeVoiceoverCheckpoint(current, patch = {}, options = {}) {
     (value) => normalizeTranslation(value, validationOptions),
     'translation',
   );
-  merged.ttsGroups = mergeTtsGroups(currentCheckpoint.ttsGroups, patch.ttsGroups, validationOptions);
+  merged.ttsBatch = mergeTtsBatch(currentCheckpoint.ttsBatch, patch.ttsBatch);
+  merged.ttsGroups = currentCheckpoint.ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION
+    ? mergeImmutableResult(
+      currentCheckpoint.ttsGroups,
+      patch.ttsGroups,
+      (value) => normalizeAcousticTtsGroups(value, merged.translation, validationOptions),
+      'ttsGroups',
+    )
+    : mergeTtsGroups(currentCheckpoint.ttsGroups, patch.ttsGroups, validationOptions);
   return normalizeVoiceoverCheckpoint(merged, validationOptions);
 }
 
@@ -596,6 +751,7 @@ export function prepareVoiceoverRetryCheckpoint(checkpoint, retryPlan = {}, opti
     ...(current.subtitleRemoval ? { subtitleRemoval: current.subtitleRemoval } : {}),
     ...(current.analysisEvidenceVersion ? { analysisEvidenceVersion: current.analysisEvidenceVersion } : {}),
     ...(current.ttsAttemptBase ? { ttsAttemptBase: current.ttsAttemptBase } : {}),
+    ttsRenderVersion: current.ttsRenderVersion,
     analysisAttempt: current.analysisAttempt + 1,
   }, options);
 }
@@ -651,6 +807,16 @@ export function prepareVoiceoverEvidenceUpgradeCheckpoint(
   );
 
   if (!analysisEvidenceStale && alignmentStale) {
+    if (current.ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION) {
+      return normalizeVoiceoverCheckpoint({
+        ...current,
+        stage: 'tts_generating',
+        ttsGroups: undefined,
+        alignedAudioAssetId: undefined,
+        finalAssetId: undefined,
+        alignmentVersion: undefined,
+      }, options);
+    }
     const reusableTtsGroups = current.ttsGroups.map((group) => {
       const {
         actualDurationMs: _actualDurationMs,
@@ -680,6 +846,7 @@ export function prepareVoiceoverEvidenceUpgradeCheckpoint(
   const latestLegacyTtsAttempt = Math.max(
     -1,
     ...(current.ttsGroups || []).map((group) => Number(group.attempt)),
+    Number(current.ttsBatch?.attempt ?? -1),
   );
   const ttsAttemptBase = Math.max(
     Number(current.ttsAttemptBase || 0),
@@ -692,6 +859,7 @@ export function prepareVoiceoverEvidenceUpgradeCheckpoint(
     version: VOICEOVER_CHECKPOINT_VERSION,
     stage: current.subtitleRemoval ? 'subtitle_removal' : 'input_prepared',
     baseVideoAssetId: current.baseVideoAssetId,
+    ttsRenderVersion: current.ttsRenderVersion,
     ...(current.subtitleRemoval ? { subtitleRemoval: current.subtitleRemoval } : {}),
     ...(ttsAttemptBase > 0 ? { ttsAttemptBase } : {}),
     analysisAttempt: current.analysisAttempt + (analysisWasSubmitted ? 1 : 0),

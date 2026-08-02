@@ -7,6 +7,7 @@ import {
   VOICEOVER_CHECKPOINT_VERSION,
   VOICEOVER_DEFAULTS,
   VOICEOVER_MAX_TTS_GROUPS,
+  VOICEOVER_TTS_RENDER_VERSION,
   buildVoiceoverError,
   getVoiceoverConfig,
   getVoiceoverPublicConfig,
@@ -185,6 +186,103 @@ test('current checkpoints carry analysis evidence and alignment algorithm proven
     })),
     (error) => error.code === 'voiceover_checkpoint_upgrade_required',
   );
+});
+
+test('render version 2 stores one durable TTS batch before acoustic alignment', () => {
+  assert.equal(VOICEOVER_TTS_RENDER_VERSION, 2);
+  const generating = normalizeVoiceoverCheckpoint(checkpointAtV2('tts_generating'));
+  assert.equal(generating.ttsRenderVersion, 2);
+  assert.deepEqual(generating.ttsBatch, validTtsBatch());
+  assert.equal(generating.ttsGroups, undefined);
+  assert.throws(
+    () => normalizeVoiceoverCheckpoint(checkpointAtV2('tts_generating', { ttsBatch: undefined })),
+    (error) => error.code === 'voiceover_checkpoint_invalid',
+  );
+  assert.throws(
+    () => normalizeVoiceoverCheckpoint(checkpointAtV2('tts_generating', {
+      ttsGroups: [validAcousticTtsGroup(0)],
+    })),
+    (error) => error.code === 'voiceover_checkpoint_invalid',
+  );
+});
+
+test('render version 2 stores acoustic groups only after forced alignment', () => {
+  const aligned = normalizeVoiceoverCheckpoint(checkpointAtV2('audio_aligned'));
+  assert.deepEqual(aligned.ttsGroups, [validAcousticTtsGroup(0)]);
+  assert.equal(aligned.ttsBatch.status, 'succeeded');
+  assert.throws(
+    () => normalizeVoiceoverCheckpoint(checkpointAtV2('audio_aligned', { ttsGroups: undefined })),
+    (error) => error.code === 'voiceover_checkpoint_invalid',
+  );
+  assert.throws(
+    () => normalizeVoiceoverCheckpoint(checkpointAtV2('audio_aligned', {
+      ttsGroups: [{
+        ...validAcousticTtsGroup(0),
+        childJobId: 'duplicate-child',
+        providerTaskId: 'duplicate-provider',
+      }],
+    })),
+    (error) => error.code === 'voiceover_checkpoint_invalid',
+  );
+});
+
+test('legacy render checkpoints remain version 1 and cannot be converted during recovery', () => {
+  const completed = checkpointAt('result_persisted');
+  delete completed.ttsRenderVersion;
+  const historical = normalizeVoiceoverCheckpoint(completed, { allowLegacyCompleted: true });
+  assert.equal(historical.ttsRenderVersion, 1);
+  assert.equal(historical.ttsGroups[0].childJobId, 'child-0');
+
+  const incomplete = checkpointAt('tts_generating');
+  delete incomplete.ttsRenderVersion;
+  const recovering = normalizeVoiceoverCheckpoint(incomplete);
+  assert.equal(recovering.ttsRenderVersion, 1);
+  assert.throws(
+    () => mergeVoiceoverCheckpoint(recovering, {
+      ttsRenderVersion: VOICEOVER_TTS_RENDER_VERSION,
+      ttsBatch: validTtsBatch(),
+    }),
+    (error) => error.code === 'voiceover_checkpoint_invalid',
+  );
+});
+
+test('render version 2 batch merge preserves identity and advances status monotonically', () => {
+  const current = normalizeVoiceoverCheckpoint(checkpointAtV2('tts_generating', {
+    ttsBatch: validTtsBatch({
+      status: 'submitted',
+      providerTaskId: 'provider-continuous-1',
+    }),
+  }));
+  const replay = mergeVoiceoverCheckpoint(current, {
+    ttsBatch: validTtsBatch({ status: 'queued' }),
+  });
+  assert.equal(replay.ttsBatch.status, 'submitted');
+  assert.equal(replay.ttsBatch.providerTaskId, 'provider-continuous-1');
+
+  const succeeded = mergeVoiceoverCheckpoint(current, {
+    ttsBatch: validTtsBatch({
+      status: 'succeeded',
+      providerTaskId: 'provider-continuous-1',
+      assetId: 'asset-continuous-1',
+      actualDurationMs: 1_000,
+    }),
+  });
+  assert.deepEqual(succeeded.ttsBatch, validTtsBatch({
+    status: 'succeeded',
+    providerTaskId: 'provider-continuous-1',
+    assetId: 'asset-continuous-1',
+    actualDurationMs: 1_000,
+  }));
+  for (const patch of [
+    validTtsBatch({ childJobId: 'continuous-child-other' }),
+    validTtsBatch({ attempt: 1 }),
+    validTtsBatch({ status: 'submitted', providerTaskId: 'provider-continuous-other' }),
+  ]) {
+    assert.throws(
+      () => mergeVoiceoverCheckpoint(current, { ttsBatch: patch }),
+      (error) => error.code === 'voiceover_checkpoint_invalid',
+    );
+  }
 });
 
 test('explicit analysis evidence v2 checkpoints follow upgrade and completed-read contracts', () => {
@@ -486,4 +584,42 @@ function validSubtitleRemoval(overrides = {}) {
 
 function validTtsGroup(index, overrides = {}) {
   return { index, attempt: 0, childJobId: `child-${index}`, status: 'queued', startMs: index * 100, endMs: index * 100 + 99, ...overrides };
+}
+
+function validTtsBatch(overrides = {}) {
+  return {
+    attempt: 0,
+    childJobId: 'continuous-child-0',
+    status: 'queued',
+    ...overrides,
+  };
+}
+
+function validAcousticTtsGroup(index, overrides = {}) {
+  return {
+    index,
+    startMs: index * 1_000,
+    endMs: index * 1_000 + 800,
+    sourceStartMs: index * 1_000 + 100,
+    sourceEndMs: index * 1_000 + 700,
+    actualDurationMs: 600,
+    atempo: 0.75,
+    ...overrides,
+  };
+}
+
+function checkpointAtV2(stage, overrides = {}) {
+  const checkpoint = checkpointAt(stage);
+  delete checkpoint.ttsGroups;
+  checkpoint.ttsRenderVersion = VOICEOVER_TTS_RENDER_VERSION;
+  if (STAGE_WITH_TTS_GROUPS.has(stage)) checkpoint.ttsBatch = STAGE_WITH_ALIGNED_AUDIO.has(stage)
+    ? validTtsBatch({
+      status: 'succeeded',
+      providerTaskId: 'provider-continuous-1',
+      assetId: 'asset-continuous-1',
+      actualDurationMs: 1_000,
+    })
+    : validTtsBatch();
+  if (STAGE_WITH_ALIGNED_AUDIO.has(stage)) checkpoint.ttsGroups = [validAcousticTtsGroup(0)];
+  return { ...checkpoint, ...overrides };
 }

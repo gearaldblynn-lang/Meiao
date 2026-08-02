@@ -88,6 +88,47 @@ export interface VoiceoverTranscriptSegment {
 
 export type VoiceoverTranslationSegment = VoiceoverTranscriptSegment;
 
+export type VoiceoverTtsStatus = 'queued' | 'submitted' | 'succeeded' | 'failed';
+
+export interface VoiceoverTtsBatch {
+  attempt: number;
+  childJobId: string;
+  providerTaskId?: string;
+  assetId?: string;
+  status: VoiceoverTtsStatus;
+  actualDurationMs?: number;
+}
+
+export interface VoiceoverLegacyTtsGroup {
+  index: number;
+  attempt: number;
+  childJobId: string;
+  providerTaskId?: string;
+  assetId?: string;
+  status: VoiceoverTtsStatus;
+  startMs: number;
+  endMs: number;
+  actualDurationMs?: number;
+  atempo?: number;
+  sourceStartMs?: never;
+  sourceEndMs?: never;
+}
+
+export interface VoiceoverAcousticTtsGroup {
+  index: number;
+  startMs: number;
+  endMs: number;
+  sourceStartMs: number;
+  sourceEndMs: number;
+  actualDurationMs: number;
+  atempo: number;
+  attempt?: never;
+  childJobId?: never;
+  providerTaskId?: never;
+  assetId?: never;
+  status?: never;
+}
+
 export interface VoiceoverTranslationPayload {
   taskType: 'voiceover_translate_video';
   taskPurpose: 'voiceover_translation';
@@ -118,11 +159,13 @@ export interface VoiceoverCheckpointV1 {
   analysisEvidenceVersion?: number;
   alignmentVersion?: number;
   ttsAttemptBase?: number;
+  ttsRenderVersion?: 1 | 2;
+  ttsBatch?: VoiceoverTtsBatch;
   subtitleRemoval?: { childJobId: string; providerTaskId?: string; resultAssetId?: string; attempt: number; status: 'queued' | 'submitted' | 'succeeded' | 'failed' };
   analysisAttempt: number;
   analysis?: { sourceLanguage: string; speakerCount: number; voiceProfile: VoiceoverVoiceProfile; segments: VoiceoverTranscriptSegment[] };
   translation?: { targetLanguage: string; mode: 'natural' | 'literal'; segments: VoiceoverTranslationSegment[]; selectedVoiceName: string };
-  ttsGroups?: Array<{ index: number; attempt: number; childJobId: string; providerTaskId?: string; assetId?: string; status: 'queued' | 'submitted' | 'succeeded' | 'failed'; startMs: number; endMs: number; actualDurationMs?: number; atempo?: number }>;
+  ttsGroups?: Array<VoiceoverLegacyTtsGroup | VoiceoverAcousticTtsGroup>;
   alignedAudioAssetId?: string;
   finalAssetId?: string;
 }
