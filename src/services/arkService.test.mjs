@@ -13,6 +13,16 @@ import {
   assertModelReplaceMaterialCounts,
   parseModelReplacePreflightContent,
 } from '../utils/modelReplacePreflight.mjs';
+import {
+  buildLogoReplaceAnalysisPrompt,
+  buildLogoReplaceQualityCheckPrompt,
+  parseLogoReplaceAnalysis,
+  parseLogoReplaceQualityCheck,
+} from '../utils/logoReplaceAnalysis.mjs';
+import {
+  buildProductReplaceAnalysisPrompt,
+  parseProductReplaceAnalysis,
+} from '../utils/productReplaceAnalysis.mjs';
 
 const arkServiceSource = readFileSync(new URL('./arkService.ts', import.meta.url), 'utf8');
 const skuSubModuleSource = readFileSync(new URL('../modules/OneClick/SkuSubModule.tsx', import.meta.url), 'utf8');
@@ -32,6 +42,57 @@ const makeProductRestoreAnalysisFixture = (targetCount = 1) => ({
 });
 
 const productRestoreAnalysisFixture = makeProductRestoreAnalysisFixture();
+
+const makeProductReplaceV5AnalysisFixture = (bindings) => ({
+  version: 5,
+  taskType: 'combination_product_replacement',
+  referenceSummary: 'Two marked products.',
+  products: bindings.map((binding) => ({
+    productGroupId: binding.productGroupId,
+    productNumber: binding.productNumber,
+    targetInputImageIndexes: binding.targetInputImageIndexes,
+    identitySummary: `product ${binding.productNumber}`,
+    silhouetteAndProportions: 'exact silhouette and component proportions',
+    structureAndAccessories: 'exact caps, pumps, seams, and attachments',
+    materialsAndFinish: 'exact material, texture, gloss, and transparency',
+    colorsAndPatterns: 'exact colors, gradients, borders, and patterns',
+    logosAndGraphics: 'exact logo and graphic topology',
+    visiblePackagingText: 'preserve all legible packaging text',
+    subjectBoundary: 'physical product silhouette only, excluding the reference-card background',
+    nonProductReferenceArtifacts: ['technical badge outside the product', 'reference-card heading'],
+    exactVisualAnchors: ['component geometry', 'label boundary and layout'],
+    invariantDetails: ['do not redesign or simplify visible product details'],
+    identityLock: {
+      materials: 'exact substrate, finish, texture, transparency, gloss, and reflection behavior',
+      details: 'exact seams, edges, interfaces, closures, labels, and small visible components',
+      colors: 'exact intrinsic base, secondary, accent, and component colors',
+      colorPreservation: {
+        componentColorMap: ['main body: neutral medium gray', 'trim: darker neutral gray'],
+        relativeColorRelationships: ['main body remains lighter than trim'],
+        midtoneAndWhiteBalanceRule: 'match source product midtones independently from scene lighting',
+        forbiddenColorShifts: ['no hue shift', 'no saturation drift', 'no midtone lightness compression'],
+      },
+      patterns: 'exact printed graphics, motifs, gradients, borders, and placement',
+      structure: 'exact silhouette, proportions, component geometry, assembly, and relative positions',
+      forbiddenChanges: ['no redesign', 'no generic substitute', 'no missing or invented components'],
+    },
+  })),
+  regions: bindings.map((binding) => ({
+    ...binding,
+    oldProduct: 'old product',
+    placement: 'keep marked placement',
+    scale: 'match marked footprint',
+    perspective: 'follow local perspective',
+    lighting: 'inherit local light',
+    materialInteraction: 'preserve reflections',
+    occlusion: 'none',
+    contactShadow: 'rebuild contact shadow',
+    generationInstruction: `replace P${binding.productNumber}`,
+  })),
+  globalConstraints: ['preserve unmarked content'],
+  generationPrompt: 'replace both marked products',
+  validationChecklist: ['mapping correct'],
+});
 
 test('translation planning prompt supports global translation while preserving logos trademarks and models', () => {
   const translationPlanningSource = arkServiceSource.match(/export const analyzeTranslationCopyForGeneration = async \([\s\S]*?const logArkEvent/)?.[0] || '';
@@ -141,6 +202,9 @@ const loadArkServiceWithAnalysisFakes = async ({
     },
     buildProductRestoreAnalysisPrompt,
     buildProductRestoreGenerationPrompt,
+    buildLogoReplaceAnalysisPrompt,
+    buildLogoReplaceQualityCheckPrompt,
+    buildProductReplaceAnalysisPrompt,
     buildRetouchAnalysisFallback: () => 'retouch fallback',
     cancelInternalJob: async (jobId) => {
       calls.cancelled.push(jobId);
@@ -174,6 +238,9 @@ const loadArkServiceWithAnalysisFakes = async ({
     assertModelReplaceMaterialCounts,
     parseModelReplacePreflightContent,
     parseProductRestoreAnalysis,
+    parseLogoReplaceAnalysis,
+    parseLogoReplaceQualityCheck,
+    parseProductReplaceAnalysis,
     resolveNearestSupportedAspectRatio: (value) => value,
     resolvePublicAssetUrl: (value) => String(value || '').trim(),
     safeCreateInternalLog: async (entry) => {
@@ -199,6 +266,9 @@ const {
   OneClickSubMode,
   buildProductRestoreAnalysisPrompt,
   buildProductRestoreGenerationPrompt,
+  buildLogoReplaceAnalysisPrompt,
+  buildLogoReplaceQualityCheckPrompt,
+  buildProductReplaceAnalysisPrompt,
   buildRetouchAnalysisFallback,
   cancelInternalJob,
   createInternalJob,
@@ -211,6 +281,9 @@ const {
   assertModelReplaceMaterialCounts,
   parseModelReplacePreflightContent,
   parseProductRestoreAnalysis,
+  parseLogoReplaceAnalysis,
+  parseLogoReplaceQualityCheck,
+  parseProductReplaceAnalysis,
   resolveNearestSupportedAspectRatio,
   resolvePublicAssetUrl,
   safeCreateInternalLog,
@@ -287,6 +360,442 @@ test('product restoration submits one ordered multimodal analysis job and return
     normalizedAnalysis: batchAnalysis,
   });
   assert.equal(Object.hasOwn(result, 'sharedRestorationPrompt'), false);
+});
+
+test('logo replacement submits one ordered multimodal control job and preserves duplicate logo roles', async () => {
+  const logoBindings = [
+    {
+      regionId: 'logo-replace-region-1',
+      regionIndex: 1,
+      targetLogoIndex: 1,
+      replacementRequirement: '沿曲面自然融合',
+    },
+    {
+      regionId: 'logo-replace-region-2',
+      regionIndex: 2,
+      targetLogoIndex: 2,
+      replacementRequirement: '保持印刷颗粒',
+    },
+  ];
+  const logoAnalysis = {
+    version: 3,
+    taskType: 'logo_replacement',
+    sourceSummary: 'Two marked package regions.',
+    regions: logoBindings.map((binding) => ({
+      ...binding,
+      oldContent: 'old logo',
+      surfaceType: 'curved package',
+      placement: 'keep current placement',
+      perspective: 'follow local perspective',
+      lighting: 'inherit highlights',
+      material: 'printed surface',
+      occlusion: 'none',
+      selectionContainsOldLogo: true,
+      selectionCoverage: 'the marked region contains the complete old symbol, wordmark, and tagline',
+      logoIdentity: {
+        layoutType: 'vertical_stack',
+        elementOrder: ['symbol', 'wordmark', 'tagline'],
+        alignment: 'centered',
+        backgroundTreatment: 'empty outer canvas',
+        visibleMarkAspectRatio: 1.38,
+        immutableStructureDescription: 'symbol above wordmark above tagline',
+      },
+      generationInstruction: `replace R${binding.regionIndex}`,
+    })),
+    globalConstraints: ['preserve unmarked content'],
+    generationPrompt: 'replace the two bound logos',
+    validationChecklist: ['mapping correct'],
+  };
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    analysisFixture: logoAnalysis,
+  });
+  const input = {
+    originalUrl: 'https://img.test/original.png',
+    regionGuideUrl: 'https://img.test/guide.png',
+    logoUrls: ['https://img.test/shared-logo.png', 'https://img.test/shared-logo.png'],
+    bindings: logoBindings,
+    globalRequirement: '保持商品不变',
+    jobMetadata: { shellProjectId: 'project-logo-1' },
+  };
+
+  const result = await module.analyzeLogoReplacement(input);
+
+  assert.equal(calls.created.length, 1);
+  const created = calls.created[0];
+  assert.equal(created.payload.taskPurpose, 'logo_replace_analysis');
+  assert.equal(created.payload.subFeature, 'logo_replace');
+  assert.equal(created.payload.preserveInputImageOrder, true);
+  const content = created.payload.messages[0].content;
+  assert.deepEqual(content.map((item) => item.type), [
+    'image_url',
+    'image_url',
+    'image_url',
+    'image_url',
+    'text',
+  ]);
+  assert.deepEqual(content.slice(0, 4).map((item) => item.image_url.url), [
+    'https://img.test/original.png',
+    'https://img.test/guide.png',
+    'https://img.test/shared-logo.png',
+    'https://img.test/shared-logo.png',
+  ]);
+  assert.equal(content[4].text, buildLogoReplaceAnalysisPrompt(input));
+  assert.equal(result.status, 'success');
+  assert.equal(result.jobId, 'analysis-job-1');
+  assert.equal(result.providerTaskId, 'provider-task-1');
+  assert.deepEqual(result.normalizedAnalysis, parseLogoReplaceAnalysis(JSON.stringify(logoAnalysis), {
+    expectedBindings: logoBindings,
+  }).value);
+});
+
+test('combination product replacement submits one ordered multimodal planning job per reference image', async () => {
+  const bindings = [
+    {
+      regionId: 'product-replace-region-1',
+      regionIndex: 1,
+      productGroupId: 'group-a',
+      productNumber: 1,
+      targetInputImageIndexes: [3, 4],
+      xRatio: 0.12,
+      yRatio: 0.18,
+      widthRatio: 0.31,
+      heightRatio: 0.64,
+    },
+    {
+      regionId: 'product-replace-region-2',
+      regionIndex: 2,
+      productGroupId: 'group-b',
+      productNumber: 2,
+      targetInputImageIndexes: [5],
+      xRatio: 0.56,
+      yRatio: 0.42,
+      widthRatio: 0.28,
+      heightRatio: 0.39,
+    },
+  ];
+  const productAnalysis = makeProductReplaceV5AnalysisFixture(bindings);
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    analysisFixture: productAnalysis,
+  });
+  const input = {
+    referenceUrl: 'https://img.test/reference.png',
+    regionGuideUrl: 'https://img.test/product-guide.png',
+    productUrls: [
+      'https://img.test/a-front.png',
+      'https://img.test/a-side.png',
+      'https://img.test/b-front.png',
+    ],
+    bindings,
+    globalRequirement: '保持构图',
+    jobMetadata: { shellProjectId: 'project-product-1' },
+  };
+
+  const result = await module.analyzeProductReplacement(input);
+
+  assert.equal(calls.created.length, 1);
+  const created = calls.created[0];
+  assert.equal(created.payload.taskPurpose, 'product_replace_analysis');
+  assert.equal(created.payload.subFeature, 'product_replace');
+  assert.equal(created.payload.preserveInputImageOrder, true);
+  const content = created.payload.messages[0].content;
+  assert.deepEqual(content.map((item) => item.type), [
+    'image_url',
+    'image_url',
+    'image_url',
+    'image_url',
+    'image_url',
+    'text',
+  ]);
+  assert.deepEqual(content.slice(0, 5).map((item) => item.image_url.url), [
+    'https://img.test/reference.png',
+    'https://img.test/product-guide.png',
+    'https://img.test/a-front.png',
+    'https://img.test/a-side.png',
+    'https://img.test/b-front.png',
+  ]);
+  assert.equal(content[5].text, buildProductReplaceAnalysisPrompt(input));
+  assert.equal(result.status, 'success');
+  assert.deepEqual(result.normalizedAnalysis, parseProductReplaceAnalysis(JSON.stringify(productAnalysis), {
+    expectedBindings: bindings,
+  }).value);
+});
+
+test('combination product replacement recovers an existing analysis without creating another job', async () => {
+  const bindings = [
+    {
+      regionId: 'product-replace-region-1',
+      regionIndex: 1,
+      productGroupId: 'group-a',
+      productNumber: 1,
+      targetInputImageIndexes: [3],
+      xRatio: 0.12,
+      yRatio: 0.18,
+      widthRatio: 0.31,
+      heightRatio: 0.64,
+    },
+    {
+      regionId: 'product-replace-region-2',
+      regionIndex: 2,
+      productGroupId: 'group-b',
+      productNumber: 2,
+      targetInputImageIndexes: [4],
+      xRatio: 0.56,
+      yRatio: 0.42,
+      widthRatio: 0.28,
+      heightRatio: 0.39,
+    },
+  ];
+  const productAnalysis = {
+    version: 1,
+    taskType: 'combination_product_replacement',
+    referenceSummary: 'Two marked products.',
+    regions: bindings.map((binding) => ({
+      ...binding,
+      oldProduct: 'old product',
+      placement: 'keep marked placement',
+      scale: 'match marked footprint',
+      perspective: 'follow local perspective',
+      lighting: 'inherit local light',
+      materialInteraction: 'preserve reflections',
+      occlusion: 'none',
+      contactShadow: 'rebuild contact shadow',
+      generationInstruction: `replace P${binding.productNumber}`,
+    })),
+    globalConstraints: ['preserve unmarked content'],
+    generationPrompt: 'replace both marked products',
+    validationChecklist: ['mapping correct'],
+  };
+  const wrappedContent = [
+    '先核对参考图与产品位置。',
+    'commentary',
+    '正在分析构图、透视与遮挡。',
+    JSON.stringify(productAnalysis),
+    'final_answer',
+  ].join('\n');
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    fetchJob: {
+      id: 'existing-product-analysis-job',
+      status: 'succeeded',
+      providerTaskId: 'existing-product-provider-task',
+      payload: {
+        taskPurpose: 'product_replace_analysis',
+        regionBindings: bindings,
+        model: 'primary-model',
+      },
+      result: {
+        content: wrappedContent,
+        creditsConsumed: 1.59,
+        modelUsed: 'primary-model',
+      },
+    },
+  });
+
+  const result = await module.recoverProductReplacementAnalysis({
+    jobId: 'existing-product-analysis-job',
+    bindings,
+  });
+
+  assert.equal(calls.created.length, 0);
+  assert.deepEqual(calls.fetched, ['existing-product-analysis-job']);
+  assert.equal(result.status, 'success');
+  assert.equal(result.jobId, 'existing-product-analysis-job');
+  assert.equal(result.providerTaskId, 'existing-product-provider-task');
+  assert.equal(result.creditsConsumed, 1.59);
+  assert.equal(result.normalizedAnalysis.version, 1);
+  assert.equal(result.normalizedAnalysis.regions.length, 2);
+});
+
+test('logo replacement recovers a successful provider channel-wrapped analysis without creating another job', async () => {
+  const logoBindings = [
+    {
+      regionId: 'logo-replace-region-1',
+      regionIndex: 1,
+      targetLogoIndex: 1,
+      replacementRequirement: '沿曲面自然融合',
+    },
+    {
+      regionId: 'logo-replace-region-2',
+      regionIndex: 2,
+      targetLogoIndex: 2,
+      replacementRequirement: '保持印刷颗粒',
+    },
+  ];
+  const logoAnalysis = {
+    version: 2,
+    taskType: 'logo_replacement',
+    sourceSummary: 'Two marked package regions.',
+    regions: logoBindings.map((binding) => ({
+      ...binding,
+      oldContent: 'old logo',
+      surfaceType: 'curved package',
+      placement: 'keep current placement',
+      perspective: 'follow local perspective',
+      lighting: 'inherit highlights',
+      material: 'printed surface',
+      occlusion: 'none',
+      logoIdentity: {
+        layoutType: 'vertical_stack',
+        elementOrder: ['symbol', 'wordmark', 'tagline'],
+        alignment: 'centered',
+        backgroundTreatment: 'empty outer canvas',
+        visibleMarkAspectRatio: 1.38,
+        immutableStructureDescription: 'symbol above wordmark above tagline',
+      },
+      generationInstruction: `replace R${binding.regionIndex}`,
+    })),
+    globalConstraints: ['preserve unmarked content'],
+    generationPrompt: 'replace the two bound logos',
+    validationChecklist: ['mapping correct'],
+  };
+  const wrappedContent = [
+    '先核对图片和区域绑定。',
+    'commentary',
+    '正在分析透视、材质和光照。',
+    JSON.stringify(logoAnalysis),
+    'final_answer',
+  ].join('\n');
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    fetchJob: {
+      id: 'existing-logo-analysis-job',
+      status: 'succeeded',
+      providerTaskId: 'existing-logo-provider-task',
+      payload: {
+        taskPurpose: 'logo_replace_analysis',
+        regionBindings: logoBindings,
+        model: 'primary-model',
+      },
+      result: {
+        content: wrappedContent,
+        creditsConsumed: 3,
+        modelUsed: 'primary-model',
+      },
+    },
+  });
+
+  const result = await module.recoverLogoReplacementAnalysis({
+    jobId: 'existing-logo-analysis-job',
+    bindings: logoBindings,
+  });
+
+  assert.equal(calls.created.length, 0);
+  assert.deepEqual(calls.fetched, ['existing-logo-analysis-job']);
+  assert.equal(result.status, 'success');
+  assert.equal(result.jobId, 'existing-logo-analysis-job');
+  assert.equal(result.providerTaskId, 'existing-logo-provider-task');
+  assert.equal(result.normalizedAnalysis.regions.length, 2);
+});
+
+test('logo replacement quality check submits one read-only multimodal control job', async () => {
+  const logoBindings = [
+    {
+      regionId: 'logo-replace-region-1',
+      regionIndex: 1,
+      targetLogoIndex: 1,
+      replacementRequirement: '保持纵向组合',
+      identityReferenceAspectRatio: 1.38,
+    },
+  ];
+  const logoAnalysis = {
+    version: 3,
+    taskType: 'logo_replacement',
+    sourceSummary: 'One marked package region.',
+    regions: [{
+      ...logoBindings[0],
+      oldContent: 'old logo',
+      surfaceType: 'flat package',
+      placement: 'keep current placement',
+      perspective: 'front view',
+      lighting: 'inherit highlights',
+      material: 'printed surface',
+      occlusion: 'none',
+      selectionContainsOldLogo: true,
+      selectionCoverage: 'the marked region contains the complete old symbol, wordmark, and tagline',
+      logoIdentity: {
+        layoutType: 'vertical_stack',
+        elementOrder: ['symbol', 'wordmark', 'tagline'],
+        alignment: 'centered',
+        backgroundTreatment: 'empty outer canvas',
+        visibleMarkAspectRatio: 1.38,
+        immutableStructureDescription: 'symbol above wordmark above tagline',
+      },
+      generationInstruction: 'replace R1',
+    }],
+    globalConstraints: ['preserve unmarked content'],
+    generationPrompt: 'replace R1',
+    validationChecklist: ['identity structure correct'],
+  };
+  const qualityReport = {
+    version: 1,
+    taskType: 'logo_replacement_quality_check',
+    overallPassed: false,
+    regions: [{
+      regionId: 'logo-replace-region-1',
+      regionIndex: 1,
+      targetLogoIndex: 1,
+      structureMatch: false,
+      layoutMatch: false,
+      elementOrderMatch: false,
+      alignmentMatch: true,
+      wordingMatch: true,
+      colorMatch: true,
+      aspectRatioMatch: true,
+      insideRegion: true,
+      oldContentRemoved: true,
+      issues: ['vertical stack became horizontal'],
+    }],
+    guideArtifactsAbsent: true,
+    outsideRegionsStable: true,
+    summary: 'R1 internal layout changed.',
+  };
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    analysisFixture: qualityReport,
+  });
+  const input = {
+    sourceUrl: 'https://img.test/source.png',
+    resultUrl: 'https://img.test/result.png',
+    logoIdentityUrls: ['https://img.test/logo-tight.png'],
+    qualityEvidenceUrls: ['https://img.test/quality-evidence-r1.png'],
+    bindings: logoBindings,
+    analysis: logoAnalysis,
+    regionRects: [{
+      regionId: 'logo-replace-region-1',
+      regionIndex: 1,
+      xRatio: 0.1,
+      yRatio: 0.2,
+      widthRatio: 0.3,
+      heightRatio: 0.2,
+    }],
+    jobMetadata: { shellProjectId: 'project-logo-qa-1' },
+  };
+
+  const result = await module.validateLogoReplacementResult(input);
+
+  assert.equal(calls.created.length, 1);
+  const created = calls.created[0];
+  assert.equal(created.payload.taskPurpose, 'logo_replace_quality_check');
+  assert.equal(created.payload.subFeature, 'logo_replace');
+  assert.equal(created.payload.preserveInputImageOrder, true);
+  assert.equal(created.maxRetries, 2);
+  const content = created.payload.messages[0].content;
+  assert.deepEqual(content.map((item) => item.type), [
+    'image_url',
+    'image_url',
+    'image_url',
+    'text',
+  ]);
+  assert.deepEqual(content.slice(0, 3).map((item) => item.image_url.url), [
+    'https://img.test/source.png',
+    'https://img.test/result.png',
+    'https://img.test/quality-evidence-r1.png',
+  ]);
+  assert.equal(content[3].text, buildLogoReplaceQualityCheckPrompt(input));
+  assert.equal(result.status, 'success');
+  assert.equal(result.passed, false);
+  assert.equal(result.jobId, 'analysis-job-1');
+  assert.equal(result.providerTaskId, 'provider-task-1');
+  assert.deepEqual(result.normalizedQuality, parseLogoReplaceQualityCheck(JSON.stringify(qualityReport), {
+    expectedBindings: logoBindings,
+  }).value);
 });
 
 test('product restoration rejects an incapable catalog before creating an internal job', async () => {

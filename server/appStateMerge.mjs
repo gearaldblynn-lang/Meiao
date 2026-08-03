@@ -637,6 +637,8 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
   if (status === 'completed' && completedMediaCount > 0) {
     delete next.error;
     delete next.message;
+    delete next.errorCode;
+    delete next.errorDetail;
   }
   return next;
 };
@@ -651,6 +653,8 @@ const clearResolvedProjectErrorFields = (item = {}) => {
   const next = { ...(item || {}) };
   delete next.error;
   delete next.message;
+  delete next.errorCode;
+  delete next.errorDetail;
   return next;
 };
 
@@ -686,6 +690,12 @@ const shouldClearPlanningPendingPlaceholders = (existingItem = {}, incomingItem 
 const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
   existingItem = normalizeShellProjectScope(existingItem);
   incomingItem = normalizeShellProjectScope(incomingItem);
+  const isLogoReplace = (
+    String(existingItem?.module || '') === 'everything_replace'
+    && String(incomingItem?.module || '') === 'everything_replace'
+    && String(existingItem?.subFeature || '') === 'logo_replace'
+    && String(incomingItem?.subFeature || '') === 'logo_replace'
+  );
   const preserveRecoveredPlanning = shouldPreserveRecoveredPlanning(existingItem, incomingItem);
   const clearPlanningPendingPlaceholders = shouldClearPlanningPendingPlaceholders(existingItem, incomingItem);
   const planningJobId = clearPlanningPendingPlaceholders
@@ -722,6 +732,16 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
   const providerTaskId = incomingItem?.providerTaskId || existingItem?.providerTaskId;
   const taskId = incomingItem?.taskId || existingItem?.taskId;
   const kieTaskId = incomingItem?.kieTaskId || existingItem?.kieTaskId;
+  const logoReplaceCreditsConsumed = isLogoReplace
+    ? maxNumber(
+        existingItem?.creditsConsumed,
+        incomingItem?.creditsConsumed,
+        mergedResults.reduce(
+          (sum, result) => sum + (Number(result?.creditsConsumed || 0) || 0),
+          0,
+        ),
+      )
+    : 0;
   const isProductRestore = (
     isProductRestoreProjectLike(existingItem)
     || isProductRestoreProjectLike(incomingItem)
@@ -756,6 +776,7 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
     ...(providerTaskId ? { providerTaskId } : {}),
     ...(taskId ? { taskId } : {}),
     ...(kieTaskId ? { kieTaskId } : {}),
+    ...(logoReplaceCreditsConsumed > 0 ? { creditsConsumed: logoReplaceCreditsConsumed } : {}),
     ...(isProductRestore && generationContext ? { generationContext } : {}),
   };
   if (!preserveRecoveredPlanning) return normalizeProjectLikeItem(clearResolvedProjectErrorFields(mergedItem));

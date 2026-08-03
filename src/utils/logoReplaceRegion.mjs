@@ -16,6 +16,7 @@ export const normalizeLogoReplaceRegion = (region) => {
   const regionIndex = Number.parseInt(String(region.regionIndex || ''), 10);
   const logoId = String(region.logoId || '').trim();
   const logoIndex = Number.parseInt(String(region.logoIndex || ''), 10);
+  const replacementRequirement = String(region.replacementRequirement || '').trim();
   return {
     version: 1,
     source: region.source === 'applied_to_all' ? 'applied_to_all' : 'manual',
@@ -27,6 +28,7 @@ export const normalizeLogoReplaceRegion = (region) => {
     heightRatio,
     ...(logoId ? { logoId } : {}),
     ...(Number.isFinite(logoIndex) && logoIndex > 0 ? { logoIndex } : {}),
+    ...(replacementRequirement ? { replacementRequirement } : {}),
   };
 };
 

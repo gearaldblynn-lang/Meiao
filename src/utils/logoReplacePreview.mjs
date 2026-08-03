@@ -275,6 +275,95 @@ export const normalizeLogoReplacePreviewItems = (items = []) => (Array.isArray(i
 /**
  * @param {{
  *   referenceUrl?: string,
+ *   regions?: Array<Record<string, unknown>>,
+ *   referenceWidth?: number,
+ *   referenceHeight?: number,
+ *   labelPrefix?: string,
+ * }} [input]
+ */
+export const createLogoReplaceRegionGuideBlob = async ({
+  referenceUrl,
+  regions,
+  referenceWidth,
+  referenceHeight,
+  labelPrefix = 'R',
+} = {}) => {
+  const normalizedRegions = (Array.isArray(regions) ? regions : [])
+    .map((region, index) => normalizeLogoReplaceRegion({
+      ...region,
+      regionId: region?.regionId || `logo-replace-region-${index + 1}`,
+      regionIndex: region?.regionIndex || index + 1,
+    }))
+    .filter(Boolean)
+    .sort((left, right) => left.regionIndex - right.regionIndex);
+  if (normalizedRegions.length === 0) throw new Error('Logo 替换区域无效，请重新框选。');
+
+  const referenceImage = await loadImage(referenceUrl, 'Reference image');
+  const sourceWidth = referenceWidth || referenceImage.width || referenceImage.naturalWidth || 1000;
+  const sourceHeight = referenceHeight || referenceImage.height || referenceImage.naturalHeight || 1000;
+  const maxEdge = 1600;
+  const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
+  const canvasWidth = Math.max(1, Math.round(sourceWidth * scale));
+  const canvasHeight = Math.max(1, Math.round(sourceHeight * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Logo 替换区域标记图生成失败。');
+  ctx.drawImage(referenceImage, 0, 0, canvasWidth, canvasHeight);
+
+  const lineWidth = Math.max(3, Math.round(Math.min(canvasWidth, canvasHeight) * 0.006));
+  const fontSize = Math.max(18, Math.round(Math.min(canvasWidth, canvasHeight) * 0.032));
+  const rects = normalizedRegions.map((region) => {
+    const rect = logoReplaceRegionToRect(region, { width: canvasWidth, height: canvasHeight });
+    if (!rect) return null;
+    ctx.save();
+    ctx.globalAlpha = 0.14;
+    ctx.fillStyle = '#ef4444';
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    ctx.restore();
+
+    ctx.save();
+    ctx.strokeStyle = '#ef4444';
+    ctx.lineWidth = lineWidth;
+    if (typeof ctx.setLineDash === 'function') ctx.setLineDash([lineWidth * 3, lineWidth * 1.5]);
+    ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+    ctx.restore();
+
+    const safeLabelPrefix = String(labelPrefix || 'R').trim().replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || 'R';
+    const label = `${safeLabelPrefix}${region.regionIndex}`;
+    ctx.save();
+    ctx.font = `700 ${fontSize}px sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    const labelWidth = Math.ceil(ctx.measureText?.(label)?.width || fontSize * 1.6);
+    const labelX = Math.max(0, Math.min(canvasWidth - labelWidth - 16, rect.x));
+    const labelY = Math.max(0, rect.y - fontSize - 12);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+    ctx.fillRect(labelX, labelY, labelWidth + 16, fontSize + 10);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(label, labelX + 8, labelY + 5);
+    ctx.restore();
+    return { ...rect, regionId: region.regionId, regionIndex: region.regionIndex };
+  }).filter(Boolean);
+
+  if (rects.length !== normalizedRegions.length) {
+    throw new Error('Logo 替换区域标记图生成失败。');
+  }
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png', 0.95));
+  if (!blob) throw new Error('Logo 替换区域标记图导出失败。');
+  return {
+    blob,
+    rects,
+    width: canvasWidth,
+    height: canvasHeight,
+    regions: normalizedRegions,
+  };
+};
+
+/**
+ * @param {{
+ *   referenceUrl?: string,
  *   items?: Array<{ region?: unknown, logoUrl?: string }>,
  *   referenceWidth?: number,
  *   referenceHeight?: number,

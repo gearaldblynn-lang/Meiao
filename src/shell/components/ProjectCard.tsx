@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckSquare2, ChevronLeft, ChevronRight, CircleAlert, Copy, Download, FileText, Film, ImagePlus, Loader2, Maximize2, Package, Palette, Pencil, Play, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
-import type { GeneratedResult } from '../../ShellMigratedApp';
+import type { GeneratedResult, ProductReplaceEditMode } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, TranslationEditRegion, TranslationEditVersion, VideoStoryboardProject } from '../../types';
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
 import {
@@ -83,7 +83,7 @@ interface Props {
   onRegenerate?: (projectId: string, resultId: string, instruction?: string) => void | Promise<void>;
   onConfirmStoryboardImaging?: (projectId: string) => void;
   onFission?: (projectId: string, resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
-  onEdit?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
+  onEdit?: (projectId: string, resultId: string, instruction: string, files: File[], editMode?: ProductReplaceEditMode) => void;
   onRecover?: (projectId: string, resultId: string) => void;
   onRemoveVideoSubtitles?: (projectId: string, resultId: string) => void;
   onConfirmPlan?: (projectId: string, plan: PlanItem | PlanItem[]) => void;
@@ -503,6 +503,27 @@ const splitTaskIds = (value?: string) => {
 
 const getProjectCreditsConsumed = (project: Project) => {
   const rawProjectCredits = normalizeCreditsConsumed(project.creditsConsumed);
+  const isProductReplaceProject = project.module === 'everything_replace'
+    && project.subFeature === 'product_replace';
+  const productReplacePlanningCredits = isProductReplaceProject
+    ? project.results.reduce(
+        (sum, result) => sum + normalizeCreditsConsumed(result.productReplaceAnalysisCreditsConsumed),
+        0,
+      )
+    : 0;
+  const productReplaceGenerationCredits = isProductReplaceProject
+    ? project.results.reduce(
+        (sum, result) => sum + normalizeCreditsConsumed(result.productReplaceGenerationCreditsConsumed),
+        0,
+      )
+    : 0;
+  if (productReplacePlanningCredits > 0 || productReplaceGenerationCredits > 0) {
+    return {
+      projectCredits: productReplacePlanningCredits,
+      resultCredits: productReplaceGenerationCredits,
+      total: productReplacePlanningCredits + productReplaceGenerationCredits,
+    };
+  }
   const baseResultCredits = project.results.reduce((sum, result) => (
     sum + (project.module === 'translation' || result.status === 'completed'
       ? normalizeCreditsConsumed(result.creditsConsumed)
@@ -631,6 +652,7 @@ const ProjectCard: React.FC<Props> = ({
     title: string;
     instruction: string;
     files: File[];
+    editMode: ProductReplaceEditMode;
   } | null>(null);
   const [storyboardRevisionDialog, setStoryboardRevisionDialog] = useState<{
     resultId: string;
@@ -656,6 +678,7 @@ const ProjectCard: React.FC<Props> = ({
   const isOneClickProject = project.module === 'one_click';
   const isEverythingReplaceProductEditProject = project.module === 'everything_replace' && project.subFeature === 'product_replace';
   const isEverythingReplaceBackgroundEditProject = project.module === 'everything_replace' && project.subFeature === 'background_replace';
+  const isLogoReplaceProject = project.module === 'everything_replace' && project.subFeature === 'logo_replace';
   const isImageCropProject = project.module === 'image_crop';
   const modelReplaceIdentityLabel = project.module === 'everything_replace' && project.subFeature === 'model_replace'
     ? getModelReplaceIdentityLabel(project)
@@ -1021,6 +1044,7 @@ const ProjectCard: React.FC<Props> = ({
       title,
       instruction: '',
       files: [],
+      editMode: isEverythingReplaceProductEditProject ? 'preserve_product' : 'free_edit',
     });
   };
 
@@ -1045,7 +1069,13 @@ const ProjectCard: React.FC<Props> = ({
       addToast('请先填写修改说明', 'warning');
       return;
     }
-    onEdit(project.id, editDialog.resultId, finalInstruction, usesMinimalRoleEditPrompt ? [] : editDialog.files);
+    onEdit(
+      project.id,
+      editDialog.resultId,
+      finalInstruction,
+      usesMinimalRoleEditPrompt ? [] : editDialog.files,
+      editDialog.editMode,
+    );
     setEditDialog(null);
     setDetailOpen(false);
   };
@@ -2523,6 +2553,10 @@ const ProjectCard: React.FC<Props> = ({
                             && displayResult.status === 'error'
                             ? String(displayResult.error || displayResult.message || '').trim()
                             : '';
+                          const logoReplaceFailureReason = isLogoReplaceProject
+                            && displayResult.status === 'error'
+                            ? String(displayResult.error || displayResult.message || '').trim()
+                            : '';
                           const resultMeta: string[] = [];
                           if (displayResult.aspectRatio && displayResult.aspectRatio !== 'auto') resultMeta.push(displayResult.aspectRatio);
                           if (displayResult.createdAt) resultMeta.push(formatMonthDay(displayResult.createdAt));
@@ -2663,6 +2697,12 @@ const ProjectCard: React.FC<Props> = ({
                                     </div>
                                   ) : null}
                                   {renderResultUsageMeta(displayResult)}
+                                  {logoReplaceFailureReason && (
+                                    <div role="alert" className="rounded-lg px-2.5 py-2" style={{ background: 'rgba(239,68,68,0.08)', color: 'var(--error)' }}>
+                                      <p className="text-[10px] font-semibold">失败原因</p>
+                                      <p className="mt-1 whitespace-pre-wrap break-words text-[10px] leading-5">{logoReplaceFailureReason}</p>
+                                    </div>
+                                  )}
                                   {isProductRestoreProject && displayResult.error && (
                                     <p className="whitespace-pre-wrap break-words text-[10px] leading-5" style={{ color: 'var(--error)' }}>
                                       {displayResult.error}
@@ -3266,12 +3306,45 @@ const ProjectCard: React.FC<Props> = ({
               </div>
             </div>
             <div className="space-y-4 px-6 py-5">
+              {isEverythingReplaceProductEditProject ? (
+                <div>
+                  <label className="mb-2 block text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>修改模式</label>
+                  <div className="grid grid-cols-2 rounded-md border p-1" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+                    {([
+                      { value: 'preserve_product', label: '保留产品' },
+                      { value: 'free_edit', label: '自由修改' },
+                    ] as Array<{ value: ProductReplaceEditMode; label: string }>).map((option) => {
+                      const selected = editDialog.editMode === option.value;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => setEditDialog((prev) => prev ? { ...prev, editMode: option.value } : prev)}
+                          className="h-8 rounded px-3 text-[12px] font-medium"
+                          style={{
+                            background: selected ? 'var(--bg-base)' : 'transparent',
+                            color: selected ? 'var(--accent)' : 'var(--text-tertiary)',
+                            boxShadow: selected ? 'var(--shadow-sm)' : 'none',
+                          }}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
               <div>
                 <label className="mb-2 block text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>修改说明</label>
                 <textarea
                   value={editDialog.instruction}
                   onChange={(event) => setEditDialog((prev) => prev ? { ...prev, instruction: event.target.value } : prev)}
-                  placeholder={usesMinimalRoleEditPrompt ? '例如：把背景换成浴室场景 / 只调整框体为蜜桃配色' : '例如：把背景换成浴室场景 / 参考图替换瓶身贴纸 / 只调整框体为蜜桃配色，产品本身不变'}
+                  placeholder={isEverythingReplaceProductEditProject && editDialog.editMode === 'free_edit'
+                    ? '例如：把产品改成蓝色，并保持背景不变'
+                    : usesMinimalRoleEditPrompt
+                      ? '例如：把背景换成浴室场景，并保持产品不变'
+                      : '例如：把背景换成浴室场景 / 参考图替换瓶身贴纸 / 只调整框体为蜜桃配色，产品本身不变'}
                   className="h-32 w-full resize-none rounded-[18px] border px-4 py-3 text-[13px] leading-6 outline-none"
                   style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
                 />

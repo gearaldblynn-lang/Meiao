@@ -41,6 +41,9 @@ export type ShellDraftMaterial = {
   cornerBadgeRegion?: Record<string, unknown>;
   logoReplaceRegion?: Record<string, unknown>;
   logoReplaceRegions?: Array<Record<string, unknown>>;
+  productGroupId?: string;
+  productGroupAssignment?: 'auto' | 'manual';
+  productReplaceRegions?: Array<Record<string, unknown>>;
 };
 
 export type ShellDraftState = {
@@ -153,6 +156,12 @@ const normalizeMaterial = (value: unknown, options: NormalizeShellDraftOptions =
     cornerBadgeRegion: normalizeJsonRecord(value.cornerBadgeRegion),
     logoReplaceRegion: normalizeJsonRecord(value.logoReplaceRegion),
     logoReplaceRegions: normalizeJsonRecordArray(value.logoReplaceRegions),
+    productGroupId: typeof value.productGroupId === 'string' && value.productGroupId.trim()
+      ? value.productGroupId.trim()
+      : undefined,
+    productGroupAssignment: value.productGroupAssignment === 'manual' ? 'manual'
+      : value.productGroupAssignment === 'auto' ? 'auto' : undefined,
+    productReplaceRegions: normalizeJsonRecordArray(value.productReplaceRegions),
   };
 };
 
@@ -249,6 +258,9 @@ export const mergeShellDraftMaterials = (
           cornerBadgeRegion: item.cornerBadgeRegion || current.cornerBadgeRegion,
           logoReplaceRegion: item.logoReplaceRegion || current.logoReplaceRegion,
           logoReplaceRegions: item.logoReplaceRegions || current.logoReplaceRegions,
+          productGroupId: item.productGroupId || current.productGroupId,
+          productGroupAssignment: item.productGroupAssignment || current.productGroupAssignment,
+          productReplaceRegions: item.productReplaceRegions || current.productReplaceRegions,
           localAssetId: item.localAssetId || current.localAssetId,
           remoteUrl: item.remoteUrl || current.remoteUrl,
           url: item.url || current.url,
@@ -286,6 +298,9 @@ const mergeFallbackFieldsIntoPreferredMaterials = (
           cornerBadgeRegion: item.cornerBadgeRegion || fallback.cornerBadgeRegion,
           logoReplaceRegion: item.logoReplaceRegion || fallback.logoReplaceRegion,
           logoReplaceRegions: item.logoReplaceRegions || fallback.logoReplaceRegions,
+          productGroupId: item.productGroupId || fallback.productGroupId,
+          productGroupAssignment: item.productGroupAssignment || fallback.productGroupAssignment,
+          productReplaceRegions: item.productReplaceRegions || fallback.productReplaceRegions,
           localAssetId: item.localAssetId || fallback.localAssetId,
           originalWidth: item.originalWidth ?? fallback.originalWidth,
           originalHeight: item.originalHeight ?? fallback.originalHeight,

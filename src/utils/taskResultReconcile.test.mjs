@@ -84,3 +84,74 @@ test('non-product restoration completed patches remain incoming-authoritative re
   assert.equal(merged.length, 1);
   assert.equal(merged[0].imageUrl, '/incoming-authoritative.png');
 });
+
+test('same-job legacy logo review rejection cannot override a completed media result', () => {
+  const backendJobId = 'logo-generation-job';
+  const imageUrl = '/managed/logo-result.png';
+  const qualityError = 'Logo 内部排布与身份参考不一致，已停止发布。';
+  const merged = mergeArrayByStableKeys([{
+    id: 'logo-result',
+    module: 'everything_replace',
+    subFeature: 'logo_replace',
+    backendJobId,
+    status: 'completed',
+    imageUrl,
+    creditsConsumed: 4.84,
+  }], [{
+    id: 'logo-result',
+    module: 'everything_replace',
+    subFeature: 'logo_replace',
+    backendJobId,
+    status: 'error',
+    imageUrl,
+    creditsConsumed: 4.84,
+    error: qualityError,
+    errorCode: 'logo_replace_quality_rejected',
+  }]);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, 'completed');
+  assert.equal(merged[0].error, undefined);
+  assert.equal(merged[0].errorCode, undefined);
+  assert.equal(merged[0].imageUrl, imageUrl);
+  assert.equal(merged[0].creditsConsumed, 4.84);
+});
+
+test('completed media stays authoritative when a duplicate row carries an error with media', () => {
+  const completed = {
+    id: 'same-result',
+    backendJobId: 'completed-job',
+    status: 'completed',
+    imageUrl: '/completed.png',
+  };
+  const incomingFailure = {
+    id: 'same-result',
+    backendJobId: 'completed-job',
+    status: 'error',
+    imageUrl: '/completed.png',
+    error: 'incoming failure',
+  };
+
+  const nonLogo = mergeArrayByStableKeys([{
+    ...completed,
+    module: 'retouch',
+    subFeature: 'original',
+  }], [{
+    ...incomingFailure,
+    module: 'retouch',
+    subFeature: 'original',
+  }]);
+  assert.equal(nonLogo[0].status, 'completed');
+
+  const differentLogoJob = mergeArrayByStableKeys([{
+    ...completed,
+    module: 'everything_replace',
+    subFeature: 'logo_replace',
+  }], [{
+    ...incomingFailure,
+    module: 'everything_replace',
+    subFeature: 'logo_replace',
+    backendJobId: 'different-job',
+  }]);
+  assert.equal(differentLogoJob[0].status, 'completed');
+});

@@ -52,6 +52,7 @@ test('logo replace regions preserve multiple old-logo areas with selected logos'
       heightRatio: 0.08,
       logoId: 'logo-b',
       logoIndex: 2,
+      replacementRequirement: '沿布料褶皱自然变形',
     },
     {
       regionId: 'hat-logo',
@@ -62,6 +63,7 @@ test('logo replace regions preserve multiple old-logo areas with selected logos'
       heightRatio: 0.04,
       logoId: 'logo-a',
       logoIndex: 1,
+      replacementRequirement: '保持刺绣针脚质感',
     },
   ]);
 
@@ -70,9 +72,22 @@ test('logo replace regions preserve multiple old-logo areas with selected logos'
     regionIndex: region.regionIndex,
     logoId: region.logoId,
     logoIndex: region.logoIndex,
+    replacementRequirement: region.replacementRequirement,
   })), [
-    { regionId: 'hat-logo', regionIndex: 1, logoId: 'logo-a', logoIndex: 1 },
-    { regionId: 'mask-logo', regionIndex: 2, logoId: 'logo-b', logoIndex: 2 },
+    {
+      regionId: 'hat-logo',
+      regionIndex: 1,
+      logoId: 'logo-a',
+      logoIndex: 1,
+      replacementRequirement: '保持刺绣针脚质感',
+    },
+    {
+      regionId: 'mask-logo',
+      regionIndex: 2,
+      logoId: 'logo-b',
+      logoIndex: 2,
+      replacementRequirement: '沿布料褶皱自然变形',
+    },
   ]);
 });
 

@@ -179,6 +179,48 @@ test('prunePersistedAppStateForDeletion removes generic shell project cards', ()
   assert.equal(project, undefined);
 });
 
+test('targeted placeholder cleanup reconciles project counts after a recovered result', () => {
+  const state = buildPersistedAppState({
+    shellProjects: [{
+      id: 'logo-project',
+      name: 'Logo 项目',
+      module: 'everything_replace',
+      subFeature: 'logo_replace',
+      status: 'error',
+      taskCount: 2,
+      completedCount: 1,
+      error: 'Download download failed: 400',
+      results: [
+        {
+          id: 'provider-task',
+          taskId: 'provider-task',
+          backendJobId: 'generation-job',
+          status: 'completed',
+          imageUrl: '/api/assets/file/final/result.png',
+        },
+        {
+          id: 'task-placeholder-error',
+          status: 'error',
+          imageUrl: '',
+        },
+      ],
+    }],
+  });
+
+  const pruned = prunePersistedAppStateForDeletion(state, {
+    projectId: 'logo-project',
+    resultId: 'task-placeholder-error',
+    reconcileProjectCounts: true,
+  });
+  const project = pruned.shellProjects.find((item) => item.id === 'logo-project');
+
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.taskCount, 1);
+  assert.equal(project?.completedCount, 1);
+  assert.equal(project?.status, 'completed');
+  assert.equal(project?.error, undefined);
+});
+
 test('prunePersistedAppStateForDeletion removes pending result cards by backend job id', () => {
   const state = buildPersistedAppState({
     shellProjects: [{

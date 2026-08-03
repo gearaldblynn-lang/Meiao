@@ -98,6 +98,63 @@ test('normalizing shell draft preserves everything replace logo placement templa
   assert.deepEqual(draft.materials.logo[0].logoPlacement, logoPlacement);
 });
 
+test('normalizing and hydrating shell draft preserves product replacement group ids', () => {
+  const productReplaceRegions = [{
+    version: 1,
+    source: 'manual',
+    regionId: 'product-replace-region-1',
+    regionIndex: 1,
+    productGroupId: 'product-group-a',
+    productNumber: 1,
+    xRatio: 0.1,
+    yRatio: 0.2,
+    widthRatio: 0.3,
+    heightRatio: 0.4,
+  }];
+  const localDraft = {
+    updatedAt: 100,
+    materials: {
+      product: [{
+        id: 'product-angle-1',
+        type: 'product',
+        url: 'https://example.com/product-angle-1.png',
+        remoteUrl: 'https://example.com/product-angle-1.png',
+        localAssetId: 'draft-product-angle-1',
+        fileName: 'product-angle-1.png',
+        subFeature: 'product_replace',
+        productGroupId: 'product-group-a',
+        productGroupAssignment: 'manual',
+        productReplaceRegions,
+      }],
+    },
+  };
+  const remoteDraft = {
+    updatedAt: 200,
+    materials: {
+      product: [{
+        id: 'product-angle-1',
+        type: 'product',
+        url: 'https://example.com/product-angle-1-new.png',
+        remoteUrl: 'https://example.com/product-angle-1-new.png',
+        localAssetId: 'draft-product-angle-1',
+        fileName: 'product-angle-1.png',
+        subFeature: 'product_replace',
+      }],
+    },
+  };
+
+  const normalized = normalizeShellDraftState(localDraft);
+  const hydrated = resolveHydratedShellDraftState({ localDraft, remoteDraft });
+
+  assert.equal(normalized.materials.product[0].productGroupId, 'product-group-a');
+  assert.equal(hydrated.materials.product[0].productGroupId, 'product-group-a');
+  assert.equal(normalized.materials.product[0].productGroupAssignment, 'manual');
+  assert.equal(hydrated.materials.product[0].productGroupAssignment, 'manual');
+  assert.deepEqual(normalized.materials.product[0].productReplaceRegions, productReplaceRegions);
+  assert.deepEqual(hydrated.materials.product[0].productReplaceRegions, productReplaceRegions);
+  assert.equal(hydrated.materials.product[0].remoteUrl, 'https://example.com/product-angle-1-new.png');
+});
+
 test('normalizing shell draft preserves logo replacement regions', () => {
   const cornerBadgeRegion = {
     version: 1,

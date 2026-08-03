@@ -7,6 +7,13 @@ import { getSupportedAspectRatiosForModel } from "../utils/modelAspectRatio";
 import { normalizeExactAspectRatio, resolveNearestSupportedAspectRatio } from "../utils/aspectRatioUtils";
 import { buildRetouchAnalysisFallback, shouldUseRetouchAnalysisFallback } from "./retouchAnalysisFallback.mjs";
 import { buildProductRestoreAnalysisPrompt, parseProductRestoreAnalysis } from "../modules/Retouch/productRestoreContract.mjs";
+import {
+  buildLogoReplaceAnalysisPrompt,
+  buildLogoReplaceQualityCheckPrompt,
+  parseLogoReplaceAnalysis,
+  parseLogoReplaceQualityCheck,
+} from "../utils/logoReplaceAnalysis.mjs";
+import { buildProductReplaceAnalysisPrompt, parseProductReplaceAnalysis } from "../utils/productReplaceAnalysis.mjs";
 import { normalizeKnownProductRestoreCredits } from "../utils/productRestoreAnalysisCredits";
 import { assertModelReplaceMaterialCounts, parseModelReplacePreflightContent } from "../utils/modelReplacePreflight.mjs";
 import { runTranslationPlanningWithLanguageGuard } from "../modules/Translation/translationPlanningLanguage.mjs";
@@ -1079,6 +1086,622 @@ export const recoverProductRestoreAnalysisBatch = async (
       return productRestorePendingResult(jobId, serviceError?.providerTaskId);
     }
     return productRestoreErrorResult(serviceError, jobId);
+  }
+};
+
+export const analyzeLogoReplacement = async (input: {
+  originalUrl: string;
+  regionGuideUrl: string;
+  logoUrls: string[];
+  bindings: Array<{
+    regionId: string;
+    regionIndex: number;
+    targetLogoIndex: number;
+    replacementRequirement: string;
+  }>;
+  globalRequirement: string;
+  apiConfig?: GlobalApiConfig;
+  signal?: AbortSignal;
+  jobMetadata?: Record<string, unknown>;
+  onJobCreated?: AnalysisJobCreatedCallback;
+}) => {
+  try {
+    const analysisPrompt = buildLogoReplaceAnalysisPrompt(input);
+    const inputContent = [
+      { type: 'image_url' as const, image_url: { url: input.originalUrl } },
+      { type: 'image_url' as const, image_url: { url: input.regionGuideUrl } },
+      ...input.logoUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+      { type: 'text' as const, text: analysisPrompt },
+    ];
+    const analysis = await requestAnalysisResponseDetailed(
+      inputContent,
+      input.apiConfig || ({} as GlobalApiConfig),
+      input.signal,
+      input.onJobCreated,
+      {
+        ...(input.jobMetadata || {}),
+        taskPurpose: 'logo_replace_analysis',
+        subFeature: 'logo_replace',
+        preserveInputImageOrder: true,
+      },
+      false,
+      true,
+    );
+    const parsed = parseLogoReplaceAnalysis(analysis.content, {
+      expectedBindings: input.bindings,
+    });
+    if (!parsed.ok) {
+      return {
+        status: 'error' as const,
+        errorCode: parsed.errorCode,
+        message: parsed.message,
+        jobId: analysis.jobId,
+        providerTaskId: analysis.taskId,
+        modelUsed: analysis.modelUsed,
+        ...(analysis.creditsConsumed !== undefined ? { creditsConsumed: analysis.creditsConsumed } : {}),
+      };
+    }
+    return {
+      status: 'success' as const,
+      jobId: analysis.jobId,
+      providerTaskId: analysis.taskId,
+      modelUsed: analysis.modelUsed,
+      ...(analysis.creditsConsumed !== undefined ? { creditsConsumed: analysis.creditsConsumed } : {}),
+      normalizedAnalysis: parsed.value,
+    };
+  } catch (error: unknown) {
+    const serviceError = error as ProductRestoreServiceError;
+    const jobId = String(serviceError?.jobId || '').trim();
+    const providerTaskId = String(serviceError?.providerTaskId || '').trim();
+    if (isRecoverableAnalysisSyncError(serviceError) && jobId) {
+      return {
+        status: 'generating' as const,
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+        errorCode: 'analysis_result_pending',
+        message: 'Logo 替换分析已提交，结果仍在生成中。',
+      };
+    }
+    return {
+      status: 'error' as const,
+      errorCode: String(serviceError?.code || '').trim() || 'logo_replace_analysis_failed',
+      message: String(serviceError?.message || 'Logo 替换分析失败。').trim(),
+      ...(jobId ? { jobId } : {}),
+      ...(providerTaskId ? { providerTaskId } : {}),
+    };
+  }
+};
+
+export const validateLogoReplacementResult = async (input: {
+  sourceUrl: string;
+  resultUrl: string;
+  logoIdentityUrls: string[];
+  qualityEvidenceUrls: string[];
+  bindings: Array<{
+    regionId: string;
+    regionIndex: number;
+    targetLogoIndex: number;
+    replacementRequirement: string;
+    identityReferenceAspectRatio?: number;
+  }>;
+  analysis: Record<string, unknown>;
+  regionRects: Array<Record<string, unknown>>;
+  apiConfig?: GlobalApiConfig;
+  signal?: AbortSignal;
+  jobMetadata?: Record<string, unknown>;
+  onJobCreated?: AnalysisJobCreatedCallback;
+}) => {
+  try {
+    if (
+      !Array.isArray(input.logoIdentityUrls)
+      || input.logoIdentityUrls.length !== input.bindings.length
+      || !Array.isArray(input.qualityEvidenceUrls)
+      || input.qualityEvidenceUrls.length !== input.bindings.length
+    ) {
+      throw Object.assign(new Error('Logo 结构质检的区域与身份参考数量不一致。'), {
+        code: 'logo_replace_quality_check_input_mismatch',
+      });
+    }
+    const qualityPrompt = buildLogoReplaceQualityCheckPrompt(input);
+    const inputContent = [
+      { type: 'image_url' as const, image_url: { url: input.sourceUrl } },
+      { type: 'image_url' as const, image_url: { url: input.resultUrl } },
+      ...input.qualityEvidenceUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+      { type: 'text' as const, text: qualityPrompt },
+    ];
+    const quality = await requestAnalysisResponseDetailed(
+      inputContent,
+      input.apiConfig || ({} as GlobalApiConfig),
+      input.signal,
+      input.onJobCreated,
+      {
+        ...(input.jobMetadata || {}),
+        taskPurpose: 'logo_replace_quality_check',
+        subFeature: 'logo_replace',
+        preserveInputImageOrder: true,
+      },
+      false,
+      true,
+    );
+    const parsed = parseLogoReplaceQualityCheck(quality.content, {
+      expectedBindings: input.bindings,
+    });
+    if (!parsed.ok) {
+      return {
+        status: 'error' as const,
+        passed: false,
+        errorCode: parsed.errorCode,
+        message: parsed.message,
+        jobId: quality.jobId,
+        providerTaskId: quality.taskId,
+        modelUsed: quality.modelUsed,
+        ...(quality.creditsConsumed !== undefined ? { creditsConsumed: quality.creditsConsumed } : {}),
+      };
+    }
+    return {
+      status: 'success' as const,
+      passed: parsed.value.overallPassed,
+      jobId: quality.jobId,
+      providerTaskId: quality.taskId,
+      modelUsed: quality.modelUsed,
+      ...(quality.creditsConsumed !== undefined ? { creditsConsumed: quality.creditsConsumed } : {}),
+      normalizedQuality: parsed.value,
+    };
+  } catch (error: unknown) {
+    const serviceError = error as ProductRestoreServiceError;
+    const jobId = String(serviceError?.jobId || '').trim();
+    const providerTaskId = String(serviceError?.providerTaskId || '').trim();
+    return {
+      status: 'error' as const,
+      passed: false,
+      errorCode: String(serviceError?.code || '').trim() || 'logo_replace_quality_check_failed',
+      message: String(serviceError?.message || 'Logo 替换结构质检失败，已停止发布。').trim(),
+      ...(jobId ? { jobId } : {}),
+      ...(providerTaskId ? { providerTaskId } : {}),
+    };
+  }
+};
+
+export const recoverLogoReplacementQualityCheck = async (input: {
+  jobId: string;
+  bindings: Array<{
+    regionId: string;
+    regionIndex: number;
+    targetLogoIndex: number;
+    replacementRequirement: string;
+  }>;
+  signal?: AbortSignal;
+}) => {
+  const jobId = String(input.jobId || '').trim();
+  if (!jobId) {
+    return {
+      status: 'error' as const,
+      passed: false,
+      errorCode: 'logo_replace_quality_job_missing',
+      message: 'Logo 替换结构质检任务标识缺失。',
+    };
+  }
+  if (input.signal?.aborted) {
+    return {
+      status: 'error' as const,
+      passed: false,
+      errorCode: 'interrupted',
+      message: 'Logo 替换结构质检恢复已取消。',
+      jobId,
+    };
+  }
+
+  try {
+    const { job } = await fetchInternalJob(jobId);
+    const providerTaskId = String(job?.providerTaskId || job?.result?.providerTaskId || '').trim();
+    if (String(job?.payload?.taskPurpose || '').trim() !== 'logo_replace_quality_check') {
+      return {
+        status: 'error' as const,
+        passed: false,
+        errorCode: 'logo_replace_quality_job_mismatch',
+        message: '指定任务不是 Logo 替换结构质检任务。',
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+      };
+    }
+    if (isPendingAnalysisJobStatus(job?.status)) {
+      return {
+        status: 'generating' as const,
+        passed: false,
+        errorCode: 'logo_replace_quality_result_pending',
+        message: 'Logo 替换结构质检仍在进行中。',
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+      };
+    }
+    if (job?.status !== 'succeeded') {
+      const error = createAnalysisJobError(job, 'Logo 替换结构质检失败。');
+      return {
+        status: 'error' as const,
+        passed: false,
+        errorCode: job?.status === 'cancelled'
+          ? 'interrupted'
+          : String(error.code || '').trim() || 'logo_replace_quality_check_failed',
+        message: job?.status === 'cancelled'
+          ? 'Logo 替换结构质检已取消。'
+          : String(error.message || 'Logo 替换结构质检失败。').trim(),
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+      };
+    }
+
+    const parsed = parseLogoReplaceQualityCheck(
+      String(job.result?.content || job.result?.text || ''),
+      { expectedBindings: input.bindings },
+    );
+    const modelUsed = String(job.result?.modelUsed || job.model || job.payload?.model || '').trim() || 'unknown';
+    const creditsConsumed = normalizeKnownProductRestoreCredits(job.result?.creditsConsumed);
+    if (!parsed.ok) {
+      return {
+        status: 'error' as const,
+        passed: false,
+        errorCode: parsed.errorCode,
+        message: parsed.message,
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+        modelUsed,
+        ...(creditsConsumed !== undefined ? { creditsConsumed } : {}),
+      };
+    }
+    return {
+      status: 'success' as const,
+      passed: parsed.value.overallPassed,
+      jobId,
+      ...(providerTaskId ? { providerTaskId } : {}),
+      modelUsed,
+      ...(creditsConsumed !== undefined ? { creditsConsumed } : {}),
+      normalizedQuality: parsed.value,
+    };
+  } catch (error: unknown) {
+    const serviceError = error as ProductRestoreServiceError;
+    if (isRecoverableAnalysisSyncError(serviceError) || isTransientAnalysisTransportError(serviceError)) {
+      return {
+        status: 'generating' as const,
+        passed: false,
+        errorCode: 'logo_replace_quality_result_pending',
+        message: 'Logo 替换结构质检仍在进行中。',
+        jobId,
+        ...(String(serviceError?.providerTaskId || '').trim()
+          ? { providerTaskId: String(serviceError?.providerTaskId || '').trim() }
+          : {}),
+      };
+    }
+    return {
+      status: 'error' as const,
+      passed: false,
+      errorCode: String(serviceError?.code || '').trim() || 'logo_replace_quality_check_failed',
+      message: String(serviceError?.message || 'Logo 替换结构质检恢复失败。').trim(),
+      jobId,
+      ...(String(serviceError?.providerTaskId || '').trim()
+        ? { providerTaskId: String(serviceError?.providerTaskId || '').trim() }
+        : {}),
+    };
+  }
+};
+
+export const analyzeProductReplacement = async (input: {
+  referenceUrl: string;
+  regionGuideUrl: string;
+  productUrls: string[];
+  bindings: Array<{
+    regionId: string;
+    regionIndex: number;
+    productGroupId: string;
+    productNumber: number;
+    targetInputImageIndexes: number[];
+  }>;
+  globalRequirement: string;
+  apiConfig?: GlobalApiConfig;
+  signal?: AbortSignal;
+  jobMetadata?: Record<string, unknown>;
+  onJobCreated?: AnalysisJobCreatedCallback;
+}) => {
+  try {
+    const analysisPrompt = buildProductReplaceAnalysisPrompt(input);
+    const inputContent = [
+      { type: 'image_url' as const, image_url: { url: input.referenceUrl } },
+      { type: 'image_url' as const, image_url: { url: input.regionGuideUrl } },
+      ...input.productUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+      { type: 'text' as const, text: analysisPrompt },
+    ];
+    const analysis = await requestAnalysisResponseDetailed(
+      inputContent,
+      input.apiConfig || ({} as GlobalApiConfig),
+      input.signal,
+      input.onJobCreated,
+      {
+        ...(input.jobMetadata || {}),
+        taskPurpose: 'product_replace_analysis',
+        subFeature: 'product_replace',
+        preserveInputImageOrder: true,
+      },
+      false,
+      true,
+    );
+    const parsed = parseProductReplaceAnalysis(analysis.content, {
+      expectedBindings: input.bindings,
+    });
+    if (!parsed.ok) {
+      return {
+        status: 'error' as const,
+        errorCode: parsed.errorCode,
+        message: parsed.message,
+        jobId: analysis.jobId,
+        providerTaskId: analysis.taskId,
+        modelUsed: analysis.modelUsed,
+        ...(analysis.creditsConsumed !== undefined ? { creditsConsumed: analysis.creditsConsumed } : {}),
+      };
+    }
+    return {
+      status: 'success' as const,
+      jobId: analysis.jobId,
+      providerTaskId: analysis.taskId,
+      modelUsed: analysis.modelUsed,
+      ...(analysis.creditsConsumed !== undefined ? { creditsConsumed: analysis.creditsConsumed } : {}),
+      normalizedAnalysis: parsed.value,
+    };
+  } catch (error: unknown) {
+    const serviceError = error as ProductRestoreServiceError;
+    const jobId = String(serviceError?.jobId || '').trim();
+    const providerTaskId = String(serviceError?.providerTaskId || '').trim();
+    if (isRecoverableAnalysisSyncError(serviceError) && jobId) {
+      return {
+        status: 'generating' as const,
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+        errorCode: 'analysis_result_pending',
+        message: '产品替换策划已提交，结果仍在生成中。',
+      };
+    }
+    return {
+      status: 'error' as const,
+      errorCode: String(serviceError?.code || '').trim() || 'product_replace_analysis_failed',
+      message: String(serviceError?.message || '产品替换策划失败。').trim(),
+      ...(jobId ? { jobId } : {}),
+      ...(providerTaskId ? { providerTaskId } : {}),
+    };
+  }
+};
+
+export const recoverProductReplacementAnalysis = async (input: {
+  jobId: string;
+  bindings: Array<{
+    regionId: string;
+    regionIndex: number;
+    productGroupId: string;
+    productNumber: number;
+    targetInputImageIndexes: number[];
+  }>;
+  signal?: AbortSignal;
+}) => {
+  const jobId = String(input.jobId || '').trim();
+  if (!jobId) {
+    return {
+      status: 'error' as const,
+      errorCode: 'product_replace_analysis_job_missing',
+      message: '产品替换策划任务标识缺失。',
+    };
+  }
+  if (input.signal?.aborted) {
+    return {
+      status: 'error' as const,
+      errorCode: 'interrupted',
+      message: '产品替换策划恢复已取消。',
+      jobId,
+    };
+  }
+
+  try {
+    const { job } = await fetchInternalJob(jobId);
+    const providerTaskId = String(job?.providerTaskId || job?.result?.providerTaskId || '').trim();
+    if (String(job?.payload?.taskPurpose || '').trim() !== 'product_replace_analysis') {
+      return {
+        status: 'error' as const,
+        errorCode: 'product_replace_analysis_job_mismatch',
+        message: '指定任务不是产品替换策划任务。',
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+      };
+    }
+    if (isPendingAnalysisJobStatus(job?.status)) {
+      return {
+        status: 'generating' as const,
+        errorCode: 'analysis_result_pending',
+        message: '产品替换策划已提交，结果仍在生成中。',
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+      };
+    }
+    if (job?.status !== 'succeeded') {
+      const error = createAnalysisJobError(job, '产品替换策划失败。');
+      return {
+        status: 'error' as const,
+        errorCode: job?.status === 'cancelled'
+          ? 'interrupted'
+          : String(error.code || '').trim() || 'product_replace_analysis_failed',
+        message: job?.status === 'cancelled'
+          ? '产品替换策划已取消。'
+          : String(error.message || '产品替换策划失败。').trim(),
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+      };
+    }
+
+    const parsed = parseProductReplaceAnalysis(
+      String(job.result?.content || job.result?.text || ''),
+      {
+        expectedBindings: input.bindings,
+        allowLegacyV1: true,
+        allowLegacyV2: true,
+        allowLegacyV3: true,
+        allowLegacyV4: true,
+      },
+    );
+    const creditsConsumed = normalizeKnownProductRestoreCredits(job.result?.creditsConsumed);
+    const modelUsed = String(job.result?.modelUsed || job.model || job.payload?.model || '').trim() || 'unknown';
+    if (!parsed.ok) {
+      return {
+        status: 'error' as const,
+        errorCode: parsed.errorCode,
+        message: parsed.message,
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+        modelUsed,
+        ...(creditsConsumed !== undefined ? { creditsConsumed } : {}),
+      };
+    }
+    return {
+      status: 'success' as const,
+      jobId,
+      ...(providerTaskId ? { providerTaskId } : {}),
+      modelUsed,
+      ...(creditsConsumed !== undefined ? { creditsConsumed } : {}),
+      normalizedAnalysis: parsed.value,
+    };
+  } catch (error: unknown) {
+    const serviceError = error as ProductRestoreServiceError;
+    if (isRecoverableAnalysisSyncError(serviceError) || isTransientAnalysisTransportError(serviceError)) {
+      return {
+        status: 'generating' as const,
+        errorCode: 'analysis_result_pending',
+        message: '产品替换策划已提交，结果仍在生成中。',
+        jobId,
+        ...(String(serviceError?.providerTaskId || '').trim()
+          ? { providerTaskId: String(serviceError?.providerTaskId || '').trim() }
+          : {}),
+      };
+    }
+    return {
+      status: 'error' as const,
+      errorCode: String(serviceError?.code || '').trim() || 'product_replace_analysis_failed',
+      message: String(serviceError?.message || '产品替换策划恢复失败。').trim(),
+      jobId,
+      ...(String(serviceError?.providerTaskId || '').trim()
+        ? { providerTaskId: String(serviceError?.providerTaskId || '').trim() }
+        : {}),
+    };
+  }
+};
+
+export const recoverLogoReplacementAnalysis = async (input: {
+  jobId: string;
+  bindings: Array<{
+    regionId: string;
+    regionIndex: number;
+    targetLogoIndex: number;
+    replacementRequirement: string;
+  }>;
+  signal?: AbortSignal;
+}) => {
+  const jobId = String(input.jobId || '').trim();
+  if (!jobId) {
+    return {
+      status: 'error' as const,
+      errorCode: 'logo_replace_analysis_job_missing',
+      message: 'Logo 替换分析任务标识缺失。',
+    };
+  }
+  if (input.signal?.aborted) {
+    return {
+      status: 'error' as const,
+      errorCode: 'interrupted',
+      message: 'Logo 替换分析恢复已取消。',
+      jobId,
+    };
+  }
+
+  try {
+    const { job } = await fetchInternalJob(jobId);
+    const providerTaskId = String(job?.providerTaskId || job?.result?.providerTaskId || '').trim();
+    if (String(job?.payload?.taskPurpose || '').trim() !== 'logo_replace_analysis') {
+      return {
+        status: 'error' as const,
+        errorCode: 'logo_replace_analysis_job_mismatch',
+        message: '指定任务不是 Logo 替换分析任务。',
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+      };
+    }
+    if (isPendingAnalysisJobStatus(job?.status)) {
+      return {
+        status: 'generating' as const,
+        errorCode: 'analysis_result_pending',
+        message: 'Logo 替换分析已提交，结果仍在生成中。',
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+      };
+    }
+    if (job?.status !== 'succeeded') {
+      const error = createAnalysisJobError(job, 'Logo 替换分析失败。');
+      return {
+        status: 'error' as const,
+        errorCode: job?.status === 'cancelled'
+          ? 'interrupted'
+          : String(error.code || '').trim() || 'logo_replace_analysis_failed',
+        message: job?.status === 'cancelled'
+          ? 'Logo 替换分析已取消。'
+          : String(error.message || 'Logo 替换分析失败。').trim(),
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+      };
+    }
+
+    const parsed = parseLogoReplaceAnalysis(
+      String(job.result?.content || job.result?.text || ''),
+      {
+        expectedBindings: input.bindings,
+        allowLegacyVersion2: true,
+      },
+    );
+    if (!parsed.ok) {
+      return {
+        status: 'error' as const,
+        errorCode: parsed.errorCode,
+        message: parsed.message,
+        jobId,
+        ...(providerTaskId ? { providerTaskId } : {}),
+        modelUsed: String(job.result?.modelUsed || job.model || job.payload?.model || '').trim() || 'unknown',
+        ...(normalizeKnownProductRestoreCredits(job.result?.creditsConsumed) !== undefined
+          ? { creditsConsumed: normalizeKnownProductRestoreCredits(job.result?.creditsConsumed) }
+          : {}),
+      };
+    }
+    const creditsConsumed = normalizeKnownProductRestoreCredits(job.result?.creditsConsumed);
+    return {
+      status: 'success' as const,
+      jobId,
+      ...(providerTaskId ? { providerTaskId } : {}),
+      modelUsed: String(job.result?.modelUsed || job.model || job.payload?.model || '').trim() || 'unknown',
+      ...(creditsConsumed !== undefined ? { creditsConsumed } : {}),
+      normalizedAnalysis: parsed.value,
+    };
+  } catch (error: unknown) {
+    const serviceError = error as ProductRestoreServiceError;
+    if (isRecoverableAnalysisSyncError(serviceError) || isTransientAnalysisTransportError(serviceError)) {
+      return {
+        status: 'generating' as const,
+        errorCode: 'analysis_result_pending',
+        message: 'Logo 替换分析已提交，结果仍在生成中。',
+        jobId,
+        ...(String(serviceError?.providerTaskId || '').trim()
+          ? { providerTaskId: String(serviceError?.providerTaskId || '').trim() }
+          : {}),
+      };
+    }
+    return {
+      status: 'error' as const,
+      errorCode: String(serviceError?.code || '').trim() || 'logo_replace_analysis_failed',
+      message: String(serviceError?.message || 'Logo 替换分析恢复失败。').trim(),
+      jobId,
+      ...(String(serviceError?.providerTaskId || '').trim()
+        ? { providerTaskId: String(serviceError?.providerTaskId || '').trim() }
+        : {}),
+    };
   }
 };
 

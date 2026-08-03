@@ -1043,6 +1043,8 @@ export interface OneClickMaterialSnapshot {
   cornerBadgeRegion?: Record<string, unknown>;
   logoReplaceRegion?: Record<string, unknown>;
   logoReplaceRegions?: Array<Record<string, unknown>>;
+  productGroupId?: string;
+  productReplaceRegions?: Array<Record<string, unknown>>;
 }
 
 export type ProductRestoreMaterialType = 'restoreTarget' | 'productReference';

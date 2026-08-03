@@ -109,6 +109,8 @@ export interface ShellGeneratedResult {
   draftNonce?: string;
   targetMaterialId?: string;
   creditsConsumed?: number;
+  productReplaceAnalysisCreditsConsumed?: number;
+  productReplaceGenerationCreditsConsumed?: number;
   error?: string;
   errorCode?: string;
   message?: string;
@@ -229,6 +231,8 @@ export interface ShellMaterialData {
   cornerBadgeRegion?: Record<string, unknown>;
   logoReplaceRegion?: Record<string, unknown>;
   logoReplaceRegions?: Array<Record<string, unknown>>;
+  productGroupId?: string;
+  productReplaceRegions?: Array<Record<string, unknown>>;
 }
 
 const cloneLegacyProductRestoreAnalysis = (
@@ -345,6 +349,22 @@ const persistedSnapshotCache = new WeakMap<object, Pick<ShellDataSnapshot, 'proj
 const normalizeCreditsConsumed = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const mergeNonRegressingCredits = (existingValue: unknown, nextValue: unknown) => {
+  const existingCredits = normalizeCreditsConsumed(existingValue);
+  const nextCredits = normalizeCreditsConsumed(nextValue);
+  if (existingCredits === undefined) return nextCredits;
+  if (nextCredits === undefined) return existingCredits;
+  return Math.max(existingCredits, nextCredits);
+};
+
+const sumCreditsConsumed = (values: unknown[]) => {
+  const total = values.reduce<number>(
+    (sum, value) => sum + (normalizeCreditsConsumed(value) || 0),
+    0,
+  );
+  return normalizeCreditsConsumed(Number(total.toFixed(6)));
 };
 
 const normalizeCanvasDimension = (value: unknown) => {
@@ -1438,13 +1458,20 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         sourcePreviewUrl: String(result?.sourcePreviewUrl || result?.sourceUrl || '').trim() || undefined,
         fileName: String(result?.fileName || '').trim() || undefined,
         relativePath: String(result?.relativePath || '').trim() || undefined,
-        taskId: getVisibleTaskId(result),
-        backendJobId: String(result?.backendJobId || '').trim() || undefined,
-        batchIndex: toOptionalInteger(result?.batchIndex),
-        targetMaterialId: String(result?.targetMaterialId || '').trim() || undefined,
-        creditsConsumed: isProductRestoreRecord(project, result)
-          ? normalizeKnownProductRestoreCredits(result?.creditsConsumed)
-          : normalizeCreditsConsumed(result?.creditsConsumed),
+	        taskId: getVisibleTaskId(result),
+	        backendJobId: String(result?.backendJobId || '').trim() || undefined,
+	        batchIndex: toOptionalInteger(result?.batchIndex),
+	        batchCount: toOptionalInteger(result?.batchCount),
+	        targetMaterialId: String(result?.targetMaterialId || '').trim() || undefined,
+	        creditsConsumed: isProductRestoreRecord(project, result)
+	          ? normalizeKnownProductRestoreCredits(result?.creditsConsumed)
+	          : normalizeCreditsConsumed(result?.creditsConsumed),
+	        productReplaceAnalysisCreditsConsumed: normalizeCreditsConsumed(
+	          result?.productReplaceAnalysisCreditsConsumed,
+	        ),
+	        productReplaceGenerationCreditsConsumed: normalizeCreditsConsumed(
+	          result?.productReplaceGenerationCreditsConsumed,
+	        ),
         error: String(result?.error || '').trim() || undefined,
         errorCode: String(result?.errorCode || '').trim() || undefined,
         matchedAspectRatio: String(result?.matchedAspectRatio || result?.aspectRatio || 'auto'),
@@ -2055,6 +2082,14 @@ const mapJobs = (
     return Number(value || fallback) || fallback;
   };
 
+  const isProductReplaceGenerationJob = (
+    job: InternalJob,
+    subFeature?: string,
+  ) => (
+    subFeature === 'product_replace'
+    && String(job.payload?.taskPurpose || job.payload?.shellPurpose || '').trim() === 'product_replace_generation'
+  );
+
   const buildJobOnlyModelReplaceGenerationContext = (
     orderedJobs: InternalJob[],
   ): ShellProjectData['generationContext'] | undefined => {
@@ -2445,10 +2480,22 @@ const mapJobs = (
     const subFeatureLabel = subFeature === 'model_replace'
       ? '模特替换'
       : MODULE_LABELS[MODULE_VALUES.EVERYTHING_REPLACE] || '万物替换';
-    const results: ShellGeneratedResult[] = sortedJobs.map((job, index) => {
-      const payload = job.payload || {};
-      const urls = getResultUrls(job);
-      const status = taskStatusToProject(job.status);
+	    const mappedResults: ShellGeneratedResult[] = sortedJobs.map((job, index) => {
+	      const payload = job.payload || {};
+	      const urls = getResultUrls(job);
+	      const status = taskStatusToProject(job.status);
+	      const isProductReplaceGeneration = isProductReplaceGenerationJob(job, subFeature);
+	      const productReplaceAnalysisCreditsConsumed = isProductReplaceGeneration
+	        ? normalizeCreditsConsumed(payload.productReplaceAnalysisCreditsConsumed)
+	        : undefined;
+	      const productReplaceGenerationCreditsConsumed = isProductReplaceGeneration
+	        ? normalizeCreditsConsumed(job.result?.creditsConsumed)
+	        : undefined;
+	      const productReplaceCombinedCredits = (
+	        (productReplaceAnalysisCreditsConsumed || 0)
+	        + (productReplaceGenerationCreditsConsumed || 0)
+	      ) || undefined;
+      const effectiveStatus = status;
       const batchIndex = getEverythingReplaceBatchIndex(job, index + 1);
       const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
       const imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
@@ -2470,17 +2517,22 @@ const mapJobs = (
         prompt: String(payload.prompt || (subFeature === 'model_replace' ? subFeatureLabel : job.errorMessage) || subFeatureLabel),
         model: normalizeModel(payload.model || job.result?.model || job.provider),
         aspectRatio: String(payload.aspectRatio || payload.ratio || job.result?.aspectRatio || 'auto'),
-        status: (status === 'completed' && urls[0] ? 'completed' : status === 'error' ? 'error' : 'generating') as ShellGeneratedResult['status'],
+        status: (effectiveStatus === 'completed' && urls[0] ? 'completed' : effectiveStatus === 'error' ? 'error' : 'generating') as ShellGeneratedResult['status'],
         createdAt: toCreatedMs(job.createdAt || firstJob?.createdAt),
         module: MODULE_VALUES.EVERYTHING_REPLACE,
         subFeature,
-        taskId: providerTaskId || undefined,
-        backendJobId: String(job.id || '').trim() || undefined,
-        batchIndex,
-        sourceUrl: sourceUrl || undefined,
-        sourcePreviewUrl: sourceUrl || undefined,
-        fileName: String(payload.sourceFileName || '').trim() || undefined,
-        creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+	        taskId: providerTaskId || undefined,
+	        backendJobId: String(job.id || '').trim() || undefined,
+	        batchIndex,
+	        batchCount: Number(payload.batchCount || payload.count || 0) || undefined,
+	        sourceUrl: sourceUrl || undefined,
+	        sourcePreviewUrl: sourceUrl || undefined,
+	        fileName: String(payload.sourceFileName || '').trim() || undefined,
+	        creditsConsumed: isProductReplaceGeneration
+	          ? productReplaceCombinedCredits
+	          : normalizeCreditsConsumed(job.result?.creditsConsumed),
+	        productReplaceAnalysisCreditsConsumed,
+	        productReplaceGenerationCreditsConsumed,
         error: String(job.errorMessage || job.errorCode || '').trim() || undefined,
         errorCode: String(job.errorCode || '').trim() || undefined,
         message: String(job.errorMessage || '').trim() || undefined,
@@ -2488,8 +2540,13 @@ const mapJobs = (
         ...(payload.identitySource === 'library'
           ? { virtualModelSnapshot: sanitizeVirtualModelSnapshot({ identitySource: 'library', ...payload }) }
           : {}),
-      };
-    }).sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0));
+	      };
+	    }).sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0));
+	    const results = subFeature === 'product_replace'
+	      ? mergeProjectResultsByIdentity([], mappedResults)
+	      : subFeature === 'logo_replace'
+          ? mergeLogoReplaceResultsByBatch([], mappedResults)
+          : mappedResults;
     const completedCount = results.filter((result) => result.status === 'completed' && result.imageUrl).length;
     const hasRunning = results.some((result) => result.status === 'generating');
     const hasError = results.some((result) => result.status === 'error');
@@ -2514,7 +2571,9 @@ const mapJobs = (
       subFeature,
       sourceType: 'job',
       backendJobId: String(sortedJobs.at(-1)?.id || '').trim() || undefined,
-      creditsConsumed: normalizeCreditsConsumed(results.reduce((sum, result) => sum + (Number(result.creditsConsumed) || 0), 0)),
+	      creditsConsumed: subFeature === 'product_replace'
+	        ? sumCreditsConsumed(results.map((result) => result.creditsConsumed))
+	        : normalizeCreditsConsumed(results.reduce((sum, result) => sum + (Number(result.creditsConsumed) || 0), 0)),
       ...(!matchedProject && subFeature === 'model_replace'
         ? { generationContext: buildJobOnlyModelReplaceGenerationContext(sortedJobs) }
         : {}),
@@ -3493,6 +3552,20 @@ const mapJobs = (
       const matchedTerminalProject = findPersistedPlanningProjectForJob(job, persistedProjects);
       if (matchedTerminalProject && projectStatus === 'completed' && urls.length > 0) {
         const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+        const isProductReplaceGeneration = isProductReplaceGenerationJob(
+          job,
+          matchedTerminalProject.subFeature || subFeature,
+        );
+        const productReplaceAnalysisCreditsConsumed = isProductReplaceGeneration
+          ? normalizeCreditsConsumed(job.payload?.productReplaceAnalysisCreditsConsumed)
+          : undefined;
+        const productReplaceGenerationCreditsConsumed = isProductReplaceGeneration
+          ? normalizeCreditsConsumed(job.result?.creditsConsumed)
+          : undefined;
+        const productReplaceCombinedCredits = (
+          (productReplaceAnalysisCreditsConsumed || 0)
+          + (productReplaceGenerationCreditsConsumed || 0)
+        ) || undefined;
         const nextJobResults: ShellGeneratedResult[] = urls.map((url, index) => {
           const subtitleRemovalMetadata = getSubtitleRemovalResultMetadata(job);
           return {
@@ -3512,24 +3585,45 @@ const mapJobs = (
           taskId: String(providerTaskId || '').trim() || undefined,
           backendJobId: job.id,
           batchIndex: Number(job.payload?.batchIndex || 0) || undefined,
+          batchCount: Number(job.payload?.batchCount || job.payload?.count || 0) || undefined,
           targetMaterialId: String(job.payload?.targetMaterialId || '').trim() || undefined,
-          creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+          creditsConsumed: isProductReplaceGeneration
+            ? productReplaceCombinedCredits
+            : normalizeCreditsConsumed(job.result?.creditsConsumed),
+          productReplaceAnalysisCreditsConsumed,
+          productReplaceGenerationCreditsConsumed,
           ...subtitleRemovalMetadata,
         };
         });
         const incomingKeys = new Set(nextJobResults.flatMap((result) => getGeneratedResultMergeKeys(result)));
+        const incomingProductReplaceBatches = new Set(
+          isProductReplaceGeneration
+            ? nextJobResults.map((result) => Number(result.batchIndex || 0)).filter((value) => value > 0)
+            : [],
+        );
         const existingResults = (matchedTerminalProject.results || []).filter((result) => {
+          if (
+            incomingProductReplaceBatches.size > 0
+            && incomingProductReplaceBatches.has(Number(result.batchIndex || 0))
+          ) return false;
           const keys = getGeneratedResultMergeKeys(result);
           return !keys.some((key) => incomingKeys.has(key));
         });
         const mergedResults = [...existingResults, ...nextJobResults];
         const completedCount = mergedResults.filter(hasCompletedMediaResult).length;
-        const taskCount = Math.max(
-          Number(matchedTerminalProject.taskCount || 0) || 0,
-          Number(job.payload?.batchCount || job.payload?.count || 0) || 0,
-          mergedResults.length,
-          1,
-        );
+        const authoritativeBatchCount = Number(job.payload?.batchCount || job.payload?.count || 0) || 0;
+        const taskCount = isProductReplaceGeneration && authoritativeBatchCount > 0
+          ? authoritativeBatchCount
+          : Math.max(
+              Number(matchedTerminalProject.taskCount || 0) || 0,
+              authoritativeBatchCount,
+              mergedResults.length,
+              1,
+            );
+        const projectCreditsConsumed = isProductReplaceGeneration
+          ? sumCreditsConsumed(mergedResults.map((result) => result.creditsConsumed))
+          : normalizeCreditsConsumed(matchedTerminalProject.creditsConsumed)
+            || normalizeCreditsConsumed(job.result?.creditsConsumed);
         projects.push({
           ...matchedTerminalProject,
           status: completedCount >= taskCount ? 'completed' : 'generating',
@@ -3542,7 +3636,8 @@ const mapJobs = (
           backendJobId: matchedTerminalProject.subFeature === 'product_restore'
             ? (matchedTerminalProject.backendJobId || job.id)
             : job.id,
-          creditsConsumed: normalizeCreditsConsumed(matchedTerminalProject.creditsConsumed) || normalizeCreditsConsumed(job.result?.creditsConsumed),
+          creditsConsumed: projectCreditsConsumed,
+          error: completedCount >= taskCount ? undefined : matchedTerminalProject.error,
         });
         return;
       }
@@ -3997,6 +4092,19 @@ const getMergedProjectTaskCount = (
   results: ShellGeneratedResult[],
   completedCount: number,
 ) => {
+  const hasAuthoritativeProductReplaceBatch = (
+    next.module === MODULE_VALUES.EVERYTHING_REPLACE
+    && next.subFeature === 'product_replace'
+    && results.some((result) => result.productReplaceGenerationCreditsConsumed !== undefined)
+  );
+  if (hasAuthoritativeProductReplaceBatch) {
+    return Math.max(
+      Number(next.taskCount || 0) || 0,
+      ...results.map((result) => Number(result.batchCount || result.batchIndex || 0) || 0),
+      completedCount,
+      1,
+    );
+  }
   if (next.module === MODULE_VALUES.BUYER_SHOW && next.sourceType === 'job') {
     return Math.max(
       Number(next.taskCount || 0) || 0,
@@ -4222,7 +4330,20 @@ const getGeneratedResultMergeKeys = (result: ShellGeneratedResult) => {
     ].filter(Boolean);
     if (translationKeys.length > 0) return translationKeys;
   }
+  const productReplaceBatchIndex = Number(result.batchIndex || 0);
+  const productReplaceBatchKey = (
+    result.module === MODULE_VALUES.EVERYTHING_REPLACE
+    && result.subFeature === 'product_replace'
+    && productReplaceBatchIndex > 0
+    && (
+      result.productReplaceGenerationCreditsConsumed !== undefined
+      || (result.status === 'error' && !resultHasMedia(result))
+    )
+  )
+    ? `product-replace-batch:${productReplaceBatchIndex}`
+    : '';
   const concreteKeys = [
+    productReplaceBatchKey,
     getProductRestoreTargetKey(result),
     result.taskId ? `task:${result.taskId}` : '',
     result.backendJobId ? `job:${result.backendJobId}` : '',
@@ -4238,6 +4359,15 @@ const shouldReplaceGeneratedResult = (existing: ShellGeneratedResult, next: Shel
   const existingCompleted = hasCompletedMediaResult(existing);
   const nextCompleted = hasCompletedMediaResult(next);
   if (existing.logoReplaceGuarded === true && next.logoReplaceGuarded !== true) return false;
+  const nextIsSameAuthoritativeLogoJob = (
+    existing.module === MODULE_VALUES.EVERYTHING_REPLACE
+    && next.module === MODULE_VALUES.EVERYTHING_REPLACE
+    && existing.subFeature === 'logo_replace'
+    && next.subFeature === 'logo_replace'
+    && Boolean(String(next.backendJobId || '').trim())
+    && String(existing.backendJobId || '').trim() === String(next.backendJobId || '').trim()
+  );
+  if (nextIsSameAuthoritativeLogoJob && existingCompleted && !nextCompleted) return true;
   const existingProductRestoreTarget = getProductRestoreTargetKey(existing);
   const nextProductRestoreTarget = getProductRestoreTargetKey(next);
   if (
@@ -4258,6 +4388,12 @@ const mergeGeneratedResultPreservingSource = (
 ): ShellGeneratedResult => {
   const isTranslation = existing.module === MODULE_VALUES.TRANSLATION
     || next.module === MODULE_VALUES.TRANSLATION;
+  const isLogoReplace = (
+    existing.module === MODULE_VALUES.EVERYTHING_REPLACE
+    && next.module === MODULE_VALUES.EVERYTHING_REPLACE
+    && existing.subFeature === 'logo_replace'
+    && next.subFeature === 'logo_replace'
+  );
   const translationEditVersions = isTranslation
     ? mergeTranslationEditVersions(
         existing.translationEditVersions,
@@ -4291,6 +4427,9 @@ const mergeGeneratedResultPreservingSource = (
     translationPlanningCreditsConsumed: next.translationPlanningCreditsConsumed ?? existing.translationPlanningCreditsConsumed,
     translationGenerationCreditsConsumed: next.translationGenerationCreditsConsumed ?? existing.translationGenerationCreditsConsumed,
     translationRetryStage: next.translationRetryStage ?? existing.translationRetryStage,
+    ...(isLogoReplace
+      ? { creditsConsumed: mergeNonRegressingCredits(existing.creditsConsumed, next.creditsConsumed) }
+      : {}),
     ...(isTranslation ? { translationEditVersions } : {}),
   };
   if (isTranslation) {
@@ -4398,6 +4537,47 @@ const mergeProjectResultsByIdentity = (
   existingResults.forEach(upsert);
   nextResults.forEach(upsert);
   return results;
+};
+
+const mergeLogoReplaceResultsByBatch = (
+  existingResults: ShellGeneratedResult[] = [],
+  nextResults: ShellGeneratedResult[] = [],
+) => {
+  const allResults = [...existingResults, ...nextResults];
+  const batchIdentityByRuntimeKey = new Map<string, string>();
+  allResults.forEach((result) => {
+    const batchIndex = Number(result.batchIndex || 0);
+    if (batchIndex <= 0) return;
+    getGeneratedResultMergeKeys(result).forEach((key) => {
+      batchIdentityByRuntimeKey.set(key, `batch:${batchIndex}`);
+    });
+  });
+  const resultsByIdentity = new Map<string, ShellGeneratedResult>();
+  allResults.forEach((result, index) => {
+    const batchIndex = Number(result.batchIndex || 0);
+    const runtimeKeys = getGeneratedResultMergeKeys(result);
+    const fallbackIdentity = runtimeKeys[0]
+      || `result:${result.backendJobId || result.id || index}`;
+    const inheritedBatchIdentity = runtimeKeys
+      .map((key) => batchIdentityByRuntimeKey.get(key))
+      .find(Boolean);
+    const identity = batchIndex > 0
+      ? `batch:${batchIndex}`
+      : inheritedBatchIdentity || fallbackIdentity;
+    const current = resultsByIdentity.get(identity);
+    const currentCreatedAt = Number(current?.createdAt || 0) || 0;
+    const nextCreatedAt = Number(result.createdAt || 0) || 0;
+    const [olderAttempt, newerAttempt] = current && currentCreatedAt > nextCreatedAt
+      ? [result, current]
+      : [current, result];
+    resultsByIdentity.set(
+      identity,
+      current
+        ? clearCompletedResultError(mergeGeneratedResultPreservingSource(olderAttempt!, newerAttempt))
+        : clearCompletedResultError(result),
+    );
+  });
+  return sortMergedResultsByBatchIndex(Array.from(resultsByIdentity.values()));
 };
 
 const sortMergedResultsByBatchIndex = (results: ShellGeneratedResult[] = []) => (
@@ -4537,6 +4717,18 @@ const shouldClearPlanningJobPendingPlans = (
 
 const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData): ShellProjectData => {
   if (!shouldReplaceProjectSnapshot(existing, next)) return existing;
+  const isLogoReplace = (
+    existing.module === MODULE_VALUES.EVERYTHING_REPLACE
+    && next.module === MODULE_VALUES.EVERYTHING_REPLACE
+    && existing.subFeature === 'logo_replace'
+    && next.subFeature === 'logo_replace'
+  );
+  const isProductReplace = (
+    existing.module === MODULE_VALUES.EVERYTHING_REPLACE
+    && next.module === MODULE_VALUES.EVERYTHING_REPLACE
+    && existing.subFeature === 'product_replace'
+    && next.subFeature === 'product_replace'
+  );
   const clearPlanningJobPendingPlans = shouldClearPlanningJobPendingPlans(existing, next);
   const planningPlanJobIds = clearPlanningJobPendingPlans
     ? getPlanningJobIdentities(existing, next)
@@ -4574,15 +4766,36 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
     : clearPlanningJobPendingResults
     ? (existing.results || []).filter((result) => !isPlanningJobPendingResult(result, planningJobIds))
     : existing.results || [];
-  const mergedResults = mergeProjectResultsByIdentity(existingResults, next.results || []);
+  const mergedResults = isLogoReplace
+    ? mergeLogoReplaceResultsByBatch(existingResults, next.results || [])
+    : mergeProjectResultsByIdentity(existingResults, next.results || []);
   const results = next.module === MODULE_VALUES.TRANSLATION
     ? sortTranslationRetryResults(mergedResults) as ShellGeneratedResult[]
     : sortMergedResultsByBatchIndex(mergedResults);
   const completedCount = results.filter(hasCompletedMediaResult).length;
-  const taskCount = getMergedProjectTaskCount(existing, next, plans, results, completedCount);
+  const mergedTaskCount = getMergedProjectTaskCount(existing, next, plans, results, completedCount);
+  const taskCount = isLogoReplace && next.sourceType === 'job'
+    ? Math.max(
+        Number(next.taskCount || 0) || 0,
+        ...results.map((result) => Number(result.batchCount || result.batchIndex || 0) || 0),
+        1,
+      )
+    : mergedTaskCount;
   const hasGenerating = results.some((result) => (result.status === 'generating' || result.status === 'retry_waiting') && resultHasRuntimeIdentity(result));
   const hasError = results.some((result) => result.status === 'error');
   const hasCompletedMedia = completedCount > 0;
+  const logoReplaceCreditsConsumed = isLogoReplace
+    ? mergeNonRegressingCredits(
+        mergeNonRegressingCredits(existing.creditsConsumed, next.creditsConsumed),
+        results.reduce(
+          (sum, result) => sum + (normalizeCreditsConsumed(result.creditsConsumed) || 0),
+          0,
+        ),
+      )
+    : undefined;
+  const productReplaceCreditsConsumed = isProductReplace
+    ? sumCreditsConsumed(results.map((result) => result.creditsConsumed))
+    : undefined;
   const generationContext = mergeProductRestoreGenerationContext(
     existing.generationContext,
     next.generationContext,
@@ -4625,11 +4838,104 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
     planningTaskId: latestProviderTaskIdentityText(existing.planningTaskId, next.planningTaskId),
     directGeneration: existing.directGeneration || next.directGeneration,
     generationContext,
+    ...(isLogoReplace
+      ? { creditsConsumed: logoReplaceCreditsConsumed }
+      : {}),
+    ...(isProductReplace
+      ? { creditsConsumed: productReplaceCreditsConsumed }
+      : {}),
   };
   if (!durablyCancelled && status === 'completed' && completedCount > 0) {
     delete mergedProject.error;
   }
   return mergedProject;
+};
+
+const normalizeProductReplaceProjectCard = (project: ShellProjectData): ShellProjectData => {
+  if (
+    project.module !== MODULE_VALUES.EVERYTHING_REPLACE
+    || project.subFeature !== 'product_replace'
+  ) return project;
+
+  const results = sortMergedResultsByBatchIndex(
+    mergeProjectResultsByIdentity([], project.results || []),
+  );
+  const authoritativeBatchCount = Math.max(
+    ...results
+      .filter((result) => result.productReplaceGenerationCreditsConsumed !== undefined)
+      .map((result) => Number(result.batchCount || result.batchIndex || 0) || 0),
+    0,
+  );
+  if (authoritativeBatchCount <= 0) return project;
+
+  const completedCount = results.filter(hasCompletedMediaResult).length;
+  const hasGenerating = results.some((result) => (
+    (result.status === 'generating' || result.status === 'retry_waiting')
+    && resultHasRuntimeIdentity(result)
+  ));
+  const hasError = results.some((result) => result.status === 'error');
+  const status = hasGenerating
+    ? 'generating'
+    : hasError
+      ? 'error'
+      : completedCount >= authoritativeBatchCount
+        ? 'completed'
+        : project.status;
+  const normalized: ShellProjectData & { error?: string } = {
+    ...project,
+    status,
+    results,
+    taskCount: authoritativeBatchCount,
+    completedCount,
+    completedAt: status === 'completed' ? project.completedAt : undefined,
+    creditsConsumed: sumCreditsConsumed(results.map((result) => result.creditsConsumed)),
+  };
+  if (status === 'completed') delete normalized.error;
+  return normalized;
+};
+
+const normalizeLogoReplaceProjectCard = (project: ShellProjectData): ShellProjectData => {
+  if (
+    project.module !== MODULE_VALUES.EVERYTHING_REPLACE
+    || project.subFeature !== 'logo_replace'
+  ) return project;
+
+  const results = mergeLogoReplaceResultsByBatch([], project.results || []);
+  const taskCount = Math.max(
+    ...results.map((result) => Number(result.batchCount || result.batchIndex || 0) || 0),
+    results.length,
+    1,
+  );
+  const completedCount = results.filter(hasCompletedMediaResult).length;
+  const hasGenerating = results.some((result) => (
+    (result.status === 'generating' || result.status === 'retry_waiting')
+    && resultHasRuntimeIdentity(result)
+  ));
+  const hasError = results.some((result) => result.status === 'error');
+  const status = hasGenerating
+    ? 'generating'
+    : hasError
+      ? 'error'
+      : completedCount >= taskCount
+        ? 'completed'
+        : project.status;
+  const normalized: ShellProjectData & { error?: string; errorCode?: string } = {
+    ...project,
+    status,
+    results,
+    taskCount,
+    completedCount,
+    completedAt: status === 'completed' ? project.completedAt : undefined,
+    creditsConsumed: mergeNonRegressingCredits(
+      project.creditsConsumed,
+      results.reduce((sum, result) => sum + (normalizeCreditsConsumed(result.creditsConsumed) || 0), 0),
+    ),
+  };
+  if (status === 'completed') {
+    delete normalized.error;
+    delete normalized.errorCode;
+  }
+  return normalized;
 };
 
 export const buildShellDataSnapshot = (
@@ -4669,6 +4975,8 @@ export const buildShellDataSnapshot = (
       : project)
     .map(normalizeOneClickProjectCard)
     .map(normalizeProductRestoreProjectCard)
+    .map(normalizeProductReplaceProjectCard)
+    .map(normalizeLogoReplaceProjectCard)
     .filter(hasVisibleProjectContent);
   return {
     projects,

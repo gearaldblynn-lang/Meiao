@@ -59,6 +59,11 @@ import { getImageDimensions, getImageDimensionsFromUrl } from './utils/imageUtil
 import { releaseObjectURL, safeCreateObjectURL } from './utils/urlUtils';
 import { countCompletedProjectResults, mergeGeneratedPlanResults } from './utils/shellProjectResults.mjs';
 import {
+  PRODUCT_REPLACE_MAX_REFERENCE_IMAGES,
+  assertProductReplaceReferenceCount,
+  normalizeProductReplacementLogic,
+} from './utils/productReplaceContract.mjs';
+import {
   cloneProductRestoreCancellationMarker,
   cloneProductRestoreCancellationReset,
   createProductRestoreCancellationRegistry,
@@ -333,6 +338,8 @@ export interface GeneratedResult {
   clientSubmissionKey?: string;
   draftNonce?: string;
   creditsConsumed?: number;
+  productReplaceAnalysisCreditsConsumed?: number;
+  productReplaceGenerationCreditsConsumed?: number;
   error?: string;
   errorCode?: string;
   message?: string;
@@ -400,7 +407,12 @@ export interface Material {
   cornerBadgeRegion?: Record<string, unknown>;
   logoReplaceRegion?: Record<string, unknown>;
   logoReplaceRegions?: Array<Record<string, unknown>>;
+  productGroupId?: string;
+  productGroupAssignment?: 'auto' | 'manual';
+  productReplaceRegions?: Array<Record<string, unknown>>;
 }
+
+export type ProductReplaceEditMode = 'preserve_product' | 'free_edit';
 
 const isTransientMaterialUrl = (url?: string) => {
   const value = String(url || '').trim();
@@ -586,6 +598,9 @@ const cloneMaterialSnapshot = (material: Material) => {
     cornerBadgeRegion: material.cornerBadgeRegion,
     logoReplaceRegion: material.logoReplaceRegion,
     logoReplaceRegions: material.logoReplaceRegions,
+    productGroupId: material.productGroupId,
+    productGroupAssignment: material.productGroupAssignment,
+    productReplaceRegions: material.productReplaceRegions,
   };
 };
 
@@ -2116,11 +2131,11 @@ const resolveEverythingReplaceBatchCount = (
 ) => {
   const referenceCount = Math.max(0, (materials.styleRef || []).length);
   if (subFeature === 'logo_replace' || params.mode === 'logo_replace') {
-    return Math.max(1, Math.min(40, referenceCount || 1));
+    return Math.max(1, Math.min(PRODUCT_REPLACE_MAX_REFERENCE_IMAGES, referenceCount || 1));
   }
   const productCount = Math.max(0, (materials.product || []).length);
   if (productCount <= 0 || referenceCount <= 0) return 1;
-  return Math.min(40, referenceCount);
+  return Math.min(PRODUCT_REPLACE_MAX_REFERENCE_IMAGES, referenceCount);
 };
 
 const resolveBatchCount = (
@@ -2743,9 +2758,17 @@ const AppContent: React.FC<{
   const materialsRef = useRef<Record<string, Material[]>>(materials);
   const materialUploadCoordinatorRef = useRef(createMaterialUploadCoordinator());
   const productRestoreUploadReservationsRef = useRef(createProductRestoreUploadReservationQueue());
+  const everythingReplaceReferenceUploadReservationsRef = useRef<Record<string, Set<string>>>({});
   const [oneClickReferencePresets, setOneClickReferencePresets] = useState<OneClickReferencePreset[]>([]);
   const [mediaTranscodeQueue, setMediaTranscodeQueue] = useState<MediaTranscodeQueueItem[]>([]);
   const mediaTranscodeQueueRef = useRef<MediaTranscodeQueueItem[]>([]);
+
+  useEffect(() => {
+    const materialIds = new Set(Object.values(materials).flatMap((list) => (list || []).map((item) => item.id)));
+    Object.values(everythingReplaceReferenceUploadReservationsRef.current).forEach((reservations) => {
+      materialIds.forEach((id) => reservations.delete(id));
+    });
+  }, [materials]);
 
   const updateMediaTranscodeQueue = useCallback((
     updater: (current: MediaTranscodeQueueItem[]) => MediaTranscodeQueueItem[],
@@ -3701,6 +3724,7 @@ const AppContent: React.FC<{
     resultId?: string;
     jobIds?: string[];
     preserveStoryboardBoardSlot?: boolean;
+    reconcileProjectCounts?: boolean;
   }) => {
     const isCurrent = sharedStateScopeRef.current!.capture();
     const sessionToken = captureInternalSessionToken();
@@ -4966,6 +4990,31 @@ const AppContent: React.FC<{
       };
     }
     let selectedFiles = Array.from(files);
+    let everythingReplaceReferenceReservationIds: string[] = [];
+    if (activeModule === AppModuleObj.EVERYTHING_REPLACE && type === 'styleRef') {
+      const existingCount = (materialsRef.current.styleRef || [])
+        .filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature))
+        .length;
+      const reservations = everythingReplaceReferenceUploadReservationsRef.current[activeScopeKey]
+        || new Set<string>();
+      everythingReplaceReferenceUploadReservationsRef.current[activeScopeKey] = reservations;
+      const remaining = Math.max(
+        0,
+        PRODUCT_REPLACE_MAX_REFERENCE_IMAGES - existingCount - reservations.size,
+      );
+      if (remaining <= 0) {
+        addToast(`替换参考图最多 ${PRODUCT_REPLACE_MAX_REFERENCE_IMAGES} 张`, 'warning');
+        return;
+      }
+      if (selectedFiles.length > remaining) {
+        selectedFiles = selectedFiles.slice(0, remaining);
+        addToast(`替换参考图最多 ${PRODUCT_REPLACE_MAX_REFERENCE_IMAGES} 张，本次已保留前 ${remaining} 张`, 'warning');
+      }
+      everythingReplaceReferenceReservationIds = selectedFiles.map((_, index) => (
+        `replace-ref-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 9)}`
+      ));
+      everythingReplaceReferenceReservationIds.forEach((id) => reservations.add(id));
+    }
     if (activeModule === AppModuleObj.VIDEO && shouldUseSeedanceMediaPreparation({
       activeSubFeature,
       mediaType: type,
@@ -5124,7 +5173,8 @@ const AppContent: React.FC<{
       : 0;
     selectedFiles.forEach((file, fileIndex) => {
       void (async () => {
-        const optimisticId = Math.random().toString(36).slice(2, 9);
+        const optimisticId = everythingReplaceReferenceReservationIds[fileIndex]
+          || Math.random().toString(36).slice(2, 9);
         const localAssetId = `draft-${Date.now()}-${optimisticId}`;
         const giftIndex = type === 'gift' ? giftStartIndex + fileIndex : undefined;
         const relativePath = (file as any).webkitRelativePath || file.name;
@@ -5155,6 +5205,11 @@ const AppContent: React.FC<{
             }],
           };
           materialsRef.current = next;
+          const referenceReservations = everythingReplaceReferenceUploadReservationsRef.current[activeScopeKey];
+          referenceReservations?.delete(optimisticId);
+          if (referenceReservations?.size === 0) {
+            delete everythingReplaceReferenceUploadReservationsRef.current[activeScopeKey];
+          }
           return next;
         });
         const remoteUrl = await uploadMaterialToManagedUrl({
@@ -5893,6 +5948,12 @@ const AppContent: React.FC<{
       generationMaterials,
     );
     if (targetModule === AppModuleObj.EVERYTHING_REPLACE) {
+      try {
+        assertProductReplaceReferenceCount((generationMaterials.styleRef || []).length);
+      } catch (error) {
+        addToast(error instanceof Error ? error.message : `替换参考图最多 ${PRODUCT_REPLACE_MAX_REFERENCE_IMAGES} 张`, 'warning');
+        return;
+      }
       batchCount = resolveEverythingReplaceBatchCount(generationMaterials, generationParams, targetSubFeature);
     }
     const isProductRestoreSubmit = targetModule === AppModuleObj.RETOUCH && targetSubFeature === 'product_restore';
@@ -5904,6 +5965,8 @@ const AppContent: React.FC<{
     }
     const isModelReplaceSubmit = targetModule === AppModuleObj.EVERYTHING_REPLACE
       && targetSubFeature === 'model_replace';
+    const isLogoReplaceSubmit = targetModule === AppModuleObj.EVERYTHING_REPLACE
+      && targetSubFeature === 'logo_replace';
     const modelReplaceIdentitySource: 'upload' | 'library' = identityDraft.identitySource;
     const modelReplaceLibraryContext = isModelReplaceSubmit
       && modelReplaceIdentitySource === 'library'
@@ -7006,6 +7069,12 @@ const AppContent: React.FC<{
 	    let pendingSpecialTaskState: { status: 'generating'; total: number } | undefined;
 	    let activeBackendJobId = '';
 	    let activeProviderTaskId = '';
+	    let activeLogoReplaceAnalysisJobId = String(
+	      generationContext?.params?.logoReplaceAnalysisJobId || '',
+	    ).trim();
+	    let activeLogoReplaceAnalysisProviderTaskId = String(
+	      generationContext?.params?.logoReplaceAnalysisProviderTaskId || '',
+	    ).trim();
 	    let activeProductRestoreAnalysisJobId = '';
 	    let productRestoreContext = cloneProductRestoreContext(generationContext?.productRestore);
 	    let productRestoreAnalysisAttempts = cloneProductRestoreAnalysisAttemptsForMutation(
@@ -7034,6 +7103,16 @@ const AppContent: React.FC<{
 	        return;
 	      }
 	      const isProductRestoreAnalysisJob = isProductRestoreSubmit && !productRestoreContext;
+	      const isLogoReplaceAnalysisJob = isLogoReplaceSubmit && (
+	        !activeLogoReplaceAnalysisJobId
+	        || activeLogoReplaceAnalysisJobId === normalizedJobId
+	      );
+	      if (isLogoReplaceAnalysisJob) {
+	        activeLogoReplaceAnalysisJobId = normalizedJobId;
+	        if (providerTaskId) {
+	          activeLogoReplaceAnalysisProviderTaskId = String(providerTaskId || '').trim();
+	        }
+	      }
 	      activeBackendJobId = normalizedJobId;
 	      if (isProductRestoreAnalysisJob) activeProductRestoreAnalysisJobId = normalizedJobId;
 	      if (providerTaskId) activeProviderTaskId = String(providerTaskId || '').trim();
@@ -7093,9 +7172,33 @@ const AppContent: React.FC<{
 	            ),
 	          }
 	        : null;
+	      const pendingLogoReplaceAnalysisProject: Project | null = isLogoReplaceAnalysisJob
+	        ? {
+	            ...newProject,
+	            backendJobId: activeLogoReplaceAnalysisJobId,
+	            planningTaskId: activeLogoReplaceAnalysisProviderTaskId || undefined,
+	            status: 'generating',
+	            results: [],
+	            taskCount: batchCount,
+	            completedCount: 0,
+	            error: 'Logo 替换分析已提交，等待结果。',
+	            generationContext: newProject.generationContext
+	              ? {
+	                  ...newProject.generationContext,
+	                  params: {
+	                    ...newProject.generationContext.params,
+	                    logoReplaceAnalysisJobId: activeLogoReplaceAnalysisJobId,
+	                    ...(activeLogoReplaceAnalysisProviderTaskId
+	                      ? { logoReplaceAnalysisProviderTaskId: activeLogoReplaceAnalysisProviderTaskId }
+	                      : {}),
+	                  },
+	                }
+	              : newProject.generationContext,
+	          }
+	        : null;
 	      setProjects((prev) => prev.map((project) => (
 	        project.id === projectId
-	          ? (pendingVideoProject || pendingProductRestoreProject || (isProductRestoreSubmit ? project : { ...project, backendJobId: jobId }))
+	          ? (pendingVideoProject || pendingProductRestoreProject || pendingLogoReplaceAnalysisProject || (isProductRestoreSubmit ? project : { ...project, backendJobId: jobId }))
           : project
       )));
       setTasks((prev) => prev.map((task) => (
@@ -7108,6 +7211,9 @@ const AppContent: React.FC<{
 	      }
 	      if (pendingProductRestoreProject) {
 	        void persistProjectToSharedState(pendingProductRestoreProject);
+	      }
+	      if (pendingLogoReplaceAnalysisProject) {
+	        void persistProjectToSharedState(pendingLogoReplaceAnalysisProject);
 	      }
     };
 
@@ -7226,8 +7332,10 @@ const AppContent: React.FC<{
             createdAt: newProject.createdAt,
             module: targetModule,
             subFeature: targetSubFeature,
-            creditsConsumed: item.creditsConsumed,
-            taskId: item.taskId,
+	            creditsConsumed: item.creditsConsumed,
+	            productReplaceAnalysisCreditsConsumed: item.productReplaceAnalysisCreditsConsumed,
+	            productReplaceGenerationCreditsConsumed: item.productReplaceGenerationCreditsConsumed,
+	            taskId: item.taskId,
             backendJobId: item.backendJobId,
             batchIndex: Number(item.batchIndex || completed) || completed,
             targetMaterialId: item.targetMaterialId,
@@ -7846,6 +7954,24 @@ const AppContent: React.FC<{
               ),
             }
           : {}),
+	        ...(isLogoReplaceSubmit && activeLogoReplaceAnalysisJobId
+	          ? {
+	              backendJobId: activeLogoReplaceAnalysisJobId,
+	              planningTaskId: activeLogoReplaceAnalysisProviderTaskId || undefined,
+	              generationContext: newProject.generationContext
+	                ? {
+	                    ...newProject.generationContext,
+	                    params: {
+	                      ...newProject.generationContext.params,
+	                      logoReplaceAnalysisJobId: activeLogoReplaceAnalysisJobId,
+	                      ...(activeLogoReplaceAnalysisProviderTaskId
+	                        ? { logoReplaceAnalysisProviderTaskId: activeLogoReplaceAnalysisProviderTaskId }
+	                        : {}),
+	                    },
+	                  }
+	                : newProject.generationContext,
+	            }
+	          : {}),
 	        status: isProductRestorePersistenceFailure ? 'planning' : 'error',
         results: batchResults.length > 0
           ? batchResults
@@ -10726,21 +10852,32 @@ const AppContent: React.FC<{
       const subFeature = project.subFeature || getDefaultSubFeature(project.module);
       const isModelReplaceRegeneration = project.module === AppModuleObj.EVERYTHING_REPLACE
         && subFeature === 'model_replace';
-      if (project.sourceType === 'job' && !isModelReplaceRegeneration) {
-        await retryInternalJob(resultId);
-        setProjects((prev) => prev.map((item) => item.id === projectId ? {
-          ...item,
-          status: 'generating',
-          error: undefined,
-          results: item.results.map((result) => result.id === resultId ? {
-            ...result,
+      const isLogoReplaceRegeneration = project.module === AppModuleObj.EVERYTHING_REPLACE
+        && subFeature === 'logo_replace';
+      const isCombinationProductReplaceRegeneration = project.module === AppModuleObj.EVERYTHING_REPLACE
+        && subFeature === 'product_replace'
+        && normalizeProductReplacementLogic(
+          project.generationContext?.params?.replacementLogic
+          || currentParams.replacementLogic
+          || '',
+        ) === 'combination_replace';
+      if (project.sourceType === 'job' && !isModelReplaceRegeneration && !isLogoReplaceRegeneration) {
+        if (!isCombinationProductReplaceRegeneration) {
+          await retryInternalJob(resultId);
+          setProjects((prev) => prev.map((item) => item.id === projectId ? {
+            ...item,
             status: 'generating',
             error: undefined,
-          } : result),
-        } : item));
-        addToast('已提交后端重试', 'success');
-        window.setTimeout(() => void hydrateShellJobs(), 800);
-        return;
+            results: item.results.map((result) => result.id === resultId ? {
+              ...result,
+              status: 'generating',
+              error: undefined,
+            } : result),
+          } : item));
+          addToast('已提交后端重试', 'success');
+          window.setTimeout(() => void hydrateShellJobs(), 800);
+          return;
+        }
       }
       if (result.mediaType === 'video' || result.videoUrl || project.module === AppModuleObj.VIDEO) {
         addToast('视频结果暂不支持单张重生成，请重新提交视频生成任务', 'info');
@@ -10795,6 +10932,505 @@ const AppContent: React.FC<{
         return;
       }
       const retryPrompt = modelReplaceRetryContext?.prompt || result.prompt || storedContext?.prompt || project.name;
+      const replacementLogic = normalizeProductReplacementLogic(
+        retryParams.replacementLogic
+        || storedContext?.params.replacementLogic
+        || '',
+      );
+      const isCombinationProductReplaceRecovery = project.module === AppModuleObj.EVERYTHING_REPLACE
+        && subFeature === 'product_replace'
+        && replacementLogic === 'combination_replace';
+      if (isCombinationProductReplaceRecovery) {
+        const productReplaceRecoveryPrompt = storedContext?.prompt || retryPrompt;
+        const productReplaceRetryMaterials = retryMaterials as Record<string, Material[]>;
+        const allProductReplaceReferences = productReplaceRetryMaterials.styleRef || [];
+        const originalReferenceCount = allProductReplaceReferences.length;
+        const requestedBatchIndex = Number(result.batchIndex);
+        const shouldRecoverSingleReference = Number.isInteger(requestedBatchIndex)
+          && requestedBatchIndex >= 1
+          && requestedBatchIndex <= originalReferenceCount;
+        const recoveryBatchIndexes = shouldRecoverSingleReference
+          ? [requestedBatchIndex]
+          : Array.from({ length: originalReferenceCount }, (_, index) => index + 1);
+        const productReplaceRecoveryMaterials: Record<string, Material[]> = {
+          ...productReplaceRetryMaterials,
+          styleRef: recoveryBatchIndexes.map((batchIndex) => allProductReplaceReferences[batchIndex - 1]),
+        };
+        if (originalReferenceCount === 0 || (productReplaceRetryMaterials.product?.length || 0) === 0) {
+          addToast('组合产品替换的历史素材不完整，请重新上传后提交', 'warning');
+          return;
+        }
+        const analysisJobs = (await fetchInternalJobs(500)).jobs
+          .filter((job) => (
+            job.status === 'succeeded'
+            && job.payload?.shellProjectId === project.id
+            && job.payload?.taskPurpose === 'product_replace_analysis'
+          ));
+        const analysisJobByBatch = new Map<number, InternalJob>();
+        analysisJobs.forEach((job) => {
+          const batchIndex = Number(job.payload?.batchIndex);
+          if (!Number.isInteger(batchIndex) || batchIndex < 1 || batchIndex > originalReferenceCount) return;
+          const current = analysisJobByBatch.get(batchIndex);
+          if (!current || Number(job.updatedAt || 0) > Number(current.updatedAt || 0)) {
+            analysisJobByBatch.set(batchIndex, job);
+          }
+        });
+        const productReplaceAnalysisJobIds = recoveryBatchIndexes
+          .map((batchIndex) => analysisJobByBatch.get(batchIndex)?.id || '');
+        if (productReplaceAnalysisJobIds.some((jobId) => !jobId)) {
+          throw new Error('没有找到与每张参考图一一对应的成功策划任务，为避免重复扣费，已停止恢复。');
+        }
+
+        const controller = new AbortController();
+        taskControllersRef.current[retryTaskId] = controller;
+        const preparedMaterials = await ensureMaterialRemoteUrls(
+          productReplaceRecoveryMaterials,
+          project.module,
+          controller.signal,
+        );
+        const recoveryBatchIndexSet = new Set(recoveryBatchIndexes);
+        const retainedRecoveryResults = shouldRecoverSingleReference
+          ? project.results.filter((current, currentIndex) => !recoveryBatchIndexSet.has(
+              Number(current.batchIndex || currentIndex + 1),
+            ))
+          : [];
+        const retainedCompletedCount = retainedRecoveryResults
+          .filter((current) => current.status === 'completed').length;
+        let latestRecoveryProject: Project = {
+          ...project,
+          status: 'generating',
+          completedAt: undefined,
+          results: retainedRecoveryResults,
+          taskCount: originalReferenceCount,
+          completedCount: retainedCompletedCount,
+          error: undefined,
+        };
+        const toRecoveryResult = (
+          item: ShellWorkflowImageResult,
+          index: number,
+        ): GeneratedResult => ({
+          id: item.backendJobId || item.taskId || `${project.id}-product-recovery-${index}`,
+          projectId: project.id,
+          imageUrl: item.imageUrl || '',
+          mediaType: 'image',
+          prompt: item.prompt || productReplaceRecoveryPrompt,
+          model: item.model || String(retryParams.model || result.model || 'gpt-image-2'),
+          aspectRatio: item.aspectRatio || result.aspectRatio || String(retryParams.aspectRatio || retryParams.ratio || 'auto'),
+          status: item.status === 'completed'
+            ? 'completed'
+            : item.status === 'generating'
+              ? 'generating'
+              : 'error',
+          createdAt: Date.now(),
+          module: project.module,
+          subFeature,
+          taskId: item.taskId,
+          backendJobId: item.backendJobId,
+          batchIndex: Number(item.batchIndex || index) || index,
+	          analysisJobId: item.analysisJobId,
+	          productReplaceAnalysisCreditsConsumed: item.productReplaceAnalysisCreditsConsumed,
+	          productReplaceGenerationCreditsConsumed: item.productReplaceGenerationCreditsConsumed,
+	          sourceUrl: item.sourceUrl,
+          fileName: item.fileName,
+          creditsConsumed: item.creditsConsumed,
+          error: item.error || item.message,
+        });
+        const syncRecoveryItem = (
+          item: ShellWorkflowImageResult,
+          index: number,
+          total: number,
+        ) => {
+          const nextResult = toRecoveryResult(item, index);
+          const resultByBatch = new Map(
+            latestRecoveryProject.results.map((current, currentIndex) => [
+              Number(current.batchIndex || currentIndex + 1),
+              current,
+            ]),
+          );
+          resultByBatch.set(Number(nextResult.batchIndex || index), nextResult);
+          const nextResults = sortGeneratedResultsByBatchIndex(Array.from(resultByBatch.values()));
+          const completedCount = nextResults.filter((current) => current.status === 'completed').length;
+          const hasGenerating = nextResults.some((current) => current.status === 'generating');
+          const hasError = nextResults.some((current) => current.status === 'error');
+          const nextStatus: Project['status'] = hasGenerating || nextResults.length < total
+            ? 'generating'
+            : hasError
+              ? 'error'
+              : 'completed';
+          latestRecoveryProject = {
+            ...latestRecoveryProject,
+            backendJobId: nextResult.backendJobId || latestRecoveryProject.backendJobId,
+            status: nextStatus,
+            completedAt: nextStatus === 'completed' ? Date.now() : undefined,
+            results: nextResults,
+            taskCount: total,
+            completedCount,
+            creditsConsumed: nextResults.reduce(
+              (sum, current) => sum + (Number(current.creditsConsumed) || 0),
+              0,
+            ) || undefined,
+            error: nextStatus === 'error'
+              ? nextResults.find((current) => current.status === 'error')?.error
+              : undefined,
+          };
+          setProjects((prev) => prev.map((current) => (
+            current.id === project.id ? latestRecoveryProject : current
+          )));
+          setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+            ...task,
+            progress: Math.round((nextResults.length / Math.max(total, 1)) * 100),
+            completed: completedCount,
+            total,
+          } : task));
+          void persistProjectToSharedState(latestRecoveryProject);
+        };
+
+        setProjects((prev) => prev.map((current) => (
+          current.id === project.id ? latestRecoveryProject : current
+        )));
+        setTasks((prev) => [{
+          id: retryTaskId,
+          projectId: project.id,
+          module: project.module,
+          type: 'image',
+          status: 'generating',
+          title: `恢复生成: ${project.name}`,
+          progress: 10,
+          createdAt: Date.now(),
+          total: originalReferenceCount,
+          completed: retainedCompletedCount,
+          subFeature,
+        }, ...prev]);
+        await persistProjectToSharedState(latestRecoveryProject);
+        addToast('已复用原策划，开始逐图恢复生成', 'success');
+
+        try {
+          const { runShellRetouchWorkflow } = await loadShellWorkflowModule();
+          const workflowResult = await runShellRetouchWorkflow({
+            module: project.module,
+            subFeature,
+            prompt: productReplaceRecoveryPrompt,
+            params: {
+              ...retryParams,
+              replacementLogic,
+              __workspacePreferences: JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences()),
+              __retryResultId: result.id,
+            },
+            materials: preparedMaterials,
+            signal: controller.signal,
+            onJobCreated: (jobId: string) => {
+              setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+                ...task,
+                backendJobId: jobId,
+                progress: Math.max(task.progress || 0, 18),
+              } : task));
+            },
+            publicBaseUrl,
+            taskMetadata: {
+              shellPurpose: 'product_replace_recovery',
+              shellProjectId: project.id,
+              shellProjectName: project.name,
+              subFeature,
+              batchCount: originalReferenceCount,
+              productReplaceAnalysisJobIds,
+              productReplaceReferenceBatchIndexes: recoveryBatchIndexes,
+              productReplaceOriginalReferenceCount: originalReferenceCount,
+            },
+          }, syncRecoveryItem);
+          workflowResult.results.forEach((item, index) => {
+            syncRecoveryItem(
+              item,
+              Number(item.batchIndex || recoveryBatchIndexes[index] || index + 1),
+              originalReferenceCount,
+            );
+          });
+          const finalHasGenerating = latestRecoveryProject.results.some((current) => current.status === 'generating');
+          const finalHasError = latestRecoveryProject.results.some((current) => current.status === 'error');
+          const finalStatus: Project['status'] = finalHasGenerating
+            ? 'generating'
+            : finalHasError
+              ? 'error'
+              : 'completed';
+          latestRecoveryProject = {
+            ...latestRecoveryProject,
+            status: finalStatus,
+            completedAt: finalStatus === 'completed' ? Date.now() : undefined,
+            error: finalStatus === 'error'
+              ? latestRecoveryProject.results.find((current) => current.status === 'error')?.error
+              : undefined,
+          };
+          setProjects((prev) => prev.map((current) => (
+            current.id === project.id ? latestRecoveryProject : current
+          )));
+          await persistProjectToSharedState(latestRecoveryProject);
+          if (finalStatus === 'generating') {
+            addToast('生图任务已提交云端，结果待同步', 'info');
+            window.setTimeout(() => void hydrateShellJobs(), 800);
+          } else {
+            setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+            delete taskControllersRef.current[retryTaskId];
+            addToast(
+              finalStatus === 'completed' ? '组合产品替换恢复完成' : '组合产品替换部分生成失败',
+              finalStatus === 'completed' ? 'success' : 'warning',
+            );
+          }
+        } catch (error) {
+          if (bailIfFrontendResourceError(error)) return;
+          const message = error instanceof Error ? error.message : '组合产品替换恢复失败';
+          latestRecoveryProject = {
+            ...latestRecoveryProject,
+            status: 'error',
+            completedAt: undefined,
+            error: message,
+          };
+          setProjects((prev) => prev.map((current) => (
+            current.id === project.id ? latestRecoveryProject : current
+          )));
+          setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+          delete taskControllersRef.current[retryTaskId];
+          await persistProjectToSharedState(latestRecoveryProject);
+          addToast(message, 'error');
+        }
+        return;
+      }
+      const isLogoReplaceAnalysisRecovery = isLogoReplaceRegeneration;
+      if (isLogoReplaceAnalysisRecovery) {
+        const logoReplaceRecoveryPrompt = storedContext?.prompt || retryPrompt;
+        const logoReplaceRetryMaterials = retryMaterials as Record<string, Material[]>;
+        const referenceCount = logoReplaceRetryMaterials.styleRef?.length || 0;
+        if (referenceCount === 0 || (logoReplaceRetryMaterials.logo?.length || 0) === 0) {
+          addToast('Logo 替换的历史原图或 Logo 素材不完整，请重新上传后提交', 'warning');
+          return;
+        }
+        const analysisJobs = (await fetchInternalJobs(500)).jobs
+          .filter((job) => (
+            job.status === 'succeeded'
+            && job.payload?.shellProjectId === project.id
+            && job.payload?.taskPurpose === 'logo_replace_analysis'
+          ));
+        const analysisJobByBatch = new Map<number, InternalJob>();
+        analysisJobs.forEach((job) => {
+          const batchIndex = Number(job.payload?.batchIndex || job.payload?.referenceIndex);
+          if (!Number.isInteger(batchIndex) || batchIndex < 1 || batchIndex > referenceCount) return;
+          const current = analysisJobByBatch.get(batchIndex);
+          if (!current || Number(job.updatedAt || 0) > Number(current.updatedAt || 0)) {
+            analysisJobByBatch.set(batchIndex, job);
+          }
+        });
+        const logoReplaceAnalysisJobIds = Array.from(
+          { length: referenceCount },
+          (_, index) => analysisJobByBatch.get(index + 1)?.id || '',
+        );
+        if (logoReplaceAnalysisJobIds.some((jobId) => !jobId)) {
+          throw new Error('没有找到与每张原图一一对应的成功 Logo 分析任务，为避免重复扣费，已停止恢复。');
+        }
+
+        const controller = new AbortController();
+        taskControllersRef.current[retryTaskId] = controller;
+        const preparedMaterials = await ensureMaterialRemoteUrls(
+          logoReplaceRetryMaterials,
+          project.module,
+          controller.signal,
+        );
+        const durableLogoRecoveryContext = storedContext
+          ? {
+              ...storedContext,
+              params: {
+                ...storedContext.params,
+                logoReplaceAnalysisJobId: logoReplaceAnalysisJobIds[0],
+              },
+            }
+          : storedContext;
+        let latestLogoRecoveryProject: Project = {
+          ...project,
+          backendJobId: logoReplaceAnalysisJobIds[0],
+          status: 'generating',
+          completedAt: undefined,
+          results: [],
+          taskCount: referenceCount,
+          completedCount: 0,
+          error: undefined,
+          generationContext: durableLogoRecoveryContext,
+        };
+        const toLogoRecoveryResult = (
+          item: ShellWorkflowImageResult,
+          index: number,
+        ): GeneratedResult => ({
+          id: item.backendJobId || item.taskId || `${project.id}-logo-recovery-${index}`,
+          projectId: project.id,
+          imageUrl: item.imageUrl || '',
+          mediaType: 'image',
+          prompt: item.prompt || logoReplaceRecoveryPrompt,
+          model: item.model || String(retryParams.model || result.model || 'gpt-image-2'),
+          aspectRatio: item.aspectRatio || result.aspectRatio || String(retryParams.aspectRatio || retryParams.ratio || 'auto'),
+          status: item.status === 'completed'
+            ? 'completed'
+            : item.status === 'generating'
+              ? 'generating'
+              : 'error',
+          createdAt: Date.now(),
+          module: project.module,
+          subFeature,
+          taskId: item.taskId,
+          backendJobId: item.backendJobId,
+          batchIndex: Number(item.batchIndex || index) || index,
+          analysisJobId: item.analysisJobId || logoReplaceAnalysisJobIds[index - 1],
+          sourceUrl: item.sourceUrl,
+          creditsConsumed: item.creditsConsumed,
+          error: item.error || item.message,
+        });
+        const syncLogoRecoveryItem = (
+          item: ShellWorkflowImageResult,
+          index: number,
+          total: number,
+        ) => {
+          const nextResult = toLogoRecoveryResult(item, index);
+          const resultByBatch = new Map(
+            latestLogoRecoveryProject.results.map((current, currentIndex) => [
+              Number(current.batchIndex || currentIndex + 1),
+              current,
+            ]),
+          );
+          resultByBatch.set(Number(nextResult.batchIndex || index), nextResult);
+          const nextResults = sortGeneratedResultsByBatchIndex(Array.from(resultByBatch.values()));
+          const completedCount = nextResults.filter((current) => current.status === 'completed').length;
+          const hasGenerating = nextResults.some((current) => current.status === 'generating');
+          const hasError = nextResults.some((current) => current.status === 'error');
+          const nextStatus: Project['status'] = hasGenerating || nextResults.length < total
+            ? 'generating'
+            : hasError
+              ? 'error'
+              : 'completed';
+          latestLogoRecoveryProject = {
+            ...latestLogoRecoveryProject,
+            backendJobId: nextResult.backendJobId || latestLogoRecoveryProject.backendJobId,
+            status: nextStatus,
+            completedAt: nextStatus === 'completed' ? Date.now() : undefined,
+            results: nextResults,
+            taskCount: total,
+            completedCount,
+            creditsConsumed: nextResults.reduce(
+              (sum, current) => sum + (Number(current.creditsConsumed) || 0),
+              0,
+            ) || undefined,
+            error: nextStatus === 'error'
+              ? nextResults.find((current) => current.status === 'error')?.error
+              : undefined,
+          };
+          setProjects((prev) => prev.map((current) => (
+            current.id === project.id ? latestLogoRecoveryProject : current
+          )));
+          setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+            ...task,
+            progress: Math.round((nextResults.length / Math.max(total, 1)) * 100),
+            completed: completedCount,
+            total,
+          } : task));
+          void persistProjectToSharedState(latestLogoRecoveryProject);
+        };
+
+        setProjects((prev) => prev.map((current) => (
+          current.id === project.id ? latestLogoRecoveryProject : current
+        )));
+        setTasks((prev) => [{
+          id: retryTaskId,
+          projectId: project.id,
+          module: project.module,
+          type: 'image',
+          status: 'generating',
+          title: `恢复生成: ${project.name}`,
+          progress: 10,
+          createdAt: Date.now(),
+          total: referenceCount,
+          completed: 0,
+          subFeature,
+          backendJobId: logoReplaceAnalysisJobIds[0],
+        }, ...prev]);
+        await persistProjectToSharedState(latestLogoRecoveryProject);
+        addToast('已复用原 Logo 分析，开始恢复生图', 'success');
+
+        try {
+          const { runShellRetouchWorkflow } = await loadShellWorkflowModule();
+          const workflowResult = await runShellRetouchWorkflow({
+            module: project.module,
+            subFeature,
+            prompt: logoReplaceRecoveryPrompt,
+            params: {
+              ...retryParams,
+              __workspacePreferences: JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences()),
+              __retryResultId: result.id,
+            },
+            materials: preparedMaterials,
+            signal: controller.signal,
+            onJobCreated: (jobId: string) => {
+              setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+                ...task,
+                backendJobId: jobId,
+                progress: Math.max(task.progress || 0, 18),
+              } : task));
+            },
+            publicBaseUrl,
+            taskMetadata: {
+              shellPurpose: 'logo_replace_recovery',
+              shellProjectId: project.id,
+              shellProjectName: project.name,
+              subFeature,
+              batchCount: referenceCount,
+              logoReplaceAnalysisJobIds,
+            },
+          }, syncLogoRecoveryItem);
+          workflowResult.results.forEach((item, index) => {
+            syncLogoRecoveryItem(item, index + 1, referenceCount);
+          });
+          const finalHasGenerating = latestLogoRecoveryProject.results.some((current) => current.status === 'generating');
+          const finalHasError = latestLogoRecoveryProject.results.some((current) => current.status === 'error');
+          const finalStatus: Project['status'] = finalHasGenerating
+            ? 'generating'
+            : finalHasError
+              ? 'error'
+              : 'completed';
+          latestLogoRecoveryProject = {
+            ...latestLogoRecoveryProject,
+            status: finalStatus,
+            completedAt: finalStatus === 'completed' ? Date.now() : undefined,
+            error: finalStatus === 'error'
+              ? latestLogoRecoveryProject.results.find((current) => current.status === 'error')?.error
+              : undefined,
+          };
+          setProjects((prev) => prev.map((current) => (
+            current.id === project.id ? latestLogoRecoveryProject : current
+          )));
+          await persistProjectToSharedState(latestLogoRecoveryProject);
+          if (finalStatus === 'generating') {
+            addToast('Logo 生图任务已提交云端，结果待同步', 'info');
+            window.setTimeout(() => void hydrateShellJobs(), 800);
+          } else {
+            setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+            delete taskControllersRef.current[retryTaskId];
+            addToast(
+              finalStatus === 'completed' ? 'Logo 替换恢复完成' : 'Logo 替换结构质检未通过',
+              finalStatus === 'completed' ? 'success' : 'warning',
+            );
+          }
+        } catch (error) {
+          if (bailIfFrontendResourceError(error)) return;
+          const message = error instanceof Error ? error.message : 'Logo 替换恢复失败';
+          latestLogoRecoveryProject = {
+            ...latestLogoRecoveryProject,
+            status: 'error',
+            completedAt: undefined,
+            error: message,
+          };
+          setProjects((prev) => prev.map((current) => (
+            current.id === project.id ? latestLogoRecoveryProject : current
+          )));
+          setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+          delete taskControllersRef.current[retryTaskId];
+          await persistProjectToSharedState(latestLogoRecoveryProject);
+          addToast(message, 'error');
+        }
+        return;
+      }
       if (isModelReplaceRegeneration && modelReplaceRetryContext) {
         const controller = new AbortController();
         taskControllersRef.current[retryTaskId] = controller;
@@ -12044,8 +12680,11 @@ const AppContent: React.FC<{
     try {
       const { runShellImageGeneration } = await loadShellWorkflowModule();
       const preparedMaterials = await ensureMaterialRemoteUrls(materialsOverride, AppModuleObj.EVERYTHING_REPLACE);
-      const resultOnlyEdit = project.module === AppModuleObj.EVERYTHING_REPLACE
-        && (project.subFeature === 'product_replace' || project.subFeature === 'background_replace');
+      const productReplaceEditMode: ProductReplaceEditMode = generationParams.productReplaceEditMode === 'preserve_product'
+        ? 'preserve_product'
+        : 'free_edit';
+      const resultOnlyEdit = project.subFeature === 'background_replace'
+        || (project.subFeature === 'product_replace' && productReplaceEditMode === 'free_edit');
       const prompt = plan.schemeContent || plan.editInstruction || storedContext?.prompt || '';
       const result = await runShellImageGeneration({
         module: AppModuleObj.EVERYTHING_REPLACE,
@@ -12067,6 +12706,7 @@ const AppContent: React.FC<{
           sourceResultUrl: plan.sourceResultUrl ? resolvePublicAssetUrl(plan.sourceResultUrl, publicBaseUrl) : undefined,
           editInstruction: plan.editInstruction || prompt,
           resultOnlyEdit,
+          productReplaceEditMode,
         },
       });
 
@@ -12364,6 +13004,7 @@ const AppContent: React.FC<{
     resultId: string,
     instruction: string,
     files: File[] = [],
+    requestedEditMode: ProductReplaceEditMode = 'free_edit',
   ) => {
     const actionKey = `edit:${projectId}:${resultId}`;
     if (!beginExclusiveAction(actionKey, '修改任务已提交，请等待当前任务完成')) return;
@@ -12401,9 +13042,13 @@ const AppContent: React.FC<{
         && project.subFeature === 'product_replace';
       const isEverythingReplaceBackgroundEdit = project.module === AppModuleObj.EVERYTHING_REPLACE
         && project.subFeature === 'background_replace';
+      const productReplaceEditMode: ProductReplaceEditMode = isEverythingReplaceProductEdit
+        ? requestedEditMode
+        : 'free_edit';
       const isOneClickEdit = project.module === AppModuleObj.ONE_CLICK;
       const usesMinimalRoleEditPrompt = isOneClickEdit || isEverythingReplaceProductEdit || isEverythingReplaceBackgroundEdit;
-      const usesResultOnlyEditPrompt = isEverythingReplaceProductEdit || isEverythingReplaceBackgroundEdit;
+      const usesResultOnlyEditPrompt = isEverythingReplaceBackgroundEdit
+        || (isEverythingReplaceProductEdit && productReplaceEditMode === 'free_edit');
       const sourceResultAspectRatio = String(result.aspectRatio || '').trim();
       const generationParams = {
         ...(storedContext?.params || currentParams),
@@ -12414,6 +13059,7 @@ const AppContent: React.FC<{
         aspectRatio: project.module === AppModuleObj.EVERYTHING_REPLACE
           ? sourceResultAspectRatio || storedContext?.params?.aspectRatio || storedContext?.params?.ratio || currentParams.aspectRatio
           : storedContext?.params?.aspectRatio || result.aspectRatio || currentParams.aspectRatio,
+        ...(isEverythingReplaceProductEdit ? { productReplaceEditMode } : {}),
       };
       const initialEditMaterials: Record<string, Material[]> = {
         product: usesResultOnlyEditPrompt ? [] : [...(contextMaterials.product || [])],
@@ -12650,6 +13296,11 @@ const AppContent: React.FC<{
     const recoverControllerId = `recover-${projectId}-${targetResult.id}-${Date.now()}`;
     taskControllersRef.current[recoverControllerId] = controller;
     const isVideoRecover = Boolean(project.module === AppModuleObj.VIDEO || targetResult.mediaType === 'video' || targetResult.videoUrl);
+    const isLogoReplaceRecovery = (
+      project.module === AppModuleObj.EVERYTHING_REPLACE
+      && project.subFeature === 'logo_replace'
+      && Boolean(targetResult.backendJobId)
+    );
     const mergeRecoveredResult = (nextResult: GeneratedResult): Project => {
       const nextResults = project.results.map((item) => item.id === targetResult.id ? nextResult : item);
       const hasGenerating = nextResults.some((item) => item.status === 'generating');
@@ -12663,6 +13314,165 @@ const AppContent: React.FC<{
         completedCount: nextResults.filter((item) => item.status === 'completed' && (item.imageUrl || item.videoUrl)).length,
       };
     };
+
+    if (isLogoReplaceRecovery) {
+      const waitingResult: GeneratedResult = {
+        ...targetResult,
+        status: 'generating',
+        error: '正在恢复原尺寸结果并执行 Logo 结构质检',
+      };
+      const waitingProject: Project = {
+        ...project,
+        status: 'generating',
+        error: undefined,
+        results: project.results.map((item) => item.id === targetResult.id ? waitingResult : item),
+      };
+      setProjects((prev) => prev.map((item) => item.id === projectId ? waitingProject : item));
+      setTasks((prev) => [{
+        id: recoverControllerId,
+        projectId,
+        module: project.module,
+        type: 'image',
+        status: 'generating',
+        title: `恢复质检: ${project.name}`,
+        progress: 20,
+        createdAt: project.createdAt,
+        total: 1,
+        completed: 0,
+        subFeature: project.subFeature,
+        backendJobId: targetResult.backendJobId,
+      }, ...prev]);
+      await persistProjectToSharedState(waitingProject);
+      addToast('正在复用原生图任务完成归一化与结构质检', 'info');
+
+      try {
+        const storedContext = project.generationContext;
+        if (!storedContext) throw new Error('Logo 替换项目缺少恢复上下文。');
+        const { job: generationJob } = await fetchInternalJob(targetResult.backendJobId!);
+        const batchIndex = Math.max(1, Number(generationJob.payload?.batchIndex || targetResult.batchIndex || 1));
+        const referenceMaterial = (storedContext.materials?.styleRef || [])[batchIndex - 1] as Material | undefined;
+        if (!referenceMaterial) throw new Error('Logo 替换项目缺少对应的原图素材。');
+
+        const workflowModule = await loadShellWorkflowModule();
+        const recoveryInput = {
+          module: project.module,
+          subFeature: 'logo_replace',
+          prompt: storedContext.prompt,
+          params: { ...storedContext.params },
+          materials: storedContext.materials,
+          signal: controller.signal,
+          apiConfig,
+          publicBaseUrl,
+        };
+        const recovered = await workflowModule.resumeLogoReplaceGenerationResult({
+          generationJob,
+          referenceMaterial,
+          config: workflowModule.buildShellModuleConfig(recoveryInput),
+          apiConfig,
+          signal: controller.signal,
+        });
+        const recoveredResult: GeneratedResult = {
+          ...targetResult,
+          imageUrl: recovered.imageUrl || '',
+          videoUrl: undefined,
+          mediaType: 'image',
+          prompt: recovered.prompt || targetResult.prompt,
+          model: recovered.model || targetResult.model,
+          aspectRatio: recovered.aspectRatio || targetResult.aspectRatio,
+          status: recovered.status === 'completed'
+            ? 'completed'
+            : recovered.status === 'generating'
+              ? 'generating'
+              : 'error',
+          taskId: recovered.taskId || targetResult.taskId,
+          backendJobId: recovered.backendJobId || targetResult.backendJobId,
+          batchIndex: recovered.batchIndex || batchIndex,
+          analysisJobId: recovered.analysisJobId || targetResult.analysisJobId,
+          sourceUrl: recovered.sourceUrl || targetResult.sourceUrl,
+          creditsConsumed: recovered.creditsConsumed,
+          error: recovered.error || recovered.message,
+        };
+        const batchCount = Math.max(1, Number(generationJob.payload?.batchCount || generationJob.payload?.referenceCount || 1));
+        const supersededPlaceholderIds = project.results
+          .filter((item) => (
+            item.id !== targetResult.id
+            && !item.backendJobId
+            && !item.taskId
+            && !item.imageUrl
+            && !item.videoUrl
+            && item.status === 'error'
+          ))
+          .map((item) => item.id);
+        const supersededPlaceholderIdSet = new Set(supersededPlaceholderIds);
+        const retainedResults = project.results.filter((item) => {
+          if (item.id === targetResult.id) return false;
+          if (String(item.backendJobId || '').trim() === String(targetResult.backendJobId || '').trim()) return false;
+          if (supersededPlaceholderIdSet.has(item.id)) return false;
+          return Number(item.batchIndex || 0) !== Number(recoveredResult.batchIndex || 0);
+        });
+        const nextResults = sortGeneratedResultsByBatchIndex([...retainedResults, recoveredResult]);
+        const nextStatus: Project['status'] = recoveredResult.status === 'completed'
+          ? 'completed'
+          : recoveredResult.status === 'generating'
+            ? 'generating'
+            : 'error';
+        const recoveredProject: Project = {
+          ...project,
+          status: nextStatus,
+          completedAt: nextStatus === 'completed' ? Date.now() : undefined,
+          results: nextResults,
+          taskCount: batchCount,
+          completedCount: nextResults.filter((item) => item.status === 'completed' && item.imageUrl).length,
+          creditsConsumed: nextResults.reduce(
+            (sum, item) => sum + (Number(item.creditsConsumed) || 0),
+            0,
+          ) || undefined,
+          error: nextStatus === 'error' ? recoveredResult.error : undefined,
+        };
+        setProjects((prev) => prev.map((item) => item.id === projectId ? recoveredProject : item));
+        await persistProjectToSharedState(recoveredProject);
+        for (const placeholderResultId of supersededPlaceholderIds) {
+          const placeholderRemoved = await persistDeletionToSharedState({
+            projectId,
+            resultId: placeholderResultId,
+            jobIds: [],
+            reconcileProjectCounts: true,
+          });
+          if (!placeholderRemoved) {
+            throw new Error('Logo 结果已恢复，但旧失败占位状态清理失败，请刷新后重试。');
+          }
+        }
+        addToast(
+          nextStatus === 'completed'
+            ? 'Logo 结果已恢复并通过结构质检'
+            : nextStatus === 'generating'
+              ? 'Logo 结构质检仍在进行，可稍后继续找回'
+              : recoveredResult.error || 'Logo 结构质检未通过',
+          nextStatus === 'completed' ? 'success' : nextStatus === 'generating' ? 'info' : 'warning',
+        );
+      } catch (error) {
+        if (bailIfFrontendResourceError(error)) return;
+        const message = error instanceof Error ? error.message : 'Logo 替换结果恢复失败';
+        const failedProject: Project = {
+          ...project,
+          status: 'error',
+          completedAt: undefined,
+          error: message,
+          results: project.results.map((item) => item.id === targetResult.id ? {
+            ...targetResult,
+            status: 'error',
+            error: message,
+          } : item),
+        };
+        setProjects((prev) => prev.map((item) => item.id === projectId ? failedProject : item));
+        await persistProjectToSharedState(failedProject);
+        addToast(message, 'error');
+      } finally {
+        setTasks((prev) => prev.filter((task) => task.id !== recoverControllerId));
+        delete taskControllersRef.current[recoverControllerId];
+      }
+      return;
+    }
 
     const waitingProject = mergeRecoveredResult({
       ...targetResult,
@@ -12750,7 +13560,7 @@ const AppContent: React.FC<{
       setTasks((prev) => prev.filter((task) => task.id !== recoverControllerId));
       delete taskControllersRef.current[recoverControllerId];
     }
-  }, [handleStoryboardRecoverResult, projects, hydrateShellData, hydrateShellJobs, addToast, apiConfig, persistProjectToSharedState]);
+  }, [handleStoryboardRecoverResult, projects, hydrateShellData, hydrateShellJobs, addToast, apiConfig, publicBaseUrl, persistDeletionToSharedState, persistProjectToSharedState]);
 
   const handleCancelTask = useCallback((taskIdOrProjectId: string) => {
     const targetId = normalizeShellCancelId(taskIdOrProjectId);

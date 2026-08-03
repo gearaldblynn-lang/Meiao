@@ -59,6 +59,276 @@ test('multi-logo guarded result is not overwritten by raw provider job sync', ()
   assert.equal(project?.results[0]?.logoReplaceGuarded, true);
 });
 
+test('AI-native logo generation completes from provider status and ignores legacy post-review metadata', () => {
+  const buildJob = (
+    qualityStatus,
+    qualitySummary,
+    processingMode = 'ai_native_analysis_generation_quality_v3',
+  ) => ({
+    id: `logo-quality-job-${qualityStatus || 'pending'}`,
+    module: 'everything_replace',
+    taskType: 'kie_image',
+    status: 'succeeded',
+    provider: 'kie',
+    providerTaskId: `provider-${qualityStatus || 'pending'}`,
+    payload: {
+      shellProjectId: `logo-quality-project-${qualityStatus || 'pending'}`,
+      shellProjectName: 'AI 原生 Logo 替换',
+      subFeature: 'logo_replace',
+      shellPurpose: 'logo_replace_generation',
+      logoReplaceProcessingMode: processingMode,
+      batchIndex: 1,
+      batchCount: 1,
+      prompt: 'replace logo',
+      aspectRatio: '1:1',
+    },
+    result: {
+      imageUrl: `/logo-quality-${qualityStatus || 'pending'}.png`,
+      logoReplaceQualityStatus: qualityStatus,
+      logoReplaceQualitySummary: qualitySummary,
+      creditsConsumed: 3,
+    },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+
+  const pending = buildShellDataSnapshot({}, [buildJob(undefined, '')]).projects[0];
+  assert.equal(pending?.status, 'completed');
+  assert.equal(pending?.results[0]?.status, 'completed');
+
+  const providerFailedBeforeQuality = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'logo-generation-provider-failed',
+      name: 'AI 原生 Logo 替换',
+      module: 'everything_replace',
+      subFeature: 'logo_replace',
+      status: 'generating',
+      taskCount: 1,
+      completedCount: 0,
+      createdAt: Date.now(),
+      results: [{
+        id: 'logo-generation-provider-failed-result-1',
+        projectId: 'logo-generation-provider-failed',
+        imageUrl: '',
+        prompt: 'replace logo',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'generating',
+        createdAt: Date.now(),
+        module: 'everything_replace',
+        subFeature: 'logo_replace',
+        backendJobId: 'logo-generation-provider-failed-job',
+      }],
+    }],
+  }, [{
+    ...buildJob(undefined, ''),
+    id: 'logo-generation-provider-failed-job',
+    providerTaskId: '',
+    status: 'failed',
+    payload: {
+      ...buildJob(undefined, '').payload,
+      shellProjectId: 'logo-generation-provider-failed',
+    },
+    result: null,
+    errorCode: 'provider_internal_error',
+    errorMessage: '生成服务暂时异常，请稍后重试',
+  }]).projects[0];
+  assert.equal(providerFailedBeforeQuality?.status, 'error');
+  assert.equal(providerFailedBeforeQuality?.results[0]?.status, 'error');
+  assert.equal(providerFailedBeforeQuality?.results[0]?.error, '生成服务暂时异常，请稍后重试');
+
+  const failed = buildShellDataSnapshot({}, [buildJob('failed', 'Logo 纵排变成横排。')]).projects[0];
+  assert.equal(failed?.status, 'completed');
+  assert.equal(failed?.results[0]?.status, 'completed');
+  assert.equal(failed?.results[0]?.imageUrl, '/logo-quality-failed.png');
+  assert.equal(failed?.results[0]?.error, undefined);
+
+  const persistedCompleted = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'logo-quality-project-failed',
+      name: 'AI 原生 Logo 替换',
+      module: 'everything_replace',
+      subFeature: 'logo_replace',
+      status: 'error',
+      taskCount: 1,
+      completedCount: 0,
+      creditsConsumed: 3,
+      createdAt: Date.now(),
+      results: [{
+        id: 'provider-failed',
+        projectId: 'logo-quality-project-failed',
+        imageUrl: '/logo-quality-failed.png',
+        prompt: 'replace logo',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'error',
+        error: 'Logo 纵排变成横排。',
+        errorCode: 'logo_replace_quality_rejected',
+        creditsConsumed: 4.84,
+        createdAt: Date.now(),
+        module: 'everything_replace',
+        subFeature: 'logo_replace',
+        taskId: 'provider-failed',
+        backendJobId: 'logo-quality-job-failed',
+      }],
+    }],
+  }, [buildJob('failed', 'Logo 纵排变成横排。')]).projects[0];
+  assert.equal(persistedCompleted?.status, 'completed');
+  assert.equal(persistedCompleted?.completedCount, 1);
+  assert.equal(persistedCompleted?.results[0]?.status, 'completed');
+  assert.equal(persistedCompleted?.results[0]?.error, undefined);
+  assert.equal(persistedCompleted?.results[0]?.errorCode, undefined);
+  assert.equal(persistedCompleted?.creditsConsumed, 4.84);
+  assert.equal(persistedCompleted?.results[0]?.creditsConsumed, 4.84);
+
+  const passed = buildShellDataSnapshot({}, [buildJob('passed', 'Logo 结构一致。')]).projects[0];
+  assert.equal(passed?.status, 'completed');
+  assert.equal(passed?.results[0]?.status, 'completed');
+
+  const legacyV2Failed = buildShellDataSnapshot({}, [buildJob(
+    'failed',
+    '旧版放大质检证据缺失。',
+    'ai_native_analysis_generation_quality_v2',
+  )]).projects[0];
+  assert.equal(legacyV2Failed?.status, 'completed');
+  assert.equal(legacyV2Failed?.results[0]?.error, undefined);
+
+  const persistedOnly = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'logo-persisted-first-paint',
+      name: 'Logo 冷刷新首屏',
+      module: 'everything_replace',
+      subFeature: 'logo_replace',
+      status: 'error',
+      taskCount: 2,
+      completedCount: 1,
+      creditsConsumed: 5.32,
+      createdAt: 1785724868940,
+      results: [{
+        id: 'new-success',
+        projectId: 'logo-persisted-first-paint',
+        imageUrl: '/new-success.png',
+        prompt: 'replace logo',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'completed',
+        errorCode: 'logo_replace_structure_quality_failed',
+        creditsConsumed: 5.32,
+        createdAt: 1785726923491,
+        module: 'everything_replace',
+        subFeature: 'logo_replace',
+        backendJobId: 'new-success-job',
+        batchIndex: 1,
+        batchCount: 1,
+      }, {
+        id: 'old-failure',
+        projectId: 'logo-persisted-first-paint',
+        imageUrl: '',
+        prompt: 'replace logo',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'error',
+        error: '旧生图失败',
+        errorCode: 'provider_internal_error',
+        createdAt: 1785725641541,
+        module: 'everything_replace',
+        subFeature: 'logo_replace',
+        backendJobId: 'old-failure-job',
+        batchIndex: 1,
+        batchCount: 1,
+      }],
+    }],
+  }, []).projects[0];
+  assert.equal(persistedOnly?.status, 'completed');
+  assert.equal(persistedOnly?.taskCount, 1);
+  assert.equal(persistedOnly?.completedCount, 1);
+  assert.equal(persistedOnly?.results.length, 1);
+  assert.equal(persistedOnly?.results[0]?.id, 'new-success');
+  assert.equal(persistedOnly?.results[0]?.error, undefined);
+  assert.equal(persistedOnly?.results[0]?.errorCode, undefined);
+  assert.equal(persistedOnly?.creditsConsumed, 5.32);
+});
+
+test('Logo recovery keeps only the newest generation attempt for each reference batch', () => {
+  const shellProjectId = 'logo-recovery-latest-attempt';
+  const basePayload = {
+    shellProjectId,
+    shellProjectName: 'Logo 恢复项目',
+    subFeature: 'logo_replace',
+    shellPurpose: 'logo_replace_generation',
+    taskPurpose: 'logo_replace_generation',
+    logoReplaceProcessingMode: 'ai_native_analysis_generation_quality_v3',
+    batchIndex: 1,
+    batchCount: 1,
+    prompt: 'replace logo',
+    aspectRatio: '1:1',
+  };
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: shellProjectId,
+      name: 'Logo 恢复项目',
+      module: 'everything_replace',
+      subFeature: 'logo_replace',
+      status: 'error',
+      taskCount: 2,
+      completedCount: 0,
+      createdAt: 100,
+      results: [{
+        id: 'logo-old-provider-failure-result',
+        projectId: shellProjectId,
+        imageUrl: '',
+        prompt: 'replace logo',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'error',
+        createdAt: 100,
+        module: 'everything_replace',
+        subFeature: 'logo_replace',
+        backendJobId: 'logo-old-provider-failure',
+        batchIndex: 1,
+        error: '生成服务暂时异常，请稍后重试',
+      }],
+    }],
+  }, [{
+    id: 'logo-old-provider-failure',
+    module: 'everything_replace',
+    taskType: 'kie_image',
+    status: 'failed',
+    provider: 'kie',
+    providerTaskId: '',
+    payload: basePayload,
+    errorCode: 'provider_internal_error',
+    errorMessage: '生成服务暂时异常，请稍后重试',
+    createdAt: 100,
+    updatedAt: 110,
+  }, {
+    id: 'logo-new-quality-failure',
+    module: 'everything_replace',
+    taskType: 'kie_image',
+    status: 'succeeded',
+    provider: 'kie',
+    providerTaskId: 'provider-new',
+    payload: basePayload,
+    result: {
+      imageUrl: '/logo-new.png',
+      providerTaskId: 'provider-new',
+      creditsConsumed: 3,
+      logoReplaceQualityStatus: 'failed',
+      logoReplaceQualitySummary: '微型副标文字不清晰。',
+    },
+    createdAt: 200,
+    updatedAt: 220,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === shellProjectId);
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.results[0]?.backendJobId, 'logo-new-quality-failure');
+  assert.equal(project?.results[0]?.imageUrl, '/logo-new.png');
+  assert.equal(project?.results[0]?.status, 'completed');
+  assert.equal(project?.taskCount, 1);
+  assert.equal(project?.creditsConsumed, 3);
+});
+
 test('shell data adapter repairs observed product restoration job cards into one canonical project', () => {
   const shellProjectId = 'proj-1784136403259';
   const clientSubmissionKey = `${shellProjectId}:product_restore:restore-analysis-job:restore-target-a:v2`;
@@ -7908,4 +8178,152 @@ test('shell data adapter never restores a compiled provider prompt as raw model 
   const project = buildShellDataSnapshot({}, [job]).projects[0];
 
   assert.equal(project?.generationContext?.prompt, '');
+});
+
+test('product replacement generation batch identity replaces an old failed retry and restores authoritative 2 of 2 credits', () => {
+  const shellProjectId = 'product-replace-batch-project';
+  const persistedProject = {
+    id: shellProjectId,
+    name: '组合产品替换',
+    module: 'everything_replace',
+    subFeature: 'product_replace',
+    status: 'error',
+    createdAt: 1000,
+    taskCount: 3,
+    completedCount: 0,
+    directGeneration: false,
+    creditsConsumed: 19.71,
+    error: '旧失败不应保留',
+    results: [
+      {
+        id: 'provider-generation-1',
+        projectId: shellProjectId,
+        imageUrl: '/result-1.png',
+        mediaType: 'image',
+        prompt: '第 1 张',
+        model: 'nano-banana-2',
+        aspectRatio: '3:2',
+        status: 'completed',
+        createdAt: 2001,
+        module: 'everything_replace',
+        subFeature: 'product_replace',
+        backendJobId: 'product-generation-1',
+        taskId: 'provider-generation-1',
+        batchIndex: 1,
+        batchCount: 2,
+        creditsConsumed: 6.59,
+        productReplaceAnalysisCreditsConsumed: 1.59,
+        productReplaceGenerationCreditsConsumed: 5,
+      },
+      {
+        id: 'provider-generation-2',
+        projectId: shellProjectId,
+        imageUrl: '/result-2.png',
+        mediaType: 'image',
+        prompt: '第 2 张',
+        model: 'nano-banana-2',
+        aspectRatio: '3:2',
+        status: 'completed',
+        createdAt: 2002,
+        module: 'everything_replace',
+        subFeature: 'product_replace',
+        backendJobId: 'product-generation-2',
+        taskId: 'provider-generation-2',
+        batchIndex: 2,
+        batchCount: 2,
+        creditsConsumed: 6.53,
+        productReplaceAnalysisCreditsConsumed: 1.53,
+        productReplaceGenerationCreditsConsumed: 5,
+      },
+      {
+        id: 'old-failed-retry',
+        projectId: shellProjectId,
+        imageUrl: '',
+        mediaType: 'image',
+        prompt: '旧失败重试',
+        model: 'maxforai-image-2-relay',
+        aspectRatio: 'auto',
+        status: 'error',
+        createdAt: 1100,
+        module: 'everything_replace',
+        subFeature: 'product_replace',
+        backendJobId: 'old-failed-job',
+        batchIndex: 1,
+        error: 'provider_auth_invalid',
+      },
+    ],
+  };
+  const makeGenerationJob = ({
+    id,
+    providerTaskId,
+    batchIndex,
+    imageUrl,
+    analysisCredits,
+  }) => ({
+    id,
+    module: 'everything_replace',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId,
+    payload: {
+      shellProjectId,
+      shellProjectName: '组合产品替换',
+      taskPurpose: 'product_replace_generation',
+      shellPurpose: 'product_replace_generation',
+      subFeature: 'product_replace',
+      batchIndex,
+      batchCount: 2,
+      prompt: `第 ${batchIndex} 张`,
+      model: 'nano-banana-2',
+      aspectRatio: '3:2',
+      productReplaceAnalysisCreditsConsumed: analysisCredits,
+    },
+    result: {
+      imageUrl,
+      providerTaskId,
+      creditsConsumed: 5,
+    },
+    createdAt: 2000 + batchIndex,
+    updatedAt: 3000 + batchIndex,
+    finishedAt: 3000 + batchIndex,
+  });
+
+  const persistedOnlyProject = buildShellDataSnapshot({
+    shellProjects: [persistedProject],
+  }, []).projects.find((item) => item.id === shellProjectId);
+  assert.equal(persistedOnlyProject?.status, 'completed');
+  assert.equal(persistedOnlyProject?.taskCount, 2);
+  assert.equal(persistedOnlyProject?.completedCount, 2);
+  assert.equal(persistedOnlyProject?.results.length, 2);
+  assert.equal(persistedOnlyProject?.creditsConsumed, 13.12);
+
+  const snapshot = buildShellDataSnapshot({ shellProjects: [persistedProject] }, [
+    makeGenerationJob({
+      id: 'product-generation-1',
+      providerTaskId: 'provider-generation-1',
+      batchIndex: 1,
+      imageUrl: '/result-1.png',
+      analysisCredits: 1.59,
+    }),
+    makeGenerationJob({
+      id: 'product-generation-2',
+      providerTaskId: 'provider-generation-2',
+      batchIndex: 2,
+      imageUrl: '/result-2.png',
+      analysisCredits: 1.53,
+    }),
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === shellProjectId);
+  assert.equal(project?.status, 'completed');
+  assert.equal(project?.taskCount, 2);
+  assert.equal(project?.completedCount, 2);
+  assert.equal(project?.error, undefined);
+  assert.deepEqual(project?.results.map((result) => result.batchIndex), [1, 2]);
+  assert.deepEqual(project?.results.map((result) => result.imageUrl), ['/result-1.png', '/result-2.png']);
+  assert.deepEqual(project?.results.map((result) => result.productReplaceAnalysisCreditsConsumed), [1.59, 1.53]);
+  assert.deepEqual(project?.results.map((result) => result.productReplaceGenerationCreditsConsumed), [5, 5]);
+  assert.deepEqual(project?.results.map((result) => result.creditsConsumed), [6.59, 6.53]);
+  assert.equal(project?.creditsConsumed, 13.12);
 });

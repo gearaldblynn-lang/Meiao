@@ -534,6 +534,12 @@ test('crops large transparent padding around an uploaded logo before placement',
       width: 241,
       height: 160,
     });
+    assert.deepEqual(result.visibleContentRect, {
+      x: 296,
+      y: 330,
+      width: 215,
+      height: 134,
+    });
     assert.equal(outputCanvases.at(-1).width, 241);
     assert.equal(outputCanvases.at(-1).height, 160);
   });
@@ -626,6 +632,56 @@ test('crops against an internal opaque backing plate so the exported logo has no
     });
     assert.equal(outputCanvases.at(-1).width, 70);
     assert.equal(outputCanvases.at(-1).height, 24);
+  });
+});
+
+test('identity-reference crop keeps backing-plate pixels while trimming only outer canvas', async () => {
+  const width = 240;
+  const height = 120;
+  const data = new Uint8ClampedArray(width * height * 4);
+  const setPixel = (x, y, rgba) => {
+    const offset = (y * width + x) * 4;
+    data[offset] = rgba[0];
+    data[offset + 1] = rgba[1];
+    data[offset + 2] = rgba[2];
+    data[offset + 3] = rgba[3];
+  };
+
+  for (let y = 24; y < 96; y += 1) {
+    for (let x = 36; x < 204; x += 1) {
+      setPixel(x, y, [246, 247, 248, 255]);
+    }
+  }
+  for (let y = 52; y < 68; y += 1) {
+    for (let x = 92; x < 154; x += 1) {
+      setPixel(x, y, [16, 16, 18, 255]);
+    }
+  }
+
+  await withMockedLogoCropRuntime({
+    width,
+    height,
+    imageData: { data, width, height },
+  }, async ({ outputCanvases }) => {
+    const result = await createWhitespaceCroppedLogoBlob(
+      'https://cdn.example/logo-with-backing.png',
+      { preserveBackingPlate: true },
+    );
+
+    assert.deepEqual(result.cropRect || result.rect, {
+      x: 26,
+      y: 14,
+      width: 188,
+      height: 92,
+    });
+    assert.deepEqual(result.visibleContentRect, {
+      x: 36,
+      y: 24,
+      width: 168,
+      height: 72,
+    });
+    assert.equal(outputCanvases.at(-1).width, 188);
+    assert.equal(outputCanvases.at(-1).height, 92);
   });
 });
 

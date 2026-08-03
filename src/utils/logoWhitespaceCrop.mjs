@@ -542,7 +542,9 @@ const decodeImageFromBlob = async (blob, label) => {
 
 const isWholeImage = (rect, width, height) => rect.x === 0 && rect.y === 0 && rect.width === width && rect.height === height;
 
-export const createWhitespaceCroppedLogoBlob = async (logoUrl) => {
+export const createWhitespaceCroppedLogoBlob = async (logoUrl, {
+  preserveBackingPlate = false,
+} = {}) => {
   const image = await decodeImageFromBlob(await fetchImageBlobWithProxy(logoUrl, 'Logo图'), 'Logo图');
   const width = image.width || image.naturalWidth || 1;
   const height = image.height || image.naturalHeight || 1;
@@ -560,31 +562,37 @@ export const createWhitespaceCroppedLogoBlob = async (logoUrl) => {
   if (isWholeImage(rect, width, height)) {
     rect = findDarkBackgroundLightContentBounds(imageData) || rect;
   }
-  const transparentized = transparentizeFlatLogoBackground(imageData);
-  if (transparentized.changed) {
-    if (typeof sourceCtx.putImageData === 'function') {
-      sourceCtx.putImageData(transparentized.imageData, 0, 0);
+  if (!preserveBackingPlate) {
+    const transparentized = transparentizeFlatLogoBackground(imageData);
+    if (transparentized.changed) {
+      if (typeof sourceCtx.putImageData === 'function') {
+        sourceCtx.putImageData(transparentized.imageData, 0, 0);
+      }
+      rect = findNonTransparentBounds(transparentized.imageData);
     }
-    rect = findNonTransparentBounds(transparentized.imageData);
-  }
-  const darkBackingTransparentized = transparentizeDarkLogoBacking(transparentized.changed ? transparentized.imageData : imageData);
-  if (darkBackingTransparentized.changed) {
-    if (typeof sourceCtx.putImageData === 'function') {
-      sourceCtx.putImageData(darkBackingTransparentized.imageData, 0, 0);
+    const darkBackingTransparentized = transparentizeDarkLogoBacking(transparentized.changed ? transparentized.imageData : imageData);
+    if (darkBackingTransparentized.changed) {
+      if (typeof sourceCtx.putImageData === 'function') {
+        sourceCtx.putImageData(darkBackingTransparentized.imageData, 0, 0);
+      }
+      rect = findNonTransparentBounds(darkBackingTransparentized.imageData);
     }
-    rect = findNonTransparentBounds(darkBackingTransparentized.imageData);
-  }
-  const backingPlateTransparentized = transparentizeOpaqueLogoBackingPlate(
-    darkBackingTransparentized.changed
-      ? darkBackingTransparentized.imageData
-      : transparentized.changed ? transparentized.imageData : imageData,
-  );
-  if (backingPlateTransparentized.changed) {
-    if (typeof sourceCtx.putImageData === 'function') {
-      sourceCtx.putImageData(backingPlateTransparentized.imageData, 0, 0);
+    const backingPlateTransparentized = transparentizeOpaqueLogoBackingPlate(
+      darkBackingTransparentized.changed
+        ? darkBackingTransparentized.imageData
+        : transparentized.changed ? transparentized.imageData : imageData,
+    );
+    if (backingPlateTransparentized.changed) {
+      if (typeof sourceCtx.putImageData === 'function') {
+        sourceCtx.putImageData(backingPlateTransparentized.imageData, 0, 0);
+      }
+      rect = findNonTransparentBounds(backingPlateTransparentized.imageData);
     }
-    rect = findNonTransparentBounds(backingPlateTransparentized.imageData);
   }
+  // The tight visible-art bounds and the padded export crop serve different
+  // purposes. Keep the former for identity geometry; use the latter only to
+  // avoid clipping pixels in the uploaded reference image.
+  const visibleContentRect = { ...rect };
   rect = expandLogoCropRectWithPadding({ rect, width, height });
   const outputCanvas = document.createElement('canvas');
   outputCanvas.width = Math.max(1, rect.width);
@@ -594,5 +602,5 @@ export const createWhitespaceCroppedLogoBlob = async (logoUrl) => {
   outputCtx.drawImage(sourceCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
   const blob = await new Promise((resolve) => outputCanvas.toBlob(resolve, 'image/png', 0.95));
   if (!blob) throw new Error('Logo裁边导出失败');
-  return { blob, rect, originalWidth: width, originalHeight: height };
+  return { blob, rect, visibleContentRect, originalWidth: width, originalHeight: height };
 };

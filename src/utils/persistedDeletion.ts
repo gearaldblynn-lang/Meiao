@@ -6,6 +6,7 @@ export interface PersistedDeletionTarget {
   resultId?: string;
   jobIds?: string[];
   preserveStoryboardBoardSlot?: boolean;
+  reconcileProjectCounts?: boolean;
 }
 
 interface TargetSets {
@@ -263,6 +264,28 @@ export const prunePersistedAppStateForDeletion = (
       nextProject.results = project.results.filter((result: any) => !matchesTarget(result, targets.nestedIds));
       if (project.results.length > 0 && nextProject.results.length === 0) {
         return [];
+      }
+      if (target.reconcileProjectCounts && nextProject.results.length !== project.results.length) {
+        const completedCount = nextProject.results.filter((result: any) => (
+          result?.status === 'completed' && Boolean(result?.imageUrl || result?.videoUrl)
+        )).length;
+        const hasGenerating = nextProject.results.some((result: any) => (
+          result?.status === 'generating' || result?.status === 'pending' || result?.status === 'retry_waiting'
+        ));
+        const hasError = nextProject.results.some((result: any) => result?.status === 'error');
+        nextProject.taskCount = Math.max(nextProject.results.length, 1);
+        nextProject.completedCount = completedCount;
+        nextProject.status = hasGenerating
+          ? 'generating'
+          : hasError
+            ? 'error'
+            : completedCount >= nextProject.taskCount
+              ? 'completed'
+              : nextProject.status;
+        if (nextProject.status === 'completed') {
+          delete nextProject.error;
+          delete nextProject.message;
+        }
       }
     }
     if (

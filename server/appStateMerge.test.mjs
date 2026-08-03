@@ -2138,3 +2138,51 @@ test('app state merge applies canonical product restoration tombstones before sc
 
   assert.deepEqual(merged.shellProjects, []);
 });
+
+test('mergeAppStateForStorage recovers a completed logo result from legacy post-review rejection', () => {
+  const projectId = 'proj-logo-quality-rejected';
+  const backendJobId = 'logo-generation-job';
+  const imageUrl = '/managed/logo-result.png';
+  const qualityError = 'Logo 内部排布与身份参考不一致，已停止发布。';
+  const buildProject = (status, result, creditsConsumed = 4.84) => ({
+    id: projectId,
+    module: 'everything_replace',
+    subFeature: 'logo_replace',
+    status,
+    taskCount: 1,
+    completedCount: status === 'completed' ? 1 : 0,
+    creditsConsumed,
+    results: [{
+      id: 'logo-result',
+      projectId,
+      module: 'everything_replace',
+      subFeature: 'logo_replace',
+      backendJobId,
+      imageUrl,
+      creditsConsumed: 4.84,
+      ...result,
+    }],
+  });
+
+  const merged = mergeAppStateForStorage({
+    shellProjects: [buildProject('completed', { status: 'completed' })],
+  }, {
+    shellProjects: [buildProject('error', {
+      status: 'error',
+      error: qualityError,
+      errorCode: 'logo_replace_quality_rejected',
+    }, 3)],
+  });
+
+  const project = merged.shellProjects[0];
+  assert.equal(project.status, 'completed');
+  assert.equal(project.taskCount, 1);
+  assert.equal(project.completedCount, 1);
+  assert.equal(project.creditsConsumed, 4.84);
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].status, 'completed');
+  assert.equal(project.results[0].error, undefined);
+  assert.equal(project.results[0].errorCode, undefined);
+  assert.equal(project.results[0].imageUrl, imageUrl);
+  assert.equal(project.results[0].creditsConsumed, 4.84);
+});

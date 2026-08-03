@@ -5,9 +5,10 @@ import { existsSync, readFileSync } from 'node:fs';
 const source = () => readFileSync(new URL('./BottomInputBar.tsx', import.meta.url), 'utf8');
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
-test('logo replacement integrates the new guarded replacement contract', () => {
+test('logo replacement exposes one AI-native region-binding contract', () => {
   const bottomInputBar = source();
   const workflow = read('../../../adapters/shellWorkflow.ts');
+  const activeLogoWorkflow = workflow.match(/const runLogoReplaceWorkflow = async[\s\S]*?const runProductReplaceWorkflow = async/)?.[0] || '';
   const shellApp = read('../../../ShellMigratedApp.tsx');
   const logoQuickParams = bottomInputBar.match(/const getLogoReplaceQuickParams = [\s\S]*?const getQuickParamsForModule/)?.[0] || '';
   const placeholderBlock = bottomInputBar.match(/const getPlaceholderForContext = [\s\S]*?const getGenerateLabelForContext/)?.[0] || '';
@@ -18,18 +19,33 @@ test('logo replacement integrates the new guarded replacement contract', () => {
   assert.doesNotMatch(logoQuickParams, /单Logo框选|多Logo框选/);
   assert.doesNotMatch(logoQuickParams, /key: 'logoReplaceRenderMode'|program_guarded|程序兜底|KIE直出/);
 
-  assert.match(bottomInputBar, /const LOGO_REGION_REPLACE_PLACEHOLDER = '框选旧 Logo 区域时，请让选框略大于 Logo 本身，完整包住文字\/图形及周围少量背景留白。';/);
+  assert.match(bottomInputBar, /const LOGO_REGION_REPLACE_PLACEHOLDER = '选框必须完整包住旧 Logo，同时也是新 Logo 最终允许占用的范围；新旧比例不同时请扩大选框，为完整图形、主标和副标预留空间。';/);
   assert.match(placeholderBlock, /single_logo_region_replace/);
   assert.match(placeholderBlock, /multi_logo_replace/);
   assert.match(placeholderBlock, /return LOGO_REGION_REPLACE_PLACEHOLDER/);
 
   assert.doesNotMatch(shellApp, /logoReplaceRenderMode: params\.logoReplaceRenderMode \|\| 'program_guarded'/);
-  assert.match(workflow, /requestedLogoReplaceRenderMode/);
-  assert.match(workflow, /logoReplaceMode === 'multi_logo_replace' \|\| logoReplaceMode === 'single_logo_region_replace'[\s\S]*\? 'program_guarded'/);
-  assert.match(workflow, /const useDirectLogoReplace = logoReplaceMode !== 'multi_logo_replace' && logoReplaceMode !== 'single_logo_region_replace' && logoReplaceRenderMode === 'kie_direct'/);
-  assert.match(workflow, /imageInputUrls = \[referenceUrl, \.\.\.multiLogoInputUrls, multiLogoPreviewInputs\.multiLogoPreviewUrl\]\.filter\(Boolean\)/);
-  assert.match(workflow, /cleanupMode: 'rect'/);
-  assert.match(workflow, /cleanupScrubPaddingRatio: logoReplaceMode === 'single_logo_region_replace' \? 0\.24 : 0/);
+  assert.match(bottomInputBar, /replacementRequirement: String\(region\?\.replacementRequirement \|\| ''\)\.trim\(\)/);
+  assert.match(bottomInputBar, /当前区域替换要求/);
+  assert.match(bottomInputBar, /value=\{String\(activeRegion\.replacementRequirement \|\| ''\)\}/);
+  assert.match(bottomInputBar, /replacementRequirement: event\.target\.value/);
+  assert.match(activeLogoWorkflow, /ai_native_analysis_generation_v4/);
+  assert.match(activeLogoWorkflow, /completeLogoReplaceResultLifecycle/);
+  assert.doesNotMatch(activeLogoWorkflow, /validateLogoReplacementResult|logo_replace_quality_check/);
+  assert.doesNotMatch(activeLogoWorkflow, /program_guarded|createGuardedMultiLogoReplaceResultBlob/);
+});
+
+test('logo replacement selection frame keeps the coordinate layer aligned to the contained image', () => {
+  const bottomInputBar = source();
+
+  assert.match(
+    bottomInputBar,
+    /width: `min\(100%, calc\(\(min\(60vh, 680px\) - 24px\) \* \$\{referenceRatio\}\)\)`/,
+  );
+  assert.doesNotMatch(
+    bottomInputBar,
+    /width: referenceRatio >= 1 \? '100%' : `calc\(min\(60vh, 680px\) \* \$\{referenceRatio\}\)`/,
+  );
 });
 
 test('one click shell params are subfeature-aware and do not expose fake style preset entry', () => {
@@ -534,6 +550,7 @@ test('everything replace product mode exposes replacement controls and material 
   const bottomInputBar = source();
   const uploadSelector = read('../UploadTypeSelector.tsx');
   const materialPreview = read('../MaterialPreviewBar.tsx');
+  const productRegionEditor = read('../ProductReplaceRegionEditor.tsx');
   const imageLightbox = read('../ImageLightbox.tsx');
 
   assert.match(bottomInputBar, /isProductReplaceContext/);
@@ -572,6 +589,45 @@ test('everything replace product mode exposes replacement controls and material 
   assert.doesNotMatch(bottomInputBar, /位置可调/);
   assert.match(bottomInputBar, /Logo位置区域调整/);
   assert.match(bottomInputBar, /LOGO_PLACEMENT_RATIOS/);
+  assert.match(bottomInputBar, /ProductReplaceRegionEditor/);
+  assert.match(bottomInputBar, /productReplaceRegions/);
+  assert.match(bottomInputBar, /待标记/);
+  assert.match(bottomInputBar, /已标记/);
+  assert.match(bottomInputBar, /data-region-mark-status=\{completed \? 'complete' : 'pending'\}/);
+  assert.match(bottomInputBar, /data-region-mark-scope=\{scope\}/);
+  assert.match(bottomInputBar, /scope: 'product_replace'/);
+  assert.match(bottomInputBar, /scope: 'logo_replace'/);
+  assert.match(bottomInputBar, /regions\.length > 0 && regions\.every/);
+  assert.match(bottomInputBar, /rounded-full border px-1 text-\[8px\] font-semibold text-white shadow-sm backdrop-blur-sm/);
+  assert.match(bottomInputBar, /background: 'rgba\(15, 23, 42, 0\.72\)'/);
+  assert.match(bottomInputBar, /background: completed \? '#22c55e' : '#f59e0b'/);
+  assert.doesNotMatch(bottomInputBar, /flex h-\[18px\] w-\[18px\] items-center justify-center rounded-md text-white/);
+  assert.match(bottomInputBar, /renderCombinationMaterialOverlay/);
+  assert.match(bottomInputBar, /buildProductGroupAssignmentPatches/);
+  assert.match(bottomInputBar, /getEffectiveProductGroupId/);
+  assert.match(bottomInputBar, /resolveProductGroupIdForSelection/);
+  assert.match(bottomInputBar, /productGroupAssignment: 'manual'/);
+  assert.doesNotMatch(bottomInputBar, /productGroupId: `product-group-\$\{index \+ 1\}`/);
+  assert.match(bottomInputBar, /renderMaterialOverlay=\{isCombinationProductReplace[\s\S]*?renderCombinationMaterialOverlay[\s\S]*?renderLogoReplaceMaterialOverlay/);
+  assert.match(materialPreview, /renderMaterialOverlay\?: \(type: string, material: Material, index: number\) => React\.ReactNode/);
+  assert.match(materialPreview, /renderMaterialOverlay\?\.\(type, m, index\)/);
+  assert.doesNotMatch(bottomInputBar, /sm:grid-cols-2[\s\S]*?所属产品组[\s\S]*?sm:grid-cols-2[\s\S]*?已标记/);
+  assert.match(productRegionEditor, /P\{group\.productNumber\}/);
+  assert.match(productRegionEditor, /产品替换区域标记/);
+  assert.match(productRegionEditor, /每张替换参考图都必须完成全部产品区域标记/);
+  assert.match(productRegionEditor, /标记只用于定位，不会进入最终成图/);
+  assert.match(productRegionEditor, /保存区域标记/);
+  assert.match(bottomInputBar, /Logo 替换区域标记/);
+  assert.match(bottomInputBar, /styleRef: '标记区域'/);
+  assert.doesNotMatch(bottomInputBar, /styleRef: '框选区域'/);
+  assert.match(productRegionEditor, /const EMPTY_PRODUCT_REPLACE_REGIONS/);
+  assert.match(productRegionEditor, /initialRegions = EMPTY_PRODUCT_REPLACE_REGIONS/);
+  assert.doesNotMatch(productRegionEditor, /initialRegions = \[\]/);
+  assert.match(productRegionEditor, /fetchImageBlobWithProxy/);
+  assert.match(productRegionEditor, /resolvePublicAssetUrl/);
+  assert.match(productRegionEditor, /URL\.createObjectURL/);
+  assert.match(productRegionEditor, /URL\.revokeObjectURL/);
+  assert.doesNotMatch(productRegionEditor, /src=\{reference\.url\}/);
   assert.match(bottomInputBar, /logoPlacementReferenceSize/);
   assert.match(bottomInputBar, /activeEverythingReplaceReference\?\.originalWidth \|\| 1000/);
   assert.doesNotMatch(bottomInputBar, /activeEverythingReplaceReference\.originalWidth/);
@@ -593,7 +649,7 @@ test('everything replace product mode exposes replacement controls and material 
   assert.match(uploadSelector, /materialActionLabels/);
   assert.match(uploadSelector, /onMaterialAction/);
   assert.match(materialPreview, /onAdjustMaterial/);
-  assert.match(materialPreview, /调整位置/);
+  assert.match(materialPreview, /adjustMaterialLabels/);
   assert.match(imageLightbox, /bottom-8 left-1\/2/);
   assert.match(imageLightbox, /Move size=\{17\}/);
   assert.doesNotMatch(materialPreview, /详情补充/);

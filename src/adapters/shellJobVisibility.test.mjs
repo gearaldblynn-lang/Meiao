@@ -81,5 +81,20 @@ test('isShellControlJob recognizes planning and analysis jobs across shell modul
     taskType: 'kie_chat',
     payload: { shellPlanningPurpose: 'one_click_planning' },
   }, 'one_click'), true);
+  assert.equal(isShellControlJob({
+    module: 'everything_replace',
+    taskType: 'kie_chat',
+    payload: { taskPurpose: 'logo_replace_analysis' },
+  }, 'everything_replace'), true);
+  assert.equal(isShellControlJob({
+    module: 'everything_replace',
+    taskType: 'kie_chat',
+    payload: { taskPurpose: 'logo_replace_quality_check' },
+  }, 'everything_replace'), true);
+  assert.equal(isShellControlJob({
+    module: 'everything_replace',
+    taskType: 'kie_chat',
+    payload: { taskPurpose: 'product_replace_analysis' },
+  }, 'everything_replace'), true);
   assert.equal(isShellControlJob({ module: 'retouch', taskType: 'kie_image', payload: {} }, 'retouch'), false);
 });

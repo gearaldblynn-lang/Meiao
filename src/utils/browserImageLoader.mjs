@@ -1,3 +1,5 @@
+import { resolvePublicAssetUrl } from './modelAssetUrl.mjs';
+
 const shouldUseDownloadProxy = (url) => {
   try {
     if (typeof window === 'undefined' || !window.location?.href) return false;
@@ -29,6 +31,7 @@ const isSameOriginUrl = (url) => {
 export const fetchImageBlobWithProxy = async (url, label = 'Image', signal) => {
   const safeUrl = String(url || '').trim();
   if (!safeUrl) throw new Error(`${label} URL is empty`);
+  const browserUrl = resolvePublicAssetUrl(safeUrl) || safeUrl;
 
   const fetchDirect = async (targetUrl) => {
     const sameOrigin = isSameOriginUrl(targetUrl);
@@ -44,10 +47,10 @@ export const fetchImageBlobWithProxy = async (url, label = 'Image', signal) => {
   };
 
   try {
-    return await fetchDirect(safeUrl);
+    return await fetchDirect(browserUrl);
   } catch (error) {
-    if (!shouldUseDownloadProxy(safeUrl)) throw error;
-    return fetchDirect(`/api/assets/download-proxy?url=${encodeURIComponent(safeUrl)}`);
+    if (!shouldUseDownloadProxy(browserUrl)) throw error;
+    return fetchDirect(`/api/assets/download-proxy?url=${encodeURIComponent(browserUrl)}`);
   }
 };
 

@@ -121,6 +121,8 @@ export const mergeArrayByStableKeys = (existingItems = [], incomingItems = []) =
     const next = { ...(item || {}) };
     delete next.error;
     delete next.message;
+    delete next.errorCode;
+    delete next.errorDetail;
     return next;
   };
   const mergeDuplicateItem = (current = {}, item = {}) => {

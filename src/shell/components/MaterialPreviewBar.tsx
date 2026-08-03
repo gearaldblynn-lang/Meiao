@@ -32,11 +32,21 @@ interface Props {
   materials: Record<string, Material[]>;
   onRemoveMaterial: (type: string, id: string) => void;
   onAdjustMaterial?: (type: string, id: string) => void;
+  adjustMaterialLabels?: Partial<Record<string, string>>;
+  renderMaterialOverlay?: (type: string, material: Material, index: number) => React.ReactNode;
   onMoveMaterial?: (type: string, id: string, direction: 'left' | 'right') => void;
   materialLimits?: Partial<Record<string, number>>;
 }
 
-const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAdjustMaterial, onMoveMaterial, materialLimits }) => {
+const MaterialPreviewBar: React.FC<Props> = ({
+  materials,
+  onRemoveMaterial,
+  onAdjustMaterial,
+  adjustMaterialLabels,
+  renderMaterialOverlay,
+  onMoveMaterial,
+  materialLimits,
+}) => {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -88,7 +98,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
 
   const totalCount = groups.reduce((sum, group) => sum + group.list.length, 0);
   const currentLightboxActionLabel = currentLightboxItem && onAdjustMaterial
-    ? (currentLightboxItem.type === 'logo' ? '调整位置' : currentLightboxItem.type === 'styleRef' ? '框选区域' : '')
+    ? String(adjustMaterialLabels?.[currentLightboxItem.type] || '')
     : '';
 
   return (
@@ -207,6 +217,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                           第{m.buyerShowSetIndex + 1}套
                         </span>
                       ) : null}
+                      {renderMaterialOverlay?.(type, m, index)}
                       {onMoveMaterial ? (
                         <div className="absolute bottom-0.5 left-1/2 z-20 flex -translate-x-1/2 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                           <button

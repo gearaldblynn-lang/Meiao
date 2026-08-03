@@ -1,6 +1,6 @@
 # Prompt RTCFE 迁移对照检查文档
 
-更新日期：2026-04-29
+更新日期：2026-08-03
 
 本文档用于把项目内所有长期维护的 prompt 统一迁移到 RTCFE 结构。当前阶段只做对照审查，不直接改运行中的 prompt。你确认本文档无遗漏后，再按本文档逐项落地修改。
 
@@ -107,6 +107,8 @@ E Example 示例
 | P22 | 智能体生图 | `server/index.mjs` | `buildImagePromptReferenceText` + final prompt | 智能体图像生成 prompt | 待确认 |
 | P23 | 智能体训练 | `server/index.mjs` | `STUDIO_CONFIG_ASSISTANT_PROMPT` | 训练助手配置 prompt | 待确认 |
 | P24 | Provider 网关 | `server/providerGateway.mjs` | `buildKieAspectRatioPromptHint` | 比例补充短 prompt | 待确认 |
+| P25 | 万物替换 | `src/utils/productReplaceAnalysis.mjs`、`src/utils/productReplaceContract.mjs` | `buildProductReplaceAnalysisPrompt`、`buildProductReplacePrompt`、`buildProductReplaceEditPrompt` | 组合替换策划、产品替换生成与结果编辑 prompt | 已迁移 |
+| P26 | 万物替换 | `src/utils/logoReplaceAnalysis.mjs` | `buildLogoReplaceAnalysisPrompt`、`buildLogoReplaceGenerationPrompt` | Logo 结构分析与原子图稿生图 prompt；历史质量解析器已停用 | 已迁移 |
 
 说明：测试文件中的 prompt fixture 不作为源 prompt 迁移对象，但迁移后要同步更新或新增测试。
 
@@ -675,6 +677,45 @@ E Example 示例
   - 如果未来启用，应作为 C 约束片段追加，不要覆盖主 prompt。
 - 你确认：`[ ]`
 
+### P25 万物替换产品替换
+
+- 文件：`src/utils/productReplaceAnalysis.mjs`、`src/utils/productReplaceContract.mjs`
+- 位置：`buildProductReplaceAnalysisPrompt`、`buildProductReplacePrompt`、`buildProductReplaceEditPrompt`
+- 当前用途：单品模式直接执行替换；组合模式按每张参考图的手工 P 区域先输出严格策划 JSON，再执行生图；结果编辑支持“保留产品”和“自由修改”两种模式。
+- 当前状态：已按完整 RTCFE 迁移；组合策划 schema 为 v5，运行时 processing mode 为 `per_reference_manual_region_analysis_generation_v5_color_fidelity`，历史 v1-v4 仅允许恢复读取。
+- 关键约束：
+  - 无上传 Logo 时，不得出现 Logo 植入任务、Logo 位置示意图角色或 Logo 植入约束。
+  - 组合模式按产品组理解素材；同组图片是同一产品的多角度或细节证据。
+  - 组合模式的每张替换参考图都必须手工完成 P1 到 Pn 的位置标记；P 编号与产品组绑定是位置真值，不允许按左右顺序自动猜测。
+  - 每张组合参考图独立提交一次策划：`Image 1=当前参考图`、`Image 2=P 标记图`、`Image 3...=按绑定顺序排列的产品素材`。
+  - 策划 JSON 的 `products` 与 `regions` 必须完整覆盖全部绑定，解析器拒绝遗漏、重复、交换、合并或新增产品；v5 同时强制记录产品实体边界、非产品参考元素、精确视觉锚点、五维身份锁和逐组件颜色保真合同。
+  - 颜色保真必须分别记录组件颜色地图、组件间相对明暗/饱和关系、产品中间调与白平衡规则、禁止颜色偏移；生图中的 `<product_color_fidelity_contract>` 优先于场景色温、滤镜、全局 LUT、统一曝光和自然融合。
+  - 场景光只允许形成局部高光、局部阴影和局部反射色；不得把中灰压成深灰或黑色，不得让场景统一调色覆盖产品主体中间调。暗场氛围应通过背景与周围光影建立，同时保持产品真实颜色可辨识。
+  - 用户补充要求只能约束不冲突的场景、构图、文案处理和禁区；历史草稿中的产品名称、颜色、材质、结构或数量若与当前绑定产品素材冲突，策划与生图都必须忽略冲突部分。
+  - 生图仍按每张参考图一个独立任务执行，但输入只包含干净参考图、产品素材与可选 Logo；位置由归一化数值区域合同传递，标记图和 P 编号只停留在策划阶段，不得进入生成输入或最终图。
+  - 单品模式不要求位置标记，也不调用组合策划，继续沿用原有直接生成路径。
+  - 产品保留编辑必须重新带入原产品素材并锁定产品身份；自由编辑只以当前结果图为图片依据。
+  - 单次生图任务输入数量必须遵守当前图像模型能力上限；组合标记图仅用于策划，不占生图输入预算。
+  - 当前链路不包含生成后质量验收或二次评判任务。
+- 防回归测试：`src/utils/productReplaceAnalysis.test.mjs`、`src/utils/productReplaceContract.test.mjs`、`src/utils/productReplaceRegion.test.mjs`、`src/services/arkService.test.mjs`
+- 你确认：`[x]`
+
+### P26 万物替换 Logo 替换
+
+- 文件：`src/utils/logoReplaceAnalysis.mjs`
+- 位置：`buildLogoReplaceAnalysisPrompt`、`buildLogoReplaceGenerationPrompt`
+- 当前用途：统一图片角标、单 Logo 和多 Logo 的内部结构分析与 AI 原生整图替换。
+- 当前状态：已按完整 RTCFE 迁移，分析 schema 为 v3，运行时 processing mode 为 `ai_native_analysis_generation_v4`；历史质量 prompt/解析代码不再被工作流调用。
+- 关键约束：
+  - 输入固定为原图、编号区域图、按 R1 到 Rn 排列的紧边界 Logo 身份参考；顺序和重复素材不得改写。
+  - v3 分析必须逐区确认 `selectionContainsOldLogo` 和 `selectionCoverage`；框偏移、只覆盖局部或框错对象时在生图前 fail closed。
+  - `logoIdentity` 必须记录布局类型、元素顺序、对齐、有意底板、可见图稿比例和不可变结构说明；缺项、比例漂移或非恢复场景中的旧 v2/v1 分析 fail closed。
+  - 生图把每个 Logo 视为不可拆分原子图稿，只允许整组等比缩放、旋转、透视或曲面形变；禁止纵横排互换和内部元素独立移动。
+  - 整组按 contain 放入目标区域；空间不足时缩小并留白，不得裁切、拉伸、挤压、拆分或重排。
+  - provider 生图和最终资产处理成功后直接完成，不创建出图后 AI 审查任务；历史质量字段不得覆盖成功图片状态。
+- 防回归测试：`src/utils/logoReplaceAnalysis.test.mjs`、`src/utils/logoWhitespaceCrop.test.mjs`、`src/services/arkService.test.mjs`、`src/adapters/shellWorkflowLogoReplace.test.mjs`、`src/adapters/shellDataAdapter.test.mjs`
+- 你确认：`[x]`
+
 ## 5. 落地顺序建议
 
 建议按风险从高到低迁移：
@@ -685,6 +726,7 @@ E Example 示例
 4. 出海翻译和精修：P02、P08、P15。
 5. 智能体和后台：P19、P20、P21、P22、P23。
 6. Provider 短规则：P24。
+7. 万物替换：P25 产品替换和 P26 Logo 替换已完成，后续只需维护行为测试与真实 provider 验收。
 
 ## 6. 防回归测试要求
 
@@ -717,6 +759,20 @@ E Example 示例
   - 保留默认 `size=auto` 规则。
   - 保留图片编号映射规则。
   - 保留 `<CONFIG_CHANGES>` 标签。
+- 产品替换 prompt 测试：
+  - 验证 RTCFE 五段顺序。
+  - 验证无 Logo 时不产生 Logo 植入指令、有 Logo 时才加入对应角色和约束。
+  - 验证组合产品分组、每张参考图的 P 区域完整覆盖和确定性图片编号映射。
+  - 验证策划模型收到“参考图、P 标记图、产品素材、文本”的固定顺序，并拒绝交换或遗漏产品绑定。
+  - 验证组合标记图只进入策划、不进入生图输入预算；单品模式保持直接生成且不要求标记。
+  - 验证 v5 缺少任一颜色保真字段时 fail closed；验证 `<product_color_fidelity_contract>` 前置，且单品与组合模式都禁止全局 LUT、滤镜和统一曝光覆盖产品中间调。
+  - 验证产品保留编辑和自由编辑的约束、图片输入角色不同。
+- Logo 替换 prompt 测试：
+  - 验证 RTCFE 五段顺序、v3 选框覆盖字段和 `logoIdentity` 完整 schema。
+  - 验证 Logo 输入采用紧边界身份参考并锁定可见图稿比例。
+  - 验证原子图稿、纵横排禁止互换、整体 contain 和禁止内部元素重排。
+  - 验证归一化框坐标、目标框比例、身份参考比例和整组 contain 边界进入生图合同。
+  - 验证工作流只创建分析与生图任务，且历史审查失败不能覆盖成功生成图。
 
 ## 7. 你的审查方式
 

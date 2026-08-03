@@ -8,6 +8,24 @@ Use this file to stop the same problems from being rediscovered and re-fixed in 
 
 Before debugging a recurring issue, search this file, related tests, and recent handoff/release docs. After fixing a repeated issue, append a concise entry.
 
+## 2026-08-03 - 本地验收案例不能留在临时 worktree 数据源
+
+- Symptom: 同一浏览器曾看到 8 月 3 日产品替换验收项目，重启 3001 并重新登录 `admin` 后列表为空。
+- Environment: local development / Vite 3001 / local JSON backend / Git worktree acceptance run.
+- Root cause: 验收时前端和后端运行于临时 worktree，任务、项目和受管素材写入 worktree 自己的 `server/data`；后来只重启主项目前端并连接主项目 3100，两个同名 `admin` 实际拥有不同 user ID 和独立数据文件。架构级根因见 `CLAUDE.md` #92。
+- Fix: 在无活跃任务时做带备份的定向迁移，只把 4 个项目、18 条既有任务和 21 个受管资源重新归属到主项目 `admin`，不创建或重试任何付费任务；随后重新登录并做 API、素材和真实页面验收。
+- Regression check: 主后端 `/api/state` 返回项目 1/4/6/7；21/21 受管素材经 `admin` 鉴权返回有效图片；3001 页面显示四张已完成卡，项目 7 为 `2/2` 且两张结果图可见。
+- Avoid next time: 付费验收前必须记录并核对后端工作目录、数据文件绝对路径、端口和 user ID；验收产物要写入主数据源，不能把“前端端口相同”当成“后端数据相同”。
+
+## 2026-08-03 - 结构化策划恢复要兼容真实包装且保留原批次
+
+- Symptom: 两条策划 provider job 都已成功，页面却报“未返回可用结构”；后续点单条失败生图的“重生成”还会命中通用 job retry 或重跑整批。
+- Environment: local development / 万物替换 / 组合产品 / KIE Responses 策划 + GPT Image 2 生图。
+- Root cause: provider 实际返回唯一 JSON 后单独附加 `final_answer`，旧解析器只接受另一种 channel wrapper；失败 job hydration 后的 `sourceType=job` 又让通用分支抢跑，专用恢复也没有单条 batch 子集合同。架构级根因见 `CLAUDE.md` #86。
+- Fix: 只新增“唯一 JSON + 唯一末行 final_answer”严格包装；组合恢复跳过通用 job retry，点单条时只传对应参考图、策划 ID 和原 batch identity，保留其他成功结果。
+- Regression check: `node --test src/utils/productReplaceAnalysis.test.mjs src/adapters/shellWorkflowProductReplace.test.mjs src/components/uiArchitecture.test.mjs`；`npm run verify`；真实项目必须确认策划 job 数不增加、单条恢复只新增一条原 batch 生图、已成功兄弟图的 provider ID 不变，最终页面 `2/2` 且无标记泄漏。
+- Avoid next time: provider 解析回归必须来自真实 raw response；付费重试必须保留原 batch index/count 并且只重提用户点击的那一张。
+
 ## Entry Format
 
 ```markdown
@@ -20,6 +38,33 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check:
 - Avoid next time:
 ```
+
+## 2026-08-03 - Logo 可识别不等于内部结构一致
+
+- Symptom: 新品牌仍能读出 `NOVA LEAF`，但素材中的“图形在上、主标居中、副标最下方”被结果改成“图形在左、文字在右”。
+- Environment: local development / 万物替换 / 图片角标、单 Logo、多 Logo 统一 AI 原生整图编辑。
+- Root cause: v1 分析和生图合同没有可解析的 Logo 内部拓扑字段；原素材外围空白让画布比例与可见标志比例混淆，宽目标框进一步诱导模型做横向重排。架构级根因见 `CLAUDE.md` #84。
+- Fix: 使用保留有意底板的紧边界身份参考，v3 分析强制输出选框覆盖结论、`logoIdentity` 结构和可见比例，生图将 Logo 作为不可拆分原子图稿并使用整体 contain。出图后 AI 审查及其状态门禁后来按产品决策移除，见 `CLAUDE.md` #89。
+- Regression check: `node --test src/utils/logoReplaceAnalysis.test.mjs src/utils/logoWhitespaceCrop.test.mjs src/adapters/shellWorkflowLogoReplace.test.mjs src/adapters/shellDataAdapter.test.mjs`、`npx tsc --noEmit`；人工结构验收仍须核对纵向元素顺序、文字、颜色、比例、框内位置、旧标/标记残留和框外稳定性。
+- Avoid next time: Logo 验收不得以“品牌大致可识别”代替结构一致；目标框宽高比不得改变 Logo 内部排布。正确性约束应前置到分析与生图合同，出图后由用户直接验收，不再增加第二个主观模型裁判。
+
+## 2026-08-03 - 组合产品替换不能按画面顺序自动猜测产品位置
+
+- Symptom: 多产品组合替换时，产品容易落到错误位置、相互交换或无法还原参考图中的组合关系；增加产品素材图数量不能稳定修复。
+- Environment: local development / 万物替换 / 组合产品替换 / 多张替换参考图。
+- Root cause: 旧合同只按产品组首次出现顺序，再假定参考图中的目标区域从左到右、从上到下排列；每张参考图没有自己的人工位置真值。标点图还与干净参考图一起进入生图输入，策划 v1 又没有结构化产品身份，模型容易把定位标记或原产品细节带入结果。恢复时，批次数和策划/生图积分字段没有完整穿过 job 聚合与持久化读取，同一 batch 的历史失败和当前成功会在冷刷新时形成重复结果。架构级根因见 `CLAUDE.md` #85。
+- Fix: 每张组合参考图必须分别手工标记 P1 到 Pn，并把标记持久化在该参考素材上；所有参考图在付费提交前先做完整覆盖校验。每张参考图独立用“干净参考图 + 标点图 + 产品素材”调用 v3 策划，强制区分产品实体与卡片、标题、技术编号等非产品参考元素；生图只接收“干净参考图 + 产品素材 + 数值位置合同”，并清除策划文本中的 P 编号。恢复完整保留 `batchCount` 和两段积分，按 batch 去重并在无 jobs 首屏直接清理旧失败项。单品替换保持原有直接生成路径，不新增生成后质量验收。
+- Regression check: `node --experimental-strip-types --test src/utils/productReplaceAnalysis.test.mjs src/utils/productReplaceContract.test.mjs src/adapters/shellWorkflowProductReplace.test.mjs src/services/arkService.test.mjs src/adapters/shellDataAdapter.test.mjs`；`node --experimental-strip-types --test src/adapters/shellPersistence.test.mjs src/adapters/shellJobVisibility.test.mjs src/utils/taskResultReconcile.test.mjs server/appStateMerge.test.mjs`；`npx tsc --noEmit`、`npm run build`、`npm run doctor`。真实恢复必须同时验证仅 app state 和 app state + jobs 都为 `completed/2/2/13.12`，冷刷新首屏无重复结果，两张受保护结果图有真实像素。
+- Avoid next time: 多对象替换的身份映射必须来自用户可见、可持久化、逐参考图独立的结构化绑定；标点图只能进入策划，不能进入生图。新增批次或计费字段必须贯穿任务创建、聚合、持久化、首屏和 hydration，并在任何付费任务创建前 fail closed。
+
+## 2026-08-03 - 组合标记编辑器不能使用不稳定默认值或原生受保护图片
+
+- Symptom: 打开未标记参考图后持续出现 `Maximum update depth exceeded`，拖拽区域无法保留；刷新登录后参考大图和 P1/P2 产品缩略图又可能全部破图。
+- Environment: local development / `localhost:3001` shell + `127.0.0.1:3100` API / 组合产品位置标记。
+- Root cause: 可选 `initialRegions` 使用参数内联 `=[]`，初始化 effect 每次写 state 都获得新依赖引用并再次运行。上传素材 URL 又是 owner 保护的 managed asset 绝对地址，原生 `<img>` 不带 Bearer；不同本机主机名触发跨源代理后，代理也不能代替当前用户通过素材 owner 校验。
+- Fix: 默认空区域提升为模块级稳定常量。编辑器主图和产品缩略图先经 `resolvePublicAssetUrl` 归一本机 managed URL，再用 `fetchImageBlobWithProxy` 带会话认证读取 Blob、创建 object URL，并在 effect 清理时 abort 和 revoke。
+- Regression check: `node --test src/shell/components/layout/BottomInputBar.test.mjs`；真实浏览器上传两产品和两参考图，逐图完成 P1/P2，确认第一张保存后第二张仍为独立 `0/2`，两张最终均“已标记”，重新打开主图/缩略图/区域都可见，控制台 error 数为 0。
+- Avoid next time: 会写 state 的 effect 不得依赖参数内联空数组/空对象；受保护图片必须验证真实资源链和像素显示，DOM 中存在 `<img>` 不等于素材可见。
 
 ## 2026-07-23 - Single-upstream stop/start deployment makes public 502 inevitable
 
@@ -1176,3 +1221,56 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 后处理改变最终图片 URL 后，立即 PATCH 对应后端 job 的 `result`，并保留原 job、provider 和积分身份；PATCH 失败不得把已经正确展示的本地结果回退成 provider 原图。
 - Regression check: `node --experimental-strip-types --test src/adapters/shellWorkflowTranslationOriginalSize.test.mjs`；`npm run verify`。回归必须锁定 URL 未改变时零 PATCH、URL 改变时只 PATCH 一次且使用最终 URL。
 - Avoid next time: 任何客户端或服务端后处理只要改变了最终可发布资产，就必须同时更新项目状态和 job 真相源。页面当前显示正确不能替代刷新后的 hydration 回放。
+
+## 2026-08-03 - Logo 选框坐标与身份比例必须来自各自的真实几何边界
+
+- Symptom: 用户在可见原图上准确框选旧 Logo，保存后的标记框却横向偏移；修正框位后，生图结果虽然不再把纵排 Logo 改成横排，完整副标仍可能越出允许区域，身份比例合同也与 Logo 素材观感不完全一致。
+- Environment: local development / AI-native multi-Logo replacement / contained square source preview / white-background NOVA LEAF identity reference.
+- Root cause: 框选编辑器的原图按 `contain` 渲染为 580.59×580.59，绝对定位坐标层却保持 694×580.59，视觉拖拽与归一化坐标不在同一平面。裁剪器又只返回加 6% 防裁切留白后的导出矩形，workflow 误用该矩形宽高作为可见 Logo 身份比例；NOVA LEAF 的真实可见边界为 363×263（1.3802），错误合同却使用 407×307（1.3257）。界面旧提示只要求选框略大于旧 Logo，没有说明该框也是新 Logo 完整图形、主标和副标的最终允许占用范围。
+- Fix: 坐标层宽度按可用高度和原图宽高比计算，确保与 contain 原图实际矩形完全一致；裁剪器同时保留 `visibleContentRect` 与加边距 `cropRect`，前者只负责 `identityReferenceAspectRatio` 和元数据审计，后者只负责导出不裁边；框选界面明确新旧双重范围语义。生成提示词继续执行原子图稿、可见比例、元素顺序和 whole-group contain 合同。
+- Regression check: `node --test src/utils/logoWhitespaceCrop.test.mjs src/adapters/shellWorkflowLogoReplace.test.mjs src/shell/components/layout/BottomInputBar.test.mjs`；`npx tsc --noEmit`。真实浏览器验收还必须核对原图与坐标层 DOM 实际宽高相等、保存后重新打开框位不漂移、job 元数据记录 1.3802、完整 Logo 落在放大证据红框内。
+- Avoid next time: 几何字段必须按用途命名和传递，防裁切留白不能冒充可见内容比例；任何画布式交互都要把用户看到的实际内容矩形作为唯一坐标系，不能用外层响应式容器推算；框选语义必须同时说明“清除什么”和“新内容允许占哪里”，并在付费提交前与后置放大证据共同验证。
+
+## 2026-08-03 - Logo 多阶段恢复必须复用分析并按 batch 替换旧尝试
+
+- Symptom: Logo 生图在 provider 提交前因提示词超限失败，页面却持续显示生成中；点“重生成”只提示“任务不存在”。修复后的首次真实恢复又把旧失败和新尝试显示成 2 个结果。
+- Root cause: Logo 的分析、生图和归一化没有贯穿恢复身份。通用 `sourceType=job` 重试在 Logo 专用恢复之前抢跑；生图直接携带完整分析回复，真实 prompt 达 21685 字符。jobs hydration 只认不同 backend/provider ID，没有把同 batch 的新尝试当成旧尝试的替代。旧质量门控对状态的影响已由 `CLAUDE.md` #89 删除。
+- Fix: 生图提示词只投影执行字段，并以构建期环境变量在付费提交前限制默认 18000 字符；真实恢复 prompt 为 15021。Logo 显式跳过通用 backend retry，只查询并复用已成功 analysis ID。项目结果按参考图 batch 只保留最新尝试，任务数从最新 job payload 的权威 `batchCount` 恢复。
+- Regression check: `node --test src/adapters/shellLogoRecovery.test.mjs src/adapters/shellDataAdapter.test.mjs src/utils/logoReplaceAnalysis.test.mjs src/adapters/shellWorkflowLogoReplace.test.mjs`；`npx tsc --noEmit`。真实验收要确认 analysis 数不增、新生图 prompt 低于上限、冷刷新后只有一个同 batch 结果。
+- Avoid next time: 多阶段付费流程不能落入通用单 job 恢复。已成功阶段必须复用，展示身份必须用业务 batch 而不是每次尝试的 provider ID。
+
+## 2026-08-03 - Logo 成功图不能被出图后 AI 审查改成失败
+
+- Symptom: 页面已经有完整成图，项目卡仍显示“失败”，详情里的失败原因是 `wordingMatch` 等审查结论；刷新后仍失败。
+- Environment: local development / 万物替换 / Logo 替换 / 历史 processing mode `ai_native_analysis_generation_quality_v3`。
+- Root cause: 成图后自动创建 `logo_replace_quality_check`，第二个模型的主观结论通过质量字段覆盖成功 generation job；data adapter 和共享结果对账又把该审查失败设为权威终态。架构级根因见 `CLAUDE.md` #89。
+- Fix: processing mode 升为 `ai_native_analysis_generation_v4`；工作流只保留分析、生图和最终资产处理，成功即完成，不再创建审查任务、证据或审查积分。hydration 忽略历史质量字段，共享对账让已有完成媒体清除历史错误并恢复完成；持久化首屏按 batch 和真实创建时间只保留最新尝试，消除 jobs hydrate 前的“失败 1/2”闪烁。真实 provider 失败仍保持失败。
+- Regression check: `node --test src/adapters/shellWorkflowLogoReplace.test.mjs src/adapters/shellDataAdapter.test.mjs src/utils/taskResultReconcile.test.mjs server/appStateMerge.test.mjs src/shell/components/layout/BottomInputBar.test.mjs`；`npx tsc --noEmit`；真实浏览器冷刷新旧项目后应为 `completed/1/1`，且任务账本不新增任何 job。
+- Avoid next time: 不要用另一个生成式模型自动裁判用户已能看到的结果，更不能让该裁判覆盖成功状态或产生隐式费用。结果满意度由用户决定，系统只对可验证的执行状态负责。
+
+## 2026-08-03 - 产品身份字段不能埋在宽泛策划数据中
+
+- Symptom: 位置映射正确、策划也包含产品描述，但最终产品仍会发生材质、细节、固有颜色、图案或结构漂移，看起来像同类产品而不是上传的具体产品。
+- Environment: local development / 万物替换 / 组合产品替换 / v3 per-reference planning。
+- Root cause: v3 把产品身份字段与构图、光影、遮挡和融合要求一起序列化，最终生图没有独立的高优先级产品身份合同；颜色与图案共用字段，固有色和环境受光也没有明确分离。架构级根因见 `CLAUDE.md` #88。
+- Fix: v4 策划逐产品强制输出 `materials/details/colors/patterns/structure/forbiddenChanges`，缺项 fail closed；生图在普通策划数据之前接收按目标区域和输入图编号绑定的 `<product_identity_lock_contract>`。环境光、透视和融合只允许改变成像关系，不得修改产品固有属性。历史 v1-v3 恢复从旧字段推导五维锁定，不新增生成后质量验收模型。
+- Regression check: `node --test src/services/arkService.test.mjs src/utils/productReplaceAnalysis.test.mjs src/utils/productReplaceContract.test.mjs src/adapters/shellWorkflowProductReplace.test.mjs`；检查五维任一缺失均解析失败、身份锁定合同早于普通策划数据、标点图仍不进入生图输入、工作流仍无产品质量验收模型。
+- Avoid next time: 身份关键字段必须独立、前置、逐对象绑定且可严格验证；不能用“保持一致”或大型通用 JSON 代替执行优先级。
+
+## 2026-08-03 - 组合产品自动组不能用当前数组序号充当身份
+
+- Symptom: 上传两张不同产品素材后，两个缩略图的所属产品组同时显示 P1；选择 P2 也可能继续复用同一个底层组 ID。
+- Environment: local development / 万物替换 / 组合产品替换 / 删除、恢复或续传后的素材列表。
+- Root cause: `product-group-N` 由当前数组下标生成，素材生命周期变化后旧组号与新槽位碰撞；数据又没有区分系统自动分组和用户主动把多角度素材合到同组。架构级根因见 `CLAUDE.md` #90。
+- Fix: 自动组改用稳定素材身份生成唯一 ID，持久化 `auto|manual` 来源并修复历史非手动重复；手动合组继续允许重复，选择新 P 槽位时生成真正唯一的手动组 ID。
+- Regression check: `node --experimental-strip-types --test src/utils/productReplaceGroups.test.mjs src/shell/components/layout/BottomInputBar.test.mjs src/utils/shellDraftState.test.mjs`；`npm run build`；真实页面必须显示独立素材 P1/P2，且不触发任何生成任务。
+- Avoid next time: 可重排列表的数组下标只用于展示顺序，不能作为持久业务身份；凡“重复可能合法”的字段都必须记录重复来源并覆盖删除、重排、恢复和续传。
+
+## 2026-08-03 - 产品颜色保护不能允许场景统一调色覆盖中间调
+
+- Symptom: 产品原图是中性中灰，生成到暗场景后主体被压成接近黑色；表面上仍属于“灰色”，实际明度层级和组件颜色关系已经漂移。
+- Environment: local development / 万物替换 / 组合产品替换 / 项目 7 暗场人物图。
+- Root cause: v4 只有宽泛的 `colors` 文本，最终提示词同时允许调整“整体明暗”，没有把产品蒙版排除在全局 LUT、统一色温和统一曝光之外；页面残留的旧产品颜色要求也可能与当前素材冲突。架构级根因见 `CLAUDE.md` #91。
+- Fix: v5 增加逐组件颜色地图、相对颜色关系、中间调白平衡规则和禁止偏移清单；生图前置独立颜色保真合同，只允许局部高光/阴影/反射，禁止全局调色改变产品中间调。与当前产品素材冲突的旧用户描述必须忽略。历史 v2-v4 在存在颜色字段时推导结构化保护，v1 与单品模式继承全局颜色保护，仍不增加生成后质量验收。
+- Regression check: `node --experimental-strip-types --test src/utils/productReplaceAnalysis.test.mjs src/utils/productReplaceContract.test.mjs src/adapters/shellWorkflowProductReplace.test.mjs src/services/arkService.test.mjs`；`npm run build`。必须锁定 v5 缺颜色子字段会失败、旧“允许整体明暗”文案消失、单品与组合都禁止全局调色覆盖产品。
+- Avoid next time: 颜色一致性必须同时约束色相、明度、饱和度、逐组件边界和允许的受光范围；只写“保持颜色一致”或允许整体明暗都不够。

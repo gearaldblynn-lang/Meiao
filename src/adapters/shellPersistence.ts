@@ -139,6 +139,8 @@ type ShellProject = {
       cornerBadgeRegion?: Record<string, unknown>;
       logoReplaceRegion?: Record<string, unknown>;
       logoReplaceRegions?: Array<Record<string, unknown>>;
+      productGroupId?: string;
+      productReplaceRegions?: Array<Record<string, unknown>>;
     }>>;
     productRestore?: ProductRestoreProjectContext;
     productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];

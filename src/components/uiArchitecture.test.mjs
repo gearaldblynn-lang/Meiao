@@ -3271,11 +3271,11 @@ test('one click completed result edit uses only product assets and generated bas
   const oneClickShellModule = read('../shell/modules/OneClick/OneClickModule.tsx');
   const shellApp = read('../ShellMigratedApp.tsx');
 
-  assert.match(projectCard, /onEdit\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(projectCard, /onEdit\?: \(projectId: string, resultId: string, instruction: string, files: File\[\], editMode\?: ProductReplaceEditMode\) => void/);
   assert.match(projectCard, /editDialog/);
   assert.match(projectCard, /const isOneClickProject = project\.module === 'one_click'/);
   assert.match(projectCard, /const usesMinimalRoleEditPrompt = isOneClickProject \|\| isEverythingReplaceProductEditProject/);
-  assert.match(projectCard, /onEdit\(project\.id, editDialog\.resultId, finalInstruction, usesMinimalRoleEditPrompt \? \[\] : editDialog\.files\)/);
+  assert.match(projectCard, /onEdit\([\s\S]{0,240}editDialog\.editMode/);
   assert.doesNotMatch(projectCard, /补充参考图/);
   assert.match(projectListView, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(oneClickShellModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
@@ -3300,23 +3300,21 @@ test('everything replace product edit uses its own generation flow', () => {
   const everythingReplaceModule = read('../shell/modules/EverythingReplace/EverythingReplaceModule.tsx');
   const shellApp = read('../ShellMigratedApp.tsx');
   const workflow = read('../adapters/shellWorkflow.ts');
-  const editPromptFunction = workflow.match(/const buildEverythingReplaceResultEditPrompt = \(\{[\s\S]*?\n\};/)?.[0] || '';
 
-  assert.match(projectCard, /onEdit\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(projectCard, /editMode: isEverythingReplaceProductEditProject \? 'preserve_product' : 'free_edit'/);
+  assert.match(projectCard, /保留产品/);
+  assert.match(projectCard, /自由修改/);
   assert.match(projectListView, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(everythingReplaceModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(shellApp, /onEditResult=\{handleEditResult\}/);
   assert.match(shellApp, /const runEverythingReplaceEditGeneration = useCallback/);
   assert.match(shellApp, /shellPurpose: resultOnlyEdit \? 'everything_replace_result_only_edit' : 'everything_replace_product_edit'/);
   assert.match(shellApp, /project\?\.module === AppModuleObj\.EVERYTHING_REPLACE && \(project\.subFeature === 'product_replace' \|\| project\.subFeature === 'background_replace'\)/);
-  assert.match(shellApp, /const usesResultOnlyEditPrompt = isEverythingReplaceProductEdit \|\| isEverythingReplaceBackgroundEdit/);
+  assert.match(shellApp, /isEverythingReplaceProductEdit && productReplaceEditMode === 'free_edit'/);
+  assert.match(shellApp, /product: usesResultOnlyEditPrompt \? \[\] : \[\.\.\.\(contextMaterials\.product \|\| \[\]\)\]/);
   assert.match(shellApp, /runEverythingReplaceEditGeneration\(readyEditProject, editPlan, editMaterials\)/);
-  assert.match(workflow, /buildEverythingReplaceResultEditPrompt/);
-  assert.match(editPromptFunction, /修改基准图：\$\{safePreviousResultUrl \|\| '当前产出的结果图'\}（唯一参考基准，公网url）/);
-  assert.match(editPromptFunction, /原任务的背景替换、产品替换、人物\/产品锁定等约束均不再生效/);
-  assert.match(editPromptFunction, /修改要求：\$\{instruction \|\| '按用户输入要求修改当前结果图。'\}/);
-  assert.doesNotMatch(editPromptFunction, /【补充参考图】/);
-  assert.doesNotMatch(editPromptFunction, /【约束规范】/);
+  assert.match(workflow, /buildProductReplaceEditPrompt/);
+  assert.match(workflow, /productReplaceEditMode/);
 });
 
 test('video storyboard result edit stays in the same card with version history and supplement uploads', () => {
@@ -3387,7 +3385,7 @@ test('one click result edit and fission show immediate feedback before long asyn
   const shellApp = read('../ShellMigratedApp.tsx');
 
   assert.match(projectCard, /onFission\(project\.id, fissionDialog\.resultId, fissionDialog\.mode, finalInstruction\);\s*setFissionDialog\(null\);\s*setDetailOpen\(false\);/);
-  assert.match(projectCard, /onEdit\(project\.id, editDialog\.resultId, finalInstruction, usesMinimalRoleEditPrompt \? \[\] : editDialog\.files\);\s*setEditDialog\(null\);\s*setDetailOpen\(false\);/);
+  assert.match(projectCard, /onEdit\([\s\S]{0,240}editDialog\.editMode,[\s\S]{0,80}setEditDialog\(null\);\s*setDetailOpen\(false\);/);
   assert.match(projectCard, /isEditResultPending=\{isEditPending\}/);
   assert.match(projectCard, /isFissionResultPending=\{isFissionPending\}/);
   assert.match(planEditor, /isEditResultPending\?: \(resultId: string\) => boolean/);
@@ -3567,6 +3565,14 @@ test('everything replace logo replacement is integrated without product-replace 
   assert.match(server, /updateLocalJobResult/);
 });
 
+test('logo replacement detail exposes real generation failures attached to error results', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+
+  assert.match(projectCard, /const isLogoReplaceProject = project\.module === 'everything_replace' && project\.subFeature === 'logo_replace';/);
+  assert.match(projectCard, /const logoReplaceFailureReason = isLogoReplaceProject[\s\S]{0,220}displayResult\.status === 'error'/);
+  assert.match(projectCard, /role="alert"[\s\S]{0,300}>失败原因<[\s\S]{0,300}\{logoReplaceFailureReason\}/);
+});
+
 test('everything replace product workflow keeps batch metadata so many outputs remain visible', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const workflow = read('../adapters/shellWorkflow.ts');
@@ -3574,54 +3580,36 @@ test('everything replace product workflow keeps batch metadata so many outputs r
 
   assert.match(shellApp, /targetModule === AppModuleObj\.EVERYTHING_REPLACE/);
   assert.match(shellApp, /resolveEverythingReplaceBatchCount/);
+  assert.match(shellApp, /PRODUCT_REPLACE_MAX_REFERENCE_IMAGES - existingCount - reservations\.size/);
+  assert.match(shellApp, /materialsRef\.current = next;\s*const referenceReservations = everythingReplaceReferenceUploadReservationsRef\.current\[activeScopeKey\];\s*referenceReservations\?\.delete\(optimisticId\)/);
   assert.match(shellApp, /shellProjectId: projectId/);
   assert.match(shellApp, /shellProjectName: projectName/);
   assert.match(shellApp, /sortGeneratedResultsByBatchIndex/);
   assert.match(workflow, /AppModule\.EVERYTHING_REPLACE/);
   assert.match(workflow, /runProductReplaceWorkflow/);
   assert.match(workflow, /replacementLogic/);
-  assert.match(workflow, /【角色】/);
-  assert.match(workflow, /【输入图片角色】/);
-  assert.match(workflow, /【任务】/);
-  assert.match(workflow, /【替换逻辑】/);
-  assert.match(workflow, /【文案处理】/);
-  assert.match(workflow, /【约束】/);
-  assert.doesNotMatch(workflow, /【Logo 参考】/);
-  assert.doesNotMatch(workflow, /Logo 原图：随 input_urls 上传/);
+  assert.match(workflow, /buildProductReplacePrompt as buildProductReplaceContractPrompt/);
+  assert.match(workflow, /analyzeProductReplacement/);
+  assert.match(workflow, /taskPurpose: 'product_replace_analysis'/);
+  assert.match(workflow, /productReplaceRegions/);
+  assert.match(workflow, /createLogoReplaceRegionGuideBlob/);
+  assert.match(workflow, /labelPrefix: 'P'/);
+  assert.match(workflow, /compileProductReplaceGroups/);
+  assert.match(workflow, /assertProductReplaceInputBudget/);
+  assert.match(workflow, /assertProductReplaceReferenceCount/);
+  assert.match(workflow, /mapProductReplaceWithConcurrency/);
+  assert.match(workflow, /resolveProductReplaceSubmissionConcurrency/);
   assert.match(workflow, /skipPromptCleanupSuffix/);
+  assert.match(workflow, /preserveInputImageOrder: true/);
   assert.match(workflow, /normalizeProductReplaceTextPolicy/);
-  assert.match(workflow, /当前任务只使用当前这一张替换参考图/);
-  assert.match(workflow, /找到当前替换参考图中应被替换的原产品区域，将产品素材图中的目标产品自然替换进对应位置/);
-  assert.match(workflow, /去除参考图中的所有宣传文案内容/);
-  assert.match(workflow, /参考图中的所有非产品宣传文案均不做任何变动/);
-  assert.doesNotMatch(workflow, /【任务类型】：万物替换 \/ 产品替换 \/ 单品替换/);
-  assert.doesNotMatch(workflow, /productDetailUrls/);
-  assert.doesNotMatch(workflow, /buildProductDetailReferencePrompt/);
-  assert.match(workflow, /const total = referenceUrls\.length/);
+  assert.match(workflow, /assertProductReplaceReferenceCount\(\(input\.materials\.styleRef \|\| \[\]\)\.length\)/);
   assert.match(workflow, /buildEverythingReplaceLogoInputs/);
   assert.match(workflow, /loadShellDraftAsset/);
   assert.match(workflow, /logoBlob: localLogoRecord\?\.blob/);
-  assert.doesNotMatch(workflow, /\.\.\.productDetailUrls/);
-  assert.doesNotMatch(workflow, /产品素材硬约束｜最高优先级/);
-  assert.doesNotMatch(workflow, /产品细节锁定/);
-  assert.doesNotMatch(workflow, /主产品图URL/);
-  assert.doesNotMatch(workflow, /产品细节补充图URL/);
-  assert.doesNotMatch(workflow, /若主产品图与细节补充图存在差异，以主产品图为准/);
-  assert.match(workflow, /不得遗漏任意上传产品/);
-  assert.match(workflow, /人物微调/);
-  assert.match(workflow, /必须重绘为不同人物/);
-  assert.match(workflow, /不得只做几乎不可见的轻微修饰/);
-  assert.match(workflow, /全局微调/);
-  assert.match(workflow, /人物、场景、动作和局部细节允许轻微变化/);
-  assert.match(workflow, /产品素材图是产品外观的最高优先级依据/);
-  assert.match(workflow, /输入图片角色/);
-  assert.match(workflow, /当前替换参考图/);
-  assert.match(workflow, /移除参考图中的原产品、原品牌、原商标、原包装信息和原产品轮廓/);
-  assert.match(workflow, /透视、遮挡、接触阴影、材质反光/);
-  assert.doesNotMatch(workflow, /人物自适应/);
+  assert.match(workflow, /productGroups: productGroupMetadata/);
+  assert.match(workflow, /referenceCount: total/);
   assert.match(workflow, /firstImageColorMode/);
   assert.match(workflow, /textPolicy/);
-  assert.match(workflow, /Promise\.all/);
   assert.match(workflow, /batchIndex/);
   assert.match(workflow, /referenceIndex/);
   assert.match(workflow, /resolveProductReplaceReferenceAspectRatio/);
@@ -3718,7 +3706,34 @@ test('everything replace regeneration appends a new result instead of overwritin
   assert.match(shellApp, /status: item\?\.status === 'completed' \? 'success' : item\?\.status \|\| 'error'/);
 });
 
-test('everything replace product and background edits use only the current result image as baseline', () => {
+test('failed combination product replacement resumes its successful analysis jobs through the full workflow', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const regenerateStart = shellApp.indexOf('const handleRegenerateResult = useCallback');
+  const regenerateEnd = shellApp.indexOf('\n  useEffect(() => {', regenerateStart);
+  const regenerateBody = shellApp.slice(regenerateStart, regenerateEnd);
+
+  assert.match(regenerateBody, /const isCombinationProductReplaceRegeneration = project\.module === AppModuleObj\.EVERYTHING_REPLACE/);
+  assert.match(regenerateBody, /if \(project\.sourceType === 'job' && !isModelReplaceRegeneration && !isLogoReplaceRegeneration\) \{[\s\S]*?if \(!isCombinationProductReplaceRegeneration\) \{[\s\S]*?retryInternalJob/);
+  assert.match(regenerateBody, /const isCombinationProductReplaceRecovery = project\.module === AppModuleObj\.EVERYTHING_REPLACE/);
+  assert.match(regenerateBody, /subFeature === 'product_replace'/);
+  assert.match(regenerateBody, /replacementLogic === 'combination_replace'/);
+  assert.match(regenerateBody, /fetchInternalJobs\(500\)/);
+  assert.match(regenerateBody, /job\.payload\?\.shellProjectId === project\.id/);
+  assert.match(regenerateBody, /job\.payload\?\.taskPurpose === 'product_replace_analysis'/);
+  assert.match(regenerateBody, /Number\(job\.payload\?\.batchIndex\)/);
+  assert.match(regenerateBody, /productReplaceAnalysisJobIds/);
+  assert.match(regenerateBody, /const recoveryBatchIndexes = shouldRecoverSingleReference/);
+  assert.match(regenerateBody, /styleRef: recoveryBatchIndexes\.map\(\(batchIndex\) => allProductReplaceReferences\[batchIndex - 1\]\)/);
+  assert.match(regenerateBody, /productReplaceReferenceBatchIndexes: recoveryBatchIndexes/);
+  assert.match(regenerateBody, /productReplaceOriginalReferenceCount: originalReferenceCount/);
+  assert.match(regenerateBody, /const retainedRecoveryResults = shouldRecoverSingleReference/);
+  assert.match(regenerateBody, /const productReplaceRecoveryPrompt = storedContext\?\.prompt \|\| retryPrompt/);
+  assert.match(regenerateBody, /prompt: productReplaceRecoveryPrompt/);
+  assert.match(regenerateBody, /runShellRetouchWorkflow\(\{/);
+  assert.match(regenerateBody, /shellPurpose: 'product_replace_recovery'/);
+});
+
+test('everything replace edits wire product-preserving and result-only input modes', () => {
   const projectCard = read('../shell/components/ProjectCard.tsx');
   const shellApp = read('../ShellMigratedApp.tsx');
   const workflow = read('../adapters/shellWorkflow.ts');
@@ -3727,22 +3742,23 @@ test('everything replace product and background edits use only the current resul
   assert.match(projectCard, /const isEverythingReplaceBackgroundEditProject = project\.module === 'everything_replace' && project\.subFeature === 'background_replace'/);
   assert.match(projectCard, /project\.module === 'everything_replace' && project\.subFeature === 'background_replace'/);
   assert.match(projectCard, /const usesMinimalRoleEditPrompt = isOneClickProject \|\| isEverythingReplaceProductEditProject \|\| isEverythingReplaceBackgroundEditProject/);
+  assert.match(projectCard, /editMode: isEverythingReplaceProductEditProject \? 'preserve_product' : 'free_edit'/);
 
   assert.match(shellApp, /const isEverythingReplaceBackgroundEdit = project\.module === AppModuleObj\.EVERYTHING_REPLACE[\s\S]*?project\.subFeature === 'background_replace'/);
-  assert.match(shellApp, /const usesResultOnlyEditPrompt = isEverythingReplaceProductEdit \|\| isEverythingReplaceBackgroundEdit/);
+  assert.match(shellApp, /const usesResultOnlyEditPrompt = isEverythingReplaceBackgroundEdit[\s\S]*?productReplaceEditMode === 'free_edit'/);
   assert.match(shellApp, /product: usesResultOnlyEditPrompt \? \[\] : \[\.\.\.\(contextMaterials\.product \|\| \[\]\)\]/);
   assert.match(shellApp, /gift: usesResultOnlyEditPrompt \? \[\] : \[\.\.\.\(contextMaterials\.gift \|\| \[\]\)\]/);
   assert.match(shellApp, /schemeContent: usesResultOnlyEditPrompt \? finalInstruction : originalGenerationPrompt \|\| finalInstruction/);
   assert.match(shellApp, /shellPurpose: resultOnlyEdit \? 'everything_replace_result_only_edit' : 'everything_replace_product_edit'/);
-  assert.match(shellApp, /const resultOnlyEdit = project\.module === AppModuleObj\.EVERYTHING_REPLACE[\s\S]*?\(project\.subFeature === 'product_replace' \|\| project\.subFeature === 'background_replace'\)/);
+  assert.match(shellApp, /const resultOnlyEdit = project\.subFeature === 'background_replace'[\s\S]*?productReplaceEditMode === 'free_edit'/);
   assert.match(shellApp, /resultOnlyEdit,/);
+  assert.match(shellApp, /productReplaceEditMode,/);
 
   assert.match(materials, /if \(sourceResultUrl && hasEditInstruction && isResultOnlyEdit\) \{[\s\S]*?return dedupeUrls\(\[sourceResultUrl\]\)/);
+  assert.match(materials, /return dedupeUrls\(\[\.\.\.productImageUrls, \.\.\.giftImageUrls, sourceResultUrl\]\)/);
   assert.match(workflow, /input\.subFeature === 'product_replace' \|\| input\.subFeature === 'background_replace'/);
-  assert.match(workflow, /resultOnlyEdit: Boolean\(input\.taskMetadata\?\.resultOnlyEdit\)/);
-  assert.match(workflow, /修改基准图：\$\{safePreviousResultUrl \|\| '当前产出的结果图'\}（唯一参考基准，公网url）/);
-  assert.match(workflow, /原任务的背景替换、产品替换、人物\/产品锁定等约束均不再生效/);
-  assert.match(workflow, /修改要求：\$\{instruction \|\| '按用户输入要求修改当前结果图。'\}/);
+  assert.match(workflow, /buildProductReplaceEditPrompt/);
+  assert.match(workflow, /everythingReplaceEditMode/);
 });
 
 test('everything replace product workflow sends logo placement guides per reference task', () => {
@@ -3757,31 +3773,25 @@ test('everything replace product workflow sends logo placement guides per refere
   assert.match(workflow, /buildEverythingReplaceLogoInputs/);
   assert.match(workflow, /createEverythingReplaceLogoPlacementGuide/);
   assert.match(workflow, /logoPlacementGuideUrl/);
-  assert.match(workflow, /Logo位置示意图/);
-  assert.match(workflow, /Logo 必须植入最终图/);
-  assert.match(workflow, /Logo 位置示意图只作为位置参考/);
-  assert.match(workflow, /边框、辅助线、底色、选区框或标记/);
-  assert.match(workflow, /相对位置、面积、方向和比例/);
+  assert.match(workflow, /logo: logoInputs\.logoUrl && logoInputs\.logoPlacementGuideUrl/);
+  assert.match(workflow, /placementGuideUrl: logoInputs\.logoPlacementGuideUrl/);
 });
 
 test('everything replace product edit is wired to its own generation path', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const workflow = read('../adapters/shellWorkflow.ts');
   const everythingReplaceModule = read('../shell/modules/EverythingReplace/EverythingReplaceModule.tsx');
-  const editPromptFunction = workflow.match(/const buildEverythingReplaceResultEditPrompt = \(\{[\s\S]*?\n\};/)?.[0] || '';
 
   assert.match(shellApp, /const runEverythingReplaceEditGeneration = useCallback/);
   assert.match(shellApp, /isEverythingReplaceProductEdit/);
   assert.match(shellApp, /await runEverythingReplaceEditGeneration\(readyEditProject, editPlan, editMaterials\)/);
   assert.match(shellApp, /onEditResult=\{handleEditResult\}/);
   assert.match(everythingReplaceModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
-  assert.match(workflow, /buildEverythingReplaceResultEditPrompt/);
+  assert.match(workflow, /buildProductReplaceEditPrompt/);
   assert.match(workflow, /everythingReplaceEditPrompt/);
   assert.match(shellApp, /shellPurpose: resultOnlyEdit \? 'everything_replace_result_only_edit' : 'everything_replace_product_edit'/);
-  assert.match(shellApp, /const usesResultOnlyEditPrompt = isEverythingReplaceProductEdit \|\| isEverythingReplaceBackgroundEdit/);
-  assert.match(editPromptFunction, /修改基准图：\$\{safePreviousResultUrl \|\| '当前产出的结果图'\}（唯一参考基准，公网url）/);
-  assert.match(editPromptFunction, /原任务的背景替换、产品替换、人物\/产品锁定等约束均不再生效/);
-  assert.match(editPromptFunction, /修改要求：\$\{instruction \|\| '按用户输入要求修改当前结果图。'\}/);
+  assert.match(shellApp, /const usesResultOnlyEditPrompt = isEverythingReplaceBackgroundEdit[\s\S]*?productReplaceEditMode === 'free_edit'/);
+  assert.match(shellApp, /productReplaceEditMode,/);
 });
 
 test('generation refreshes expiring uploaded material urls from local draft assets', () => {
