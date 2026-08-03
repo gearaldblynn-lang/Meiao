@@ -8,6 +8,15 @@ Use this file to stop the same problems from being rediscovered and re-fixed in 
 
 Before debugging a recurring issue, search this file, related tests, and recent handoff/release docs. After fixing a repeated issue, append a concise entry.
 
+## 2026-08-03 - Git 忽略规则不会自动收窄部署归档
+
+- Symptom: 本地 `tmp/` 已加入 `.gitignore`，但发布前检查发现部署脚本仍会把 43 个真实任务验收素材打进云端源码归档。
+- Environment: local release packaging / `scripts/deploy_tencent.sh` tar stream.
+- Root cause: Git 的忽略规则只控制版本跟踪；部署脚本直接从工作目录执行 `tar`，两者没有任何自动关联。
+- Fix: 部署归档显式增加 `--exclude='./tmp'`，保留本地验收证据但不上传生产服务器。
+- Regression check: `node --test scripts/deploy_tencent.test.mjs`；测试从实际 tar 段断言本地临时目录必须被排除。
+- Avoid next time: 任何由工作目录直接生成的发布包都必须维护自己的允许/排除合同，不能把 `.gitignore` 当成发布边界。
+
 ## 2026-08-03 - 本地验收案例不能留在临时 worktree 数据源
 
 - Symptom: 同一浏览器曾看到 8 月 3 日产品替换验收项目，重启 3001 并重新登录 `admin` 后列表为空。

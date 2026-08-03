@@ -136,6 +136,15 @@ test('deploy_tencent refuses to reload while cloud jobs are running', () => {
   assert.match(source, /MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS/);
 });
 
+test('deploy_tencent excludes local acceptance artifacts from the release archive', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const archiveIndex = source.indexOf('tar \\\n');
+  const uploadIndex = source.indexOf('| ssh ', archiveIndex);
+  const archive = source.slice(archiveIndex, uploadIndex);
+
+  assert.match(archive, /--exclude='\.\/tmp'/);
+});
+
 test('deploy_tencent rejects any remote marker, including an empty file, before source upload', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const functionStart = source.indexOf('run_remote_deploy_readiness() {');

@@ -132,6 +132,7 @@ tar \
   --exclude='./.worktrees' \
   --exclude='./node_modules' \
   --exclude='./dist' \
+  --exclude='./tmp' \
   --exclude='./server/data' \
   --exclude='./.env.server' \
   --exclude='./._*' \
