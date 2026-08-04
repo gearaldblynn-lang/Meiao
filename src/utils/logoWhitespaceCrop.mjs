@@ -75,6 +75,38 @@ export const findNonTransparentBounds = (imageData, alphaThreshold = 8) => {
   return boundsToRect(bounds, width, height);
 };
 
+export const resolveLogoIdentityBackgroundPolicy = (imageData, rect = null, alphaThreshold = 8) => {
+  const { data, width, height } = imageData || {};
+  if (!data || !width || !height) {
+    return {
+      backgroundPolicy: 'opaque_canvas_is_identity',
+      transparentPixelRatio: 0,
+    };
+  }
+  const x = Math.max(0, Math.floor(Number(rect?.x) || 0));
+  const y = Math.max(0, Math.floor(Number(rect?.y) || 0));
+  const right = Math.min(width, Math.ceil(x + (Number(rect?.width) || width)));
+  const bottom = Math.min(height, Math.ceil(y + (Number(rect?.height) || height)));
+  let transparentPixels = 0;
+  let totalPixels = 0;
+  for (let pixelY = y; pixelY < bottom; pixelY += 1) {
+    for (let pixelX = x; pixelX < right; pixelX += 1) {
+      const alpha = data[(pixelY * width + pixelX) * 4 + 3];
+      if (alpha <= alphaThreshold) transparentPixels += 1;
+      totalPixels += 1;
+    }
+  }
+  const transparentPixelRatio = totalPixels > 0
+    ? Number((transparentPixels / totalPixels).toFixed(4))
+    : 0;
+  return {
+    backgroundPolicy: transparentPixelRatio >= 0.01
+      ? 'transparent_pixels_reveal_surface'
+      : 'opaque_canvas_is_identity',
+    transparentPixelRatio,
+  };
+};
+
 export const findOpaqueWhiteTrimBounds = (imageData, tolerance = 10) => {
   const { data, width, height } = imageData || {};
   if (!data || !width || !height) return { x: 0, y: 0, width: width || 0, height: height || 0 };
@@ -555,6 +587,7 @@ export const createWhitespaceCroppedLogoBlob = async (logoUrl, {
   if (!sourceCtx) throw new Error('Logo裁边失败');
   sourceCtx.drawImage(image, 0, 0, width, height);
   const imageData = sourceCtx.getImageData(0, 0, width, height);
+  let identityImageData = imageData;
   let rect = findNonTransparentBounds(imageData);
   if (isWholeImage(rect, width, height)) {
     rect = findOpaqueWhiteTrimBounds(imageData);
@@ -565,6 +598,7 @@ export const createWhitespaceCroppedLogoBlob = async (logoUrl, {
   if (!preserveBackingPlate) {
     const transparentized = transparentizeFlatLogoBackground(imageData);
     if (transparentized.changed) {
+      identityImageData = transparentized.imageData;
       if (typeof sourceCtx.putImageData === 'function') {
         sourceCtx.putImageData(transparentized.imageData, 0, 0);
       }
@@ -572,6 +606,7 @@ export const createWhitespaceCroppedLogoBlob = async (logoUrl, {
     }
     const darkBackingTransparentized = transparentizeDarkLogoBacking(transparentized.changed ? transparentized.imageData : imageData);
     if (darkBackingTransparentized.changed) {
+      identityImageData = darkBackingTransparentized.imageData;
       if (typeof sourceCtx.putImageData === 'function') {
         sourceCtx.putImageData(darkBackingTransparentized.imageData, 0, 0);
       }
@@ -583,6 +618,7 @@ export const createWhitespaceCroppedLogoBlob = async (logoUrl, {
         : transparentized.changed ? transparentized.imageData : imageData,
     );
     if (backingPlateTransparentized.changed) {
+      identityImageData = backingPlateTransparentized.imageData;
       if (typeof sourceCtx.putImageData === 'function') {
         sourceCtx.putImageData(backingPlateTransparentized.imageData, 0, 0);
       }
@@ -594,6 +630,7 @@ export const createWhitespaceCroppedLogoBlob = async (logoUrl, {
   // avoid clipping pixels in the uploaded reference image.
   const visibleContentRect = { ...rect };
   rect = expandLogoCropRectWithPadding({ rect, width, height });
+  const backgroundIdentity = resolveLogoIdentityBackgroundPolicy(identityImageData, rect);
   const outputCanvas = document.createElement('canvas');
   outputCanvas.width = Math.max(1, rect.width);
   outputCanvas.height = Math.max(1, rect.height);
@@ -602,5 +639,12 @@ export const createWhitespaceCroppedLogoBlob = async (logoUrl, {
   outputCtx.drawImage(sourceCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
   const blob = await new Promise((resolve) => outputCanvas.toBlob(resolve, 'image/png', 0.95));
   if (!blob) throw new Error('Logo裁边导出失败');
-  return { blob, rect, visibleContentRect, originalWidth: width, originalHeight: height };
+  return {
+    blob,
+    rect,
+    visibleContentRect,
+    originalWidth: width,
+    originalHeight: height,
+    ...backgroundIdentity,
+  };
 };

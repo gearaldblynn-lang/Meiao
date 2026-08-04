@@ -2,11 +2,83 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeLogoOverlayItem,
+  createAiNativeLogoReplaceGuardedResultBlob,
   createGuardedMultiLogoReplaceResultBlob,
   expandRect,
   pickGuardedLogoReplacePixel,
   scrubLogoResidualPixels,
 } from './logoReplaceGuard.mjs';
+
+test('AI-native guard keeps generation inside selected regions and restores transparent logo identity', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalDocument = globalThis.document;
+  const drawCalls = [];
+  const clipCalls = [];
+
+  globalThis.fetch = async (url) => ({ ok: true, blob: async () => ({ url }) });
+  globalThis.createImageBitmap = async (blob) => ({ width: 100, height: 80, url: blob.url });
+  globalThis.document = {
+    createElement(tag) {
+      assert.equal(tag, 'canvas');
+      return {
+        width: 0,
+        height: 0,
+        getContext() {
+          return {
+            drawImage(image, ...args) { drawCalls.push({ image, args }); },
+            save() {},
+            restore() {},
+            beginPath() {},
+            rect(...args) { clipCalls.push(args); },
+            clip() {},
+            set globalAlpha(value) { this.__globalAlpha = value; },
+            set filter(value) { this.__filter = value; },
+          };
+        },
+        toBlob(callback) { callback(new Blob(['result'], { type: 'image/png' })); },
+      };
+    },
+  };
+
+  try {
+    const guarded = await createAiNativeLogoReplaceGuardedResultBlob({
+      originalUrl: 'original.png',
+      generatedUrl: 'generated.png',
+      originalWidth: 100,
+      originalHeight: 80,
+      items: [
+        {
+          region: { xRatio: 0.1, yRatio: 0.2, widthRatio: 0.3, heightRatio: 0.1 },
+          backgroundPolicy: 'transparent_pixels_reveal_surface',
+          logoOverlayUrl: 'transparent-logo.png',
+          logoOverlayRect: { xRatio: 0.15, yRatio: 0.225, widthRatio: 0.2, heightRatio: 0.05 },
+        },
+        {
+          region: { xRatio: 0.6, yRatio: 0.2, widthRatio: 0.2, heightRatio: 0.2 },
+          backgroundPolicy: 'opaque_canvas_is_identity',
+          logoOverlayUrl: 'opaque-logo.png',
+          logoOverlayRect: { xRatio: 0.6, yRatio: 0.2, widthRatio: 0.2, heightRatio: 0.2 },
+        },
+      ],
+    });
+
+    assert.equal(guarded.regionGuarded, true);
+    assert.deepEqual(guarded.protectedRects, [
+      { x: 10, y: 16, width: 30, height: 8 },
+      { x: 60, y: 16, width: 20, height: 16 },
+    ]);
+    assert.ok(clipCalls.some((args) => args[0] === 10 && args[1] === 16 && args[2] === 30 && args[3] === 8));
+    assert.ok(clipCalls.some((args) => args[0] === 60 && args[1] === 16 && args[2] === 20 && args[3] === 16));
+    assert.equal(drawCalls.filter((call) => call.image.url === 'transparent-logo.png').length, 1);
+    assert.equal(drawCalls.filter((call) => call.image.url === 'opaque-logo.png').length, 1);
+    assert.equal(drawCalls.filter((call) => call.image.url === 'generated.png').length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.createImageBitmap = originalCreateImageBitmap;
+    globalThis.document = originalDocument;
+  }
+});
 
 test('expands the edit rect modestly and clamps to image bounds', () => {
   assert.deepEqual(expandRect({

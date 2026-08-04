@@ -51,9 +51,13 @@ import { createCornerBadgeRegionGuide, normalizeCornerBadgeRegion } from '../uti
 import { normalizeLogoReplaceRegion, normalizeLogoReplaceRegions } from '../utils/logoReplaceRegion.mjs';
 import { createWhitespaceCroppedLogoBlob } from '../utils/logoWhitespaceCrop.mjs';
 import { createLogoReplaceRegionGuideBlob, createMultiLogoReplacePreviewBlob } from '../utils/logoReplacePreview.mjs';
-import { createGuardedMultiLogoReplaceResultBlob } from '../utils/logoReplaceGuard.mjs';
+import {
+  createAiNativeLogoReplaceGuardedResultBlob,
+  createGuardedMultiLogoReplaceResultBlob,
+} from '../utils/logoReplaceGuard.mjs';
 import {
   LOGO_REPLACE_MAX_REGIONS,
+  buildLogoReplaceGeometryContract,
   buildLogoReplaceGenerationPrompt,
 } from '../utils/logoReplaceAnalysis.mjs';
 import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
@@ -2033,6 +2037,8 @@ const buildLogoReplacementLogoInput = async ({
       cropped: false,
       cropRect: null as Record<string, unknown> | null,
       visibleContentRect: null as Record<string, unknown> | null,
+      backgroundPolicy: 'opaque_canvas_is_identity' as const,
+      transparentPixelRatio: 0,
     };
   }
   const guideFile = new File(
@@ -2053,6 +2059,8 @@ const buildLogoReplacementLogoInput = async ({
       cropped: false,
       cropRect: null as Record<string, unknown> | null,
       visibleContentRect: null as Record<string, unknown> | null,
+      backgroundPolicy: 'opaque_canvas_is_identity' as const,
+      transparentPixelRatio: 0,
     };
   }
   return {
@@ -2068,6 +2076,46 @@ const buildLogoReplacementLogoInput = async ({
       originalWidth: cropped.originalWidth,
       originalHeight: cropped.originalHeight,
     },
+    backgroundPolicy: cropped.backgroundPolicy,
+    transparentPixelRatio: cropped.transparentPixelRatio,
+  };
+};
+
+const buildLogoReplaceOverlayRect = ({
+  containedBounds,
+  cropRect,
+  visibleContentRect,
+  backgroundPolicy,
+}: {
+  containedBounds: Record<string, unknown>;
+  cropRect?: Record<string, unknown> | null;
+  visibleContentRect?: Record<string, unknown> | null;
+  backgroundPolicy?: string;
+}) => {
+  if (backgroundPolicy !== 'transparent_pixels_reveal_surface') return containedBounds;
+  const cropWidth = Number(cropRect?.width || 0);
+  const cropHeight = Number(cropRect?.height || 0);
+  const visibleWidth = Number(visibleContentRect?.width || 0);
+  const visibleHeight = Number(visibleContentRect?.height || 0);
+  const containedWidth = Number(containedBounds?.widthRatio || 0);
+  const containedHeight = Number(containedBounds?.heightRatio || 0);
+  if (
+    cropWidth <= 0
+    || cropHeight <= 0
+    || visibleWidth <= 0
+    || visibleHeight <= 0
+    || containedWidth <= 0
+    || containedHeight <= 0
+  ) return containedBounds;
+  const overlayWidth = containedWidth * (cropWidth / visibleWidth);
+  const overlayHeight = containedHeight * (cropHeight / visibleHeight);
+  const visibleOffsetX = (Number(visibleContentRect?.x || 0) - Number(cropRect?.x || 0)) / cropWidth;
+  const visibleOffsetY = (Number(visibleContentRect?.y || 0) - Number(cropRect?.y || 0)) / cropHeight;
+  return {
+    xRatio: Number((Number(containedBounds.xRatio || 0) - (visibleOffsetX * overlayWidth)).toFixed(4)),
+    yRatio: Number((Number(containedBounds.yRatio || 0) - (visibleOffsetY * overlayHeight)).toFixed(4)),
+    widthRatio: Number(overlayWidth.toFixed(4)),
+    heightRatio: Number(overlayHeight.toFixed(4)),
   };
 };
 
@@ -2448,13 +2496,22 @@ const runLegacyLogoReplaceWorkflow = async (
   };
 };
 
+type LogoReplaceGuardItem = {
+  region: LogoReplaceRegion;
+  backgroundPolicy: 'transparent_pixels_reveal_surface' | 'opaque_canvas_is_identity';
+  transparentPixelRatio?: number;
+  logoOverlayUrl: string;
+  logoOverlayRect: Record<string, unknown>;
+};
+
 const finalizeLogoReplaceResultAsset = async ({
   generatedItem,
   referenceMaterial,
   referenceUrl,
   batchIndex,
-  config,
+  config: _config,
   signal,
+  logoGuardItems,
 }: {
   generatedItem: ShellWorkflowImageResult;
   referenceMaterial: ShellMaterialInput;
@@ -2462,6 +2519,7 @@ const finalizeLogoReplaceResultAsset = async ({
   batchIndex: number;
   config: ModuleConfig;
   signal: AbortSignal;
+  logoGuardItems: LogoReplaceGuardItem[];
 }): Promise<ShellWorkflowImageResult> => {
   if (generatedItem.status !== 'completed' || !generatedItem.imageUrl) {
     return generatedItem;
@@ -2505,9 +2563,16 @@ const finalizeLogoReplaceResultAsset = async ({
     targetWidth,
     targetHeight,
   });
-  const finalBlob = providerDimensions.width === targetWidth && providerDimensions.height === targetHeight
-    ? providerBlob
-    : await resizeImage(providerBlob, targetWidth, targetHeight, config.maxFileSize);
+  const guarded = await createAiNativeLogoReplaceGuardedResultBlob({
+    originalUrl: referenceUrl,
+    generatedUrl: providerImageUrl,
+    items: logoGuardItems,
+    originalWidth: targetWidth,
+    originalHeight: targetHeight,
+    overlayBlendMode: 'exact',
+    signal,
+  });
+  const finalBlob = guarded.blob;
   const finalUrl = await persistGeneratedAsset(
     finalBlob,
     'retouch',
@@ -2515,7 +2580,7 @@ const finalizeLogoReplaceResultAsset = async ({
   );
 
   const backendJobId = String(generatedItem.backendJobId || '').trim();
-  if (backendJobId && finalUrl !== providerImageUrl) {
+  if (backendJobId) {
     try {
       await updateInternalJobResult(backendJobId, {
         imageUrl: finalUrl,
@@ -2524,6 +2589,8 @@ const finalizeLogoReplaceResultAsset = async ({
         outputWidth: targetWidth,
         outputHeight: targetHeight,
         logoReplaceFinalized: true,
+        logoReplaceRegionGuarded: true,
+        logoReplaceAlphaGuardedCount: guarded.alphaGuardedCount,
       });
     } catch (error) {
       console.warn('[MEIAO] logo replacement final asset job update failed', error);
@@ -2542,6 +2609,8 @@ type LogoReplaceAnalysisBinding = {
   targetLogoIndex: number;
   replacementRequirement: string;
   identityReferenceAspectRatio?: number;
+  identityBackgroundPolicy: 'transparent_pixels_reveal_surface' | 'opaque_canvas_is_identity';
+  identityTransparentPixelRatio?: number;
 };
 
 type LogoReplaceResolvedBinding = {
@@ -2561,6 +2630,7 @@ const completeLogoReplaceResultLifecycle = async ({
   config,
   signal,
   analysis,
+  logoGuardItems,
   existingGenerationJobResult,
 }: {
   generatedItem: ShellWorkflowImageResult;
@@ -2570,10 +2640,13 @@ const completeLogoReplaceResultLifecycle = async ({
   config: ModuleConfig;
   signal: AbortSignal;
   analysis: Extract<Awaited<ReturnType<typeof recoverLogoReplacementAnalysis>>, { status: 'success' }>;
+  logoGuardItems: LogoReplaceGuardItem[];
   existingGenerationJobResult?: Record<string, unknown> | null;
 }): Promise<ShellWorkflowImageResult> => {
   const storedFinalUrl = String(existingGenerationJobResult?.imageUrl || '').trim();
-  const finalizedItem = existingGenerationJobResult?.logoReplaceFinalized === true && storedFinalUrl
+  const finalizedItem = existingGenerationJobResult?.logoReplaceFinalized === true
+    && existingGenerationJobResult?.logoReplaceRegionGuarded === true
+    && storedFinalUrl
     ? {
         ...generatedItem,
         imageUrl: storedFinalUrl,
@@ -2585,6 +2658,7 @@ const completeLogoReplaceResultLifecycle = async ({
         batchIndex,
         config,
         signal,
+        logoGuardItems,
       });
   if (finalizedItem.status !== 'completed' || !finalizedItem.imageUrl) {
     return {
@@ -2660,15 +2734,24 @@ export const resumeLogoReplaceGenerationResult = async ({
     });
   }
 
-  const analysisBindings: LogoReplaceAnalysisBinding[] = rawBindings.map((binding, index) => ({
-    regionId: String(binding.regionId || `logo-replace-region-${index + 1}`).trim(),
-    regionIndex: Number(binding.regionIndex || index + 1),
-    targetLogoIndex: Number(binding.targetLogoIndex || index + 1),
-    replacementRequirement: String(binding.replacementRequirement || '').trim(),
-    ...(Number(binding.identityReferenceAspectRatio) > 0
-      ? { identityReferenceAspectRatio: Number(binding.identityReferenceAspectRatio) }
-      : {}),
-  }));
+  const analysisBindings: LogoReplaceAnalysisBinding[] = rawBindings.map((binding, index) => {
+    const identityTransparentPixelRatio = Number(binding.identityTransparentPixelRatio || 0);
+    const identityBackgroundPolicy = String(binding.identityBackgroundPolicy || '').trim() === 'transparent_pixels_reveal_surface'
+      || identityTransparentPixelRatio >= 0.01
+      ? 'transparent_pixels_reveal_surface' as const
+      : 'opaque_canvas_is_identity' as const;
+    return {
+      regionId: String(binding.regionId || `logo-replace-region-${index + 1}`).trim(),
+      regionIndex: Number(binding.regionIndex || index + 1),
+      targetLogoIndex: Number(binding.targetLogoIndex || index + 1),
+      replacementRequirement: String(binding.replacementRequirement || '').trim(),
+      identityBackgroundPolicy,
+      identityTransparentPixelRatio,
+      ...(Number(binding.identityReferenceAspectRatio) > 0
+        ? { identityReferenceAspectRatio: Number(binding.identityReferenceAspectRatio) }
+        : {}),
+    };
+  });
   const analysisJobId = String(payload.logoReplaceAnalysisJobId || '').trim();
   const analysis = await recoverLogoReplacementAnalysis({
     jobId: analysisJobId,
@@ -2723,6 +2806,43 @@ export const resumeLogoReplaceGenerationResult = async ({
       },
     };
   });
+  const logoGuardItems: LogoReplaceGuardItem[] = regionBindings.map(({ region }, index) => {
+    const rawBinding = rawBindings[index];
+    const analysisRegion = analysis.normalizedAnalysis.regions?.find((item) => (
+      String(item?.regionId || '').trim() === analysisBindings[index].regionId
+      && Number(item?.regionIndex) === analysisBindings[index].regionIndex
+    ));
+    const geometry = buildLogoReplaceGeometryContract({
+      region,
+      identityReferenceAspectRatio: analysisBindings[index].identityReferenceAspectRatio
+        || analysisRegion?.logoIdentity?.visibleMarkAspectRatio,
+      regionIndex: analysisBindings[index].regionIndex,
+    });
+    const storedContainedBounds = rawBinding.identityReferenceContainedBounds;
+    const containedBounds = storedContainedBounds && typeof storedContainedBounds === 'object'
+      ? storedContainedBounds as Record<string, unknown>
+      : geometry.containedBounds;
+    const storedOverlayRect = rawBinding.identityReferenceOverlayRect;
+    const logoOverlayRect = storedOverlayRect && typeof storedOverlayRect === 'object'
+      ? storedOverlayRect as Record<string, unknown>
+      : buildLogoReplaceOverlayRect({
+          containedBounds,
+          cropRect: rawBinding.identityReferenceCropRect && typeof rawBinding.identityReferenceCropRect === 'object'
+            ? rawBinding.identityReferenceCropRect as Record<string, unknown>
+            : null,
+          visibleContentRect: rawBinding.identityReferenceVisibleContentRect && typeof rawBinding.identityReferenceVisibleContentRect === 'object'
+            ? rawBinding.identityReferenceVisibleContentRect as Record<string, unknown>
+            : null,
+          backgroundPolicy: analysisBindings[index].identityBackgroundPolicy,
+        });
+    return {
+      region,
+      backgroundPolicy: analysisBindings[index].identityBackgroundPolicy,
+      transparentPixelRatio: analysisBindings[index].identityTransparentPixelRatio,
+      logoOverlayUrl: identityReferenceUrls[index],
+      logoOverlayRect,
+    };
+  });
   const batchIndex = Math.max(1, Number(payload.batchIndex || 1));
   const total = Math.max(batchIndex, Number(payload.batchCount || payload.referenceCount || 1));
   const generatedItem: ShellWorkflowImageResult = {
@@ -2747,6 +2867,7 @@ export const resumeLogoReplaceGenerationResult = async ({
     config,
     signal,
     analysis,
+    logoGuardItems,
     existingGenerationJobResult: generationResult,
   });
 };
@@ -2814,7 +2935,7 @@ const runLogoReplaceWorkflow = async (
       })
     )));
     const orderedLogoUrls = identityReferences.map((reference) => reference.url);
-    const analysisBindings = regionBindings.map(({ region }, index) => {
+    const analysisBindings: LogoReplaceAnalysisBinding[] = regionBindings.map(({ region }, index) => {
       const visibleContentWidth = Number(identityReferences[index]?.visibleContentRect?.width || 0);
       const visibleContentHeight = Number(identityReferences[index]?.visibleContentRect?.height || 0);
       const identityReferenceAspectRatio = visibleContentWidth > 0 && visibleContentHeight > 0
@@ -2825,6 +2946,8 @@ const runLogoReplaceWorkflow = async (
         regionIndex: index + 1,
         targetLogoIndex: index + 1,
         replacementRequirement: String(region.replacementRequirement || '').trim(),
+        identityBackgroundPolicy: identityReferences[index]?.backgroundPolicy || 'opaque_canvas_is_identity',
+        identityTransparentPixelRatio: Number(identityReferences[index]?.transparentPixelRatio || 0),
         ...(identityReferenceAspectRatio ? { identityReferenceAspectRatio } : {}),
       };
     });
@@ -2860,7 +2983,7 @@ const runLogoReplaceWorkflow = async (
             shellPurpose: 'logo_replace_analysis',
             subFeature: 'logo_replace',
             logoReplaceMode,
-            logoReplaceProcessingMode: 'ai_native_analysis_generation_v5_execution_plan',
+            logoReplaceProcessingMode: 'ai_native_analysis_generation_v6_region_alpha_guard',
             batchIndex: referenceIndex + 1,
             batchCount: total,
             referenceIndex: referenceIndex + 1,
@@ -2886,6 +3009,32 @@ const runLogoReplaceWorkflow = async (
       widthRatio: Number(region.widthRatio || 0),
       heightRatio: Number(region.heightRatio || 0),
     }));
+    const logoGeometryContracts = generationRegionRects.map((region, index) => (
+      buildLogoReplaceGeometryContract({
+        region,
+        identityReferenceAspectRatio: analysisBindings[index].identityReferenceAspectRatio
+          || analysis.normalizedAnalysis.regions?.find((item) => (
+            String(item?.regionId || '').trim() === analysisBindings[index].regionId
+            && Number(item?.regionIndex) === analysisBindings[index].regionIndex
+          ))?.logoIdentity?.visibleMarkAspectRatio,
+        regionIndex: analysisBindings[index].regionIndex,
+      })
+    ));
+    const logoGuardItems: LogoReplaceGuardItem[] = regionBindings.map(({ region }, index) => {
+      const containedBounds = logoGeometryContracts[index].containedBounds;
+      return {
+        region,
+        backgroundPolicy: analysisBindings[index].identityBackgroundPolicy,
+        transparentPixelRatio: analysisBindings[index].identityTransparentPixelRatio,
+        logoOverlayUrl: identityReferences[index].url,
+        logoOverlayRect: buildLogoReplaceOverlayRect({
+          containedBounds,
+          cropRect: identityReferences[index].cropRect,
+          visibleContentRect: identityReferences[index].visibleContentRect,
+          backgroundPolicy: analysisBindings[index].identityBackgroundPolicy,
+        }),
+      };
+    });
     const prompt = buildLogoReplaceGenerationPrompt({
       analysis: analysis.normalizedAnalysis,
       bindings: analysisBindings,
@@ -2919,7 +3068,7 @@ const runLogoReplaceWorkflow = async (
         subFeature: 'logo_replace',
         logoReplaceMode,
         replacementLogic: logoReplaceMode,
-        logoReplaceProcessingMode: 'ai_native_analysis_generation_v5_execution_plan',
+        logoReplaceProcessingMode: 'ai_native_analysis_generation_v6_region_alpha_guard',
         skipPromptCleanupSuffix: true,
         preserveInputImageOrder: true,
         batchIndex: referenceIndex + 1,
@@ -2940,6 +3089,10 @@ const runLogoReplaceWorkflow = async (
           identityReferenceCropRect: identityReferences[index]?.cropRect,
           identityReferenceVisibleContentRect: identityReferences[index]?.visibleContentRect,
           identityReferenceAspectRatio: analysisBindings[index]?.identityReferenceAspectRatio,
+          identityBackgroundPolicy: analysisBindings[index]?.identityBackgroundPolicy,
+          identityTransparentPixelRatio: analysisBindings[index]?.identityTransparentPixelRatio,
+          identityReferenceContainedBounds: logoGeometryContracts[index]?.containedBounds,
+          identityReferenceOverlayRect: logoGuardItems[index]?.logoOverlayRect,
           xRatio: Number(region.xRatio || 0),
           yRatio: Number(region.yRatio || 0),
           widthRatio: Number(region.widthRatio || 0),
@@ -2972,6 +3125,7 @@ const runLogoReplaceWorkflow = async (
       config,
       signal: input.signal,
       analysis,
+      logoGuardItems,
     });
     onItemCompleted?.(item, referenceIndex + 1, total);
     return item;

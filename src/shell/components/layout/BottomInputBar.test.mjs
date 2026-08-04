@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 const source = () => readFileSync(new URL('./BottomInputBar.tsx', import.meta.url), 'utf8');
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
-test('logo replacement exposes one AI-native region-binding contract', () => {
+test('logo replacement exposes one AI generation plus deterministic region and alpha protection', () => {
   const bottomInputBar = source();
   const workflow = read('../../../adapters/shellWorkflow.ts');
   const activeLogoWorkflow = workflow.match(/const runLogoReplaceWorkflow = async[\s\S]*?const runProductReplaceWorkflow = async/)?.[0] || '';
@@ -29,7 +29,7 @@ test('logo replacement exposes one AI-native region-binding contract', () => {
   assert.match(bottomInputBar, /当前区域替换要求/);
   assert.match(bottomInputBar, /value=\{String\(activeRegion\.replacementRequirement \|\| ''\)\}/);
   assert.match(bottomInputBar, /replacementRequirement: event\.target\.value/);
-  assert.match(activeLogoWorkflow, /ai_native_analysis_generation_v5_execution_plan/);
+  assert.match(activeLogoWorkflow, /ai_native_analysis_generation_v6_region_alpha_guard/);
   assert.match(activeLogoWorkflow, /completeLogoReplaceResultLifecycle/);
   assert.doesNotMatch(activeLogoWorkflow, /validateLogoReplacementResult|logo_replace_quality_check/);
   assert.doesNotMatch(activeLogoWorkflow, /program_guarded|createGuardedMultiLogoReplaceResultBlob/);

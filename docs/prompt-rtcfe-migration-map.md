@@ -705,8 +705,8 @@ E Example 示例
 
 - 文件：`src/utils/logoReplaceAnalysis.mjs`
 - 位置：`buildLogoReplaceAnalysisPrompt`、`buildLogoReplaceGenerationPrompt`
-- 当前用途：统一图片角标、单 Logo 和多 Logo 的内部结构分析与 AI 原生整图替换。
-- 当前状态：已按完整 RTCFE 迁移，分析 schema 为 v4，运行时 processing mode 为 `ai_native_analysis_generation_v5_execution_plan`；历史 v2/v3 仅允许恢复读取，历史质量 prompt/解析代码不再被工作流调用。
+- 当前用途：统一图片角标、单 Logo 和多 Logo 的选区分析、AI 区域清理/材质融合与确定性终态保护。
+- 当前状态：已按完整 RTCFE 迁移，分析 schema 为 v4，运行时 processing mode 为 `ai_native_analysis_generation_v6_region_alpha_guard`；历史 v2/v3 仅允许恢复读取，历史质量 prompt/解析代码不再被工作流调用。
 - 关键约束：
   - 输入固定为原图、编号区域图、按 R1 到 Rn 排列的紧边界 Logo 身份参考；顺序和重复素材不得改写。
   - v4 分析必须逐区确认 `selectionContainsOldLogo` 和 `selectionCoverage`，并仅输出 `surfaceType/perspective/lighting/material/occlusion`；每项最多 120 字符。框偏移、只覆盖局部或框错对象时在生图前 fail closed。
@@ -714,6 +714,8 @@ E Example 示例
   - 编号标记图只进入策划阶段，生图输入只有原图与紧边界 Logo 素材；数值区域与简短表面决策合并为唯一 `<logo_replace_execution_contract>`。
   - 生图把每个 Logo 视为不可拆分原子图稿，只允许整组等比缩放、旋转、透视或曲面形变；禁止纵横排互换和内部元素独立移动。
   - 整组按 contain 放入目标区域；空间不足时缩小并留白，不得裁切、拉伸、挤压、拆分或重排。
+  - 紧边界身份参考同时记录透明像素比例和背景政策；透明像素表示无内容，必须透出原承载表面，不得变成黑/白/彩色底板。
+  - provider 返回的整图只是候选结果；发布前以原图恢复所有选区外像素，并用绑定 Logo 身份参考的真实像素保留字形、图形、颜色和 alpha。
   - provider 生图和最终资产处理成功后直接完成，不创建出图后 AI 审查任务；历史质量字段不得覆盖成功图片状态。
 - 防回归测试：`src/utils/logoReplaceAnalysis.test.mjs`、`src/utils/logoWhitespaceCrop.test.mjs`、`src/services/arkService.test.mjs`、`src/adapters/shellWorkflowLogoReplace.test.mjs`、`src/adapters/shellDataAdapter.test.mjs`
 - 你确认：`[x]`

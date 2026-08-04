@@ -6,10 +6,39 @@ import {
   findDarkBackgroundLightContentBounds,
   findNonTransparentBounds,
   findOpaqueWhiteTrimBounds,
+  resolveLogoIdentityBackgroundPolicy,
   transparentizeDarkLogoBacking,
   transparentizeFlatLogoBackground,
   transparentizeOpaqueLogoBackingPlate,
 } from './logoWhitespaceCrop.mjs';
+
+test('treats uploaded alpha as authoritative instead of inventing a backing plate', () => {
+  const transparentLogo = {
+    width: 4,
+    height: 2,
+    data: new Uint8ClampedArray([
+      255, 255, 255, 255, 255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 0,
+      255, 255, 255, 255, 255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 0,
+    ]),
+  };
+  const opaqueLogo = {
+    width: 2,
+    height: 2,
+    data: new Uint8ClampedArray([
+      255, 255, 255, 255, 255, 255, 255, 255,
+      255, 255, 255, 255, 255, 255, 255, 255,
+    ]),
+  };
+
+  assert.deepEqual(resolveLogoIdentityBackgroundPolicy(transparentLogo), {
+    backgroundPolicy: 'transparent_pixels_reveal_surface',
+    transparentPixelRatio: 0.5,
+  });
+  assert.deepEqual(resolveLogoIdentityBackgroundPolicy(opaqueLogo), {
+    backgroundPolicy: 'opaque_canvas_is_identity',
+    transparentPixelRatio: 0,
+  });
+});
 
 const withMockedLogoCropRuntime = async ({ width, height, imageData, fetchImpl }, callback) => {
   const originalFetch = globalThis.fetch;
@@ -540,6 +569,7 @@ test('crops large transparent padding around an uploaded logo before placement',
       width: 215,
       height: 134,
     });
+    assert.equal(result.backgroundPolicy, 'transparent_pixels_reveal_surface');
     assert.equal(outputCanvases.at(-1).width, 241);
     assert.equal(outputCanvases.at(-1).height, 160);
   });

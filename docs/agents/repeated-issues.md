@@ -1327,3 +1327,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 标记器增加独立 `draw|move` 交互状态，拖动时保留区域尺寸并将坐标限制在原图内，标记框 pointer down 阻止冒泡；所有 `everything_replace` 结果卡统一不渲染生图 Prompt，仍保留真实失败原因；将模特预检归类为控制 job，同时清理已持久化的对应幽灵卡。
 - Regression check: `node --experimental-strip-types --test src/adapters/shellPersistence.test.mjs src/adapters/shellJobVisibility.test.mjs src/adapters/shellDataAdapter.test.mjs src/utils/productReplaceRegion.test.mjs src/shell/components/layout/BottomInputBar.test.mjs src/components/uiArchitecture.test.mjs server/appStateMerge.test.mjs`（495 项通过）；`npm run build`；`npm run doctor`。真实组件浏览器验收已确认拖动后尺寸不变、保存重开位置不丢，项目详情不再出现 Prompt。
 - Avoid next time: 策划、分析、预检等无媒体产物 job 新增 purpose 时必须同步更新 shell 控制任务分类和幽灵卡回归；画布内子控件的拖动与父层框选要有明确事件边界；模块级展示规则应用模块判定，不要逐子功能累加例外。
+
+## 2026-08-04 - Logo 生图不能靠提示词保证框外不变和透明底板
+
+- Symptom: 用户只在左上角框选 Logo，结果却在帽子/面罩上额外生成同一 Logo，框外认证文字变形；上传的透明 WARRIOR Logo 又被生成黑色矩形底板，Logo 字形也会近似重画。
+- Cloud evidence: 多桑任务 `58338f7e9ef15dee21444a87` 的目标区域只是左上角，Kcmg 身份参考是 530×273 RGBA，透明像素比例 74.85%，候选图却把 Kcmg 复制到面部并改写右侧文案。任务 `aeb160e053eacb2123b22cd5` 的 WARRIOR 参考是 480×124 RGBA，透明像素比例 77.68%，provider 候选图却增加黑底。坐标、contain 比例和上传 alpha 均正确，排除了用户标记错位和裁剪丢 alpha。
+- Root cause: 全图生成模型即使收到“只改目标区域”也没有像素级边界能力，提示词只能降低越界概率；旧链路又把 provider 整图直接当最终资产。同时透明像素没有机器可执行的背景政策，模型会把透明画布误解为黑/白底板或重画 Logo。
+- Fix: v6 在身份参考阶段计算 `identityBackgroundPolicy` 和 `transparentPixelRatio`，生图执行合同显式区分“透明像素=无内容，必须透出原表面”与“不透明画布是身份”。provider 返回后以原图为最终底图，只采用选区内的 AI 清理/融合像素，框外逐像素恢复；Logo 按可见比例和裁边留白反算合成矩形，用上传身份参考的真实像素终态合成，不让模型重画字形。不新增 AI 质量验收或额外计费。
+- Regression check: `node --experimental-strip-types --test src/utils/logoWhitespaceCrop.test.mjs src/utils/logoReplaceAnalysis.test.mjs src/utils/logoReplaceGuard.test.mjs src/adapters/shellWorkflowLogoReplace.test.mjs`；`npm run build`。用上述两条云上失败结果离线回放，Kcmg 面部重复和框外文字漂移被原图恢复，WARRIOR 黑底消失，全程未发起新 provider 任务。
+- Avoid next time: 凡是“框外不变”“透明通道保留”“标识精确一致”这类可验证硬合同，不得只写在提示词中。AI 负责局部视觉推断，程序必须负责像素边界、alpha 语义和精确身份发布合同。

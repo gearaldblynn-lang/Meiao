@@ -547,3 +547,102 @@ export const createGuardedMultiLogoReplaceResultBlob = async ({
     height,
   };
 };
+
+/**
+ * Publishes an AI-native Logo result without allowing the full-frame model to
+ * change pixels outside user-selected regions. Exact identity references are
+ * composited last so transparent pixels can never become an invented backing.
+ * @param {{
+ *   originalUrl?: string,
+ *   generatedUrl?: string,
+ *   items?: Array<{
+ *     region?: unknown,
+ *     backgroundPolicy?: 'transparent_pixels_reveal_surface' | 'opaque_canvas_is_identity',
+ *     logoOverlayUrl?: string,
+ *     logoOverlayRect?: Record<string, unknown>,
+ *   }>,
+ *   originalWidth?: number,
+ *   originalHeight?: number,
+ *   overlayBlendMode?: 'exact' | 'fabric_blend' | 'auto',
+ *   signal?: AbortSignal,
+ * }} options
+ */
+export const createAiNativeLogoReplaceGuardedResultBlob = async ({
+  originalUrl,
+  generatedUrl,
+  items,
+  originalWidth,
+  originalHeight,
+  overlayBlendMode = 'auto',
+  signal,
+} = {}) => {
+  const originalImage = await loadImage(originalUrl, 'Original image', signal);
+  const generatedImage = await loadImage(generatedUrl, 'Generated image', signal);
+  const sourceWidth = originalWidth || originalImage.width || originalImage.naturalWidth || generatedImage.width || generatedImage.naturalWidth || 1000;
+  const sourceHeight = originalHeight || originalImage.height || originalImage.naturalHeight || generatedImage.height || generatedImage.naturalHeight || 1000;
+  const width = Math.max(1, Math.round(sourceWidth));
+  const height = Math.max(1, Math.round(sourceHeight));
+  const guardItems = (Array.isArray(items) ? items : [])
+    .map((item) => {
+      const normalized = normalizeGuardItem(item, { width, height });
+      if (!normalized) return null;
+      return {
+        ...normalized,
+        backgroundPolicy: String(item?.backgroundPolicy || '').trim() === 'transparent_pixels_reveal_surface'
+          ? 'transparent_pixels_reveal_surface'
+          : 'opaque_canvas_is_identity',
+      };
+    })
+    .filter(Boolean);
+  if (guardItems.length === 0) throw new Error('AI-native Logo guard regions are invalid');
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('AI-native Logo guard canvas failed');
+  ctx.drawImage(originalImage, 0, 0, width, height);
+
+  guardItems.forEach((item) => {
+    if (item.backgroundPolicy === 'transparent_pixels_reveal_surface') {
+      applyGeneratedCleanupContentMask({
+        ctx,
+        originalImage,
+        generatedImage,
+        clipRect: item.rect,
+        width,
+        height,
+      });
+      scrubLogoResidualsInCanvas(ctx, item.rect, width, height);
+      return;
+    }
+    drawGeneratedCleanupBase(ctx, generatedImage, item.rect, width, height);
+  });
+
+  const overlayEntries = guardItems.filter((item) => item.logoOverlayItem);
+  const logoImages = await Promise.all(overlayEntries.map((item) => (
+    loadImage(item.logoOverlayItem.logoUrl, 'Exact replacement Logo identity', signal)
+  )));
+  logoImages.forEach((logoImage, index) => {
+    const item = overlayEntries[index];
+    const overlay = item.logoOverlayItem;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(item.rect.x, item.rect.y, item.rect.width, item.rect.height);
+    ctx.clip();
+    applyLogoOverlayBlend(ctx, overlayBlendMode, overlay.rect);
+    ctx.drawImage(logoImage, overlay.rect.x, overlay.rect.y, overlay.rect.width, overlay.rect.height);
+    ctx.restore();
+  });
+
+  return {
+    blob: await exportCanvasBlob(canvas, 'AI-native Logo guard'),
+    rects: guardItems.map((item) => item.rect),
+    protectedRects: guardItems.map((item) => item.rect),
+    logoOverlayItems: overlayEntries.map((item) => item.logoOverlayItem),
+    regionGuarded: true,
+    alphaGuardedCount: guardItems.filter((item) => item.backgroundPolicy === 'transparent_pixels_reveal_surface').length,
+    width,
+    height,
+  };
+};

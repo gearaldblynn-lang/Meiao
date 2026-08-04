@@ -11,10 +11,11 @@ const functionBlock = (name) => {
   return end < 0 ? shellWorkflowSource.slice(start) : shellWorkflowSource.slice(start, end + 3);
 };
 
-test('all logo modes use one AI analysis and direct full-image generation workflow', () => {
+test('all logo modes use one AI generation plus deterministic selected-region protection', () => {
   const workflow = functionBlock('runLogoReplaceWorkflow');
   const guideBuilder = functionBlock('buildLogoReplaceRegionGuideInputs');
   const lifecycle = functionBlock('completeLogoReplaceResultLifecycle');
+  const finalizer = functionBlock('finalizeLogoReplaceResultAsset');
 
   assert.match(shellWorkflowSource, /analyzeLogoReplacement/);
   assert.match(shellWorkflowSource, /buildLogoReplaceGenerationPrompt/);
@@ -22,9 +23,9 @@ test('all logo modes use one AI analysis and direct full-image generation workfl
   assert.match(guideBuilder, /createLogoReplaceRegionGuideBlob/);
   assert.match(workflow, /taskPurpose: 'logo_replace_analysis'/);
   assert.match(workflow, /taskPurpose: 'logo_replace_generation'/);
-  assert.match(workflow, /logoReplaceProcessingMode: 'ai_native_analysis_generation_v5_execution_plan'/);
+  assert.match(workflow, /logoReplaceProcessingMode: 'ai_native_analysis_generation_v6_region_alpha_guard'/);
   assert.doesNotMatch(lifecycle, /logo_replace_quality_check|validateLogoReplacementResult|createLogoReplaceQualityEvidenceBlobs|qualityEvidenceUrls/);
-  assert.doesNotMatch(workflow, /createGuardedMultiLogoReplaceResultBlob/);
+  assert.match(finalizer, /createAiNativeLogoReplaceGuardedResultBlob/);
   assert.doesNotMatch(workflow, /program_guarded|toMultiLogoReplaceResultItem|cleanupScrubPaddingRatio/);
 });
 
@@ -36,6 +37,8 @@ test('logo analysis receives the guide while generation receives only the clean 
   assert.match(shellWorkflowSource, /preserveBackingPlate: true/);
   assert.match(workflow, /const orderedLogoUrls = identityReferences\.map\(\(reference\) => reference\.url\)/);
   assert.match(workflow, /identityReferenceAspectRatio/);
+  assert.match(workflow, /identityBackgroundPolicy/);
+  assert.match(workflow, /transparentPixelRatio/);
   assert.match(workflow, /identityReferences\[index\]\?\.visibleContentRect\?\.width/);
   assert.match(workflow, /identityReferences\[index\]\?\.visibleContentRect\?\.height/);
   assert.doesNotMatch(workflow, /const cropWidth = Number\(identityReferences\[index\]\?\.cropRect\?\.width/);
@@ -62,7 +65,7 @@ test('single and corner presets select one region while multi preserves every nu
   assert.match(regionResolver, /: regions/);
 });
 
-test('logo workflow preserves requirements and returns the provider final image directly', () => {
+test('logo workflow preserves requirements and guards the provider image before publishing', () => {
   const workflow = functionBlock('runLogoReplaceWorkflow');
   const resultFinalizer = functionBlock('finalizeLogoReplaceResultAsset');
   const lifecycle = functionBlock('completeLogoReplaceResultLifecycle');
@@ -87,11 +90,13 @@ test('logo workflow preserves requirements and returns the provider final image 
   assert.match(resultFinalizer, /fetchRemoteFileBlob\(providerImageUrl\)/);
   assert.match(resultFinalizer, /getImageDimensions\(providerBlob\)/);
   assert.match(resultFinalizer, /assertTranslationOutputAspectRatio/);
-  assert.match(resultFinalizer, /resizeImage/);
   assert.match(resultFinalizer, /persistGeneratedAsset/);
+  assert.match(resultFinalizer, /createAiNativeLogoReplaceGuardedResultBlob/);
+  assert.match(resultFinalizer, /overlayBlendMode: 'exact'/);
+  assert.match(resultFinalizer, /logoReplaceRegionGuarded: true/);
   assert.match(resultFinalizer, /updateInternalJobResult/);
   assert.match(resultFinalizer, /originalProviderImageUrl: providerImageUrl/);
-  assert.doesNotMatch(resultFinalizer, /createGuardedMultiLogoReplaceResultBlob|drawImage|logoReplaceGuarded/);
+  assert.doesNotMatch(resultFinalizer, /drawImage/);
   assert.doesNotMatch(workflow, /persistGeneratedAsset|logoReplaceGuarded|createGuardedMultiLogoReplaceResultBlob|drawImage/);
 });
 

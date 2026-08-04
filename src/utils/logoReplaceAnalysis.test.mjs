@@ -17,6 +17,7 @@ const bindings = [
     targetLogoIndex: 1,
     replacementRequirement: '沿包装曲面自然融合',
     identityReferenceAspectRatio: 1.38,
+    identityBackgroundPolicy: 'transparent_pixels_reveal_surface',
   },
   {
     regionId: 'logo-replace-region-2',
@@ -24,6 +25,7 @@ const bindings = [
     targetLogoIndex: 2,
     replacementRequirement: '保持金属压印和反射',
     identityReferenceAspectRatio: 1.72,
+    identityBackgroundPolicy: 'opaque_canvas_is_identity',
   },
 ];
 
@@ -251,6 +253,9 @@ test('generation prompt treats analysis and user requirements as data, then appe
   assert.match(prompt, /logo_replace_execution_contract/);
   assert.match(prompt, /"targetRegion":\{"xRatio":0\.1/);
   assert.match(prompt, /"identityReferenceAspectRatio":1\.38/);
+  assert.match(prompt, /"backgroundPolicy":"transparent_pixels_reveal_surface"/);
+  assert.match(prompt, /透明像素表示“无内容”/);
+  assert.match(prompt, /必须透出 Image 1 原表面/);
   assert.match(prompt, /"containedBounds"/);
   assert.match(prompt, /目标框比例不是 Logo 比例/);
   assert.match(prompt, /成图不得留下编号、框线、虚线、色块或标记/);

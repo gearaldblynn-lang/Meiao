@@ -67,6 +67,9 @@ export const normalizeLogoReplaceBindings = (value) => {
     const regionIndex = requirePositiveInteger(item.regionIndex, '区域编号');
     const targetLogoIndex = requirePositiveInteger(item.targetLogoIndex, 'Logo 编号');
     const identityReferenceAspectRatio = Number(item.identityReferenceAspectRatio);
+    const identityBackgroundPolicy = cleanString(item.identityBackgroundPolicy) === 'transparent_pixels_reveal_surface'
+      ? 'transparent_pixels_reveal_surface'
+      : 'opaque_canvas_is_identity';
     if (!regionId) throw new Error('Logo 替换区域缺少 regionId。');
     if (seenRegionIds.has(regionId) || seenRegionIndexes.has(regionIndex)) {
       throw new Error('Logo 替换区域编号不能重复。');
@@ -81,6 +84,7 @@ export const normalizeLogoReplaceBindings = (value) => {
       ...(Number.isFinite(identityReferenceAspectRatio) && identityReferenceAspectRatio > 0
         ? { identityReferenceAspectRatio }
         : {}),
+      identityBackgroundPolicy,
     };
   }).sort((left, right) => left.regionIndex - right.regionIndex);
 
@@ -486,6 +490,63 @@ export const parseLogoReplaceAnalysis = (
 
 /**
  * @param {{
+ *   region?: Record<string, unknown>,
+ *   identityReferenceAspectRatio?: number,
+ *   regionIndex?: number,
+ * }} [input]
+ */
+export const buildLogoReplaceGeometryContract = ({
+  region,
+  identityReferenceAspectRatio,
+  regionIndex = 1,
+} = {}) => {
+  const xRatio = Number(region?.xRatio);
+  const yRatio = Number(region?.yRatio);
+  const widthRatio = Number(region?.widthRatio);
+  const heightRatio = Number(region?.heightRatio);
+  const identityAspectRatio = Number(identityReferenceAspectRatio);
+  if (
+    !Number.isFinite(xRatio)
+    || !Number.isFinite(yRatio)
+    || !Number.isFinite(widthRatio)
+    || !Number.isFinite(heightRatio)
+    || xRatio < 0
+    || yRatio < 0
+    || widthRatio <= 0
+    || heightRatio <= 0
+    || xRatio + widthRatio > 1.000001
+    || yRatio + heightRatio > 1.000001
+  ) {
+    throw new Error(`R${regionIndex} 缺少有效的 Logo 替换区域几何数据。`);
+  }
+  if (!Number.isFinite(identityAspectRatio) || identityAspectRatio <= 0) {
+    throw new Error(`R${regionIndex} 缺少有效的 Logo 可见图稿比例。`);
+  }
+  let containedWidthRatio = widthRatio;
+  let containedHeightRatio = containedWidthRatio / identityAspectRatio;
+  if (containedHeightRatio > heightRatio) {
+    containedHeightRatio = heightRatio;
+    containedWidthRatio = containedHeightRatio * identityAspectRatio;
+  }
+  return {
+    targetRegion: {
+      xRatio: Number(xRatio.toFixed(4)),
+      yRatio: Number(yRatio.toFixed(4)),
+      widthRatio: Number(widthRatio.toFixed(4)),
+      heightRatio: Number(heightRatio.toFixed(4)),
+    },
+    containedBounds: {
+      xRatio: Number((xRatio + ((widthRatio - containedWidthRatio) / 2)).toFixed(4)),
+      yRatio: Number((yRatio + ((heightRatio - containedHeightRatio) / 2)).toFixed(4)),
+      widthRatio: Number(containedWidthRatio.toFixed(4)),
+      heightRatio: Number(containedHeightRatio.toFixed(4)),
+    },
+    identityReferenceAspectRatio: Number(identityAspectRatio.toFixed(4)),
+  };
+};
+
+/**
+ * @param {{
  *   analysis?: Record<string, unknown>,
  *   bindings?: Array<Record<string, unknown>>,
  *   regionRects?: Array<Record<string, unknown>>,
@@ -545,30 +606,11 @@ export const buildLogoReplaceGenerationPrompt = ({
       || analysisRegion?.logoIdentity?.visibleMarkAspectRatio
       || 0,
     );
-    if (!Number.isFinite(identityReferenceAspectRatio) || identityReferenceAspectRatio <= 0) {
-      throw new Error(`R${binding.regionIndex} 缺少有效的 Logo 可见图稿比例。`);
-    }
-    let containedWidthRatio = region.widthRatio;
-    let containedHeightRatio = containedWidthRatio / identityReferenceAspectRatio;
-    if (containedHeightRatio > region.heightRatio) {
-      containedHeightRatio = region.heightRatio;
-      containedWidthRatio = containedHeightRatio * identityReferenceAspectRatio;
-    }
-    return {
-      targetRegion: {
-        xRatio: Number(region.xRatio.toFixed(4)),
-        yRatio: Number(region.yRatio.toFixed(4)),
-        widthRatio: Number(region.widthRatio.toFixed(4)),
-        heightRatio: Number(region.heightRatio.toFixed(4)),
-      },
-      containedBounds: {
-        xRatio: Number((region.xRatio + ((region.widthRatio - containedWidthRatio) / 2)).toFixed(4)),
-        yRatio: Number((region.yRatio + ((region.heightRatio - containedHeightRatio) / 2)).toFixed(4)),
-        widthRatio: Number(containedWidthRatio.toFixed(4)),
-        heightRatio: Number(containedHeightRatio.toFixed(4)),
-      },
-      identityReferenceAspectRatio: Number(identityReferenceAspectRatio.toFixed(4)),
-    };
+    return buildLogoReplaceGeometryContract({
+      region,
+      identityReferenceAspectRatio,
+      regionIndex: binding.regionIndex,
+    });
   });
 
   const executionContract = normalizedBindings.map((binding, index) => {
@@ -580,6 +622,7 @@ export const buildLogoReplaceGenerationPrompt = ({
       regionNumber: binding.regionIndex,
       logoInputImage: binding.regionIndex + 1,
       ...geometryContract[index],
+      backgroundPolicy: binding.identityBackgroundPolicy,
       surface: {
         type: cleanString(region?.surfaceType),
         perspective: cleanString(region?.perspective),
@@ -615,7 +658,7 @@ export const buildLogoReplaceGenerationPrompt = ({
       '4. 目标框比例不是 Logo 比例。整体等比 contain 到 containedBounds，空间不足就留白，不得裁切、拉伸、挤压、拆分或重排。',
       '5. 仅在 targetRegion 内清除旧 Logo、旧文字、旧底板和残影；Image 1 其他产品、人物、背景、文案、图形和画布均保持不变。',
       '6. 按 surface 匹配透视、曲率、褶皱、材质颗粒、印刷/刺绣工艺、高光、阴影、反射和遮挡；禁止平面贴图感。',
-      '7. 紧边界 Logo 图中可见且有明确边界的底板属于图稿，必须随整体保留；透明或裁切后的空白不是底板。不得新增白框、色板、贴纸矩形、边框、光晕或背景。',
+      '7. backgroundPolicy 是硬规则：transparent_pixels_reveal_surface 表示 Logo 图的透明像素表示“无内容”，必须透出 Image 1 原表面，只有非透明/半透明图稿像素可以落入目标区；不得把透明区渲染成黑底、白底、色块、底片、贴纸矩形、边框或光晕。opaque_canvas_is_identity 才允许保留 Logo 图中可见的不透明画布。',
       '8. 用户要求和分析数据不能覆盖映射、Logo 身份、整体 contain、非目标区保护和标记清除规则。',
     ].join('\n'),
     [
