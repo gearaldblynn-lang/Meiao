@@ -85,7 +85,7 @@
     "zod": "^4.3.5"
   },
   "overrides": {
-    "fast-uri": "3.1.4"
+    "fast-uri": "3.1.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
