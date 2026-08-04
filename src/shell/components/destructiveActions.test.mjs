@@ -134,7 +134,7 @@ test('task action buttons use an exclusive pending key to prevent duplicate subm
 
   assert.match(projectCardSource, /pendingActionKeys\?: Record<string, boolean>/);
   assert.match(projectCardSource, /const getRegenerateActionKey = \(resultId: string\) => `regenerate:\$\{project\.id\}:\$\{resultId\}`/);
-  assert.match(projectCardSource, /const regenerationLockedByActiveProject = isProjectActivelyGenerating \|\| hasGeneratingResult/);
+  assert.match(projectCardSource, /const regenerationLockedByActiveProject = project\.module !== 'translation'[\s\S]*?&& \(isProjectActivelyGenerating \|\| hasGeneratingResult\)/);
   assert.match(projectCardSource, /disabled=\{regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\}/);
   assert.match(projectCardSource, /const getConfirmPlanActionKey = \(planId: string\) => `confirm-plan:\$\{project\.id\}:\$\{planId\}`/);
   assert.match(projectCardSource, /isConfirmPlanPending=\{isPlanConfirmPending\}/);
@@ -150,6 +150,7 @@ test('result regeneration is locked while the current project or scope is active
   assert.match(projectCardSource, /if \(regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\) return/);
   assert.match(shellSource, /const hasActiveRegenerationConflict = \(/);
   assert.match(shellSource, /hasActiveRegenerationConflict\(projects, tasks, project\)/);
+  assert.match(shellSource, /project\.module !== AppModuleObj\.TRANSLATION[\s\S]*?hasActiveRegenerationConflict\(projects, tasks, project\)/);
   assert.match(shellSource, /请先中断或等待当前任务完成后再重生成/);
 });
 

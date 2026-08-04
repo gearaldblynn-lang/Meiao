@@ -1519,16 +1519,19 @@ test('mergeTranslationRetryResultIntoProjects preserves interleaved hydration an
   assert.equal(ignored.projects[0].results.some((result) => result.id === retryA.id), false);
 });
 
-test('translation retry scope lock atomically blocks a second result in the same subfeature', () => {
+test('translation retry scope lock blocks the same result lineage while allowing different images concurrently', () => {
   const locks = new Set();
 
-  assert.equal(acquireTranslationRetryScopeLock(locks, 'translation:main'), true);
-  assert.equal(acquireTranslationRetryScopeLock(locks, 'translation:main'), false);
-  assert.equal(acquireTranslationRetryScopeLock(locks, 'translation:detail'), true);
-  assert.deepEqual([...locks].sort(), ['translation:detail', 'translation:main']);
+  assert.equal(acquireTranslationRetryScopeLock(locks, 'translation:project-1:result-1'), true);
+  assert.equal(acquireTranslationRetryScopeLock(locks, 'translation:project-1:result-1'), false);
+  assert.equal(acquireTranslationRetryScopeLock(locks, 'translation:project-1:result-2'), true);
+  assert.deepEqual([...locks].sort(), [
+    'translation:project-1:result-1',
+    'translation:project-1:result-2',
+  ]);
 
-  assert.equal(releaseTranslationRetryScopeLock(locks, 'translation:main'), true);
-  assert.equal(acquireTranslationRetryScopeLock(locks, 'translation:main'), true);
+  assert.equal(releaseTranslationRetryScopeLock(locks, 'translation:project-1:result-1'), true);
+  assert.equal(acquireTranslationRetryScopeLock(locks, 'translation:project-1:result-1'), true);
   assert.equal(releaseTranslationRetryScopeLock(locks, 'translation:missing'), false);
 });
 

@@ -3835,6 +3835,8 @@ test('translation result retry appends lineage history and executes paid work se
   assert.match(projectCard, /已依次处理/);
 
   assert.match(shellApp, /translationRetryScopeLocksRef/);
+  assert.match(shellApp, /const translationRetryRootResultId = String\(result\.retryRootResultId \|\| result\.id\)\.trim\(\)/);
+  assert.match(shellApp, /`translation:\$\{project\.id\}:\$\{translationRetryRootResultId\}`/);
   assert.match(shellApp, /resolveTranslationRetrySnapshot/);
   assert.match(shellApp, /buildTranslationRetryDescriptor/);
   assert.match(shellApp, /executeTranslationRetryPipeline/);

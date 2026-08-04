@@ -9390,7 +9390,10 @@ const AppContent: React.FC<{
         addToast(productRestoreCreationDisabledReason, 'warning');
         return;
       }
-      if (hasActiveRegenerationConflict(projects, tasks, project)) {
+      if (
+        project.module !== AppModuleObj.TRANSLATION
+        && hasActiveRegenerationConflict(projects, tasks, project)
+      ) {
         addToast('当前模块仍有任务生成中，请先中断或等待当前任务完成后再重生成', 'warning');
         return;
       }
@@ -9988,9 +9991,10 @@ const AppContent: React.FC<{
         const subFeature = isSupportedCompletedTranslationRetry
           ? completedRetrySubFeature
           : project.subFeature || 'main';
-        const translationRetryScopeKey = `translation:${subFeature}`;
+        const translationRetryRootResultId = String(result.retryRootResultId || result.id).trim();
+        const translationRetryScopeKey = `translation:${project.id}:${translationRetryRootResultId}`;
         if (!acquireTranslationRetryScopeLock(translationRetryScopeLocksRef.current, translationRetryScopeKey)) {
-          addToast('当前翻译子功能已有重试任务，请等待完成后再试', 'info');
+          addToast('该图片已有重试任务，请等待完成后再试', 'info');
           return;
         }
         try {

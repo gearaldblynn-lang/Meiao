@@ -754,7 +754,8 @@ const ProjectCard: React.FC<Props> = ({
     isProjectActivelyGenerating: boolean;
     displayProjectStatus: Project['status'];
   };
-  const regenerationLockedByActiveProject = isProjectActivelyGenerating || hasGeneratingResult;
+  const regenerationLockedByActiveProject = project.module !== 'translation'
+    && (isProjectActivelyGenerating || hasGeneratingResult);
   const isSubtitlePartial = isSubtitleRemovalProject
     && !hasGeneratingResult
     && subtitleSuccessCount > 0
