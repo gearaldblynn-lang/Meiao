@@ -1309,3 +1309,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 产品每组合并为一份身份+颜色合同；Logo 每区合并为一份映射+几何+身份+表面合同。移除重复指令、参考图可直读信息、URL、无意义坐标精度与末尾复述，保留所有唯一身份真值。
 - Regression check: 用户附件产品 prompt `14568→8738`（40%）；云上真实 Logo prompt `6964→1785`（74.4%）。回归测试锁定单一执行合同、被删重复字段、RTCFE、产品五维真值、Logo 原子排布与长度目标。
 - Avoid next time: 必须定期直接查看真实 provider payload，而不是只检查代码中有没有长度闸门。详细来自唯一事实充足，不是同义反复。
+
+## 2026-08-04 - 万物替换的交互、展示和控制任务必须分层
+
+- Symptom: 产品区域标记框只能重画、不能直接拖动；万物替换结果详情展示冗长的生图 Prompt；一次模特替换在项目列表出现两张卡，其中一张 0/1 持续“处理中”。
+- Environment: local browser / 万物替换 / 产品替换标记器、结果详情、模特替换预检。
+- Root cause: 区域按钮只有选中点击而没有 move pointer 状态，且按下事件可冒泡到父层重画逻辑；Prompt 隐藏条件只覆盖部分替换子功能；`model_replace_preflight` 未被列入 shell 控制任务，未绑定的策划预检 job 因此被通用 hydration 误合成为 `job-<id>` 生成项目。
+- Fix: 标记器增加独立 `draw|move` 交互状态，拖动时保留区域尺寸并将坐标限制在原图内，标记框 pointer down 阻止冒泡；所有 `everything_replace` 结果卡统一不渲染生图 Prompt，仍保留真实失败原因；将模特预检归类为控制 job，同时清理已持久化的对应幽灵卡。
+- Regression check: `node --experimental-strip-types --test src/adapters/shellPersistence.test.mjs src/adapters/shellJobVisibility.test.mjs src/adapters/shellDataAdapter.test.mjs src/utils/productReplaceRegion.test.mjs src/shell/components/layout/BottomInputBar.test.mjs src/components/uiArchitecture.test.mjs server/appStateMerge.test.mjs`（495 项通过）；`npm run build`；`npm run doctor`。真实组件浏览器验收已确认拖动后尺寸不变、保存重开位置不丢，项目详情不再出现 Prompt。
+- Avoid next time: 策划、分析、预检等无媒体产物 job 新增 purpose 时必须同步更新 shell 控制任务分类和幽灵卡回归；画布内子控件的拖动与父层框选要有明确事件边界；模块级展示规则应用模块判定，不要逐子功能累加例外。

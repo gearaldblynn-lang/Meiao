@@ -2537,16 +2537,7 @@ const ProjectCard: React.FC<Props> = ({
                           const promptExpanded = Boolean(expandedPrompts[result.id]);
                           const matchedPlan = findPlanByResult(result, index);
                           const displayedPrompt = getDisplayedResultPrompt(displayResult, matchedPlan);
-                          const hideResultPromptInProjectCard = isSubtitleRemovalProject || (
-                            project.module === 'everything_replace'
-                            && (
-                              project.subFeature === 'model_replace'
-                              || (
-                                (project.subFeature === 'product_replace' || project.subFeature === 'background_replace')
-                                && result.status !== 'error'
-                              )
-                            )
-                          );
+                          const hideResultPromptInProjectCard = isSubtitleRemovalProject || project.module === 'everything_replace';
                           const hasResult = Boolean(displayResult.imageUrl || displayResult.videoUrl);
                           const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
                           const modelReplaceFailureReason = project.module === 'everything_replace'

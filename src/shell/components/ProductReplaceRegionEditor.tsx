@@ -3,7 +3,7 @@ import { Check, MapPin, X } from 'lucide-react';
 import type { Material } from '../../ShellMigratedApp';
 import { fetchImageBlobWithProxy } from '../../utils/browserImageLoader.mjs';
 import { resolvePublicAssetUrl } from '../../utils/modelAssetUrl.mjs';
-import { normalizeProductReplaceRegion } from '../../utils/productReplaceRegion.mjs';
+import { moveProductReplaceRegion, normalizeProductReplaceRegion } from '../../utils/productReplaceRegion.mjs';
 
 export type ProductReplaceRegionGroup = {
   id: string;
@@ -23,6 +23,15 @@ type ProductReplaceRegion = {
   yRatio: number;
   widthRatio: number;
   heightRatio: number;
+};
+
+type RegionInteraction = {
+  mode: 'draw' | 'move';
+  regionIndex: number;
+  startX: number;
+  startY: number;
+  origin?: ProductReplaceRegion;
+  changed: boolean;
 };
 
 type Props = {
@@ -124,7 +133,7 @@ const ProductReplaceRegionEditor: React.FC<Props> = ({
   onSave,
 }) => {
   const frameRef = useRef<HTMLDivElement>(null);
-  const drawRef = useRef<{ startX: number; startY: number } | null>(null);
+  const interactionRef = useRef<RegionInteraction | null>(null);
   const [regions, setRegions] = useState<ProductReplaceRegion[]>(() => normalizeInitialRegions(groups, initialRegions));
   const [activeGroupId, setActiveGroupId] = useState(() => groups[0]?.id || '');
   const [markedGroupIds, setMarkedGroupIds] = useState<Set<string>>(() => collectSavedGroupIds(groups, initialRegions));
@@ -140,17 +149,18 @@ const ProductReplaceRegionEditor: React.FC<Props> = ({
 
   if (!open || !reference) return null;
 
-  const pointerPosition = (event: React.PointerEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
+  const pointerPosition = (event: React.PointerEvent<HTMLElement>) => {
+    const rect = frameRef.current?.getBoundingClientRect();
+    if (!rect) return { xRatio: 0, yRatio: 0 };
     return {
       xRatio: Math.min(1, Math.max(0, (event.clientX - rect.left) / Math.max(1, rect.width))),
       yRatio: Math.min(1, Math.max(0, (event.clientY - rect.top) / Math.max(1, rect.height))),
     };
   };
 
-  const updateActiveRegion = (patch: Partial<ProductReplaceRegion>) => {
+  const updateRegion = (regionIndex: number, patch: Partial<ProductReplaceRegion>) => {
     setRegions((current) => current.map((region, index) => (
-      index === activeIndex ? { ...region, ...patch } : region
+      index === regionIndex ? { ...region, ...patch } : region
     )));
   };
 
@@ -159,8 +169,14 @@ const ProductReplaceRegionEditor: React.FC<Props> = ({
     event.preventDefault();
     (event.currentTarget as HTMLDivElement).setPointerCapture?.(event.pointerId);
     const position = pointerPosition(event);
-    drawRef.current = { startX: position.xRatio, startY: position.yRatio };
-    updateActiveRegion({
+    interactionRef.current = {
+      mode: 'draw',
+      regionIndex: activeIndex,
+      startX: position.xRatio,
+      startY: position.yRatio,
+      changed: true,
+    };
+    updateRegion(activeIndex, {
       xRatio: position.xRatio,
       yRatio: position.yRatio,
       widthRatio: 0.02,
@@ -169,29 +185,68 @@ const ProductReplaceRegionEditor: React.FC<Props> = ({
     setValidationMessage('');
   };
 
+  const handleRegionPointerDown = (event: React.PointerEvent<HTMLButtonElement>, regionIndex: number) => {
+    const region = regions[regionIndex];
+    if (!region) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const frame = frameRef.current;
+    frame?.setPointerCapture?.(event.pointerId);
+    const position = pointerPosition(event);
+    interactionRef.current = {
+      mode: 'move',
+      regionIndex,
+      startX: position.xRatio,
+      startY: position.yRatio,
+      origin: { ...region },
+      changed: false,
+    };
+    setActiveGroupId(region.productGroupId);
+    setValidationMessage('');
+  };
+
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    const draw = drawRef.current;
-    if (!draw) return;
+    const interaction = interactionRef.current;
+    if (!interaction) return;
     event.preventDefault();
     const position = pointerPosition(event);
-    const xRatio = Math.min(draw.startX, position.xRatio);
-    const yRatio = Math.min(draw.startY, position.yRatio);
-    updateActiveRegion({
+    if (interaction.mode === 'move' && interaction.origin) {
+      const deltaX = position.xRatio - interaction.startX;
+      const deltaY = position.yRatio - interaction.startY;
+      if (Math.abs(deltaX) > 0.001 || Math.abs(deltaY) > 0.001) interaction.changed = true;
+      const moved = moveProductReplaceRegion(interaction.origin, deltaX, deltaY);
+      if (moved) {
+        updateRegion(interaction.regionIndex, {
+          xRatio: moved.xRatio,
+          yRatio: moved.yRatio,
+        });
+      }
+      return;
+    }
+
+    const xRatio = Math.min(interaction.startX, position.xRatio);
+    const yRatio = Math.min(interaction.startY, position.yRatio);
+    updateRegion(interaction.regionIndex, {
       xRatio,
       yRatio,
-      widthRatio: Math.min(Math.max(0.02, Math.abs(position.xRatio - draw.startX)), 1 - xRatio),
-      heightRatio: Math.min(Math.max(0.02, Math.abs(position.yRatio - draw.startY)), 1 - yRatio),
+      widthRatio: Math.min(Math.max(0.02, Math.abs(position.xRatio - interaction.startX)), 1 - xRatio),
+      heightRatio: Math.min(Math.max(0.02, Math.abs(position.yRatio - interaction.startY)), 1 - yRatio),
     });
   };
 
   const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!drawRef.current) return;
+    const interaction = interactionRef.current;
+    if (!interaction) return;
     event.preventDefault();
-    drawRef.current = null;
-    const group = groups[activeIndex];
-    if (group) {
+    interactionRef.current = null;
+    const group = groups[interaction.regionIndex];
+    if (group && interaction.changed) {
       setMarkedGroupIds((current) => new Set([...current, group.id]));
     }
+  };
+
+  const handlePointerCancel = () => {
+    interactionRef.current = null;
   };
 
   const save = () => {
@@ -289,7 +344,7 @@ const ProductReplaceRegionEditor: React.FC<Props> = ({
               <span className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
                 当前标记：P{groups[activeIndex]?.productNumber || 1}
               </span>
-              <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>在图上拖拽框选对应原产品</span>
+              <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>拖动标记框调整位置；在空白处拖拽重新框选</span>
             </div>
             <div className="flex justify-center rounded-2xl p-3" style={{ height: 'min(64vh, 700px)', background: 'var(--bg-elevated)' }}>
               <div
@@ -307,7 +362,7 @@ const ProductReplaceRegionEditor: React.FC<Props> = ({
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                   onPointerUp={handlePointerUp}
-                  onPointerCancel={handlePointerUp}
+                  onPointerCancel={handlePointerCancel}
                 >
                 <AuthenticatedPreviewImage
                   sourceUrl={reference.url}
@@ -323,6 +378,9 @@ const ProductReplaceRegionEditor: React.FC<Props> = ({
                       key={region.productGroupId}
                       type="button"
                       data-product-region-control="true"
+                      aria-label={`拖动 P${region.productNumber} 标记框调整位置`}
+                      title={`拖动 P${region.productNumber} 标记框调整位置`}
+                      onPointerDown={(event) => handleRegionPointerDown(event, index)}
                       onClick={(event) => {
                         event.stopPropagation();
                         setActiveGroupId(region.productGroupId);
@@ -335,6 +393,7 @@ const ProductReplaceRegionEditor: React.FC<Props> = ({
                         height: `${region.heightRatio * 100}%`,
                         borderColor: active ? '#2563eb' : marked ? '#16a34a' : '#94a3b8',
                         background: active ? 'rgba(37,99,235,0.16)' : marked ? 'rgba(22,163,74,0.12)' : 'rgba(148,163,184,0.10)',
+                        cursor: 'move',
                       }}
                     >
                       <span className="absolute left-1 top-1 rounded bg-black/65 px-1.5 py-0.5">

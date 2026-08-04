@@ -3573,6 +3573,13 @@ test('logo replacement detail exposes real generation failures attached to error
   assert.match(projectCard, /role="alert"[\s\S]{0,300}>失败原因<[\s\S]{0,300}\{logoReplaceFailureReason\}/);
 });
 
+test('everything replacement detail hides verbose generation prompts for every replacement mode', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+
+  assert.match(projectCard, /const hideResultPromptInProjectCard = isSubtitleRemovalProject \|\| project\.module === 'everything_replace';/);
+  assert.match(projectCard, /\{!hideResultPromptInProjectCard && \(/);
+});
+
 test('everything replace product workflow keeps batch metadata so many outputs remain visible', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const workflow = read('../adapters/shellWorkflow.ts');
@@ -3614,9 +3621,8 @@ test('everything replace product workflow keeps batch metadata so many outputs r
   assert.match(workflow, /referenceIndex/);
   assert.match(workflow, /resolveProductReplaceReferenceAspectRatio/);
   assert.match(projectCard, /hideResultPromptInProjectCard/);
-  assert.match(projectCard, /project\.module === 'everything_replace'/);
-  assert.match(projectCard, /project\.subFeature === 'product_replace'/);
-  assert.match(projectCard, /result\.status !== 'error'/);
+  assert.match(projectCard, /isSubtitleRemovalProject \|\| project\.module === 'everything_replace'/);
+  assert.doesNotMatch(projectCard, /result\.status !== 'error'/);
 });
 
 test('everything replace background workflow is wired with RTCFE prompt and locked subject constraints', () => {

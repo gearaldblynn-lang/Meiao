@@ -27,6 +27,18 @@ export const normalizeProductReplaceRegion = (region) => {
   };
 };
 
+export const moveProductReplaceRegion = (region, deltaXRatio = 0, deltaYRatio = 0) => {
+  const normalized = normalizeProductReplaceRegion(region);
+  if (!normalized) return null;
+  const nextX = clamp(normalized.xRatio + Number(deltaXRatio || 0), 0, 1 - normalized.widthRatio);
+  const nextY = clamp(normalized.yRatio + Number(deltaYRatio || 0), 0, 1 - normalized.heightRatio);
+  return {
+    ...normalized,
+    xRatio: Number(nextX.toFixed(6)),
+    yRatio: Number(nextY.toFixed(6)),
+  };
+};
+
 export const normalizeProductReplaceRegions = (regions) => (
   (Array.isArray(regions) ? regions : [])
     .map(normalizeProductReplaceRegion)

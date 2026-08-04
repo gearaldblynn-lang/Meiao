@@ -616,6 +616,11 @@ test('everything replace product mode exposes replacement controls and material 
   assert.match(productRegionEditor, /产品替换区域标记/);
   assert.match(productRegionEditor, /每张替换参考图都必须完成全部产品区域标记/);
   assert.match(productRegionEditor, /标记只用于定位，不会进入最终成图/);
+  assert.match(productRegionEditor, /拖动标记框调整位置/);
+  assert.match(productRegionEditor, /mode: 'move'/);
+  assert.match(productRegionEditor, /moveProductReplaceRegion/);
+  assert.match(productRegionEditor, /event\.stopPropagation\(\)/);
+  assert.match(productRegionEditor, /onPointerDown=\{\(event\) => handleRegionPointerDown\(event, index\)\}/);
   assert.match(productRegionEditor, /保存区域标记/);
   assert.match(bottomInputBar, /Logo 替换区域标记/);
   assert.match(bottomInputBar, /styleRef: '标记区域'/);

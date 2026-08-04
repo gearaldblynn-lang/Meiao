@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   assertProductReplaceRegionCoverage,
+  moveProductReplaceRegion,
   normalizeProductReplaceRegion,
 } from './productReplaceRegion.mjs';
 
@@ -92,4 +93,28 @@ test('requires every reference image to bind every product group exactly once', 
     productGroups,
     regions: [bindings[0], { ...bindings[0], regionId: 'duplicate' }],
   }), /产品位置标记不能重复、遗漏或引用旧产品组/);
+});
+
+test('moves an existing product region without changing its size or leaving the reference image', () => {
+  const region = normalizeProductReplaceRegion({
+    regionId: 'product-replace-region-1',
+    regionIndex: 1,
+    productGroupId: 'group-a',
+    productNumber: 1,
+    xRatio: 0.2,
+    yRatio: 0.3,
+    widthRatio: 0.35,
+    heightRatio: 0.4,
+  });
+
+  assert.deepEqual(moveProductReplaceRegion(region, 0.1, -0.15), {
+    ...region,
+    xRatio: 0.3,
+    yRatio: 0.15,
+  });
+  assert.deepEqual(moveProductReplaceRegion(region, 1, 1), {
+    ...region,
+    xRatio: 0.65,
+    yRatio: 0.6,
+  });
 });

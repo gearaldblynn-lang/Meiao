@@ -8190,6 +8190,42 @@ test('shell data adapter hides an active orphan model replacement job until its 
   assert.deepEqual(snapshot.tasks, []);
 });
 
+test('shell data adapter removes an unbound model replacement preflight ghost card', () => {
+  const jobId = 'aaaaaaaaaaaaaaaaaaaaaaaa';
+  const ghostProject = {
+    id: `job-${jobId}`,
+    name: '万物替换',
+    module: 'everything_replace',
+    subFeature: 'model_replace',
+    status: 'generating',
+    createdAt: 1784500000000,
+    results: [],
+    taskCount: 1,
+    completedCount: 0,
+    backendJobId: jobId,
+  };
+  const preflightJob = {
+    id: jobId,
+    module: 'everything_replace',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    payload: {
+      taskPurpose: 'model_replace_preflight',
+      subFeature: 'model_replace',
+      preflightPart: 'identity',
+    },
+    result: { content: '{"passed":true}' },
+    createdAt: 1784500000000,
+    updatedAt: 1784500001000,
+  };
+
+  const snapshot = buildShellDataSnapshot({ shellProjects: [ghostProject] }, [preflightJob]);
+
+  assert.deepEqual(snapshot.projects, []);
+  assert.deepEqual(snapshot.tasks, []);
+});
+
 test('shell data adapter never restores a compiled provider prompt as raw model replacement input', () => {
   const job = buildModelReplaceRecoveryJob({
     payload: {

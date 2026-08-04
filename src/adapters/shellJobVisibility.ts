@@ -29,6 +29,7 @@ const SHELL_CONTROL_JOB_PURPOSES = new Set([
   'retouch_analysis',
   'product_restore_analysis',
   'product_replace_analysis',
+  'model_replace_preflight',
   'logo_replace_analysis',
   'logo_replace_quality_check',
   'storyboard_planning',
