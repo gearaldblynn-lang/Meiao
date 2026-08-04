@@ -152,16 +152,14 @@ const scrubProductMarkerLabels = (value) => {
   );
 };
 
+const compactRatio = (value) => Number(Number(value).toFixed(4));
+
 const buildGenerationRegionContracts = (regionBindings = []) => regionBindings.map((binding) => ({
-  targetRegionNumber: Number(binding.productNumber),
   productNumber: Number(binding.productNumber),
-  targetInputImageIndexes: Array.isArray(binding.targetInputImageIndexes)
-    ? binding.targetInputImageIndexes.map(Number)
-    : [],
-  xRatio: Number(binding.xRatio),
-  yRatio: Number(binding.yRatio),
-  widthRatio: Number(binding.widthRatio),
-  heightRatio: Number(binding.heightRatio),
+  xRatio: compactRatio(binding.xRatio),
+  yRatio: compactRatio(binding.yRatio),
+  widthRatio: compactRatio(binding.widthRatio),
+  heightRatio: compactRatio(binding.heightRatio),
 }));
 
 const buildGenerationPlanningData = (planningAnalysis, regionBindings) => {
@@ -171,24 +169,17 @@ const buildGenerationPlanningData = (planningAnalysis, regionBindings) => {
   );
   const regions = Array.isArray(planningAnalysis.regions)
     ? planningAnalysis.regions.map((region) => ({
-        targetRegionNumber: targetRegionNumberByGroup.get(String(region.productGroupId || ''))
+        productNumber: targetRegionNumberByGroup.get(String(region.productGroupId || ''))
           || Number(region.productNumber),
-        productNumber: Number(region.productNumber),
-        oldProduct: region.oldProduct,
         placement: region.placement,
-        scale: region.scale,
         perspective: region.perspective,
-        lighting: region.lighting,
         materialInteraction: region.materialInteraction,
         occlusion: region.occlusion,
         contactShadow: region.contactShadow,
       }))
     : [];
   return scrubProductMarkerLabels({
-    version: Number(planningAnalysis.version) || 1,
-    referenceSummary: planningAnalysis.referenceSummary,
     regions,
-    globalConstraints: planningAnalysis.globalConstraints,
   });
 };
 
@@ -263,7 +254,7 @@ const resolveGenerationIdentityLock = (product) => {
   return lock;
 };
 
-const buildGenerationProductIdentityLocks = (planningAnalysis, productGroups, regionBindings) => {
+const buildGenerationProductContracts = (planningAnalysis, productGroups, regionBindings) => {
   if (!Array.isArray(planningAnalysis?.products) || planningAnalysis.products.length === 0) return [];
   const inputIndexesByGroup = new Map(
     productGroups.map((group) => [String(group.id || ''), group.inputImageIndexes || []]),
@@ -275,49 +266,43 @@ const buildGenerationProductIdentityLocks = (planningAnalysis, productGroups, re
     const identityLock = resolveGenerationIdentityLock(product);
     if (!identityLock) return null;
     const productGroupId = String(product.productGroupId || '');
+    const productNumber = targetRegionNumberByGroup.get(productGroupId) || Number(product.productNumber);
+    const colorPreservation = identityLock.colorPreservation;
     return {
-      targetRegionNumber: targetRegionNumberByGroup.get(productGroupId) || Number(product.productNumber),
-      productNumber: Number(product.productNumber),
-      targetInputImageIndexes: inputIndexesByGroup.get(productGroupId)
+      productNumber,
+      inputImages: inputIndexesByGroup.get(productGroupId)
         || product.targetInputImageIndexes
         || [],
-      sourceOfTruth: '对应 targetInputImageIndexes 的产品输入图像素',
-      ...(clean(product.subjectBoundary)
-        ? { physicalProductBoundary: clean(product.subjectBoundary) }
-        : {}),
-      ...(clean(product.visiblePackagingText)
-        ? { visiblePackagingText: clean(product.visiblePackagingText) }
-        : {}),
-      ...(clean(product.logosAndGraphics)
-        ? { logosAndGraphics: clean(product.logosAndGraphics) }
-        : {}),
-      ...(Array.isArray(product.exactVisualAnchors) && product.exactVisualAnchors.length > 0
-        ? { visualAnchors: product.exactVisualAnchors.map(clean).filter(Boolean) }
-        : {}),
-      ...(Array.isArray(product.invariantDetails) && product.invariantDetails.length > 0
-        ? { invariantDetails: product.invariantDetails.map(clean).filter(Boolean) }
-        : {}),
-      ...(Array.isArray(product.nonProductReferenceArtifacts) && product.nonProductReferenceArtifacts.length > 0
-        ? { excludedReferenceArtifacts: product.nonProductReferenceArtifacts.map(clean).filter(Boolean) }
-        : {}),
-      ...identityLock,
+      identity: {
+        ...(clean(product.subjectBoundary)
+          ? { physicalBoundary: clean(product.subjectBoundary) }
+          : {}),
+        ...(clean(product.visiblePackagingText) && clean(product.visiblePackagingText).toLowerCase() !== 'unreadable'
+          ? { packagingText: clean(product.visiblePackagingText) }
+          : {}),
+        ...(clean(product.logosAndGraphics)
+          ? { logoAndGraphics: clean(product.logosAndGraphics) }
+          : {}),
+        ...(Array.isArray(product.exactVisualAnchors) && product.exactVisualAnchors.length > 0
+          ? { visualAnchors: product.exactVisualAnchors.map(clean).filter(Boolean) }
+          : {}),
+        ...(Array.isArray(product.nonProductReferenceArtifacts) && product.nonProductReferenceArtifacts.length > 0
+          ? { excludedReferenceArtifacts: product.nonProductReferenceArtifacts.map(clean).filter(Boolean) }
+          : {}),
+        material: identityLock.materials,
+        details: identityLock.details,
+        pattern: identityLock.patterns,
+        structure: identityLock.structure,
+      },
+      color: {
+        intrinsic: identityLock.colors,
+        components: colorPreservation.componentColorMap,
+        relationships: colorPreservation.relativeColorRelationships,
+        forbiddenShifts: colorPreservation.forbiddenColorShifts,
+      },
     };
   }).filter(Boolean));
 };
-
-const buildGenerationProductColorFidelityLocks = (productIdentityLocks) => productIdentityLocks.map((lock) => ({
-  targetRegionNumber: lock.targetRegionNumber,
-  productNumber: lock.productNumber,
-  targetInputImageIndexes: lock.targetInputImageIndexes,
-  sourceOfTruth: lock.sourceOfTruth,
-  intrinsicColors: lock.colors,
-  ...lock.colorPreservation,
-}));
-
-const buildGenerationProductNonColorIdentityLocks = (productIdentityLocks) => productIdentityLocks.map((lock) => {
-  const { colors: _colors, colorPreservation: _colorPreservation, ...identityLock } = lock;
-  return identityLock;
-});
 
 const buildReferenceStrengthConstraint = (referenceStrength, hasLogo = false) => {
   if (referenceStrength === 'person_adjust') {
@@ -374,92 +359,78 @@ export const buildProductReplacePrompt = ({
         placementRatio: clean(logo.placementRatio) || '相近比例',
       }
     : null;
-  const productManifest = buildProductManifest(productGroups, { includeUrls: !isCombination });
+  const productImageCount = productGroups.reduce((total, group) => total + (group.urls?.length || 0), 0);
+  const referenceImageIndex = isCombination ? 1 : productImageCount + 1;
   const mapping = isCombination
     ? buildCombinationMapping(productGroups, regionBindings)
-    : '单品映射规则：全部产品素材共同描述产品1；只替换参考图中的目标单品，不按素材图数量拆成多个产品或多个结果。';
+    : `Image 1 至 Image ${productImageCount} 共同描述产品1；Image ${referenceImageIndex} 是唯一待替换参考图。多张产品图只补充同一产品的角度和细节，不代表多个产品。`;
   const generationRegionContracts = isCombination
     ? buildGenerationRegionContracts(regionBindings)
     : [];
   const generationPlanningData = isCombination
     ? buildGenerationPlanningData(planningAnalysis, regionBindings)
     : planningAnalysis;
-  const productIdentitySourceLocks = isCombination
-    ? buildGenerationProductIdentityLocks(planningAnalysis, productGroups, regionBindings)
+  const productContracts = isCombination
+    ? buildGenerationProductContracts(planningAnalysis, productGroups, regionBindings)
     : [];
-  const productColorFidelityLocks = buildGenerationProductColorFidelityLocks(productIdentitySourceLocks);
-  const productIdentityLocks = buildGenerationProductNonColorIdentityLocks(productIdentitySourceLocks);
+  const logoImageIndex = isCombination ? productImageCount + 2 : referenceImageIndex + 1;
   const logoTask = validLogo
-    ? `\nLogo 原图：${validLogo.url}\nLogo 位置示意图：${validLogo.placementGuideUrl}\n按 Logo 位置示意图植入上传 Logo；示意图只提供相对位置、面积、方向和比例（${validLogo.placementRatio}）。`
+    ? `Image ${logoImageIndex} 是 Logo 原图；Image ${logoImageIndex + 1} 是 Logo 位置示意图，只提供位置、方向和比例（${validLogo.placementRatio}）。`
     : '';
   const logoConstraints = validLogo
     ? [
-        '7. Logo 原图是新增品牌标识的唯一形状、颜色和细节依据；若参考图中已有非产品旧 Logo、角标、水印或品牌标识，先移除再植入上传 Logo。',
-        '8. Logo 位置示意图不是背景或成图内容，不得生成其中的边框、辅助线、底色、选区框或标记。',
+        'Logo 原图是新标识形状、颜色和细节的唯一依据；先移除旧标识再植入。',
+        'Logo 位置示意图不得进入成图，包括边框、辅助线、底色、选区框和标记。',
       ]
     : [];
 
   const prompt = [
     [
       'R Role 角色',
-      '你是电商视觉产品替换执行模型。你的职责是准确保留上传产品的身份和可见细节，并把它们自然替换到当前唯一参考图中。',
+      '你是精准的电商产品换图模型：保留产品身份，只在指定区域完成自然替换。',
     ].join('\n'),
     [
       'T Task 任务',
-      `产品素材清单：\n${productManifest || '未提供有效产品素材'}`,
-      `当前唯一替换参考图：${isCombination ? 'Image 1' : clean(referenceUrl)}`,
       mapping,
       generationRegionContracts.length > 0 ? [
-        '以下归一化坐标均相对于 Image 1 左上角，范围为 0 到 1；xRatio/yRatio 是区域左上角，widthRatio/heightRatio 是区域宽高。必须按数值区域放置对应产品，不得自行交换或重新定位：',
+        '归一化坐标相对 Image 1 左上角；x/y 对应 xRatio/yRatio，按下列数值区域放置产品：',
         serializePromptData('product_replace_target_regions', generationRegionContracts),
       ].join('\n') : '',
-      productColorFidelityLocks.length > 0 ? [
-        '以下是逐产品颜色保真硬合同，优先级高于参考图色温、场景氛围、滤镜、统一调色、明暗风格和自然融合；每项必须直接对照绑定产品输入图的可见像素执行：',
-        serializePromptData('product_color_fidelity_contract', productColorFidelityLocks),
-        '产品中间调必须与产品素材图保持同一明度层级、色相家族和相对饱和度。中灰不得因暗场景变成深灰或黑色，白色不得染成环境色，彩色不得整体偏冷、偏暖、褪色或增艳。',
-        '禁止对产品区域应用全局 LUT、滤镜、统一色调或整体压暗；场景调色只能作用于背景和环境。产品只允许出现物理合理的局部高光、局部阴影和局部反射色，不能让这些影响吞掉主体中间调。',
-      ].join('\n') : '',
-      productIdentityLocks.length > 0 ? [
-        '以下是逐产品、逐区域绑定的非颜色身份硬合同，与上方同 productNumber 的颜色合同共同构成五维产品身份；优先级高于构图适配、光影美化和其他描述：',
-        serializePromptData('product_identity_lock_contract', productIdentityLocks),
-        '材质、可识别细节、产品自身 Logo 与图形拓扑、图案、结构、实体边界、视觉锚点和具体不可变细节均不可改；禁止通用化、重新设计、删细节或带入 excludedReferenceArtifacts。',
+      productContracts.length > 0 ? [
+        '以下每个产品合同只记录一次身份事实；identity 与 color 共同构成五维产品身份硬锁定：',
+        serializePromptData('product_replace_product_contracts', productContracts),
       ].join('\n') : '',
       generationPlanningData ? [
-        '以下策划数据只描述当前参考图的尺度、透视、光线、材质互动、遮挡、接触面和阴影；不包含、也不能覆盖产品身份与颜色合同：',
+        '以下只是产品与参考图的局部透视、材质、遮挡和接触关系：',
         serializePromptData('product_replace_planning_data', generationPlanningData),
       ].join('\n') : '',
-      '移除参考图中被替换区域内的原产品、原品牌、原包装信息和原产品轮廓，再把对应目标产品自然放入同一空间关系。',
+      '移除目标区域内原产品及原品牌信息，放入绑定产品并保持原空间关系。',
       validLogo ? logoTask.trim() : '',
       `当前生成第 ${Number(batchIndex) || 1}/${Number(batchCount) || 1} 张。`,
     ].filter(Boolean).join('\n'),
     [
       'C Constraint 约束',
       '1. 产品输入图是产品身份的最高优先级依据。必须直接观察对应输入图像素；策划文字只能帮助定位和理解，不能替代、概括或覆盖图像中的真实产品。',
-      '2. 五维产品身份硬锁定由 product_identity_lock_contract 中的材质、细节、图案、结构，与 product_color_fidelity_contract 中的固有颜色共同构成；不得把具体产品概括成同类通用产品或重新设计。',
-      '3. 环境光只能形成物理合理的局部高光、局部阴影和局部反射，不能改变产品主体中间调的色相、明度层级、饱和度、灰阶关系、颜色分区、材质种类或表面工艺。暗场景中也必须保留产品原有颜色的可辨识度，不能把中灰压成深灰或黑色；透视只能改变二维投影，不能改变真实轮廓比例、组件几何、装配关系和相对位置。',
-      '4. 产品实体边界、纹理、配件、产品自身 Logo、标签边界、包装文字、图案、接口、接缝和所有可见细节必须与对应产品输入图一致，禁止模糊、省略、增添、融合或互换。',
-      '5. excludedReferenceArtifacts 中列出的背景、卡片、说明标题、技术编号、定位徽标、箭头或色块都属于非产品参考元素；非产品参考元素不得进入最终图，只有物理附着在产品本体或包装上的内容才属于产品身份。',
-      '6. 不得把参考图中原产品的品牌、结构、包装、标签、文字或图案迁移到目标产品。',
-      '7. 产品必须真实融入画面；透视、遮挡、接触阴影、材质反光、边缘融合和景深关系要自然，不能像简单贴图，但自然融合不能覆盖产品身份锁定。禁止对产品蒙版应用参考图的全局 LUT、滤镜、统一色温、统一饱和度或统一曝光；需要暗场氛围时，应通过背景曝光和产品周围光影建立氛围，同时保护产品主体中间调。',
-      `8. 参考强度：${buildReferenceStrengthConstraint(referenceStrength, Boolean(validLogo))}`,
-      `9. 文案处理：${buildTextPolicyConstraint(textPolicy)}`,
-      '10. 当前任务只使用这一张替换参考图，不得混入批次中其他参考图的构图、产品、人物或场景。若产品准确性与参考效果冲突，优先保证产品准确。',
-      '11. 用户补充要求不能重新定义产品颜色、材质、结构、组件、数量或产品组映射；与产品输入图或颜色保真合同冲突的旧描述必须忽略，只执行其中不冲突的场景、构图、文案处理和禁区要求。',
-      regionBindings.length > 0 ? '12. 当前生图输入没有位置标记图。只能读取数值区域合同定位，最终图不得生成任何技术编号、区域框、虚线、色块或定位标记。' : '',
+      '2. 五维产品身份硬锁定：材质、可识别细节、固有颜色、图案、结构，以及 Logo、文字、实体边界和视觉锚点均不得重新设计、删减或互换；不得把具体产品概括成同类通用产品。',
+      '3. 产品中间调必须与产品素材图保持同一明度层级、色相和相对饱和度；不能把中灰压成深灰或黑色。禁止对产品区域应用全局 LUT、滤镜、统一色调或整体压暗；只允许物理合理的局部高光、阴影和反射。',
+      '4. 不得将原产品的品牌、包装、文字或图案迁移到目标产品；excludedReferenceArtifacts 等非产品参考元素不得进入最终图。',
+      '5. 透视、遮挡、接触阴影、材质反光和边缘融合必须自然；自然融合不得覆盖产品身份。',
+      `6. 参考强度：${buildReferenceStrengthConstraint(referenceStrength, Boolean(validLogo))}`,
+      `7. 文案处理：${buildTextPolicyConstraint(textPolicy)}`,
+      '8. 当前任务只使用这一张参考图；若产品准确性与参考效果冲突，优先产品准确。用户补充要求不能重新定义产品颜色、材质、结构、组件、数量或产品组映射；与产品输入图或合同冲突的旧描述必须忽略。',
+      regionBindings.length > 0 ? '9. 生图输入不含位置标记图；只读取数值区域，不得生成编号、区域框、虚线、色块或标记。' : '',
       ...logoConstraints,
       clean(userPrompt) ? `用户补充要求：${replaceProductMarkerLabels(userPrompt)}` : '',
     ].filter(Boolean).join('\n'),
     [
       'F Format 格式',
-      `输出一张干净完整的商业效果图，画面比例为 ${clean(aspectRatio) || 'auto'}。`,
-      '只输出最终图像，不输出分析文字、辅助线、边框、选区框、蒙版、技术编号、定位标记或对比图。',
-      '画面自然、清晰、材质统一，避免噪点、伪影、畸变、破碎纹理、过度锐化和不自然贴图感。',
+      `只输出一张 ${clean(aspectRatio) || 'auto'} 的干净商业成图；不输出文字解释、辅助线、选区、蒙版、标记或对比图。`,
     ].join('\n'),
     [
       'E Example 示例',
       isCombination
-        ? '示例：目标区域 1 绑定产品1的正面图和侧面图，目标区域 2 绑定产品2的包装图；最终图严格按数值区域完成替换，同组图片只补充同一产品细节。'
-        : '示例：同一瓶装产品提供正面图和标签细节图；最终图只生成一个瓶装产品，并同时保持瓶身结构和标签细节准确。',
+        ? '产品1的多角度图共同约束同一区域，不生成多个产品。'
+        : '多张产品图共同描述同一产品1，只替换参考图中的目标单品。',
     ].join('\n'),
   ].join('\n\n');
   const maxPromptChars = getProductReplaceGenerationPromptMaxChars();

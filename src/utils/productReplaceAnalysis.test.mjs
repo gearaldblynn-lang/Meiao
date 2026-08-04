@@ -121,8 +121,10 @@ test('product replacement analysis prompt uses ordered image roles and a strict 
   assert.match(prompt, /只有物理附着在产品本体或包装上的文字/);
   assert.match(prompt, /技术编号、定位徽标、箭头、说明标题/);
   assert.match(prompt, /identityLock 是产品身份的唯一权威详细记录/);
-  assert.match(prompt, /generationInstruction 只写当前区域的局部执行关系/);
-  assert.match(prompt, /不得复制 identityLock 或其他 JSON 字段/);
+  assert.match(prompt, /generationInstruction 只写当前区域的局部例外/);
+  assert.match(prompt, /不重述产品身份或其他字段/);
+  assert.match(prompt, /identityLock 中每个文本字段最多两个短句/);
+  assert.match(prompt, /regions 中 placement、scale、perspective/);
   assert.match(prompt, /"xRatio": 0\.12/);
 });
 

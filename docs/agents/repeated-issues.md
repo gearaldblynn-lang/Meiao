@@ -1292,3 +1292,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 生图仅投影一份颜色合同、一份非颜色身份合同和一份场景执行计划；删除执行计划中的产品全量副本与重复 `generationInstruction`，但保留材质、细节、固有颜色、图案、结构、实体边界、可见文字、视觉锚点和排除元素。新增默认 18000 字符付费前闸门，并将 provider 文本超限归为不可重试 bad request。
 - Regression check: `node --experimental-strip-types --test src/utils/productReplaceAnalysis.test.mjs src/utils/productReplaceContract.test.mjs src/adapters/shellWorkflowProductReplace.test.mjs src/services/arkService.test.mjs`；`node --test server/providerGateway.test.mjs`；`npm run lint`；`npm run build`。云上三条真实策划回放的新 prompt 分别为 14407、12147、9059 字符；额外保留了 Logo/图形拓扑和具体不变特征。
 - Avoid next time: 模型分析产物用于审计和恢复，provider prompt 只携带无重复的执行投影。每次增加新合同必须同时删除旧重复投影，并用真实长分析级别锁定长度、字段唯一性和付费前停止。
+
+## 2026-08-04 - 低于 provider 上限不等于生图提示词已精准
+
+- Symptom: 产品替换已从约 3 万字符降到 1.2-1.4 万，但用户打开真实 provider 请求后仍发现提示词过长；单区 Logo 任务也达 6.3-7.0k。
+- Root cause: 产品合同内部的不变细节/禁止变化和策划中的可见参考图信息仍在重述权威字段；Logo 生图将分析、绑定、几何三份数据与重复英文护栏同时发送。架构级根因见 `CLAUDE.md` #97。
+- Fix: 产品每组合并为一份身份+颜色合同；Logo 每区合并为一份映射+几何+身份+表面合同。移除重复指令、参考图可直读信息、URL、无意义坐标精度与末尾复述，保留所有唯一身份真值。
+- Regression check: 用户附件产品 prompt `14568→8738`（40%）；云上真实 Logo prompt `6964→1785`（74.4%）。回归测试锁定单一执行合同、被删重复字段、RTCFE、产品五维真值、Logo 原子排布与长度目标。
+- Avoid next time: 必须定期直接查看真实 provider payload，而不是只检查代码中有没有长度闸门。详细来自唯一事实充足，不是同义反复。
