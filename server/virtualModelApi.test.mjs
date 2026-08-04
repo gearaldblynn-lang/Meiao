@@ -51,6 +51,43 @@ test('public list exposes published summaries only', async () => {
   assert.equal(JSON.stringify(models[0]).includes('asset-0'), false);
 });
 
+test('an active draft hides the previous published version from new selection without breaking historical replay', async () => {
+  const { store, model, version } = await createPublishedModel();
+  const historical = await createVirtualModelGenerationJobSnapshot({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: version.id,
+  });
+
+  await createVirtualModelVersion({
+    store,
+    virtualModelId: model.id,
+    identityProfile: { description: 'Work in progress' },
+    createdBy: 'admin-1',
+  });
+
+  assert.deepEqual(await listPublishedVirtualModels({ store }), []);
+  await assert.rejects(
+    createVirtualModelGenerationJobSnapshot({
+      store,
+      virtualModelId: model.id,
+      virtualModelVersionId: version.id,
+    }),
+    (error) => error?.code === 'MODEL_NOT_PUBLISHED',
+  );
+  assert.deepEqual(
+    await createVirtualModelGenerationJobSnapshot({
+      store,
+      virtualModelId: model.id,
+      virtualModelVersionId: version.id,
+      allowHistoricalPublishedVersion: true,
+      publishedAt: historical.publishedAt,
+      selectedAssetIds: historical.selectedAssetIds,
+    }),
+    { ...historical, identitySelectionStrategy: 'historical_snapshot' },
+  );
+});
+
 test('server intake creates a URL-free library snapshot with three selected asset IDs', async () => {
   const { store, model, version } = await createPublishedModel();
   const snapshot = await createVirtualModelGenerationJobSnapshot({

@@ -20,6 +20,18 @@ test('picker supports public-name and code search with tag filtering', async () 
   assert.match(source, /selectedTag/);
 });
 
+test('picker defensively hides non-published responses and clears a stale selection with a visible explanation', async () => {
+  const source = await readFile(new URL('./VirtualModelPicker.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /const isSelectableVirtualModel = \(model: VirtualModelSummary\) =>/);
+  assert.match(source, /model\.status === 'published'/);
+  assert.match(source, /model\.version\?\.status === 'published'/);
+  assert.match(source, /model\.currentVersionId === model\.version\?\.id/);
+  assert.match(source, /nextModels\.filter\(isSelectableVirtualModel\)/);
+  assert.match(source, /setPendingSelection\(null\)/);
+  assert.match(source, /此前选择的模特尚未发布或正在编辑草稿，请重新选择/);
+});
+
 test('picker prioritizes a readable portrait and high-contrast selected-model details', async () => {
   const source = await readFile(new URL('./VirtualModelPicker.tsx', import.meta.url), 'utf8');
 

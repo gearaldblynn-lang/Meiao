@@ -159,6 +159,20 @@ test('public model summary exposes only a separately stored primary preview URL'
   assert.equal('publicUrl' in models[0], false);
 });
 
+test('MySQL public model listing excludes models with any active draft version', async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, params = []) => {
+      calls.push({ sql, params });
+      return [[]];
+    },
+  };
+
+  assert.deepEqual(await listPublishedVirtualModels({ pool }), []);
+  assert.match(calls[0].sql, /NOT EXISTS\s*\(\s*SELECT 1 FROM virtual_model_versions draft/i);
+  assert.match(calls[0].sql, /draft\.status = 'draft'/i);
+});
+
 test('deleting a local model hides it from lists while preserving its versions and assets', async () => {
   const store = normalizeVirtualModelLocalStore({
     virtualModels: [{ id: 'model-1', code: 'VM-1', name: 'Model 1', tags: [], status: 'published', currentVersionId: 'version-1', updatedAt: 1 }],
@@ -337,8 +351,9 @@ test('MySQL historical replay preserves a deleted model snapshot while normal se
   const pool = {
     query: async (sql, params) => {
       calls.push({ sql, params });
-      if (sql === "SELECT * FROM virtual_models WHERE id = ? AND status = 'published' AND current_version_id = ?") {
+      if (/^SELECT \* FROM virtual_models m\s+WHERE/.test(sql)) {
         assert.deepEqual(params, ['model-1', 'version-1']);
+        assert.match(sql, /NOT EXISTS/);
         return [[]];
       }
       if (sql === 'SELECT * FROM virtual_models WHERE id = ?') {
@@ -371,8 +386,8 @@ test('MySQL historical replay preserves a deleted model snapshot while normal se
   });
   assert.deepEqual(historical.selectedAssetIds, selectedAssetIds);
   assert.equal(historical.publishedAt, publishedAt);
-  assert.deepEqual(calls.map(({ sql }) => sql), [
-    "SELECT * FROM virtual_models WHERE id = ? AND status = 'published' AND current_version_id = ?",
+  assert.deepEqual(calls.map(({ sql }, index) => index === 0 ? 'guarded-current-model-query' : sql), [
+    'guarded-current-model-query',
     'SELECT * FROM virtual_models WHERE id = ?',
     'SELECT * FROM virtual_model_versions WHERE id = ? AND virtual_model_id = ? AND published_at = ?',
     'SELECT * FROM virtual_model_assets WHERE virtual_model_version_id = ?',
@@ -668,6 +683,23 @@ test('a local version remains immutable after a newer version is published', asy
     replaceDraftVersionAssets({ store, virtualModelId: model.id, virtualModelVersionId: firstVersion.id, assets }),
     (error) => error?.code === 'MODEL_VERSION_IMMUTABLE',
   );
+});
+
+test('publishing a version retires every other draft so the model becomes publicly selectable again', async () => {
+  const store = normalizeVirtualModelLocalStore({});
+  const model = await createVirtualModelDraft({ store, code: 'VM-DRAFTS', name: 'Draft cleanup' });
+  const staleDraft = await createVirtualModelVersion({ store, virtualModelId: model.id, identityProfile: {} });
+  const publishingDraft = await createVirtualModelVersion({ store, virtualModelId: model.id, identityProfile: {} });
+  await replaceDraftVersionAssets({
+    store,
+    virtualModelId: model.id,
+    virtualModelVersionId: publishingDraft.id,
+    assets,
+  });
+
+  assert.equal((await publishVirtualModelVersion({ store, virtualModelId: model.id, virtualModelVersionId: publishingDraft.id })).ok, true);
+  assert.equal(store.virtualModelVersions.find((item) => item.id === staleDraft.id)?.status, 'unpublished');
+  assert.deepEqual((await listPublishedVirtualModels({ store })).map((item) => item.id), [model.id]);
 });
 
 test('MySQL unpublish rejects an unknown model', async () => {

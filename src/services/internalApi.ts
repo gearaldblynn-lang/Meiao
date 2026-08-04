@@ -2369,7 +2369,7 @@ export const validateVirtualModelLibrarySelection = async (virtualModelId: strin
     method: 'POST',
     body: JSON.stringify({ virtualModelId, virtualModelVersionId }),
   });
-  if (response.ok !== true) throw new Error('当前公共模特选择已失效，请重新选择。');
+  if (response.ok !== true) throw new Error('该模特尚未发布或正在编辑草稿，请重新选择已发布模特。');
   return response;
 };
 

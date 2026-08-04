@@ -130,12 +130,29 @@ const getLocalVersionAndAssets = (store, virtualModelId, virtualModelVersionId) 
 export const listPublishedVirtualModels = async ({ pool = null, store = null } = {}) => {
   if (!pool) {
     const normalized = normalizeVirtualModelLocalStore(store);
-    return normalized.virtualModels.filter((item) => item.status === 'published').map(modelFromRow).map((model) => {
+    const modelsWithActiveDraft = new Set(
+      normalized.virtualModelVersions
+        .filter((item) => item.status === 'draft')
+        .map((item) => String(item.virtualModelId ?? item.virtual_model_id ?? '')),
+    );
+    return normalized.virtualModels.filter((item) => (
+      item.status === 'published'
+      && !modelsWithActiveDraft.has(String(item.id))
+    )).map(modelFromRow).map((model) => {
       const version = normalized.virtualModelVersions.map(versionFromRow).find((item) => item.id === model.currentVersionId && item.status === 'published');
       return version ? publicModel(model, version, normalized.virtualModelAssets.filter((item) => item.virtualModelVersionId === version.id).map(assetFromRow)) : null;
     }).filter(Boolean);
   }
-  const [rows] = await pool.query(`SELECT m.*, v.id AS version_id, v.virtual_model_id, v.version_number, v.identity_profile_json, v.status AS version_status, v.published_at, v.created_at AS version_created_at FROM virtual_models m JOIN virtual_model_versions v ON v.id = m.current_version_id WHERE m.status = 'published' AND v.status = 'published' ORDER BY m.updated_at DESC`);
+  const [rows] = await pool.query(`SELECT m.*, v.id AS version_id, v.virtual_model_id, v.version_number, v.identity_profile_json, v.status AS version_status, v.published_at, v.created_at AS version_created_at
+    FROM virtual_models m
+    JOIN virtual_model_versions v ON v.id = m.current_version_id
+    WHERE m.status = 'published'
+      AND v.status = 'published'
+      AND NOT EXISTS (
+        SELECT 1 FROM virtual_model_versions draft
+        WHERE draft.virtual_model_id = m.id AND draft.status = 'draft'
+      )
+    ORDER BY m.updated_at DESC`);
   const ids = rows.map((row) => row.version_id);
   const [assetRows] = ids.length ? await pool.query(`SELECT * FROM virtual_model_assets WHERE virtual_model_version_id IN (${ids.map(() => '?').join(',')})`, ids) : [[]];
   return rows.map((row) => { const version = versionFromRow({ ...row, id: row.version_id, status: row.version_status, created_at: row.version_created_at }); return publicModel(modelFromRow(row), version, assetRows.filter((asset) => asset.virtual_model_version_id === version.id).map(assetFromRow)); });
@@ -287,7 +304,7 @@ export const publishVirtualModelVersion = async ({ pool = null, store = null, vi
       const publishedAt = now();
       const [versionResult] = await connection.query("UPDATE virtual_model_versions SET status = 'published', published_at = ? WHERE id = ? AND virtual_model_id = ?", [publishedAt, virtualModelVersionId, virtualModelId]);
       if (versionResult.affectedRows !== 1) throw Object.assign(new Error('Virtual model version not found'), { code: 'MODEL_NOT_FOUND' });
-      await connection.query("UPDATE virtual_model_versions SET status = 'unpublished' WHERE virtual_model_id = ? AND id <> ? AND status = 'published'", [virtualModelId, virtualModelVersionId]);
+      await connection.query("UPDATE virtual_model_versions SET status = 'unpublished' WHERE virtual_model_id = ? AND id <> ? AND status IN ('published', 'draft')", [virtualModelId, virtualModelVersionId]);
       const [modelResult] = await connection.query("UPDATE virtual_models SET status = 'published', current_version_id = ?, updated_at = ? WHERE id = ? AND status <> 'deleted'", [virtualModelVersionId, publishedAt, virtualModelId]);
       if (modelResult.affectedRows !== 1) throw Object.assign(new Error('Virtual model not found'), { code: 'MODEL_NOT_FOUND' });
       await connection.commit();
@@ -308,7 +325,13 @@ export const publishVirtualModelVersion = async ({ pool = null, store = null, vi
   const publishedAt = now();
   const rawVersion = local.normalized.virtualModelVersions.find((item) => item.id === virtualModelVersionId);
   const rawModel = local.normalized.virtualModels.find((item) => item.id === virtualModelId);
-  local.normalized.virtualModelVersions.forEach((item) => { if (item.virtualModelId === virtualModelId && item.id !== virtualModelVersionId && item.status === 'published') item.status = 'unpublished'; });
+  local.normalized.virtualModelVersions.forEach((item) => {
+    if (
+      item.virtualModelId === virtualModelId
+      && item.id !== virtualModelVersionId
+      && (item.status === 'published' || item.status === 'draft')
+    ) item.status = 'unpublished';
+  });
   rawVersion.status = 'published'; rawVersion.publishedAt = publishedAt; rawModel.status = 'published'; rawModel.currentVersionId = virtualModelVersionId; rawModel.updatedAt = publishedAt;
   return { ok: true, publishedAt };
 };
@@ -341,7 +364,14 @@ export const createVirtualModelGenerationJobSnapshot = async ({ pool = null, sto
   if (pool) {
     const [rows] = allowHistoricalPublishedVersion
       ? await pool.query('SELECT * FROM virtual_models WHERE id = ?', [virtualModelId])
-      : await pool.query('SELECT * FROM virtual_models WHERE id = ? AND status = \'published\' AND current_version_id = ?', [virtualModelId, virtualModelVersionId]);
+      : await pool.query(`SELECT * FROM virtual_models m
+        WHERE m.id = ?
+          AND m.status = 'published'
+          AND m.current_version_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM virtual_model_versions draft
+            WHERE draft.virtual_model_id = m.id AND draft.status = 'draft'
+          )`, [virtualModelId, virtualModelVersionId]);
     model = rows[0] && modelFromRow(rows[0]);
     const [versionRows] = model ? await pool.query(
       allowHistoricalPublishedVersion
@@ -355,7 +385,13 @@ export const createVirtualModelGenerationJobSnapshot = async ({ pool = null, sto
   } else {
     const local = getLocalVersionAndAssets(store, virtualModelId, virtualModelVersionId);
     model = local.model; version = local.version; assets = local.assets;
-    const isCurrentPublished = model?.status === 'published' && model.currentVersionId === virtualModelVersionId && version?.status === 'published';
+    const hasActiveDraft = local.normalized.virtualModelVersions.some((item) => (
+      item.virtualModelId === virtualModelId && item.status === 'draft'
+    ));
+    const isCurrentPublished = model?.status === 'published'
+      && model.currentVersionId === virtualModelVersionId
+      && version?.status === 'published'
+      && !hasActiveDraft;
     const historicalPublishedAt = Number(publishedAt);
     const isHistoricalPublished = allowHistoricalPublishedVersion === true
       && Number.isFinite(historicalPublishedAt)

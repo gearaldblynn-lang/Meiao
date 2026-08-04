@@ -8,6 +8,15 @@ Use this file to stop the same problems from being rediscovered and re-fixed in 
 
 Before debugging a recurring issue, search this file, related tests, and recent handoff/release docs. After fixing a repeated issue, append a concise entry.
 
+## 2026-08-04 - 虚拟模特活动草稿不能继续出现在公共库
+
+- Symptom: 后台仅 2 个模特显示已发布，模特替换的公共库却显示 5 个；旧选择不会立即说明不可用。
+- Environment: Tencent Cloud production / virtual-model admin lifecycle / model replacement picker.
+- Root cause: 后台状态优先显示活动草稿，公共列表和新任务快照却仍按旧发布指针判断，三层生命周期合同漂移。
+- Fix: 有活动草稿时同时从公共列表和新任务入口移除；发布时收敛其他草稿；选择器清理旧选择并给出明确提示，历史快照仍可重放。
+- Regression check: `node --test server/virtualModelApi.test.mjs server/virtualModelStore.test.mjs src/shell/components/VirtualModelPicker.test.mjs src/services/internalApi.test.mjs`；`npm run verify`。
+- Avoid next time: 版本状态改动必须一次性验证管理列表、公共列表、选择器、新任务和历史重放，不得让各层自己推导“已发布”。
+
 ## 2026-08-03 - Git 忽略规则不会自动收窄部署归档
 
 - Symptom: 本地 `tmp/` 已加入 `.gitignore`，但发布前检查发现部署脚本仍会把 43 个真实任务验收素材打进云端源码归档。

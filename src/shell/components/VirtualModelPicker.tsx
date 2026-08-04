@@ -18,6 +18,14 @@ type Props = {
   onClose: () => void;
 };
 
+const STALE_SELECTION_MESSAGE = '此前选择的模特尚未发布或正在编辑草稿，请重新选择。';
+const isSelectableVirtualModel = (model: VirtualModelSummary) => (
+  model.status === 'published'
+  && model.version?.status === 'published'
+  && model.currentVersionId === model.version?.id
+  && Number(model.version?.publishedAt) > 0
+);
+
 const VirtualModelPicker: React.FC<Props> = ({ open, selected, onSelect, onClose }) => {
   const [models, setModels] = useState<VirtualModelSummary[]>([]);
   const [query, setQuery] = useState('');
@@ -31,13 +39,26 @@ const VirtualModelPicker: React.FC<Props> = ({ open, selected, onSelect, onClose
     let cancelled = false;
     void fetchVirtualModels()
       .then(({ models: nextModels }) => {
-        if (!cancelled) setModels(nextModels);
+        if (cancelled) return;
+        const selectableModels = nextModels.filter(isSelectableVirtualModel);
+        setModels(selectableModels);
+        if (selected && !selectableModels.some((model) => (
+          model.id === selected.virtualModelId
+          && model.currentVersionId === selected.virtualModelVersionId
+        ))) {
+          setPendingSelection(null);
+          setDetailModel(null);
+          setError(STALE_SELECTION_MESSAGE);
+        } else {
+          setPendingSelection(selected);
+          setError('');
+        }
       })
       .catch((cause) => {
         if (!cancelled) setError(cause instanceof Error ? cause.message : 'Unable to load public models.');
       });
     return () => { cancelled = true; };
-  }, [open]);
+  }, [open, selected]);
 
   const tags = useMemo(() => [...new Set(models.flatMap((model) => model.tags || []))], [models]);
   const visibleModels = useMemo(() => {
@@ -51,8 +72,18 @@ const VirtualModelPicker: React.FC<Props> = ({ open, selected, onSelect, onClose
   }, [models, query, selectedTag]);
 
   const showDetail = (model: VirtualModelSummary) => {
+    setError('');
     setDetailModel(model);
-    void fetchVirtualModel(model.id).then(({ model: detail }) => setDetailModel(detail)).catch(() => undefined);
+    void fetchVirtualModel(model.id)
+      .then(({ model: detail }) => {
+        if (!isSelectableVirtualModel(detail)) throw new Error(STALE_SELECTION_MESSAGE);
+        setDetailModel(detail);
+      })
+      .catch(() => {
+        setDetailModel(null);
+        setPendingSelection(null);
+        setError(STALE_SELECTION_MESSAGE);
+      });
   };
 
   if (!open) return null;
@@ -97,7 +128,12 @@ const VirtualModelPicker: React.FC<Props> = ({ open, selected, onSelect, onClose
           <button type="button" onClick={onClose} className="rounded-md px-3 py-2 text-[12px]" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>取消</button>
           <button type="button" disabled={!pendingSelection} onClick={() => {
             const model = models.find((item) => item.id === pendingSelection?.virtualModelId);
-            if (!model) return;
+            if (!model || !isSelectableVirtualModel(model)) {
+              setPendingSelection(null);
+              setDetailModel(null);
+              setError(STALE_SELECTION_MESSAGE);
+              return;
+            }
             onSelect({ virtualModelId: model.id, virtualModelVersionId: model.currentVersionId, modelName: model.name, modelCode: model.code, versionNumber: model.version?.versionNumber, publishedAt: model.version?.publishedAt || undefined });
             onClose();
           }} className="flex items-center gap-1 rounded-md px-3 py-2 text-[12px] text-white disabled:opacity-50" style={{ background: 'var(--accent)' }}><Check size={14} />确认选择</button>
