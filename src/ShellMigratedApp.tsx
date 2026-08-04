@@ -12011,6 +12011,7 @@ const AppContent: React.FC<{
           { width: initialCanvas.width, height: initialCanvas.height, ratioLabel: `${initialCanvas.width}:${initialCanvas.height}` },
           subFeature === 'detail' ? 'detail' : 'main',
           {
+            jobModule: AppModuleObj.TRANSLATION,
             shellPurpose: 'translation_region_edit',
             shellProjectId: projectId,
             shellResultId: resultId,

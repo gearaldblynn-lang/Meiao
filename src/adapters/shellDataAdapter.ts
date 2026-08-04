@@ -1832,8 +1832,7 @@ const getBuyerShowPlanningTaskId = (jobs: InternalJob[]) => {
 };
 
 const isTranslationRegionEditJob = (job: InternalJob) => (
-  toModule(job?.module) === MODULE_VALUES.TRANSLATION
-  && String(job?.taskType || '').includes('image')
+  String(job?.taskType || '').includes('image')
   && String((job?.payload as any)?.shellPurpose || '').trim() === 'translation_region_edit'
 );
 

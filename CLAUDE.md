@@ -23,7 +23,7 @@
   - 前端 `.test.mjs`(会 `import './xxx.ts'`)→ 必须加 `node --experimental-strip-types --test src/.../xxx.test.mjs`,否则 Node 报 `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`(文档里写的 `node --test` 漏了这个 flag)。
   - 全量:`find src -name "*.test.mjs" | xargs node --experimental-strip-types --test` / `find server -name "*.test.mjs" | xargs node --test`。
 
-## 3. 已诊断根因库 ★(持续维护,截至 2026-08-03 已记录至 #91)
+## 3. 已诊断根因库 ★(持续维护,截至 2026-08-04 已记录至 #93)
 
 > 🔗 本节是 Claude 与 Codex **共享的架构根因库主源**(单一真相)。Codex 通过 `AGENTS.md` 顶部指针 + `docs/agents/repeated-issues.md` 顶部指针读到这里。沉淀架构级根因写本节;`repeated-issues.md` 只留指针或记纯操作型问题,两边不抄全文以免漂移。
 
@@ -516,3 +516,8 @@
   根因:8 月 3 日组合替换真实验收运行在 `.worktrees/voiceover-static-cloud-release`，该工作树的后端把项目、任务、素材登记和物理文件都写入自己的 `server/data`，其中 `admin` 的 user ID 为 `f45e684baa7cb0f4e5355d03`。后续只恢复了主项目 3001 前端，并连接主项目 3100；主项目同名 `admin` 的 user ID 为 `0019216d590e08c2fb334991`，因此页面合法地读取了另一份空的产品替换状态。浏览器还保留过期管理员外壳，接口 401 被前端退化成空列表，进一步制造了“数据被删除”的假象。
   修复:先证明主项目无活跃任务，再备份主项目 `internal-store.json` 与 `asset-registry.json`；从工作树定向合并项目 1/4/6/7、18 条终态历史任务和项目实际引用的 21 个受管资源，把资源 owner 与 `storageKey` 重写到主项目 `admin`，复制对应物理文件，但不迁移用户、密码、会话、积分余额，也不创建、恢复或重试任何付费任务。重启主后端后重新登录 `admin`，API 返回四个项目，21/21 图片鉴权通过，3001 页面显示四张“已完成”卡，项目 7 详情为 `2/2`、12.16 积分且两张结果图真实可见。
   如何避免:**任何本地真实付费验收开始前必须把“源码根目录、后端进程 cwd、`server/data` 绝对路径、前后端端口、登录 username 与 user ID”作为同一环境身份打印并存档；临时 worktree 只允许跑无持久副作用的测试，真实验收必须明确写入主数据源或在结束前执行经过演练的定向回迁。恢复页面时必须同时验证鉴权、API state、任务账本、素材 owner/文件和真实 UI，不能把同名账号、相同端口或缓存中的管理员外壳当成同一数据源。**
+
+- **#93 ✅ 本地已修并用云上真实任务形态回归、待部署(2026-08-04)· 出海翻译修改已出图仍永久显示“修改中”**
+  根因:`processWithKieAi` 用全局 `getActiveModuleContext()` 决定内部 job 的 module，而翻译区域修改是一条长时间异步链。用户发起后页面模块上下文变成万物替换，多桑真实任务 `9278a26adfd91104ac8b71fe` 因此被登记为 `module=everything_replace`，虽然 payload 明确携带 `shellPurpose=translation_region_edit` 和精确项目/结果/版本身份，且 provider 与 internal job 都已 `succeeded` 并保存结果图。恢复层 `isTranslationRegionEditJob` 又先硬性要求 `job.module=translation`，这条结构化完成证据被整条跳过，`app_state` 中对应版本一直留在 `generating`。
+  修复:图像任务入口新增只用于控制面的 `jobModule`，在翻译区域修改调用处显式锁定 `translation`，并在展开 provider payload 前剔除该字段。恢复层改为依据结构化 `shellPurpose=translation_region_edit` 识别候选 job，后续仍要求完整匹配归属当前账号的 translation project/result/version 才能回写，因此可安全自愈已错标的存量任务，不重提 provider、不重复扣费。回归测试使用“`everything_replace` 错标 + 结构化翻译绑定 + succeeded 图片”的真实缩小形态，验证恢复为 `completed` 并替换可见结果图。
+  如何避免:**长时间异步任务的业务归属不得在提交时读全局当前页面状态；调用方必须把耐久 module/purpose/project/result/version 身份一次性显式传入。恢复层应用结构化 purpose 定位任务类型，再用当前账号下的精确聚合身份做回写边界，不能让一个可变的展示模块字段否定已完成的 provider 真值。**

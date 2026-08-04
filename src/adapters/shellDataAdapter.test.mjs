@@ -7585,9 +7585,10 @@ const buildTranslationEditJob = ({
   errorMessage = '',
   providerTaskId = 'translation-edit-provider-task',
   processingMode,
+  module = 'translation',
 } = {}) => ({
   id,
-  module: 'translation',
+  module,
   taskType: 'kie_image',
   provider: 'kie',
   status,
@@ -7706,6 +7707,28 @@ test('shell data adapter completes direct full-image edit jobs with the model ou
   assert.equal(version?.pendingProtectedSourceUrl, undefined);
   assert.equal(version?.backendJobId, job.id);
   assert.equal(version?.creditsConsumed, 3);
+  assert.deepEqual(snapshot.tasks, []);
+});
+
+test('shell data adapter recovers a purpose-bound translation edit even when the global page context mislabels its module', () => {
+  const state = { shellProjects: [buildTranslationEditProject()] };
+  const job = buildTranslationEditJob({
+    module: 'everything_replace',
+    status: 'succeeded',
+    processingMode: 'direct_full_image_v1',
+    result: {
+      imageUrl: 'https://provider.example.com/mislabeled-direct-edit-v2.png',
+      creditsConsumed: 3,
+    },
+  });
+
+  const snapshot = buildShellDataSnapshot(state, [job]);
+  const { result, version } = getTranslationEditTarget(snapshot);
+
+  assert.equal(result?.imageUrl, 'https://provider.example.com/mislabeled-direct-edit-v2.png');
+  assert.equal(version?.status, 'completed');
+  assert.equal(version?.backendJobId, job.id);
+  assert.equal(version?.imageUrl, 'https://provider.example.com/mislabeled-direct-edit-v2.png');
   assert.deepEqual(snapshot.tasks, []);
 });
 

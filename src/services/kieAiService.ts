@@ -491,7 +491,7 @@ export const processWithKieAi = async (
   onJobCreated?: (jobId: string, providerTaskId?: string) => void,
 ): Promise<KieAiResult> => {
   const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode);
-  const { skipPromptCleanupSuffix, preserveInputImageOrder, ...safeTaskMetadata } = taskMetadata || {};
+  const { skipPromptCleanupSuffix, preserveInputImageOrder, jobModule, ...safeTaskMetadata } = taskMetadata || {};
   logKieEvent('create_image_task', '开始创建图像任务', 'started', '', {
     imageCount: Array.isArray(imageUrls) ? imageUrls.length : 1,
     model: moduleConfig.model,
@@ -504,7 +504,7 @@ export const processWithKieAi = async (
   const promptWithCleanupSuffix = (moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary' || isMaxForAiModel) && skipPromptCleanupSuffix !== true
     ? `${finalPrompt}\n\n${getGptImage2CleanupSuffix(taskMetadata)}`
     : finalPrompt;
-  const module = getActiveModuleContext() || 'unknown';
+  const module = String(jobModule || '').trim() || getActiveModuleContext() || 'unknown';
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const { job } = await createInternalJob({
     module,

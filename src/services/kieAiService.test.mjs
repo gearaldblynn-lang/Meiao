@@ -168,6 +168,12 @@ test('kieAiService can skip the global cleanup suffix for prompts that already i
   assert.doesNotMatch(kieAiSource, /\.\.\.taskMetadata,[\s\S]*model: moduleConfig\.model/);
 });
 
+test('kieAiService accepts an explicit job module without leaking the control field into provider payload metadata', () => {
+  assert.match(kieAiSource, /const \{ skipPromptCleanupSuffix, preserveInputImageOrder, jobModule, \.\.\.safeTaskMetadata \} = taskMetadata \|\| \{\};/);
+  assert.match(kieAiSource, /const module = String\(jobModule \|\| ''\)\.trim\(\) \|\| getActiveModuleContext\(\) \|\| 'unknown';/);
+  assert.match(kieAiSource, /payload:\s*\{\s*imageUrls: safeImageUrls,\s*prompt: promptWithCleanupSuffix,\s*\.\.\.safeTaskMetadata,/);
+});
+
 test('kieAiService de-duplicates normalized model input image urls before submitting', () => {
   assert.match(kieAiSource, /const seen = new Set<string>\(\);/);
   assert.match(kieAiSource, /if \(seen\.has\(url\)\) return false;/);
