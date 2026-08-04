@@ -23,6 +23,15 @@ const basePromptInput = {
   batchCount: 2,
 };
 
+const readTaggedPromptJson = (prompt, tagName) => {
+  const openTag = `<${tagName}>`;
+  const closeTag = `</${tagName}>`;
+  const start = prompt.indexOf(openTag);
+  const end = prompt.indexOf(closeTag, start + openTag.length);
+  assert.ok(start >= 0 && end > start, `${tagName} should exist in the prompt`);
+  return JSON.parse(prompt.slice(start + openTag.length, end).trim());
+};
+
 test('product replacement logic normalizes current and historical combination values', () => {
   assert.equal(normalizeProductReplacementLogic('combination_replace'), 'combination_replace');
   assert.equal(normalizeProductReplacementLogic('组合替换'), 'combination_replace');
@@ -192,17 +201,17 @@ test('combination grouping treats repeated group ids as angles of one product an
   assert.match(prompt, /目标区域 1 → 产品1 → Image 2、Image 4/);
   assert.match(prompt, /目标区域 2 → 产品2 → Image 3/);
   assert.match(prompt, /keep 目标区域 1, 目标区域 2, and 目标区域 3 planned perspective and occlusion/);
-  assert.match(prompt, /"xRatio": 0\.1/);
-  assert.match(prompt, /"widthRatio": 0\.3/);
+  assert.match(prompt, /"xRatio":\s*0\.1/);
+  assert.match(prompt, /"widthRatio":\s*0\.3/);
   assert.match(prompt, /不得把具体产品概括成同类通用产品/);
   assert.match(prompt, /必须直接观察对应输入图像素/);
   assert.match(prompt, /非产品参考元素不得进入最终图/);
   assert.match(prompt, /<product_identity_lock_contract>/);
   assert.match(prompt, /<product_color_fidelity_contract>/);
   assert.match(prompt, /五维产品身份硬锁定/);
-  assert.match(prompt, /"materials": "exact substrate/);
-  assert.match(prompt, /"details": "exact seams/);
-  assert.match(prompt, /"colors": "exact intrinsic/);
+  assert.match(prompt, /"materials":\s*"exact substrate/);
+  assert.match(prompt, /"details":\s*"exact seams/);
+  assert.match(prompt, /"intrinsicColors":\s*"exact intrinsic/);
   assert.match(prompt, /"componentColorMap"/);
   assert.match(prompt, /"relativeColorRelationships"/);
   assert.match(prompt, /"midtoneAndWhiteBalanceRule"/);
@@ -210,8 +219,8 @@ test('combination grouping treats repeated group ids as angles of one product an
   assert.match(prompt, /禁止对产品区域应用全局 LUT、滤镜、统一色调或整体压暗/);
   assert.match(prompt, /产品中间调必须与产品素材图保持同一明度层级/);
   assert.doesNotMatch(prompt, /允许根据场景调整[\s\S]{0,30}整体明暗/);
-  assert.match(prompt, /"patterns": "exact printed/);
-  assert.match(prompt, /"structure": "exact silhouette/);
+  assert.match(prompt, /"patterns":\s*"exact printed/);
+  assert.match(prompt, /"structure":\s*"exact silhouette/);
   assert.match(prompt, /"forbiddenChanges"/);
   assert.ok(
     prompt.indexOf('<product_identity_lock_contract>') < prompt.indexOf('<product_replace_planning_data>'),
@@ -220,6 +229,124 @@ test('combination grouping treats repeated group ids as angles of one product an
   assert.doesNotMatch(prompt, /product[-_]p[-_]?[1-3]/i);
   assert.doesNotMatch(prompt, /\bP[\s_-]*[1-3]\b/i);
   assert.doesNotMatch(prompt, /从左到右、从上到下/);
+});
+
+test('verbose v5 planning is projected into one non-duplicated execution contract under the provider-safe limit', () => {
+  const detail = (label, count = 18) => Array.from(
+    { length: count },
+    (_, index) => `${label}-${index + 1}: exact evidence`,
+  ).join('; ');
+  const productGroups = Array.from({ length: 3 }, (_, index) => ({
+    id: `group-${index + 1}`,
+    productNumber: index + 1,
+    inputImageIndexes: [index + 2],
+    urls: [`https://assets.example.com/product-${index + 1}.png`],
+  }));
+  const regionBindings = productGroups.map((group, index) => ({
+    regionId: `product-replace-region-${index + 1}`,
+    regionIndex: index + 1,
+    productGroupId: group.id,
+    productNumber: group.productNumber,
+    targetInputImageIndexes: group.inputImageIndexes,
+    xRatio: 0.05 + (index * 0.3),
+    yRatio: 0.2,
+    widthRatio: 0.2,
+    heightRatio: 0.5,
+  }));
+  const planningAnalysis = {
+    version: 5,
+    taskType: 'combination_product_replacement',
+    referenceSummary: detail('scene-summary', 5),
+    products: productGroups.map((group, index) => ({
+      productGroupId: group.id,
+      productNumber: group.productNumber,
+      targetInputImageIndexes: group.inputImageIndexes,
+      identitySummary: detail(`legacy-identity-${index + 1}`, 8),
+      silhouetteAndProportions: detail(`legacy-silhouette-${index + 1}`, 7),
+      structureAndAccessories: detail(`legacy-structure-${index + 1}`, 7),
+      materialsAndFinish: detail(`legacy-material-${index + 1}`, 7),
+      colorsAndPatterns: detail(`legacy-color-pattern-${index + 1}`, 7),
+      logosAndGraphics: detail(`legacy-graphics-${index + 1}`, 4),
+      visiblePackagingText: `physical-package-text-${index + 1}`,
+      subjectBoundary: detail(`physical-boundary-${index + 1}`, 4),
+      nonProductReferenceArtifacts: [detail(`excluded-artifact-${index + 1}`, 3)],
+      exactVisualAnchors: [detail(`visual-anchor-${index + 1}`, 5)],
+      invariantDetails: [detail(`legacy-invariant-${index + 1}`, 3)],
+      identityLock: {
+        materials: detail(`canonical-material-${index + 1}`, 8),
+        details: detail(`canonical-detail-${index + 1}`, 8),
+        colors: detail(`canonical-color-${index + 1}`, 6),
+        colorPreservation: {
+          componentColorMap: [detail(`component-color-${index + 1}`, 5)],
+          relativeColorRelationships: [detail(`relative-color-${index + 1}`, 4)],
+          midtoneAndWhiteBalanceRule: detail(`midtone-rule-${index + 1}`, 5),
+          forbiddenColorShifts: [detail(`forbidden-color-${index + 1}`, 5)],
+        },
+        patterns: detail(`canonical-pattern-${index + 1}`, 7),
+        structure: detail(`canonical-structure-${index + 1}`, 7),
+        forbiddenChanges: [detail(`forbidden-change-${index + 1}`, 6)],
+      },
+    })),
+    regions: regionBindings.map((binding, index) => ({
+      ...binding,
+      oldProduct: detail(`old-product-${index + 1}`, 3),
+      placement: detail(`placement-${index + 1}`, 4),
+      scale: detail(`scale-${index + 1}`, 3),
+      perspective: detail(`perspective-${index + 1}`, 3),
+      lighting: detail(`lighting-${index + 1}`, 4),
+      materialInteraction: detail(`material-interaction-${index + 1}`, 4),
+      occlusion: detail(`occlusion-${index + 1}`, 4),
+      contactShadow: detail(`contact-shadow-${index + 1}`, 4),
+      generationInstruction: detail(`duplicate-region-instruction-${index + 1}`, 14),
+    })),
+    globalConstraints: [detail('global-scene-constraint', 4)],
+    generationPrompt: detail('unused-generation-prompt', 20),
+    validationChecklist: [detail('unused-validation-checklist', 10)],
+  };
+
+  const prompt = buildProductReplacePrompt({
+    ...basePromptInput,
+    productGroups,
+    isCombination: true,
+    regionBindings,
+    planningAnalysis,
+  });
+  const identityContract = readTaggedPromptJson(prompt, 'product_identity_lock_contract');
+  const colorContract = readTaggedPromptJson(prompt, 'product_color_fidelity_contract');
+  const executionPlan = readTaggedPromptJson(prompt, 'product_replace_planning_data');
+
+  assert.ok(prompt.length < 18_000, `generation prompt should stay under the conservative provider limit, got ${prompt.length}`);
+  assert.equal('products' in executionPlan, false);
+  assert.equal('generationInstruction' in executionPlan.regions[0], false);
+  assert.equal('colorPreservation' in identityContract[0], false);
+  assert.equal('colors' in identityContract[0], false);
+  assert.equal(identityContract[0].physicalProductBoundary, planningAnalysis.products[0].subjectBoundary);
+  assert.equal(identityContract[0].logosAndGraphics, planningAnalysis.products[0].logosAndGraphics);
+  assert.deepEqual(identityContract[0].visualAnchors, planningAnalysis.products[0].exactVisualAnchors);
+  assert.deepEqual(identityContract[0].invariantDetails, planningAnalysis.products[0].invariantDetails);
+  assert.deepEqual(identityContract[0].excludedReferenceArtifacts, planningAnalysis.products[0].nonProductReferenceArtifacts);
+  assert.equal(colorContract[0].intrinsicColors, planningAnalysis.products[0].identityLock.colors);
+  const uniqueColorRule = planningAnalysis.products[0].identityLock.colorPreservation.midtoneAndWhiteBalanceRule;
+  assert.equal(prompt.split(uniqueColorRule).length - 1, 1, 'canonical color evidence must appear exactly once');
+  assert.doesNotMatch(prompt, /unused-generation-prompt|unused-validation-checklist|legacy-identity|duplicate-region-instruction/);
+});
+
+test('product replacement refuses an oversized generation prompt before provider submission', () => {
+  assert.throws(
+    () => buildProductReplacePrompt({
+      ...basePromptInput,
+      productGroups: compileProductReplaceGroups([
+        { id: 'product', url: 'https://assets.example.com/product.png' },
+      ], false),
+      userPrompt: 'oversized-user-requirement '.repeat(1_000),
+      isCombination: false,
+    }),
+    (error) => (
+      error?.code === 'product_replace_generation_prompt_too_long'
+      && error?.maxPromptChars === 18_000
+      && error?.promptLength > error?.maxPromptChars
+    ),
+  );
 });
 
 test('generation input budget reserves the clean reference and optional Logo inputs but not the planning-only location guide', () => {

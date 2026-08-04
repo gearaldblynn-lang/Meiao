@@ -3,6 +3,15 @@ import { getImageModelCapabilities } from './modelCapabilities.mjs';
 export const PRODUCT_REPLACE_MAX_REFERENCE_IMAGES = 40;
 export const PRODUCT_REPLACE_DEFAULT_SUBMISSION_CONCURRENCY = 3;
 
+const DEFAULT_PRODUCT_REPLACE_GENERATION_PROMPT_MAX_CHARS = 18_000;
+
+const getProductReplaceGenerationPromptMaxChars = () => {
+  const configured = Number(import.meta.env?.VITE_MEIAO_PRODUCT_REPLACE_GENERATION_PROMPT_MAX_CHARS);
+  return Number.isFinite(configured) && configured >= 8_000
+    ? Math.floor(configured)
+    : DEFAULT_PRODUCT_REPLACE_GENERATION_PROMPT_MAX_CHARS;
+};
+
 const clean = (value) => String(value || '').trim();
 
 export const normalizeProductReplacementLogic = (value) => {
@@ -126,7 +135,7 @@ const buildCombinationMapping = (productGroups, regionBindings = []) => {
 
 const serializePromptData = (tagName, value) => [
   `<${tagName}>`,
-  JSON.stringify(value, null, 2).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e'),
+  JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e'),
   `</${tagName}>`,
 ].join('\n');
 
@@ -155,22 +164,11 @@ const buildGenerationRegionContracts = (regionBindings = []) => regionBindings.m
   heightRatio: Number(binding.heightRatio),
 }));
 
-const buildGenerationPlanningData = (planningAnalysis, productGroups, regionBindings) => {
+const buildGenerationPlanningData = (planningAnalysis, regionBindings) => {
   if (!planningAnalysis || typeof planningAnalysis !== 'object') return null;
-  const inputIndexesByGroup = new Map(
-    productGroups.map((group) => [String(group.id || ''), group.inputImageIndexes || []]),
-  );
   const targetRegionNumberByGroup = new Map(
     regionBindings.map((binding) => [String(binding.productGroupId || ''), Number(binding.productNumber)]),
   );
-  const products = Array.isArray(planningAnalysis.products)
-    ? planningAnalysis.products.map((product) => ({
-        ...product,
-        targetRegionNumber: targetRegionNumberByGroup.get(String(product.productGroupId || '')),
-        targetInputImageIndexes: inputIndexesByGroup.get(String(product.productGroupId || ''))
-          || product.targetInputImageIndexes,
-      }))
-    : [];
   const regions = Array.isArray(planningAnalysis.regions)
     ? planningAnalysis.regions.map((region) => ({
         targetRegionNumber: targetRegionNumberByGroup.get(String(region.productGroupId || ''))
@@ -184,13 +182,11 @@ const buildGenerationPlanningData = (planningAnalysis, productGroups, regionBind
         materialInteraction: region.materialInteraction,
         occlusion: region.occlusion,
         contactShadow: region.contactShadow,
-        generationInstruction: region.generationInstruction,
       }))
     : [];
   return scrubProductMarkerLabels({
     version: Number(planningAnalysis.version) || 1,
     referenceSummary: planningAnalysis.referenceSummary,
-    products,
     regions,
     globalConstraints: planningAnalysis.globalConstraints,
   });
@@ -286,6 +282,24 @@ const buildGenerationProductIdentityLocks = (planningAnalysis, productGroups, re
         || product.targetInputImageIndexes
         || [],
       sourceOfTruth: '对应 targetInputImageIndexes 的产品输入图像素',
+      ...(clean(product.subjectBoundary)
+        ? { physicalProductBoundary: clean(product.subjectBoundary) }
+        : {}),
+      ...(clean(product.visiblePackagingText)
+        ? { visiblePackagingText: clean(product.visiblePackagingText) }
+        : {}),
+      ...(clean(product.logosAndGraphics)
+        ? { logosAndGraphics: clean(product.logosAndGraphics) }
+        : {}),
+      ...(Array.isArray(product.exactVisualAnchors) && product.exactVisualAnchors.length > 0
+        ? { visualAnchors: product.exactVisualAnchors.map(clean).filter(Boolean) }
+        : {}),
+      ...(Array.isArray(product.invariantDetails) && product.invariantDetails.length > 0
+        ? { invariantDetails: product.invariantDetails.map(clean).filter(Boolean) }
+        : {}),
+      ...(Array.isArray(product.nonProductReferenceArtifacts) && product.nonProductReferenceArtifacts.length > 0
+        ? { excludedReferenceArtifacts: product.nonProductReferenceArtifacts.map(clean).filter(Boolean) }
+        : {}),
       ...identityLock,
     };
   }).filter(Boolean));
@@ -299,6 +313,11 @@ const buildGenerationProductColorFidelityLocks = (productIdentityLocks) => produ
   intrinsicColors: lock.colors,
   ...lock.colorPreservation,
 }));
+
+const buildGenerationProductNonColorIdentityLocks = (productIdentityLocks) => productIdentityLocks.map((lock) => {
+  const { colors: _colors, colorPreservation: _colorPreservation, ...identityLock } = lock;
+  return identityLock;
+});
 
 const buildReferenceStrengthConstraint = (referenceStrength, hasLogo = false) => {
   if (referenceStrength === 'person_adjust') {
@@ -363,12 +382,13 @@ export const buildProductReplacePrompt = ({
     ? buildGenerationRegionContracts(regionBindings)
     : [];
   const generationPlanningData = isCombination
-    ? buildGenerationPlanningData(planningAnalysis, productGroups, regionBindings)
+    ? buildGenerationPlanningData(planningAnalysis, regionBindings)
     : planningAnalysis;
-  const productIdentityLocks = isCombination
+  const productIdentitySourceLocks = isCombination
     ? buildGenerationProductIdentityLocks(planningAnalysis, productGroups, regionBindings)
     : [];
-  const productColorFidelityLocks = buildGenerationProductColorFidelityLocks(productIdentityLocks);
+  const productColorFidelityLocks = buildGenerationProductColorFidelityLocks(productIdentitySourceLocks);
+  const productIdentityLocks = buildGenerationProductNonColorIdentityLocks(productIdentitySourceLocks);
   const logoTask = validLogo
     ? `\nLogo 原图：${validLogo.url}\nLogo 位置示意图：${validLogo.placementGuideUrl}\n按 Logo 位置示意图植入上传 Logo；示意图只提供相对位置、面积、方向和比例（${validLogo.placementRatio}）。`
     : '';
@@ -379,7 +399,7 @@ export const buildProductReplacePrompt = ({
       ]
     : [];
 
-  return [
+  const prompt = [
     [
       'R Role 角色',
       '你是电商视觉产品替换执行模型。你的职责是准确保留上传产品的身份和可见细节，并把它们自然替换到当前唯一参考图中。',
@@ -400,12 +420,12 @@ export const buildProductReplacePrompt = ({
         '禁止对产品区域应用全局 LUT、滤镜、统一色调或整体压暗；场景调色只能作用于背景和环境。产品只允许出现物理合理的局部高光、局部阴影和局部反射色，不能让这些影响吞掉主体中间调。',
       ].join('\n') : '',
       productIdentityLocks.length > 0 ? [
-        '以下是逐产品、逐区域绑定的五维产品身份硬锁定合同，优先级高于构图适配、光影美化和策划中的其他描述；每一项都必须直接对照对应产品输入图执行：',
+        '以下是逐产品、逐区域绑定的非颜色身份硬合同，与上方同 productNumber 的颜色合同共同构成五维产品身份；优先级高于构图适配、光影美化和其他描述：',
         serializePromptData('product_identity_lock_contract', productIdentityLocks),
-        '材质、细节、固有颜色、图案和结构均为不可变产品身份；只允许增加不改变主体中间调的局部投影、局部高光、局部环境反射和遮挡，禁止借融合之名改色、整体压暗、改材质、改图案、改结构、删细节或把产品通用化。',
+        '材质、可识别细节、产品自身 Logo 与图形拓扑、图案、结构、实体边界、视觉锚点和具体不可变细节均不可改；禁止通用化、重新设计、删细节或带入 excludedReferenceArtifacts。',
       ].join('\n') : '',
       generationPlanningData ? [
-        '以下逐图策划数据用于执行当前参考图的产品身份、尺度、透视、光线、遮挡、接触面和阴影关系，但不能覆盖数值区域与产品绑定：',
+        '以下策划数据只描述当前参考图的尺度、透视、光线、材质互动、遮挡、接触面和阴影；不包含、也不能覆盖产品身份与颜色合同：',
         serializePromptData('product_replace_planning_data', generationPlanningData),
       ].join('\n') : '',
       '移除参考图中被替换区域内的原产品、原品牌、原包装信息和原产品轮廓，再把对应目标产品自然放入同一空间关系。',
@@ -415,10 +435,10 @@ export const buildProductReplacePrompt = ({
     [
       'C Constraint 约束',
       '1. 产品输入图是产品身份的最高优先级依据。必须直接观察对应输入图像素；策划文字只能帮助定位和理解，不能替代、概括或覆盖图像中的真实产品。',
-      '2. 五维产品身份硬锁定：材质、可识别细节、固有颜色、产品图案和物理结构必须逐项保持；不得把具体产品概括成同类通用产品或重新设计。',
+      '2. 五维产品身份硬锁定由 product_identity_lock_contract 中的材质、细节、图案、结构，与 product_color_fidelity_contract 中的固有颜色共同构成；不得把具体产品概括成同类通用产品或重新设计。',
       '3. 环境光只能形成物理合理的局部高光、局部阴影和局部反射，不能改变产品主体中间调的色相、明度层级、饱和度、灰阶关系、颜色分区、材质种类或表面工艺。暗场景中也必须保留产品原有颜色的可辨识度，不能把中灰压成深灰或黑色；透视只能改变二维投影，不能改变真实轮廓比例、组件几何、装配关系和相对位置。',
       '4. 产品实体边界、纹理、配件、产品自身 Logo、标签边界、包装文字、图案、接口、接缝和所有可见细节必须与对应产品输入图一致，禁止模糊、省略、增添、融合或互换。',
-      '5. nonProductReferenceArtifacts 中列出的背景、卡片、说明标题、技术编号、定位徽标、箭头或色块都属于非产品参考元素；非产品参考元素不得进入最终图，只有物理附着在产品本体或包装上的内容才属于产品身份。',
+      '5. excludedReferenceArtifacts 中列出的背景、卡片、说明标题、技术编号、定位徽标、箭头或色块都属于非产品参考元素；非产品参考元素不得进入最终图，只有物理附着在产品本体或包装上的内容才属于产品身份。',
       '6. 不得把参考图中原产品的品牌、结构、包装、标签、文字或图案迁移到目标产品。',
       '7. 产品必须真实融入画面；透视、遮挡、接触阴影、材质反光、边缘融合和景深关系要自然，不能像简单贴图，但自然融合不能覆盖产品身份锁定。禁止对产品蒙版应用参考图的全局 LUT、滤镜、统一色温、统一饱和度或统一曝光；需要暗场氛围时，应通过背景曝光和产品周围光影建立氛围，同时保护产品主体中间调。',
       `8. 参考强度：${buildReferenceStrengthConstraint(referenceStrength, Boolean(validLogo))}`,
@@ -442,6 +462,15 @@ export const buildProductReplacePrompt = ({
         : '示例：同一瓶装产品提供正面图和标签细节图；最终图只生成一个瓶装产品，并同时保持瓶身结构和标签细节准确。',
     ].join('\n'),
   ].join('\n\n');
+  const maxPromptChars = getProductReplaceGenerationPromptMaxChars();
+  if (prompt.length > maxPromptChars) {
+    throw Object.assign(new Error(`产品替换生图提示词超过 ${maxPromptChars} 字符限制，已在付费生图前停止。`), {
+      code: 'product_replace_generation_prompt_too_long',
+      promptLength: prompt.length,
+      maxPromptChars,
+    });
+  }
+  return prompt;
 };
 
 export const buildProductReplaceEditPrompt = ({

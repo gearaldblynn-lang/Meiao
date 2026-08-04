@@ -122,6 +122,7 @@ VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS=3
 VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS=5000
 VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS=10000
 VITE_MEIAO_PRODUCT_REPLACE_SUBMISSION_CONCURRENCY=3
+VITE_MEIAO_PRODUCT_REPLACE_GENERATION_PROMPT_MAX_CHARS=18000
 VITE_LOGO_REPLACE_GENERATION_PROMPT_MAX_CHARS=18000
 MEIAO_ADMIN_USERNAME=admin
 MEIAO_ADMIN_PASSWORD=请替换成你的管理员密码
@@ -247,6 +248,8 @@ location ^~ /api/media-transcodes/ {
 `VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS` 也是前端构建期变量，控制模块工作台从耐久任务队列同步项目卡的周期，默认 `10000` 毫秒，低于 `1000` 毫秒会回退默认值。前台恢复、窗口聚焦和网络恢复会额外立即同步；调整该值后必须重新构建前端。不要用极短轮询掩盖 provider 或任务队列故障。
 
 `VITE_MEIAO_PRODUCT_REPLACE_SUBMISSION_CONCURRENCY` 控制产品替换参考图批量任务在浏览器端同时提交的数量，默认 `3`，允许 `1-6`。降低可减少 provider 瞬时压力，提高会增加短时请求峰值；调整后必须重新构建前端。
+
+`VITE_MEIAO_PRODUCT_REPLACE_GENERATION_PROMPT_MAX_CHARS` 是产品替换生图提示词的前端构建期上限，默认 `18000`。完整策划回复只是审计产物，生图只能投影一份颜色合同、一份非颜色身份合同和一份场景执行计划。超限必须在付费提交前停止，不可截断产品身份字段；修改后必须重新构建前端。
 
 `VITE_LOGO_REPLACE_GENERATION_PROMPT_MAX_CHARS` 是 Logo 替换生图提示词的前端构建期上限，默认 `18000`。分析模型的完整回复不得无界投影进生图请求；修改该值前必须先用当前 provider 真实接口验证文本上限，修改后重新构建前端。
 

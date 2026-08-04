@@ -224,6 +224,16 @@ const normalizeKieTaskCreationError = (responseStatus, result = {}, defaultMessa
   if (code === 402 || /credits insufficient/i.test(message)) {
     return createProviderError('provider_credit_insufficient', message || 'Kie 余额不足', errorExtras('credit_insufficient'));
   }
+  if (
+    /text length cannot exceed(?: the)? maximum limit/i.test(message)
+    || /(?:prompt|text).{0,24}(?:too long|maximum length|length limit)/i.test(message)
+  ) {
+    return createProviderError(
+      'provider_bad_request',
+      '生图提示词超过生成服务文本上限，已停止提交。请精简重复描述后重试。',
+      errorExtras('bad_request'),
+    );
+  }
   if (code === 433 || /sub-?key|exceeds limit|request limit/i.test(message)) {
     return createProviderError('provider_request_limit', message || 'Kie 额度受限', errorExtras('request_limit'));
   }

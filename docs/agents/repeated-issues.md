@@ -1283,3 +1283,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: v5 增加逐组件颜色地图、相对颜色关系、中间调白平衡规则和禁止偏移清单；生图前置独立颜色保真合同，只允许局部高光/阴影/反射，禁止全局调色改变产品中间调。与当前产品素材冲突的旧用户描述必须忽略。历史 v2-v4 在存在颜色字段时推导结构化保护，v1 与单品模式继承全局颜色保护，仍不增加生成后质量验收。
 - Regression check: `node --experimental-strip-types --test src/utils/productReplaceAnalysis.test.mjs src/utils/productReplaceContract.test.mjs src/adapters/shellWorkflowProductReplace.test.mjs src/services/arkService.test.mjs`；`npm run build`。必须锁定 v5 缺颜色子字段会失败、旧“允许整体明暗”文案消失、单品与组合都禁止全局调色覆盖产品。
 - Avoid next time: 颜色一致性必须同时约束色相、明度、饱和度、逐组件边界和允许的受光范围；只写“保持颜色一致”或允许整体明暗都不够。
+
+## 2026-08-04 - 完整策划 JSON 不能作为生图提示词无界叠加
+
+- Symptom: 组合产品分析成功，生图却在创建 provider 任务前连续失败，用户只看到“生成服务暂时异常”。
+- Environment: Tencent Cloud / 多桑 / 万物替换 / 组合产品 v5 / GPT Image 2。
+- Root cause: 完整 `products` 中已包含 `identityLock.colorPreservation`，生图又单独序列化身份合同和颜色合同，相同产品事实出现 2-3 次；策划 `generationInstruction` 又重述分字段执行数据。真实 prompt 达 28319/23234 字符并被 KIE 文本上限拒绝，且 provider 500 包装让确定性长度错误被误归为可重试内部错误。架构级根因见 `CLAUDE.md` #95。
+- Fix: 生图仅投影一份颜色合同、一份非颜色身份合同和一份场景执行计划；删除执行计划中的产品全量副本与重复 `generationInstruction`，但保留材质、细节、固有颜色、图案、结构、实体边界、可见文字、视觉锚点和排除元素。新增默认 18000 字符付费前闸门，并将 provider 文本超限归为不可重试 bad request。
+- Regression check: `node --experimental-strip-types --test src/utils/productReplaceAnalysis.test.mjs src/utils/productReplaceContract.test.mjs src/adapters/shellWorkflowProductReplace.test.mjs src/services/arkService.test.mjs`；`node --test server/providerGateway.test.mjs`；`npm run lint`；`npm run build`。云上三条真实策划回放的新 prompt 分别为 14407、12147、9059 字符；额外保留了 Logo/图形拓扑和具体不变特征。
+- Avoid next time: 模型分析产物用于审计和恢复，provider prompt 只携带无重复的执行投影。每次增加新合同必须同时删除旧重复投影，并用真实长分析级别锁定长度、字段唯一性和付费前停止。

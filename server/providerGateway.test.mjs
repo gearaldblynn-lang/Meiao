@@ -2369,6 +2369,42 @@ test('executeProviderJob maps KIE createTask code 433 to provider_request_limit'
   }
 });
 
+test('executeProviderJob treats KIE prompt text overflow as a non-retryable bad request', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () => createJsonResponse({
+    code: 500,
+    msg: 'The text length cannot exceed the maximum limit',
+    data: null,
+  });
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_image',
+          payload: {
+            prompt: 'test',
+            imageUrls: ['https://example.com/source.png'],
+            model: 'gpt-image-2',
+            aspectRatio: '1:1',
+            resolution: '1K',
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => {
+        assert.equal(error?.code, 'provider_bad_request');
+        assert.match(error?.message || '', /提示词超过生成服务文本上限/);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('uploadAssetViaKieStream prefers stream upload and returns file url', async () => {
   const originalFetch = global.fetch;
   const requests = [];
