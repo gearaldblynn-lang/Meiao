@@ -22,13 +22,13 @@ test('all logo modes use one AI analysis and direct full-image generation workfl
   assert.match(guideBuilder, /createLogoReplaceRegionGuideBlob/);
   assert.match(workflow, /taskPurpose: 'logo_replace_analysis'/);
   assert.match(workflow, /taskPurpose: 'logo_replace_generation'/);
-  assert.match(workflow, /logoReplaceProcessingMode: 'ai_native_analysis_generation_v4'/);
+  assert.match(workflow, /logoReplaceProcessingMode: 'ai_native_analysis_generation_v5_execution_plan'/);
   assert.doesNotMatch(lifecycle, /logo_replace_quality_check|validateLogoReplacementResult|createLogoReplaceQualityEvidenceBlobs|qualityEvidenceUrls/);
   assert.doesNotMatch(workflow, /createGuardedMultiLogoReplaceResultBlob/);
   assert.doesNotMatch(workflow, /program_guarded|toMultiLogoReplaceResultItem|cleanupScrubPaddingRatio/);
 });
 
-test('logo analysis and generation receive original, numbered guide, and ordered bound logos', () => {
+test('logo analysis receives the guide while generation receives only the clean original and ordered logos', () => {
   const workflow = functionBlock('runLogoReplaceWorkflow');
 
   assert.match(shellWorkflowSource, /type LogoReplaceRegion =[\s\S]*xRatio: number;[\s\S]*yRatio: number;[\s\S]*widthRatio: number;[\s\S]*heightRatio: number;/);
@@ -45,9 +45,10 @@ test('logo analysis and generation receive original, numbered guide, and ordered
   assert.match(workflow, /originalUrl: referenceUrl/);
   assert.match(workflow, /regionGuideUrl:/);
   assert.match(workflow, /logoUrls: orderedLogoUrls/);
-  assert.match(workflow, /const imageInputUrls = \[referenceUrl, regionGuideInputs\.regionGuideUrl, \.\.\.orderedLogoUrls\]/);
+  assert.match(workflow, /const imageInputUrls = \[referenceUrl, \.\.\.orderedLogoUrls\]/);
+  assert.doesNotMatch(workflow, /const imageInputUrls = \[referenceUrl, regionGuideInputs\.regionGuideUrl/);
   assert.match(workflow, /preserveInputImageOrder: true/);
-  assert.match(workflow, /2 \+ regionBindings\.length/);
+  assert.match(workflow, /1 \+ regionBindings\.length/);
 });
 
 test('single and corner presets select one region while multi preserves every numbered region', () => {

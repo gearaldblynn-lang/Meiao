@@ -82,7 +82,23 @@ const analysis = {
   validationChecklist: ['P1 and P2 mapping remains exact'],
 };
 
-test('product replacement analysis prompt uses ordered image roles and a strict RTCFE JSON contract', () => {
+const executionAnalysis = {
+  version: 6,
+  taskType: 'combination_product_replacement',
+  regions: bindings.map((binding) => ({
+    regionId: binding.regionId,
+    regionIndex: binding.regionIndex,
+    productGroupId: binding.productGroupId,
+    productNumber: binding.productNumber,
+    placement: '保持用户标记区域内的原视觉中心和占比',
+    perspective: '匹配台面透视与相机俯视角度',
+    materialInteraction: '只继承局部高光和反射，不改变产品固有外观',
+    occlusion: '保持前景物体对产品边缘的现有遮挡',
+    contactShadow: '在台面重建与产品接触一致的短软阴影',
+  })),
+};
+
+test('product replacement planning asks only for execution decisions and treats uploaded products as visual truth', () => {
   const prompt = buildProductReplaceAnalysisPrompt({
     referenceUrl: 'https://assets.test/reference.png',
     regionGuideUrl: 'https://assets.test/guide.png',
@@ -103,86 +119,64 @@ test('product replacement analysis prompt uses ordered image roles and a strict 
   assert.match(prompt, /P1 固定绑定 Image 3、Image 4/);
   assert.match(prompt, /P2 固定绑定 Image 5/);
   assert.match(prompt, /regions 必须恰好包含 2 项/);
-  assert.match(prompt, /"products"/);
-  assert.match(prompt, /"silhouetteAndProportions"/);
-  assert.match(prompt, /"visiblePackagingText"/);
-  assert.match(prompt, /"subjectBoundary"/);
-  assert.match(prompt, /"nonProductReferenceArtifacts"/);
-  assert.match(prompt, /"exactVisualAnchors"/);
-  assert.match(prompt, /"identityLock"/);
-  for (const field of ['materials', 'details', 'colors', 'patterns', 'structure', 'forbiddenChanges']) {
+  assert.match(prompt, /策划只输出如何执行/);
+  assert.match(prompt, /产品身份由绑定素材图直接提供/);
+  for (const field of ['placement', 'perspective', 'materialInteraction', 'occlusion', 'contactShadow']) {
     assert.match(prompt, new RegExp(`"${field}"`));
   }
-  assert.match(prompt, /五维产品身份锁定/);
-  assert.match(prompt, /逐组件颜色地图/);
-  assert.match(prompt, /中间调与白平衡/);
-  assert.match(prompt, /禁止把场景色温、滤镜或全局调色写入产品固有色/);
-  assert.match(prompt, /用户要求若与绑定产品素材的颜色、材质、结构或数量冲突，必须忽略冲突部分/);
-  assert.match(prompt, /只有物理附着在产品本体或包装上的文字/);
-  assert.match(prompt, /技术编号、定位徽标、箭头、说明标题/);
-  assert.match(prompt, /identityLock 是产品身份的唯一权威详细记录/);
-  assert.match(prompt, /generationInstruction 只写当前区域的局部例外/);
-  assert.match(prompt, /不重述产品身份或其他字段/);
-  assert.match(prompt, /identityLock 中每个文本字段最多两个短句/);
-  assert.match(prompt, /regions 中 placement、scale、perspective/);
-  assert.match(prompt, /"xRatio": 0\.12/);
+  assert.doesNotMatch(prompt, /"products"|"identityLock"|"colorPreservation"|"generationPrompt"|"generationInstruction"/);
+  assert.doesNotMatch(prompt, /"materials"|"details"|"colors"|"patterns"|"structure"/);
+  assert.doesNotMatch(prompt, /"xRatio"/);
+  assert.ok(prompt.length < 4_500, `execution-only planning prompt should stay compact, got ${prompt.length}`);
 });
 
-test('product replacement analysis parser requires v5 color-fidelity locks and rejects swapped or incomplete mappings', () => {
-  const parsed = parseProductReplaceAnalysis(JSON.stringify(analysis), {
+test('product replacement analysis parser requires a complete v6 execution plan and injects trusted bindings', () => {
+  const parsed = parseProductReplaceAnalysis(JSON.stringify(executionAnalysis), {
     expectedBindings: bindings,
   });
   assert.equal(parsed.ok, true);
   assert.deepEqual(parsed.value.regions.map((region) => region.productGroupId), ['group-a', 'group-b']);
-  assert.deepEqual(parsed.value.products.map((product) => product.productGroupId), ['group-a', 'group-b']);
+  assert.deepEqual(parsed.value.regions[0].targetInputImageIndexes, [3, 4]);
+  assert.equal('products' in parsed.value, false);
+  assert.equal('generationPrompt' in parsed.value, false);
 
-  const swapped = structuredClone(analysis);
+  const swapped = structuredClone(executionAnalysis);
   swapped.regions[0].productGroupId = 'group-b';
   assert.equal(parseProductReplaceAnalysis(JSON.stringify(swapped), {
     expectedBindings: bindings,
   }).ok, false);
 
-  const incomplete = structuredClone(analysis);
+  const incomplete = structuredClone(executionAnalysis);
   incomplete.regions.pop();
   assert.equal(parseProductReplaceAnalysis(JSON.stringify(incomplete), {
     expectedBindings: bindings,
   }).ok, false);
 
-  const missingIdentity = structuredClone(analysis);
-  delete missingIdentity.products[0].visiblePackagingText;
-  assert.equal(parseProductReplaceAnalysis(JSON.stringify(missingIdentity), {
-    expectedBindings: bindings,
-  }).ok, false);
-
-  const missingBoundary = structuredClone(analysis);
-  delete missingBoundary.products[0].subjectBoundary;
-  assert.equal(parseProductReplaceAnalysis(JSON.stringify(missingBoundary), {
-    expectedBindings: bindings,
-  }).ok, false);
-
-  const missingExclusions = structuredClone(analysis);
-  delete missingExclusions.products[0].nonProductReferenceArtifacts;
-  assert.equal(parseProductReplaceAnalysis(JSON.stringify(missingExclusions), {
-    expectedBindings: bindings,
-  }).ok, false);
-
-  for (const field of ['materials', 'details', 'colors', 'patterns', 'structure', 'forbiddenChanges']) {
-    const missingLockField = structuredClone(analysis);
-    delete missingLockField.products[0].identityLock[field];
-    assert.equal(parseProductReplaceAnalysis(JSON.stringify(missingLockField), {
+  for (const field of ['placement', 'perspective', 'materialInteraction', 'occlusion', 'contactShadow']) {
+    const missingDecision = structuredClone(executionAnalysis);
+    delete missingDecision.regions[0][field];
+    assert.equal(parseProductReplaceAnalysis(JSON.stringify(missingDecision), {
       expectedBindings: bindings,
-    }).ok, false, `missing identity lock field should fail: ${field}`);
+    }).ok, false, `missing execution decision should fail: ${field}`);
   }
-  for (const field of ['componentColorMap', 'relativeColorRelationships', 'midtoneAndWhiteBalanceRule', 'forbiddenColorShifts']) {
-    const missingColorField = structuredClone(analysis);
-    delete missingColorField.products[0].identityLock.colorPreservation[field];
-    assert.equal(parseProductReplaceAnalysis(JSON.stringify(missingColorField), {
-      expectedBindings: bindings,
-    }).ok, false, `missing color preservation field should fail: ${field}`);
-  }
+  const overlongDecision = structuredClone(executionAnalysis);
+  overlongDecision.regions[0].placement = '过长执行描述'.repeat(30);
+  assert.equal(parseProductReplaceAnalysis(JSON.stringify(overlongDecision), {
+    expectedBindings: bindings,
+  }).ok, false);
 });
 
-test('new product replacement analysis rejects v1 through v4 while explicit recovery accepts them read-only', () => {
+test('new product replacement analysis rejects v1 through v5 while explicit recovery accepts them read-only', () => {
+  assert.equal(parseProductReplaceAnalysis(JSON.stringify(analysis), {
+    expectedBindings: bindings,
+  }).ok, false);
+  const recoveredV5 = parseProductReplaceAnalysis(JSON.stringify(analysis), {
+    expectedBindings: bindings,
+    allowLegacyV5: true,
+  });
+  assert.equal(recoveredV5.ok, true);
+  assert.equal(recoveredV5.value.version, 5);
+
   const legacyV4 = structuredClone(analysis);
   legacyV4.version = 4;
   legacyV4.products.forEach((product) => delete product.identityLock.colorPreservation);
@@ -245,7 +239,7 @@ test('product replacement analysis parser accepts one provider channel-wrapped J
   const wrapped = [
     '先按标记关系核对产品位置、遮挡、光影和材质。',
     'commentary',
-    JSON.stringify(analysis),
+    JSON.stringify(executionAnalysis),
     'final_answer',
   ].join('\n');
 
@@ -260,16 +254,16 @@ test('product replacement analysis parser accepts one provider channel-wrapped J
 
   assert.equal(parseProductReplaceAnalysis([
     wrapped,
-    JSON.stringify(analysis),
+    JSON.stringify(executionAnalysis),
   ].join('\n'), { expectedBindings: bindings }).ok, false);
   assert.equal(parseProductReplaceAnalysis([
     '先按标记关系核对产品位置。',
-    JSON.stringify(analysis),
+    JSON.stringify(executionAnalysis),
     'final_answer',
   ].join('\n'), { expectedBindings: bindings }).ok, false);
   assert.equal(parseProductReplaceAnalysis([
     'commentary',
-    JSON.stringify(analysis),
+    JSON.stringify(executionAnalysis),
     'unexpected_tail',
     'final_answer',
   ].join('\n'), { expectedBindings: bindings }).ok, false);
@@ -277,7 +271,7 @@ test('product replacement analysis parser accepts one provider channel-wrapped J
 
 test('product replacement analysis parser accepts provider JSON followed only by final_answer', () => {
   const providerResponse = [
-    JSON.stringify(analysis, null, 2),
+    JSON.stringify(executionAnalysis, null, 2),
     'final_answer',
   ].join('\n');
 
@@ -285,21 +279,21 @@ test('product replacement analysis parser accepts provider JSON followed only by
     expectedBindings: bindings,
   });
   assert.equal(parsed.ok, true);
-  assert.deepEqual(parsed.value.products.map((product) => product.productNumber), [1, 2]);
+  assert.deepEqual(parsed.value.regions.map((region) => region.productNumber), [1, 2]);
 
   assert.equal(parseProductReplaceAnalysis([
-    JSON.stringify(analysis),
+    JSON.stringify(executionAnalysis),
     'unexpected_tail',
     'final_answer',
   ].join('\n'), { expectedBindings: bindings }).ok, false);
   assert.equal(parseProductReplaceAnalysis([
-    JSON.stringify(analysis),
+    JSON.stringify(executionAnalysis),
     'final_answer',
     'unexpected_tail',
   ].join('\n'), { expectedBindings: bindings }).ok, false);
   assert.equal(parseProductReplaceAnalysis([
-    JSON.stringify(analysis),
+    JSON.stringify(executionAnalysis),
     'final_answer',
-    JSON.stringify(analysis),
+    JSON.stringify(executionAnalysis),
   ].join('\n'), { expectedBindings: bindings }).ok, false);
 });

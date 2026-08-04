@@ -48,6 +48,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Avoid next time:
 ```
 
+## 2026-08-04 - 上传素材已是视觉真值时，策划不得再造文本身份副本
+
+- Symptom: 产品/Logo 替换的生图提示词虽然已降到 provider 上限以内，仍达数千到上万字符；策划模型会用自然语言重述上传素材的颜色、材质、结构和 Logo 排布，与原图像可能不一致。
+- Environment: local development / 万物替换 / 组合产品 v5 与 Logo v3 策划。
+- Root cause: 系统把“详细”错误理解为“把图像全部转述成文本”，而不是“精确输出图像中不存在的执行决策”。架构级根因见 `CLAUDE.md` #98。
+- Fix: 产品策划升为 v6，只输出放置、透视、材质互作、遮挡和接触阴影；Logo 策划升为 v4，只验证框选并输出表面、透视、光线、材质和遮挡。生图分别只携带一份执行合同，产品/Logo 身份直接读取绑定素材。
+- Regression check: `node --experimental-strip-types --test src/utils/productReplaceAnalysis.test.mjs src/utils/productReplaceContract.test.mjs src/utils/logoReplaceAnalysis.test.mjs src/adapters/shellWorkflowProductReplace.test.mjs src/adapters/shellWorkflowLogoReplace.test.mjs src/services/arkService.test.mjs`；用用户三产品真实附件回放旧 v5 数据，生图 prompt 从 14568 降至 3803，当前 v6 三产品典型 prompt 为 1861。
+- Avoid next time: 多模态生图中，图像内已可直读的身份事实留在图像通道；策划只产出绑定与素材都无法确定的执行决策。生图 prompt 是执行协议，不是图像的文字副本。
+
 ## 2026-08-03 - Logo 可识别不等于内部结构一致
 
 - Symptom: 新品牌仍能读出 `NOVA LEAF`，但素材中的“图形在上、主标居中、副标最下方”被结果改成“图形在左、文字在右”。

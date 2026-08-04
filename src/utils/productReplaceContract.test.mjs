@@ -198,40 +198,27 @@ test('combination grouping treats repeated group ids as angles of one product an
   });
   assert.match(prompt, /Image 1 是当前唯一替换参考图/);
   assert.match(prompt, /当前生图输入不包含产品位置标记图/);
-  assert.match(prompt, /目标区域 1 → 产品1 → Image 2、Image 4/);
-  assert.match(prompt, /目标区域 2 → 产品2 → Image 3/);
+  const executionContract = readTaggedPromptJson(prompt, 'product_replace_execution_contract');
+  assert.deepEqual(executionContract[0].productInputImages, [2, 4]);
+  assert.deepEqual(executionContract[1].productInputImages, [3]);
   assert.doesNotMatch(prompt, /keep 目标区域 1, 目标区域 2, and 目标区域 3 planned perspective and occlusion/);
-  assert.match(prompt, /"xRatio":\s*0\.1/);
-  assert.match(prompt, /"widthRatio":\s*0\.3/);
+  assert.equal(executionContract[0].targetRegion.xRatio, 0.1);
+  assert.equal(executionContract[0].targetRegion.widthRatio, 0.3);
   assert.match(prompt, /不得把具体产品概括成同类通用产品/);
   assert.match(prompt, /必须直接观察对应输入图像素/);
-  assert.match(prompt, /非产品参考元素不得进入最终图/);
-  assert.match(prompt, /<product_replace_product_contracts>/);
-  assert.doesNotMatch(prompt, /<product_identity_lock_contract>|<product_color_fidelity_contract>/);
+  assert.doesNotMatch(prompt, /<product_replace_product_contracts>|<product_replace_target_regions>|<product_replace_planning_data>/);
   assert.match(prompt, /五维产品身份硬锁定/);
-  assert.match(prompt, /"material":\s*"exact substrate/);
-  assert.match(prompt, /"details":\s*"exact seams/);
-  assert.match(prompt, /"intrinsic":\s*"exact intrinsic/);
-  assert.match(prompt, /"components"/);
-  assert.match(prompt, /"relationships"/);
-  assert.doesNotMatch(prompt, /"midtoneAndWhiteBalanceRule"/);
-  assert.match(prompt, /"forbiddenShifts"/);
   assert.match(prompt, /禁止对产品区域应用全局 LUT、滤镜、统一色调或整体压暗/);
   assert.match(prompt, /产品中间调必须与产品素材图保持同一明度层级/);
   assert.doesNotMatch(prompt, /允许根据场景调整[\s\S]{0,30}整体明暗/);
-  assert.match(prompt, /"pattern":\s*"exact printed/);
-  assert.match(prompt, /"structure":\s*"exact silhouette/);
-  assert.doesNotMatch(prompt, /"forbiddenChanges"/);
-  assert.ok(
-    prompt.indexOf('<product_replace_product_contracts>') < prompt.indexOf('<product_replace_planning_data>'),
-    'five-dimension identity lock must precede the broader planning data',
-  );
+  assert.doesNotMatch(prompt, /exact substrate|exact seams|exact intrinsic|exact printed|exact silhouette|forbiddenChanges/);
   assert.doesNotMatch(prompt, /product[-_]p[-_]?[1-3]/i);
   assert.doesNotMatch(prompt, /\bP[\s_-]*[1-3]\b/i);
   assert.doesNotMatch(prompt, /从左到右、从上到下/);
+  assert.ok(prompt.length < 4_500, `three-product execution prompt should stay compact, got ${prompt.length}`);
 });
 
-test('verbose v5 planning is projected into one non-duplicated execution contract under the provider-safe limit', () => {
+test('verbose legacy v5 identity analysis is excluded because uploaded product images remain the identity truth', () => {
   const detail = (label, count = 18) => Array.from(
     { length: count },
     (_, index) => `${label}-${index + 1}: exact evidence`,
@@ -311,31 +298,18 @@ test('verbose v5 planning is projected into one non-duplicated execution contrac
     regionBindings,
     planningAnalysis,
   });
-  const productContracts = readTaggedPromptJson(prompt, 'product_replace_product_contracts');
-  const executionPlan = readTaggedPromptJson(prompt, 'product_replace_planning_data');
+  const executionPlan = readTaggedPromptJson(prompt, 'product_replace_execution_contract');
 
-  assert.ok(prompt.length < 13_000, `even unusually verbose canonical evidence should remain bounded, got ${prompt.length}`);
+  assert.ok(prompt.length < 7_000, `legacy execution hints should remain bounded, got ${prompt.length}`);
+  assert.equal(executionPlan.length, 3);
   assert.equal('products' in executionPlan, false);
-  assert.equal('generationInstruction' in executionPlan.regions[0], false);
-  assert.equal('oldProduct' in executionPlan.regions[0], false);
-  assert.equal('scale' in executionPlan.regions[0], false);
-  assert.equal('lighting' in executionPlan.regions[0], false);
-  assert.equal('referenceSummary' in executionPlan, false);
-  assert.equal('globalConstraints' in executionPlan, false);
-  assert.equal(productContracts[0].identity.physicalBoundary, planningAnalysis.products[0].subjectBoundary);
-  assert.equal(productContracts[0].identity.logoAndGraphics, planningAnalysis.products[0].logosAndGraphics);
-  assert.deepEqual(productContracts[0].identity.visualAnchors, planningAnalysis.products[0].exactVisualAnchors);
-  assert.deepEqual(productContracts[0].identity.excludedReferenceArtifacts, planningAnalysis.products[0].nonProductReferenceArtifacts);
-  assert.equal('invariantDetails' in productContracts[0].identity, false);
-  assert.equal('forbiddenChanges' in productContracts[0].identity, false);
-  assert.equal(productContracts[0].color.intrinsic, planningAnalysis.products[0].identityLock.colors);
-  assert.deepEqual(productContracts[0].color.components, planningAnalysis.products[0].identityLock.colorPreservation.componentColorMap);
-  assert.deepEqual(productContracts[0].color.relationships, planningAnalysis.products[0].identityLock.colorPreservation.relativeColorRelationships);
-  assert.deepEqual(productContracts[0].color.forbiddenShifts, planningAnalysis.products[0].identityLock.colorPreservation.forbiddenColorShifts);
-  assert.equal('midtoneAndWhiteBalanceRule' in productContracts[0].color, false);
-  const uniqueColorRule = planningAnalysis.products[0].identityLock.colorPreservation.midtoneAndWhiteBalanceRule;
-  assert.equal(prompt.includes(uniqueColorRule), false, 'per-product generic white-balance prose belongs in one global rule');
-  assert.doesNotMatch(prompt, /unused-generation-prompt|unused-validation-checklist|legacy-identity|legacy-invariant|duplicate-region-instruction/);
+  assert.equal('generationInstruction' in executionPlan[0], false);
+  assert.equal('oldProduct' in executionPlan[0], false);
+  assert.equal('scale' in executionPlan[0], false);
+  assert.equal('lighting' in executionPlan[0], false);
+  assert.equal('identity' in executionPlan[0], false);
+  assert.equal('color' in executionPlan[0], false);
+  assert.doesNotMatch(prompt, /unused-generation-prompt|unused-validation-checklist|legacy-identity|legacy-invariant|duplicate-region-instruction|canonical-material|canonical-color|component-color|forbidden-color/);
 });
 
 test('product replacement refuses an oversized generation prompt before provider submission', () => {

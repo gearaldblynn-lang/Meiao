@@ -2795,8 +2795,8 @@ const runLogoReplaceWorkflow = async (
       throw new Error(`单张图片最多支持 ${LOGO_REPLACE_MAX_REGIONS} 个 Logo 替换区域。`);
     }
     const maxInputImages = Number(getImageModelCapabilities(config.model).maxInputImages || 16);
-    if (2 + regionBindings.length > maxInputImages) {
-      throw new Error(`当前生图模型最多接收 ${maxInputImages} 张图片，本次最多可替换 ${Math.max(1, maxInputImages - 2)} 个 Logo 区域。`);
+    if (1 + regionBindings.length > maxInputImages) {
+      throw new Error(`当前生图模型最多接收 ${maxInputImages} 张图片，本次最多可替换 ${Math.max(1, maxInputImages - 1)} 个 Logo 区域。`);
     }
 
     const regionGuideInputs = await buildLogoReplaceRegionGuideInputs({
@@ -2860,7 +2860,7 @@ const runLogoReplaceWorkflow = async (
             shellPurpose: 'logo_replace_analysis',
             subFeature: 'logo_replace',
             logoReplaceMode,
-            logoReplaceProcessingMode: 'ai_native_analysis_generation_v4',
+            logoReplaceProcessingMode: 'ai_native_analysis_generation_v5_execution_plan',
             batchIndex: referenceIndex + 1,
             batchCount: total,
             referenceIndex: referenceIndex + 1,
@@ -2893,7 +2893,7 @@ const runLogoReplaceWorkflow = async (
       globalRequirement: input.prompt.trim(),
       aspectRatio,
     });
-    const imageInputUrls = [referenceUrl, regionGuideInputs.regionGuideUrl, ...orderedLogoUrls];
+    const imageInputUrls = [referenceUrl, ...orderedLogoUrls];
     const generation = await processWithKieAi(
       imageInputUrls,
       apiConfig,
@@ -2919,7 +2919,7 @@ const runLogoReplaceWorkflow = async (
         subFeature: 'logo_replace',
         logoReplaceMode,
         replacementLogic: logoReplaceMode,
-        logoReplaceProcessingMode: 'ai_native_analysis_generation_v4',
+        logoReplaceProcessingMode: 'ai_native_analysis_generation_v5_execution_plan',
         skipPromptCleanupSuffix: true,
         preserveInputImageOrder: true,
         batchIndex: referenceIndex + 1,
@@ -2934,7 +2934,7 @@ const runLogoReplaceWorkflow = async (
           logoId: logo.id || region.logoId,
           sourceLogoIndex: logo.index || region.logoIndex,
           targetLogoIndex: index + 1,
-          targetInputImageIndex: index + 3,
+          targetInputImageIndex: index + 2,
           originalLogoUrl: logo.url,
           identityReferenceUrl: identityReferences[index]?.url,
           identityReferenceCropRect: identityReferences[index]?.cropRect,
@@ -3195,7 +3195,7 @@ const runProductReplaceWorkflow = async (
               shellPurpose: 'product_replace_analysis',
               subFeature: 'product_replace',
               replacementLogic,
-              productReplaceProcessingMode: 'per_reference_manual_region_analysis_generation_v5_color_fidelity',
+              productReplaceProcessingMode: 'per_reference_manual_region_analysis_generation_v6_execution_plan',
               batchIndex: currentBatchIndex,
               batchCount: originalReferenceCount,
               referenceIndex: currentBatchIndex,
@@ -3256,7 +3256,7 @@ const runProductReplaceWorkflow = async (
           shellPurpose: 'product_replace_generation',
           subFeature: input.subFeature || 'product_replace',
           replacementLogic,
-          productReplaceProcessingMode: 'per_reference_manual_region_analysis_generation_v5_color_fidelity',
+          productReplaceProcessingMode: 'per_reference_manual_region_analysis_generation_v6_execution_plan',
           firstImageColorMode: referenceStrength,
           textPolicy,
           skipPromptCleanupSuffix: true,

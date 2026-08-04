@@ -682,15 +682,16 @@ E Example 示例
 - 文件：`src/utils/productReplaceAnalysis.mjs`、`src/utils/productReplaceContract.mjs`
 - 位置：`buildProductReplaceAnalysisPrompt`、`buildProductReplacePrompt`、`buildProductReplaceEditPrompt`
 - 当前用途：单品模式直接执行替换；组合模式按每张参考图的手工 P 区域先输出严格策划 JSON，再执行生图；结果编辑支持“保留产品”和“自由修改”两种模式。
-- 当前状态：已按完整 RTCFE 迁移；组合策划 schema 为 v5，运行时 processing mode 为 `per_reference_manual_region_analysis_generation_v5_color_fidelity`，历史 v1-v4 仅允许恢复读取。
+- 当前状态：已按完整 RTCFE 迁移；组合策划 schema 为 v6，运行时 processing mode 为 `per_reference_manual_region_analysis_generation_v6_execution_plan`，历史 v1-v5 仅允许恢复读取。
 - 关键约束：
   - 无上传 Logo 时，不得出现 Logo 植入任务、Logo 位置示意图角色或 Logo 植入约束。
   - 组合模式按产品组理解素材；同组图片是同一产品的多角度或细节证据。
   - 组合模式的每张替换参考图都必须手工完成 P1 到 Pn 的位置标记；P 编号与产品组绑定是位置真值，不允许按左右顺序自动猜测。
   - 每张组合参考图独立提交一次策划：`Image 1=当前参考图`、`Image 2=P 标记图`、`Image 3...=按绑定顺序排列的产品素材`。
-  - 策划 JSON 的 `products` 与 `regions` 必须完整覆盖全部绑定，解析器拒绝遗漏、重复、交换、合并或新增产品；v5 同时强制记录产品实体边界、非产品参考元素、精确视觉锚点、五维身份锁和逐组件颜色保真合同。
-  - 颜色保真必须分别记录组件颜色地图、组件间相对明暗/饱和关系、产品中间调与白平衡规则、禁止颜色偏移；生图中的 `<product_color_fidelity_contract>` 优先于场景色温、滤镜、全局 LUT、统一曝光和自然融合。
-  - 场景光只允许形成局部高光、局部阴影和局部反射色；不得把中灰压成深灰或黑色，不得让场景统一调色覆盖产品主体中间调。暗场氛围应通过背景与周围光影建立，同时保持产品真实颜色可辨识。
+  - 策划 JSON 只输出每个区域的 `placement/perspective/materialInteraction/occlusion/contactShadow`，每项最多 120 字符；不得输出产品外观、颜色、材质、图案、结构、Logo、文字、旧产品描述或生图提示词。
+  - 上传的绑定产品素材是产品身份的唯一视觉真值；五维一致性（材质、可识别细节、固有颜色、图案、结构）以及 Logo/文字由生图模型直接观察素材图，不经策划模型转述。
+  - 生图只接收一份紧凑 `<product_replace_execution_contract>`：产品图编号→数值目标区域→必要的局部融合决策。固定约束仅说明如何执行，不另造一份文本产品身份。
+  - 场景光只允许形成局部高光、局部阴影和局部反射色；不得把中灰压成深灰或黑色，不得让场景统一调色覆盖产品主体中间调。
   - 用户补充要求只能约束不冲突的场景、构图、文案处理和禁区；历史草稿中的产品名称、颜色、材质、结构或数量若与当前绑定产品素材冲突，策划与生图都必须忽略冲突部分。
   - 生图仍按每张参考图一个独立任务执行，但输入只包含干净参考图、产品素材与可选 Logo；位置由归一化数值区域合同传递，标记图和 P 编号只停留在策划阶段，不得进入生成输入或最终图。
   - 单品模式不要求位置标记，也不调用组合策划，继续沿用原有直接生成路径。
@@ -705,11 +706,12 @@ E Example 示例
 - 文件：`src/utils/logoReplaceAnalysis.mjs`
 - 位置：`buildLogoReplaceAnalysisPrompt`、`buildLogoReplaceGenerationPrompt`
 - 当前用途：统一图片角标、单 Logo 和多 Logo 的内部结构分析与 AI 原生整图替换。
-- 当前状态：已按完整 RTCFE 迁移，分析 schema 为 v3，运行时 processing mode 为 `ai_native_analysis_generation_v4`；历史质量 prompt/解析代码不再被工作流调用。
+- 当前状态：已按完整 RTCFE 迁移，分析 schema 为 v4，运行时 processing mode 为 `ai_native_analysis_generation_v5_execution_plan`；历史 v2/v3 仅允许恢复读取，历史质量 prompt/解析代码不再被工作流调用。
 - 关键约束：
   - 输入固定为原图、编号区域图、按 R1 到 Rn 排列的紧边界 Logo 身份参考；顺序和重复素材不得改写。
-  - v3 分析必须逐区确认 `selectionContainsOldLogo` 和 `selectionCoverage`；框偏移、只覆盖局部或框错对象时在生图前 fail closed。
-  - `logoIdentity` 必须记录布局类型、元素顺序、对齐、有意底板、可见图稿比例和不可变结构说明；缺项、比例漂移或非恢复场景中的旧 v2/v1 分析 fail closed。
+  - v4 分析必须逐区确认 `selectionContainsOldLogo` 和 `selectionCoverage`，并仅输出 `surfaceType/perspective/lighting/material/occlusion`；每项最多 120 字符。框偏移、只覆盖局部或框错对象时在生图前 fail closed。
+  - 策划不输出 `logoIdentity`、Logo 文字/颜色/图形/排布描述或生图提示词。紧边界 Logo 素材是不可拆分原子图稿的唯一身份真值，可见比例由程序从素材几何计算。
+  - 编号标记图只进入策划阶段，生图输入只有原图与紧边界 Logo 素材；数值区域与简短表面决策合并为唯一 `<logo_replace_execution_contract>`。
   - 生图把每个 Logo 视为不可拆分原子图稿，只允许整组等比缩放、旋转、透视或曲面形变；禁止纵横排互换和内部元素独立移动。
   - 整组按 contain 放入目标区域；空间不足时缩小并留白，不得裁切、拉伸、挤压、拆分或重排。
   - provider 生图和最终资产处理成功后直接完成，不创建出图后 AI 审查任务；历史质量字段不得覆盖成功图片状态。
@@ -765,11 +767,12 @@ E Example 示例
   - 验证组合产品分组、每张参考图的 P 区域完整覆盖和确定性图片编号映射。
   - 验证策划模型收到“参考图、P 标记图、产品素材、文本”的固定顺序，并拒绝交换或遗漏产品绑定。
   - 验证组合标记图只进入策划、不进入生图输入预算；单品模式保持直接生成且不要求标记。
-  - 验证 v5 缺少任一颜色保真字段时 fail closed；验证 `<product_color_fidelity_contract>` 前置，且单品与组合模式都禁止全局 LUT、滤镜和统一曝光覆盖产品中间调。
+  - 验证 v6 仅接受完整且单项不超过 120 字符的区域执行决策，并拒绝默认读取历史 v1-v5。
+  - 验证生图只有一份产品执行合同，不投影策划中的产品身份/颜色文本；单品与组合模式都禁止全局 LUT、滤镜和统一曝光覆盖产品中间调。
   - 验证产品保留编辑和自由编辑的约束、图片输入角色不同。
 - Logo 替换 prompt 测试：
-  - 验证 RTCFE 五段顺序、v3 选框覆盖字段和 `logoIdentity` 完整 schema。
-  - 验证 Logo 输入采用紧边界身份参考并锁定可见图稿比例。
+  - 验证 RTCFE 五段顺序、v4 选框覆盖与表面执行字段，且策划不产出 `logoIdentity`或生图提示词。
+  - 验证 Logo 输入采用紧边界身份参考，标记图只进策划，可见图稿比例由程序计算而非模型转述。
   - 验证原子图稿、纵横排禁止互换、整体 contain 和禁止内部元素重排。
   - 验证归一化框坐标、目标框比例、身份参考比例和整组 contain 边界进入生图合同。
   - 验证工作流只创建分析与生图任务，且历史审查失败不能覆盖成功生成图。

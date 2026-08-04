@@ -43,55 +43,20 @@ const makeProductRestoreAnalysisFixture = (targetCount = 1) => ({
 
 const productRestoreAnalysisFixture = makeProductRestoreAnalysisFixture();
 
-const makeProductReplaceV5AnalysisFixture = (bindings) => ({
-  version: 5,
+const makeProductReplaceV6AnalysisFixture = (bindings) => ({
+  version: 6,
   taskType: 'combination_product_replacement',
-  referenceSummary: 'Two marked products.',
-  products: bindings.map((binding) => ({
+  regions: bindings.map((binding) => ({
+    regionId: binding.regionId,
+    regionIndex: binding.regionIndex,
     productGroupId: binding.productGroupId,
     productNumber: binding.productNumber,
-    targetInputImageIndexes: binding.targetInputImageIndexes,
-    identitySummary: `product ${binding.productNumber}`,
-    silhouetteAndProportions: 'exact silhouette and component proportions',
-    structureAndAccessories: 'exact caps, pumps, seams, and attachments',
-    materialsAndFinish: 'exact material, texture, gloss, and transparency',
-    colorsAndPatterns: 'exact colors, gradients, borders, and patterns',
-    logosAndGraphics: 'exact logo and graphic topology',
-    visiblePackagingText: 'preserve all legible packaging text',
-    subjectBoundary: 'physical product silhouette only, excluding the reference-card background',
-    nonProductReferenceArtifacts: ['technical badge outside the product', 'reference-card heading'],
-    exactVisualAnchors: ['component geometry', 'label boundary and layout'],
-    invariantDetails: ['do not redesign or simplify visible product details'],
-    identityLock: {
-      materials: 'exact substrate, finish, texture, transparency, gloss, and reflection behavior',
-      details: 'exact seams, edges, interfaces, closures, labels, and small visible components',
-      colors: 'exact intrinsic base, secondary, accent, and component colors',
-      colorPreservation: {
-        componentColorMap: ['main body: neutral medium gray', 'trim: darker neutral gray'],
-        relativeColorRelationships: ['main body remains lighter than trim'],
-        midtoneAndWhiteBalanceRule: 'match source product midtones independently from scene lighting',
-        forbiddenColorShifts: ['no hue shift', 'no saturation drift', 'no midtone lightness compression'],
-      },
-      patterns: 'exact printed graphics, motifs, gradients, borders, and placement',
-      structure: 'exact silhouette, proportions, component geometry, assembly, and relative positions',
-      forbiddenChanges: ['no redesign', 'no generic substitute', 'no missing or invented components'],
-    },
-  })),
-  regions: bindings.map((binding) => ({
-    ...binding,
-    oldProduct: 'old product',
-    placement: 'keep marked placement',
-    scale: 'match marked footprint',
+    placement: 'keep marked placement and visual footprint',
     perspective: 'follow local perspective',
-    lighting: 'inherit local light',
-    materialInteraction: 'preserve reflections',
+    materialInteraction: 'inherit only local highlights and reflections',
     occlusion: 'none',
     contactShadow: 'rebuild contact shadow',
-    generationInstruction: `replace P${binding.productNumber}`,
   })),
-  globalConstraints: ['preserve unmarked content'],
-  generationPrompt: 'replace both marked products',
-  validationChecklist: ['mapping correct'],
 });
 
 test('translation planning prompt supports global translation while preserving logos trademarks and models', () => {
@@ -378,33 +343,20 @@ test('logo replacement submits one ordered multimodal control job and preserves 
     },
   ];
   const logoAnalysis = {
-    version: 3,
+    version: 4,
     taskType: 'logo_replacement',
-    sourceSummary: 'Two marked package regions.',
     regions: logoBindings.map((binding) => ({
-      ...binding,
-      oldContent: 'old logo',
+      regionId: binding.regionId,
+      regionIndex: binding.regionIndex,
+      targetLogoIndex: binding.targetLogoIndex,
       surfaceType: 'curved package',
-      placement: 'keep current placement',
       perspective: 'follow local perspective',
       lighting: 'inherit highlights',
       material: 'printed surface',
       occlusion: 'none',
       selectionContainsOldLogo: true,
       selectionCoverage: 'the marked region contains the complete old symbol, wordmark, and tagline',
-      logoIdentity: {
-        layoutType: 'vertical_stack',
-        elementOrder: ['symbol', 'wordmark', 'tagline'],
-        alignment: 'centered',
-        backgroundTreatment: 'empty outer canvas',
-        visibleMarkAspectRatio: 1.38,
-        immutableStructureDescription: 'symbol above wordmark above tagline',
-      },
-      generationInstruction: `replace R${binding.regionIndex}`,
     })),
-    globalConstraints: ['preserve unmarked content'],
-    generationPrompt: 'replace the two bound logos',
-    validationChecklist: ['mapping correct'],
   };
   const { calls, module } = await loadArkServiceWithAnalysisFakes({
     analysisFixture: logoAnalysis,
@@ -473,7 +425,7 @@ test('combination product replacement submits one ordered multimodal planning jo
       heightRatio: 0.39,
     },
   ];
-  const productAnalysis = makeProductReplaceV5AnalysisFixture(bindings);
+  const productAnalysis = makeProductReplaceV6AnalysisFixture(bindings);
   const { calls, module } = await loadArkServiceWithAnalysisFakes({
     analysisFixture: productAnalysis,
   });

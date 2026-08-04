@@ -29,7 +29,7 @@ test('logo replacement exposes one AI-native region-binding contract', () => {
   assert.match(bottomInputBar, /当前区域替换要求/);
   assert.match(bottomInputBar, /value=\{String\(activeRegion\.replacementRequirement \|\| ''\)\}/);
   assert.match(bottomInputBar, /replacementRequirement: event\.target\.value/);
-  assert.match(activeLogoWorkflow, /ai_native_analysis_generation_v4/);
+  assert.match(activeLogoWorkflow, /ai_native_analysis_generation_v5_execution_plan/);
   assert.match(activeLogoWorkflow, /completeLogoReplaceResultLifecycle/);
   assert.doesNotMatch(activeLogoWorkflow, /validateLogoReplacementResult|logo_replace_quality_check/);
   assert.doesNotMatch(activeLogoWorkflow, /program_guarded|createGuardedMultiLogoReplaceResultBlob/);

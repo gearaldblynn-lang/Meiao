@@ -116,23 +116,6 @@ const buildProductManifest = (productGroups, { includeUrls = true } = {}) => pro
   ))
   .join('\n');
 
-const buildCombinationMapping = (productGroups, regionBindings = []) => {
-  if (Array.isArray(regionBindings) && regionBindings.length > 0) {
-    return [
-      'Image 1 是当前唯一替换参考图和最终构图基底。',
-      '当前生图输入不包含产品位置标记图；手工位置真值仅通过下方数值区域合同传递。',
-      ...regionBindings.map((binding) => (
-        `目标区域 ${binding.productNumber} → 产品${binding.productNumber} → ${binding.targetInputImageIndexes.map((index) => `Image ${index}`).join('、')}`
-      )),
-      '用户手工标记形成的数值区域是位置真值。映射不得交换、遗漏、融合或新增产品；同组多角度图只能共同约束对应的同一个产品区域。',
-    ].join('\n');
-  }
-  return [
-    '组合映射规则：每个产品组必须由用户在当前参考图上完成位置标记。',
-    ...productGroups.map((group) => `产品${group.productNumber} → 目标区域 ${group.productNumber}`),
-  ].join('\n');
-};
-
 const serializePromptData = (tagName, value) => [
   `<${tagName}>`,
   JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e'),
@@ -154,154 +137,36 @@ const scrubProductMarkerLabels = (value) => {
 
 const compactRatio = (value) => Number(Number(value).toFixed(4));
 
-const buildGenerationRegionContracts = (regionBindings = []) => regionBindings.map((binding) => ({
-  productNumber: Number(binding.productNumber),
-  xRatio: compactRatio(binding.xRatio),
-  yRatio: compactRatio(binding.yRatio),
-  widthRatio: compactRatio(binding.widthRatio),
-  heightRatio: compactRatio(binding.heightRatio),
-}));
-
-const buildGenerationPlanningData = (planningAnalysis, regionBindings) => {
-  if (!planningAnalysis || typeof planningAnalysis !== 'object') return null;
-  const targetRegionNumberByGroup = new Map(
-    regionBindings.map((binding) => [String(binding.productGroupId || ''), Number(binding.productNumber)]),
+const buildGenerationExecutionContract = (planningAnalysis, productGroups, regionBindings) => {
+  const planByGroupId = new Map(
+    (Array.isArray(planningAnalysis?.regions) ? planningAnalysis.regions : [])
+      .map((region) => [String(region?.productGroupId || ''), region]),
   );
-  const regions = Array.isArray(planningAnalysis.regions)
-    ? planningAnalysis.regions.map((region) => ({
-        productNumber: targetRegionNumberByGroup.get(String(region.productGroupId || ''))
-          || Number(region.productNumber),
-        placement: region.placement,
-        perspective: region.perspective,
-        materialInteraction: region.materialInteraction,
-        occlusion: region.occlusion,
-        contactShadow: region.contactShadow,
-      }))
-    : [];
-  return scrubProductMarkerLabels({
-    regions,
-  });
-};
-
-const joinIdentityDetails = (...values) => values
-  .flatMap((value) => (Array.isArray(value) ? value : [value]))
-  .map(clean)
-  .filter(Boolean)
-  .join('；');
-
-const normalizeIdentityStringArray = (value) => (Array.isArray(value)
-  ? value.map(clean).filter(Boolean)
-  : []);
-
-const resolveGenerationColorPreservation = (explicit, colors) => {
-  const source = explicit && typeof explicit === 'object' && !Array.isArray(explicit)
-    ? explicit
-    : {};
-  const componentColorMap = normalizeIdentityStringArray(source.componentColorMap);
-  const relativeColorRelationships = normalizeIdentityStringArray(source.relativeColorRelationships);
-  const forbiddenColorShifts = normalizeIdentityStringArray(source.forbiddenColorShifts);
-  return {
-    componentColorMap: componentColorMap.length > 0
-      ? componentColorMap
-      : [`逐组件直接对照产品输入图保持固有颜色与边界：${colors}`],
-    relativeColorRelationships: relativeColorRelationships.length > 0
-      ? relativeColorRelationships
-      : ['保持产品输入图中各组件之间的相对明暗、饱和度和中性色关系，禁止颜色层级塌缩。'],
-    midtoneAndWhiteBalanceRule: clean(source.midtoneAndWhiteBalanceRule)
-      || '以排除高光、阴影、反射和拍摄色偏后的产品中间调为颜色真值；场景白平衡不得覆盖产品固有色。',
-    forbiddenColorShifts: forbiddenColorShifts.length > 0
-      ? forbiddenColorShifts
-      : ['禁止色相家族偏移', '禁止饱和度漂移', '禁止中间调明度压缩', '禁止中性色被染成场景色'],
-  };
-};
-
-const resolveGenerationIdentityLock = (product) => {
-  const explicit = product?.identityLock && typeof product.identityLock === 'object'
-    ? product.identityLock
-    : {};
-  const colors = clean(explicit.colors) || clean(product?.colorsAndPatterns);
-  const lock = {
-    materials: clean(explicit.materials) || clean(product?.materialsAndFinish),
-    details: clean(explicit.details) || joinIdentityDetails(
-      product?.exactVisualAnchors,
-      product?.invariantDetails,
-      product?.visiblePackagingText,
-    ),
-    colors,
-    colorPreservation: resolveGenerationColorPreservation(explicit.colorPreservation, colors),
-    patterns: clean(explicit.patterns) || joinIdentityDetails(
-      product?.colorsAndPatterns,
-      product?.logosAndGraphics,
-    ),
-    structure: clean(explicit.structure) || joinIdentityDetails(
-      product?.silhouetteAndProportions,
-      product?.structureAndAccessories,
-    ),
-    forbiddenChanges: Array.isArray(explicit.forbiddenChanges) && explicit.forbiddenChanges.length > 0
-      ? explicit.forbiddenChanges.map(clean).filter(Boolean)
-      : (Array.isArray(product?.invariantDetails)
-          ? product.invariantDetails.map(clean).filter(Boolean)
-          : []),
-  };
-  if (
-    !lock.materials
-    || !lock.details
-    || !lock.colors
-    || !lock.patterns
-    || !lock.structure
-    || lock.forbiddenChanges.length === 0
-  ) return null;
-  return lock;
-};
-
-const buildGenerationProductContracts = (planningAnalysis, productGroups, regionBindings) => {
-  if (!Array.isArray(planningAnalysis?.products) || planningAnalysis.products.length === 0) return [];
-  const inputIndexesByGroup = new Map(
+  const inputIndexesByGroupId = new Map(
     productGroups.map((group) => [String(group.id || ''), group.inputImageIndexes || []]),
   );
-  const targetRegionNumberByGroup = new Map(
-    regionBindings.map((binding) => [String(binding.productGroupId || ''), Number(binding.productNumber)]),
-  );
-  return scrubProductMarkerLabels(planningAnalysis.products.map((product) => {
-    const identityLock = resolveGenerationIdentityLock(product);
-    if (!identityLock) return null;
-    const productGroupId = String(product.productGroupId || '');
-    const productNumber = targetRegionNumberByGroup.get(productGroupId) || Number(product.productNumber);
-    const colorPreservation = identityLock.colorPreservation;
+  return scrubProductMarkerLabels(regionBindings.map((binding) => {
+    const groupId = String(binding.productGroupId || '');
+    const plan = planByGroupId.get(groupId) || {};
+    const groupInputIndexes = inputIndexesByGroupId.get(groupId);
     return {
-      productNumber,
-      inputImages: inputIndexesByGroup.get(productGroupId)
-        || product.targetInputImageIndexes
-        || [],
-      identity: {
-        ...(clean(product.subjectBoundary)
-          ? { physicalBoundary: clean(product.subjectBoundary) }
-          : {}),
-        ...(clean(product.visiblePackagingText) && clean(product.visiblePackagingText).toLowerCase() !== 'unreadable'
-          ? { packagingText: clean(product.visiblePackagingText) }
-          : {}),
-        ...(clean(product.logosAndGraphics)
-          ? { logoAndGraphics: clean(product.logosAndGraphics) }
-          : {}),
-        ...(Array.isArray(product.exactVisualAnchors) && product.exactVisualAnchors.length > 0
-          ? { visualAnchors: product.exactVisualAnchors.map(clean).filter(Boolean) }
-          : {}),
-        ...(Array.isArray(product.nonProductReferenceArtifacts) && product.nonProductReferenceArtifacts.length > 0
-          ? { excludedReferenceArtifacts: product.nonProductReferenceArtifacts.map(clean).filter(Boolean) }
-          : {}),
-        material: identityLock.materials,
-        details: identityLock.details,
-        pattern: identityLock.patterns,
-        structure: identityLock.structure,
+      productNumber: Number(binding.productNumber),
+      productInputImages: Array.isArray(groupInputIndexes) && groupInputIndexes.length > 0
+        ? groupInputIndexes
+        : binding.targetInputImageIndexes || [],
+      targetRegion: {
+        xRatio: compactRatio(binding.xRatio),
+        yRatio: compactRatio(binding.yRatio),
+        widthRatio: compactRatio(binding.widthRatio),
+        heightRatio: compactRatio(binding.heightRatio),
       },
-      color: {
-        intrinsic: identityLock.colors,
-        components: colorPreservation.componentColorMap,
-        relationships: colorPreservation.relativeColorRelationships,
-        forbiddenShifts: colorPreservation.forbiddenColorShifts,
-      },
+      ...(clean(plan.placement) ? { placement: clean(plan.placement) } : {}),
+      ...(clean(plan.perspective) ? { perspective: clean(plan.perspective) } : {}),
+      ...(clean(plan.materialInteraction) ? { materialInteraction: clean(plan.materialInteraction) } : {}),
+      ...(clean(plan.occlusion) ? { occlusion: clean(plan.occlusion) } : {}),
+      ...(clean(plan.contactShadow) ? { contactShadow: clean(plan.contactShadow) } : {}),
     };
-  }).filter(Boolean));
+  }));
 };
 
 const buildReferenceStrengthConstraint = (referenceStrength, hasLogo = false) => {
@@ -362,16 +227,10 @@ export const buildProductReplacePrompt = ({
   const productImageCount = productGroups.reduce((total, group) => total + (group.urls?.length || 0), 0);
   const referenceImageIndex = isCombination ? 1 : productImageCount + 1;
   const mapping = isCombination
-    ? buildCombinationMapping(productGroups, regionBindings)
+    ? 'Image 1 是当前唯一替换参考图和最终构图基底；产品素材与目标区域的对应关系只以下方执行合同为准。当前生图输入不包含产品位置标记图。'
     : `Image 1 至 Image ${productImageCount} 共同描述产品1；Image ${referenceImageIndex} 是唯一待替换参考图。多张产品图只补充同一产品的角度和细节，不代表多个产品。`;
-  const generationRegionContracts = isCombination
-    ? buildGenerationRegionContracts(regionBindings)
-    : [];
-  const generationPlanningData = isCombination
-    ? buildGenerationPlanningData(planningAnalysis, regionBindings)
-    : planningAnalysis;
-  const productContracts = isCombination
-    ? buildGenerationProductContracts(planningAnalysis, productGroups, regionBindings)
+  const generationExecutionContract = isCombination
+    ? buildGenerationExecutionContract(planningAnalysis, productGroups, regionBindings)
     : [];
   const logoImageIndex = isCombination ? productImageCount + 2 : referenceImageIndex + 1;
   const logoTask = validLogo
@@ -392,17 +251,9 @@ export const buildProductReplacePrompt = ({
     [
       'T Task 任务',
       mapping,
-      generationRegionContracts.length > 0 ? [
-        '归一化坐标相对 Image 1 左上角；x/y 对应 xRatio/yRatio，按下列数值区域放置产品：',
-        serializePromptData('product_replace_target_regions', generationRegionContracts),
-      ].join('\n') : '',
-      productContracts.length > 0 ? [
-        '以下每个产品合同只记录一次身份事实；identity 与 color 共同构成五维产品身份硬锁定：',
-        serializePromptData('product_replace_product_contracts', productContracts),
-      ].join('\n') : '',
-      generationPlanningData ? [
-        '以下只是产品与参考图的局部透视、材质、遮挡和接触关系：',
-        serializePromptData('product_replace_planning_data', generationPlanningData),
+      generationExecutionContract.length > 0 ? [
+        '归一化坐标相对 Image 1 左上角。逐项执行以下产品图→目标区域→局部融合计划：',
+        serializePromptData('product_replace_execution_contract', generationExecutionContract),
       ].join('\n') : '',
       '移除目标区域内原产品及原品牌信息，放入绑定产品并保持原空间关系。',
       validLogo ? logoTask.trim() : '',
@@ -413,7 +264,7 @@ export const buildProductReplacePrompt = ({
       '1. 产品输入图是产品身份的最高优先级依据。必须直接观察对应输入图像素；策划文字只能帮助定位和理解，不能替代、概括或覆盖图像中的真实产品。',
       '2. 五维产品身份硬锁定：材质、可识别细节、固有颜色、图案、结构，以及 Logo、文字、实体边界和视觉锚点均不得重新设计、删减或互换；不得把具体产品概括成同类通用产品。',
       '3. 产品中间调必须与产品素材图保持同一明度层级、色相和相对饱和度；不能把中灰压成深灰或黑色。禁止对产品区域应用全局 LUT、滤镜、统一色调或整体压暗；只允许物理合理的局部高光、阴影和反射。',
-      '4. 不得将原产品的品牌、包装、文字或图案迁移到目标产品；excludedReferenceArtifacts 等非产品参考元素不得进入最终图。',
+      '4. 不得将原产品的品牌、包装、文字或图案迁移到目标产品；产品素材中的背景、卡片、技术编号、箭头和说明文字不得进入最终图。',
       '5. 透视、遮挡、接触阴影、材质反光和边缘融合必须自然；自然融合不得覆盖产品身份。',
       `6. 参考强度：${buildReferenceStrengthConstraint(referenceStrength, Boolean(validLogo))}`,
       `7. 文案处理：${buildTextPolicyConstraint(textPolicy)}`,

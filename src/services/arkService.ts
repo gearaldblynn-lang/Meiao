@@ -1540,6 +1540,7 @@ export const recoverProductReplacementAnalysis = async (input: {
         allowLegacyV2: true,
         allowLegacyV3: true,
         allowLegacyV4: true,
+        allowLegacyV5: true,
       },
     );
     const creditsConsumed = normalizeKnownProductRestoreCredits(job.result?.creditsConsumed);
@@ -1656,6 +1657,7 @@ export const recoverLogoReplacementAnalysis = async (input: {
       {
         expectedBindings: input.bindings,
         allowLegacyVersion2: true,
+        allowLegacyVersion3: true,
       },
     );
     if (!parsed.ok) {

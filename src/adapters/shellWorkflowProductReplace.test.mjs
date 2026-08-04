@@ -36,7 +36,7 @@ test('each combination reference sends the numbered guide only to planning and s
     productWorkflow,
     /\[referenceUrl, regionGuideInputs\.regionGuideUrl, \.\.\.productUrls/,
   );
-  assert.match(productWorkflow, /productReplaceProcessingMode: 'per_reference_manual_region_analysis_generation_v5_color_fidelity'/);
+  assert.match(productWorkflow, /productReplaceProcessingMode: 'per_reference_manual_region_analysis_generation_v6_execution_plan'/);
   assert.match(productWorkflow, /productReplaceAnalysisJobId: analysis\.jobId/);
   assert.match(productWorkflow, /analysisJobId: analysis\.jobId/);
   assert.match(productWorkflow, /productReplaceAnalysisCreditsConsumed: analysis\.creditsConsumed/);
