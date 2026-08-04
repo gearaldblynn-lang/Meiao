@@ -3107,6 +3107,14 @@ const ProjectCard: React.FC<Props> = ({
                           {selectedVersion.error || '修改失败，请重新提交'}
                         </p>
                       </div>
+                    ) : selectedVersion?.status === 'generating' ? (
+                      <div role="status" className="flex max-w-md flex-col items-center gap-3 px-6 text-center">
+                        <Loader2 size={30} strokeWidth={1.8} className="animate-spin" style={{ color: 'var(--accent)' }} />
+                        <div className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>修改结果生成中</div>
+                        <p className="text-[12px] leading-6" style={{ color: 'var(--text-tertiary)' }}>
+                          完成后将在此显示新版本，当前不展示原图以避免混淆。
+                        </p>
+                      </div>
                     ) : selectedVersion?.status === 'completed' && selectedVersion?.imageUrl ? (
                       <img src={selectedVersion.imageUrl} alt="生成结果" className="max-h-[68vh] w-full object-contain" />
                     ) : result.imageUrl ? (

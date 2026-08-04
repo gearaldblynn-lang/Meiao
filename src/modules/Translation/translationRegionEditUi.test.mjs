@@ -615,6 +615,23 @@ test('translation compare shows a failed edit reason without falling back to an 
   assert.doesNotMatch(failedBranch, /<img\b/);
 });
 
+test('translation compare shows a generating placeholder instead of the previous result image', async () => {
+  const source = await readFile(projectCardUrl, 'utf8');
+  const compareStart = source.indexOf('{translationCompareOpen && translationResults.length > 0');
+  const compareEnd = source.indexOf('{confirmDeleteProject &&', compareStart);
+  const compare = source.slice(compareStart, compareEnd);
+  const generatingBranchStart = compare.indexOf("selectedVersion?.status === 'generating' ? (");
+  const completedBranchStart = compare.indexOf("selectedVersion?.status === 'completed' && selectedVersion?.imageUrl ? (");
+  const generatingBranch = compare.slice(generatingBranchStart, completedBranchStart);
+
+  assert.ok(generatingBranchStart >= 0, 'generating versions need a dedicated media branch');
+  assert.ok(completedBranchStart > generatingBranchStart, 'generating must be handled before completed or fallback media');
+  assert.match(generatingBranch, /role="status"/);
+  assert.match(generatingBranch, /修改结果生成中/);
+  assert.doesNotMatch(generatingBranch, /<img\b/);
+  assert.doesNotMatch(generatingBranch, /result\.imageUrl/);
+});
+
 test('translation region dialog is driven by the selected version and closes immediately after submit', async () => {
   const source = await readFile(projectCardUrl, 'utf8');
   const submitStart = source.indexOf('onSubmit={async (input) => {');

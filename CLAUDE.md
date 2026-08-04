@@ -23,7 +23,7 @@
   - 前端 `.test.mjs`(会 `import './xxx.ts'`)→ 必须加 `node --experimental-strip-types --test src/.../xxx.test.mjs`,否则 Node 报 `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`(文档里写的 `node --test` 漏了这个 flag)。
   - 全量:`find src -name "*.test.mjs" | xargs node --experimental-strip-types --test` / `find server -name "*.test.mjs" | xargs node --test`。
 
-## 3. 已诊断根因库 ★(持续维护,截至 2026-08-04 已记录至 #93)
+## 3. 已诊断根因库 ★(持续维护,截至 2026-08-04 已记录至 #94)
 
 > 🔗 本节是 Claude 与 Codex **共享的架构根因库主源**(单一真相)。Codex 通过 `AGENTS.md` 顶部指针 + `docs/agents/repeated-issues.md` 顶部指针读到这里。沉淀架构级根因写本节;`repeated-issues.md` 只留指针或记纯操作型问题,两边不抄全文以免漂移。
 
@@ -521,3 +521,8 @@
   根因:`processWithKieAi` 用全局 `getActiveModuleContext()` 决定内部 job 的 module，而翻译区域修改是一条长时间异步链。用户发起后页面模块上下文变成万物替换，多桑真实任务 `9278a26adfd91104ac8b71fe` 因此被登记为 `module=everything_replace`，虽然 payload 明确携带 `shellPurpose=translation_region_edit` 和精确项目/结果/版本身份，且 provider 与 internal job 都已 `succeeded` 并保存结果图。恢复层 `isTranslationRegionEditJob` 又先硬性要求 `job.module=translation`，这条结构化完成证据被整条跳过，`app_state` 中对应版本一直留在 `generating`。
   修复:图像任务入口新增只用于控制面的 `jobModule`，在翻译区域修改调用处显式锁定 `translation`，并在展开 provider payload 前剔除该字段。恢复层改为依据结构化 `shellPurpose=translation_region_edit` 识别候选 job，后续仍要求完整匹配归属当前账号的 translation project/result/version 才能回写，因此可安全自愈已错标的存量任务，不重提 provider、不重复扣费。回归测试使用“`everything_replace` 错标 + 结构化翻译绑定 + succeeded 图片”的真实缩小形态，验证恢复为 `completed` 并替换可见结果图。
   如何避免:**长时间异步任务的业务归属不得在提交时读全局当前页面状态；调用方必须把耐久 module/purpose/project/result/version 身份一次性显式传入。恢复层应用结构化 purpose 定位任务类型，再用当前账号下的精确聚合身份做回写边界，不能让一个可变的展示模块字段否定已完成的 provider 真值。**
+
+- **#94 ✅ 本地已修、待部署(2026-08-04)· 翻译修改版本处理中时，右侧“生成结果”错显上一张完成图**
+  根因:效果对比弹窗的右侧媒体分支只显式处理了 `error` 和“`completed` 且有版本图”；`generating` 与其他未完成状态会继续落入 `result.imageUrl` 回退。而 `result.imageUrl` 在修改完成前有意保留上一张成功图，用于保护可见结果；它被对比弹窗误当成当前 V2 的生成图，造成左右同图且标题显示“处理中”的矛盾 UI。
+  修复:在右侧媒体状态矩阵中为 `selectedVersion.status === 'generating'` 增加高于完成/回退图片的独立分支，只渲染 spinner、“修改结果生成中”和明确说明，不渲染 `img` 或 `result.imageUrl`。失败继续显示结构化错误，完成只显示当前版本图，无修改版本的普通翻译结果仍保留原展示逻辑。回归测试按分支截取源码，锁定 generating 分支不得出现 `<img>` 或 `result.imageUrl`。
+  如何避免:**耐久“上一张成功图”和“当前版本输出”是两种不同语义；带版本的对比 UI 必须先按选中版本的 generating/error/completed 完整分流，只有不存在版本语义时才能使用项目级图片回退。**
