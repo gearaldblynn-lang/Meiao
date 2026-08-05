@@ -19,7 +19,9 @@ test('logo replacement exposes one AI generation plus deterministic region and a
   assert.doesNotMatch(logoQuickParams, /单Logo框选|多Logo框选/);
   assert.doesNotMatch(logoQuickParams, /key: 'logoReplaceRenderMode'|program_guarded|程序兜底|KIE直出/);
 
-  assert.match(bottomInputBar, /const LOGO_REGION_REPLACE_PLACEHOLDER = '选框必须完整包住旧 Logo，同时也是新 Logo 最终允许占用的范围；新旧比例不同时请扩大选框，为完整图形、主标和副标预留空间。';/);
+  assert.match(bottomInputBar, /const LOGO_REGION_REPLACE_PLACEHOLDER = '框选用于告诉 AI 要替换哪个 Logo，覆盖大致位置即可；系统会识别实际标识边界，并根据物体表面或画面角标选择融合方式。';/);
+  assert.doesNotMatch(bottomInputBar, /选框必须完整包住|最终允许占用的范围/);
+  assert.doesNotMatch(bottomInputBar, /为新Logo的完整图形、主标和副标预留空间/);
   assert.match(placeholderBlock, /single_logo_region_replace/);
   assert.match(placeholderBlock, /multi_logo_replace/);
   assert.match(placeholderBlock, /return LOGO_REGION_REPLACE_PLACEHOLDER/);
@@ -29,7 +31,7 @@ test('logo replacement exposes one AI generation plus deterministic region and a
   assert.match(bottomInputBar, /当前区域替换要求/);
   assert.match(bottomInputBar, /value=\{String\(activeRegion\.replacementRequirement \|\| ''\)\}/);
   assert.match(bottomInputBar, /replacementRequirement: event\.target\.value/);
-  assert.match(activeLogoWorkflow, /ai_native_analysis_generation_v6_region_alpha_guard/);
+  assert.match(activeLogoWorkflow, /ai_native_analysis_generation_v7_semantic_blend_guard/);
   assert.match(activeLogoWorkflow, /completeLogoReplaceResultLifecycle/);
   assert.doesNotMatch(activeLogoWorkflow, /validateLogoReplacementResult|logo_replace_quality_check/);
   assert.doesNotMatch(activeLogoWorkflow, /program_guarded|createGuardedMultiLogoReplaceResultBlob/);

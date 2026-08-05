@@ -261,7 +261,7 @@ const isEverythingReplaceImageContext = (module: AppModule, activeSubFeature?: s
   || isModelReplaceContext(module, activeSubFeature)
 );
 
-const LOGO_REGION_REPLACE_PLACEHOLDER = '选框必须完整包住旧 Logo，同时也是新 Logo 最终允许占用的范围；新旧比例不同时请扩大选框，为完整图形、主标和副标预留空间。';
+const LOGO_REGION_REPLACE_PLACEHOLDER = '框选用于告诉 AI 要替换哪个 Logo，覆盖大致位置即可；系统会识别实际标识边界，并根据物体表面或画面角标选择融合方式。';
 
 const getEverythingReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
   const supportedRatios = getRetouchSupportedAspectRatiosForModel(currentParams.model || 'GPT Image 2');
@@ -3074,7 +3074,7 @@ const BottomInputBar: React.FC<Props> = ({
             <div>
               <h3 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Logo 替换区域标记</h3>
               <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                在原图上完整框住每个旧 Logo；标记只用于定位，不会进入最终成图。选框也是新 Logo 最终允许占用的范围。
+                在原图上大致框出每个待替换 Logo；标记只用于定位，不会进入最终成图。系统会继续识别实际标识边界和承载方式。
               </p>
             </div>
             <button
@@ -3188,7 +3188,7 @@ const BottomInputBar: React.FC<Props> = ({
                   {editingReference.fileName || '待替换原图'}
                 </span>
                 <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                  拖拽框选，并为新Logo的完整图形、主标和副标预留空间
+                  拖拽大致框出待替换标识，无需贴合 Logo 边缘
                 </span>
               </div>
               <div className="flex justify-center">

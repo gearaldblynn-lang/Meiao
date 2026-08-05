@@ -113,6 +113,26 @@ export const pickGuardedLogoReplacePixel = ({
   return inside ? generated : original;
 };
 
+export const computeLogoReplaceFeatherAlpha = ({
+  x,
+  y,
+  rect,
+  featherPx,
+} = {}) => {
+  if (!rect) return 0;
+  const feather = Math.max(1, Number(featherPx) || 1);
+  const distance = Math.min(
+    Number(x) - Number(rect.x),
+    Number(y) - Number(rect.y),
+    Number(rect.x) + Number(rect.width) - 1 - Number(x),
+    Number(rect.y) + Number(rect.height) - 1 - Number(y),
+  );
+  if (!Number.isFinite(distance) || distance <= 0) return 0;
+  if (distance >= feather) return 1;
+  const progress = clamp(distance / feather, 0, 1);
+  return progress * progress * (3 - (2 * progress));
+};
+
 const normalizeCanvasRect = (rect, dimensions) => {
   if (!rect || typeof rect !== 'object') return null;
   const targetWidth = Number(dimensions?.width);
@@ -349,6 +369,59 @@ const drawGeneratedCleanupBase = (ctx, generatedImage, clipRect, width, height) 
   ctx.restore();
 };
 
+const drawGeneratedFeatheredBase = ({
+  ctx,
+  generatedImage,
+  clipRect,
+  width,
+  height,
+  featherRatio,
+}) => {
+  if (
+    !clipRect
+    || typeof ctx.getImageData !== 'function'
+    || typeof ctx.putImageData !== 'function'
+  ) {
+    drawGeneratedCleanupBase(ctx, generatedImage, clipRect, width, height);
+    return;
+  }
+  const rect = normalizeCanvasRect(clipRect, { width, height });
+  if (!rect) return;
+  const scratch = document.createElement('canvas');
+  scratch.width = width;
+  scratch.height = height;
+  const scratchCtx = scratch.getContext('2d');
+  if (!scratchCtx || typeof scratchCtx.getImageData !== 'function') {
+    drawGeneratedCleanupBase(ctx, generatedImage, rect, width, height);
+    return;
+  }
+  scratchCtx.drawImage(generatedImage, 0, 0, width, height);
+  const currentData = ctx.getImageData(rect.x, rect.y, rect.width, rect.height);
+  const generatedData = scratchCtx.getImageData(rect.x, rect.y, rect.width, rect.height);
+  const featherPx = Math.max(1, Math.round(
+    Math.min(rect.width, rect.height) * clamp(Number(featherRatio) || 0.12, 0.02, 0.5),
+  ));
+  for (let localY = 0; localY < rect.height; localY += 1) {
+    for (let localX = 0; localX < rect.width; localX += 1) {
+      const alpha = computeLogoReplaceFeatherAlpha({
+        x: rect.x + localX,
+        y: rect.y + localY,
+        rect,
+        featherPx,
+      });
+      if (alpha <= 0) continue;
+      const offset = (localY * rect.width + localX) * 4;
+      for (let channel = 0; channel < 4; channel += 1) {
+        currentData.data[offset + channel] = Math.round(
+          (currentData.data[offset + channel] * (1 - alpha))
+          + (generatedData.data[offset + channel] * alpha),
+        );
+      }
+    }
+  }
+  ctx.putImageData(currentData, rect.x, rect.y);
+};
+
 const applyGeneratedCleanupContentMask = ({
   ctx,
   originalImage,
@@ -430,14 +503,24 @@ export const computeLogoOverlayItem = ({
 
 const normalizeGuardItem = ({
   region,
+  targetBounds,
+  editEnvelope,
+  placementMode,
+  featherRatio,
   logoOverlayUrl,
   logoOverlayRect,
   cleanupRect,
 } = {}, dimensions) => {
   const normalizedRegion = normalizeLogoReplaceRegion(region);
   if (!normalizedRegion) return null;
-  const rect = logoReplaceRegionToRect(normalizedRegion, dimensions);
-  if (!rect) return null;
+  const normalizedTargetBounds = normalizeLogoReplaceRegion(targetBounds) || normalizedRegion;
+  const normalizedEditEnvelope = normalizeLogoReplaceRegion(editEnvelope) || normalizedTargetBounds;
+  const rect = logoReplaceRegionToRect(normalizedTargetBounds, dimensions);
+  const protectedRect = logoReplaceRegionToRect(normalizedEditEnvelope, dimensions);
+  if (!rect || !protectedRect) return null;
+  const normalizedPlacementMode = String(placementMode || '').trim() === 'graphic_overlay'
+    ? 'graphic_overlay'
+    : 'surface_integrated';
   const logoOverlayItem = computeLogoOverlayItem({
     logoUrl: logoOverlayUrl,
     logoRect: logoOverlayRect,
@@ -447,8 +530,12 @@ const normalizeGuardItem = ({
   const generatedClipRect = cleanupItem || rect;
   return {
     region: normalizedRegion,
+    targetBounds: normalizedTargetBounds,
+    editEnvelope: normalizedEditEnvelope,
+    placementMode: normalizedPlacementMode,
+    featherRatio: clamp(Number(featherRatio) || 0.12, 0.02, 0.5),
     rect,
-    protectedRect: expandRect({ rect, ...dimensions }),
+    protectedRect,
     logoOverlayItem,
     cleanupItem,
     generatedClipRect,
@@ -549,14 +636,19 @@ export const createGuardedMultiLogoReplaceResultBlob = async ({
 };
 
 /**
- * Publishes an AI-native Logo result without allowing the full-frame model to
- * change pixels outside user-selected regions. Exact identity references are
- * composited last so transparent pixels can never become an invented backing.
+ * Publishes an AI-native Logo result through a semantic local edit contract.
+ * The provider candidate is accepted only inside the model-refined edit
+ * envelope, whose edge is feathered back into the original. Surface marks keep
+ * the AI-integrated pixels; graphic overlays receive an exact alpha-safe pass.
  * @param {{
  *   originalUrl?: string,
  *   generatedUrl?: string,
  *   items?: Array<{
  *     region?: unknown,
+ *     targetBounds?: unknown,
+ *     editEnvelope?: unknown,
+ *     placementMode?: 'surface_integrated' | 'graphic_overlay',
+ *     featherRatio?: number,
  *     backgroundPolicy?: 'transparent_pixels_reveal_surface' | 'opaque_canvas_is_identity',
  *     logoOverlayUrl?: string,
  *     logoOverlayRect?: Record<string, unknown>,
@@ -573,7 +665,7 @@ export const createAiNativeLogoReplaceGuardedResultBlob = async ({
   items,
   originalWidth,
   originalHeight,
-  overlayBlendMode = 'auto',
+  overlayBlendMode = 'exact',
   signal,
 } = {}) => {
   const originalImage = await loadImage(originalUrl, 'Original image', signal);
@@ -604,22 +696,34 @@ export const createAiNativeLogoReplaceGuardedResultBlob = async ({
   ctx.drawImage(originalImage, 0, 0, width, height);
 
   guardItems.forEach((item) => {
-    if (item.backgroundPolicy === 'transparent_pixels_reveal_surface') {
+    if (
+      item.placementMode === 'graphic_overlay'
+      && item.backgroundPolicy === 'transparent_pixels_reveal_surface'
+    ) {
       applyGeneratedCleanupContentMask({
         ctx,
         originalImage,
         generatedImage,
-        clipRect: item.rect,
+        clipRect: item.protectedRect,
         width,
         height,
       });
       scrubLogoResidualsInCanvas(ctx, item.rect, width, height);
       return;
     }
-    drawGeneratedCleanupBase(ctx, generatedImage, item.rect, width, height);
+    drawGeneratedFeatheredBase({
+      ctx,
+      generatedImage,
+      clipRect: item.protectedRect,
+      width,
+      height,
+      featherRatio: item.featherRatio,
+    });
   });
 
-  const overlayEntries = guardItems.filter((item) => item.logoOverlayItem);
+  const overlayEntries = guardItems.filter((item) => (
+    item.placementMode === 'graphic_overlay' && item.logoOverlayItem
+  ));
   const logoImages = await Promise.all(overlayEntries.map((item) => (
     loadImage(item.logoOverlayItem.logoUrl, 'Exact replacement Logo identity', signal)
   )));
@@ -628,7 +732,7 @@ export const createAiNativeLogoReplaceGuardedResultBlob = async ({
     const overlay = item.logoOverlayItem;
     ctx.save();
     ctx.beginPath();
-    ctx.rect(item.rect.x, item.rect.y, item.rect.width, item.rect.height);
+    ctx.rect(item.protectedRect.x, item.protectedRect.y, item.protectedRect.width, item.protectedRect.height);
     ctx.clip();
     applyLogoOverlayBlend(ctx, overlayBlendMode, overlay.rect);
     ctx.drawImage(logoImage, overlay.rect.x, overlay.rect.y, overlay.rect.width, overlay.rect.height);
@@ -638,8 +742,9 @@ export const createAiNativeLogoReplaceGuardedResultBlob = async ({
   return {
     blob: await exportCanvasBlob(canvas, 'AI-native Logo guard'),
     rects: guardItems.map((item) => item.rect),
-    protectedRects: guardItems.map((item) => item.rect),
+    protectedRects: guardItems.map((item) => item.protectedRect),
     logoOverlayItems: overlayEntries.map((item) => item.logoOverlayItem),
+    placementModes: guardItems.map((item) => item.placementMode),
     regionGuarded: true,
     alphaGuardedCount: guardItems.filter((item) => item.backgroundPolicy === 'transparent_pixels_reveal_surface').length,
     width,

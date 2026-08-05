@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeLogoOverlayItem,
+  computeLogoReplaceFeatherAlpha,
   createAiNativeLogoReplaceGuardedResultBlob,
   createGuardedMultiLogoReplaceResultBlob,
   expandRect,
@@ -9,7 +10,7 @@ import {
   scrubLogoResidualPixels,
 } from './logoReplaceGuard.mjs';
 
-test('AI-native guard keeps generation inside selected regions and restores transparent logo identity', async () => {
+test('AI-native guard uses adaptive edit envelopes and only exact-overlays graphic badges', async () => {
   const originalFetch = globalThis.fetch;
   const originalCreateImageBitmap = globalThis.createImageBitmap;
   const originalDocument = globalThis.document;
@@ -50,12 +51,18 @@ test('AI-native guard keeps generation inside selected regions and restores tran
       items: [
         {
           region: { xRatio: 0.1, yRatio: 0.2, widthRatio: 0.3, heightRatio: 0.1 },
+          targetBounds: { xRatio: 0.12, yRatio: 0.2, widthRatio: 0.26, heightRatio: 0.1 },
+          editEnvelope: { xRatio: 0.08, yRatio: 0.15, widthRatio: 0.34, heightRatio: 0.2 },
+          placementMode: 'surface_integrated',
           backgroundPolicy: 'transparent_pixels_reveal_surface',
           logoOverlayUrl: 'transparent-logo.png',
           logoOverlayRect: { xRatio: 0.15, yRatio: 0.225, widthRatio: 0.2, heightRatio: 0.05 },
         },
         {
           region: { xRatio: 0.6, yRatio: 0.2, widthRatio: 0.2, heightRatio: 0.2 },
+          targetBounds: { xRatio: 0.62, yRatio: 0.22, widthRatio: 0.16, heightRatio: 0.16 },
+          editEnvelope: { xRatio: 0.58, yRatio: 0.18, widthRatio: 0.24, heightRatio: 0.24 },
+          placementMode: 'graphic_overlay',
           backgroundPolicy: 'opaque_canvas_is_identity',
           logoOverlayUrl: 'opaque-logo.png',
           logoOverlayRect: { xRatio: 0.6, yRatio: 0.2, widthRatio: 0.2, heightRatio: 0.2 },
@@ -65,12 +72,10 @@ test('AI-native guard keeps generation inside selected regions and restores tran
 
     assert.equal(guarded.regionGuarded, true);
     assert.deepEqual(guarded.protectedRects, [
-      { x: 10, y: 16, width: 30, height: 8 },
-      { x: 60, y: 16, width: 20, height: 16 },
+      { x: 8, y: 12, width: 34, height: 16 },
+      { x: 58, y: 14, width: 24, height: 19 },
     ]);
-    assert.ok(clipCalls.some((args) => args[0] === 10 && args[1] === 16 && args[2] === 30 && args[3] === 8));
-    assert.ok(clipCalls.some((args) => args[0] === 60 && args[1] === 16 && args[2] === 20 && args[3] === 16));
-    assert.equal(drawCalls.filter((call) => call.image.url === 'transparent-logo.png').length, 1);
+    assert.equal(drawCalls.filter((call) => call.image.url === 'transparent-logo.png').length, 0);
     assert.equal(drawCalls.filter((call) => call.image.url === 'opaque-logo.png').length, 1);
     assert.equal(drawCalls.filter((call) => call.image.url === 'generated.png').length, 2);
   } finally {
@@ -78,6 +83,13 @@ test('AI-native guard keeps generation inside selected regions and restores tran
     globalThis.createImageBitmap = originalCreateImageBitmap;
     globalThis.document = originalDocument;
   }
+});
+
+test('feather alpha softens the adaptive edit boundary without turning the user box into a hard crop', () => {
+  const rect = { x: 10, y: 10, width: 40, height: 20 };
+  assert.equal(computeLogoReplaceFeatherAlpha({ x: 10, y: 10, rect, featherPx: 5 }), 0);
+  assert.ok(computeLogoReplaceFeatherAlpha({ x: 12, y: 12, rect, featherPx: 5 }) > 0);
+  assert.equal(computeLogoReplaceFeatherAlpha({ x: 20, y: 20, rect, featherPx: 5 }), 1);
 });
 
 test('expands the edit rect modestly and clamps to image bounds', () => {

@@ -343,19 +343,23 @@ test('logo replacement submits one ordered multimodal control job and preserves 
     },
   ];
   const logoAnalysis = {
-    version: 4,
+    version: 5,
     taskType: 'logo_replacement',
     regions: logoBindings.map((binding) => ({
       regionId: binding.regionId,
       regionIndex: binding.regionIndex,
       targetLogoIndex: binding.targetLogoIndex,
+      targetLocated: true,
+      selectionInterpretation: 'the approximate box points to one identifiable target logo',
+      placementMode: binding.regionIndex === 1 ? 'surface_integrated' : 'graphic_overlay',
+      targetBounds: binding.regionIndex === 1
+        ? { xRatio: 0.1, yRatio: 0.2, widthRatio: 0.2, heightRatio: 0.1 }
+        : { xRatio: 0.6, yRatio: 0.2, widthRatio: 0.2, heightRatio: 0.1 },
       surfaceType: 'curved package',
       perspective: 'follow local perspective',
       lighting: 'inherit highlights',
       material: 'printed surface',
       occlusion: 'none',
-      selectionContainsOldLogo: true,
-      selectionCoverage: 'the marked region contains the complete old symbol, wordmark, and tagline',
     })),
   };
   const { calls, module } = await loadArkServiceWithAnalysisFakes({

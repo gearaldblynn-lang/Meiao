@@ -706,16 +706,16 @@ E Example 示例
 - 文件：`src/utils/logoReplaceAnalysis.mjs`
 - 位置：`buildLogoReplaceAnalysisPrompt`、`buildLogoReplaceGenerationPrompt`
 - 当前用途：统一图片角标、单 Logo 和多 Logo 的选区分析、AI 区域清理/材质融合与确定性终态保护。
-- 当前状态：已按完整 RTCFE 迁移，分析 schema 为 v4，运行时 processing mode 为 `ai_native_analysis_generation_v6_region_alpha_guard`；历史 v2/v3 仅允许恢复读取，历史质量 prompt/解析代码不再被工作流调用。
+- 当前状态：已按完整 RTCFE 迁移，分析 schema 为 v5，运行时 processing mode 为 `ai_native_analysis_generation_v7_semantic_blend_guard`；历史 v2/v3/v4 仅允许恢复读取，历史质量 prompt/解析代码不再被工作流调用。
 - 关键约束：
   - 输入固定为原图、编号区域图、按 R1 到 Rn 排列的紧边界 Logo 身份参考；顺序和重复素材不得改写。
-  - v4 分析必须逐区确认 `selectionContainsOldLogo` 和 `selectionCoverage`，并仅输出 `surfaceType/perspective/lighting/material/occlusion`；每项最多 120 字符。框偏移、只覆盖局部或框错对象时在生图前 fail closed。
+  - v5 分析把用户框选视为语义定位：逐区确认 `targetLocated`，识别真实 `targetBounds`，并区分物体表面融合 `surface_integrated` 与二维角标 `graphic_overlay`。框只覆盖目标一部分但能唯一定位时允许继续；框错对象、完全未指向 Logo 或无法消除歧义时在生图前 fail closed。
   - 策划不输出 `logoIdentity`、Logo 文字/颜色/图形/排布描述或生图提示词。紧边界 Logo 素材是不可拆分原子图稿的唯一身份真值，可见比例由程序从素材几何计算。
   - 编号标记图只进入策划阶段，生图输入只有原图与紧边界 Logo 素材；数值区域与简短表面决策合并为唯一 `<logo_replace_execution_contract>`。
   - 生图把每个 Logo 视为不可拆分原子图稿，只允许整组等比缩放、旋转、透视或曲面形变；禁止纵横排互换和内部元素独立移动。
-  - 整组按 contain 放入目标区域；空间不足时缩小并留白，不得裁切、拉伸、挤压、拆分或重排。
+  - 二维角标整组按 contain 放入真实目标区域并以透明图稿精确合成；物体表面 Logo 由模型按透视、曲率、材质、光线和遮挡融合，不再做统一平面硬贴。
   - 紧边界身份参考同时记录透明像素比例和背景政策；透明像素表示无内容，必须透出原承载表面，不得变成黑/白/彩色底板。
-  - provider 返回的整图只是候选结果；发布前以原图恢复所有选区外像素，并用绑定 Logo 身份参考的真实像素保留字形、图形、颜色和 alpha。
+  - provider 返回的整图只是候选结果；发布前只接受真实目标周围局部编辑包络内的候选像素，边缘羽化衔接，包络外恢复原图，因此未绑定的其他 Logo、文字和产品细节不会随整图生成被改写。
   - provider 生图和最终资产处理成功后直接完成，不创建出图后 AI 审查任务；历史质量字段不得覆盖成功图片状态。
 - 防回归测试：`src/utils/logoReplaceAnalysis.test.mjs`、`src/utils/logoWhitespaceCrop.test.mjs`、`src/services/arkService.test.mjs`、`src/adapters/shellWorkflowLogoReplace.test.mjs`、`src/adapters/shellDataAdapter.test.mjs`
 - 你确认：`[x]`

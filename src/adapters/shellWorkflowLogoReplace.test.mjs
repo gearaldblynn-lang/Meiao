@@ -11,7 +11,7 @@ const functionBlock = (name) => {
   return end < 0 ? shellWorkflowSource.slice(start) : shellWorkflowSource.slice(start, end + 3);
 };
 
-test('all logo modes use one AI generation plus deterministic selected-region protection', () => {
+test('all logo modes use semantic target planning plus adaptive local protection', () => {
   const workflow = functionBlock('runLogoReplaceWorkflow');
   const guideBuilder = functionBlock('buildLogoReplaceRegionGuideInputs');
   const lifecycle = functionBlock('completeLogoReplaceResultLifecycle');
@@ -23,7 +23,7 @@ test('all logo modes use one AI generation plus deterministic selected-region pr
   assert.match(guideBuilder, /createLogoReplaceRegionGuideBlob/);
   assert.match(workflow, /taskPurpose: 'logo_replace_analysis'/);
   assert.match(workflow, /taskPurpose: 'logo_replace_generation'/);
-  assert.match(workflow, /logoReplaceProcessingMode: 'ai_native_analysis_generation_v6_region_alpha_guard'/);
+  assert.match(workflow, /logoReplaceProcessingMode: 'ai_native_analysis_generation_v7_semantic_blend_guard'/);
   assert.doesNotMatch(lifecycle, /logo_replace_quality_check|validateLogoReplacementResult|createLogoReplaceQualityEvidenceBlobs|qualityEvidenceUrls/);
   assert.match(finalizer, /createAiNativeLogoReplaceGuardedResultBlob/);
   assert.doesNotMatch(workflow, /program_guarded|toMultiLogoReplaceResultItem|cleanupScrubPaddingRatio/);
@@ -65,7 +65,7 @@ test('single and corner presets select one region while multi preserves every nu
   assert.match(regionResolver, /: regions/);
 });
 
-test('logo workflow preserves requirements and guards the provider image before publishing', () => {
+test('logo workflow preserves requirements and adapts finalization to surface or graphic placement', () => {
   const workflow = functionBlock('runLogoReplaceWorkflow');
   const resultFinalizer = functionBlock('finalizeLogoReplaceResultAsset');
   const lifecycle = functionBlock('completeLogoReplaceResultLifecycle');
@@ -77,6 +77,9 @@ test('logo workflow preserves requirements and guards the provider image before 
   assert.match(workflow, /replacementRequirement: String\(region\.replacementRequirement \|\| ''\)\.trim\(\)/);
   assert.match(workflow, /globalRequirement: input\.prompt\.trim\(\)/);
   assert.match(workflow, /regionRects: generationRegionRects/);
+  assert.match(workflow, /placementMode:/);
+  assert.match(workflow, /targetBounds:/);
+  assert.match(workflow, /editEnvelope:/);
   assert.match(workflow, /subFeature: 'logo_replace'/);
   assert.match(workflow, /skipPromptCleanupSuffix: true/);
   assert.match(workflow, /toProductReplaceResultItem/);
@@ -92,8 +95,10 @@ test('logo workflow preserves requirements and guards the provider image before 
   assert.match(resultFinalizer, /assertTranslationOutputAspectRatio/);
   assert.match(resultFinalizer, /persistGeneratedAsset/);
   assert.match(resultFinalizer, /createAiNativeLogoReplaceGuardedResultBlob/);
-  assert.match(resultFinalizer, /overlayBlendMode: 'exact'/);
+  assert.doesNotMatch(resultFinalizer, /overlayBlendMode: 'exact'/);
   assert.match(resultFinalizer, /logoReplaceRegionGuarded: true/);
+  assert.match(resultFinalizer, /logoReplaceSemanticBlendGuarded: true/);
+  assert.match(resultFinalizer, /logoReplacePlacementModes/);
   assert.match(resultFinalizer, /updateInternalJobResult/);
   assert.match(resultFinalizer, /originalProviderImageUrl: providerImageUrl/);
   assert.doesNotMatch(resultFinalizer, /drawImage/);

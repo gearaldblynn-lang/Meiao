@@ -57,6 +57,7 @@ import {
 } from '../utils/logoReplaceGuard.mjs';
 import {
   LOGO_REPLACE_MAX_REGIONS,
+  buildLogoReplaceEditContract,
   buildLogoReplaceGeometryContract,
   buildLogoReplaceGenerationPrompt,
 } from '../utils/logoReplaceAnalysis.mjs';
@@ -2498,6 +2499,10 @@ const runLegacyLogoReplaceWorkflow = async (
 
 type LogoReplaceGuardItem = {
   region: LogoReplaceRegion;
+  targetBounds: Record<string, unknown>;
+  editEnvelope: Record<string, unknown>;
+  placementMode: 'surface_integrated' | 'graphic_overlay';
+  featherRatio: number;
   backgroundPolicy: 'transparent_pixels_reveal_surface' | 'opaque_canvas_is_identity';
   transparentPixelRatio?: number;
   logoOverlayUrl: string;
@@ -2569,7 +2574,6 @@ const finalizeLogoReplaceResultAsset = async ({
     items: logoGuardItems,
     originalWidth: targetWidth,
     originalHeight: targetHeight,
-    overlayBlendMode: 'exact',
     signal,
   });
   const finalBlob = guarded.blob;
@@ -2590,6 +2594,10 @@ const finalizeLogoReplaceResultAsset = async ({
         outputHeight: targetHeight,
         logoReplaceFinalized: true,
         logoReplaceRegionGuarded: true,
+        logoReplaceSemanticBlendGuarded: true,
+        logoReplacePlacementModes: guarded.placementModes,
+        logoReplaceTargetBounds: logoGuardItems.map((item) => item.targetBounds),
+        logoReplaceEditEnvelopes: logoGuardItems.map((item) => item.editEnvelope),
         logoReplaceAlphaGuardedCount: guarded.alphaGuardedCount,
       });
     } catch (error) {
@@ -2611,6 +2619,26 @@ type LogoReplaceAnalysisBinding = {
   identityReferenceAspectRatio?: number;
   identityBackgroundPolicy: 'transparent_pixels_reveal_surface' | 'opaque_canvas_is_identity';
   identityTransparentPixelRatio?: number;
+  xRatio?: number;
+  yRatio?: number;
+  widthRatio?: number;
+  heightRatio?: number;
+};
+
+type LogoReplacePlacementMode = 'surface_integrated' | 'graphic_overlay';
+
+const resolveLogoReplacePlacementMode = ({
+  value,
+  logoReplaceMode,
+}: {
+  value?: unknown;
+  logoReplaceMode?: unknown;
+}): LogoReplacePlacementMode => {
+  const normalized = String(value || '').trim();
+  if (normalized === 'surface_integrated' || normalized === 'graphic_overlay') return normalized;
+  return String(logoReplaceMode || '').trim() === 'corner_badge_replace'
+    ? 'graphic_overlay'
+    : 'surface_integrated';
 };
 
 type LogoReplaceResolvedBinding = {
@@ -2646,6 +2674,7 @@ const completeLogoReplaceResultLifecycle = async ({
   const storedFinalUrl = String(existingGenerationJobResult?.imageUrl || '').trim();
   const finalizedItem = existingGenerationJobResult?.logoReplaceFinalized === true
     && existingGenerationJobResult?.logoReplaceRegionGuarded === true
+    && existingGenerationJobResult?.logoReplaceSemanticBlendGuarded === true
     && storedFinalUrl
     ? {
         ...generatedItem,
@@ -2703,6 +2732,7 @@ export const resumeLogoReplaceGenerationResult = async ({
 }): Promise<ShellWorkflowImageResult> => {
   const payload = generationJob.payload || {};
   const generationResult = generationJob.result || {};
+  const logoReplaceMode = String(payload.logoReplaceMode || payload.replacementLogic || '').trim();
   if (
     generationJob.status !== 'succeeded'
     || String(payload.taskPurpose || '').trim() !== 'logo_replace_generation'
@@ -2747,6 +2777,10 @@ export const resumeLogoReplaceGenerationResult = async ({
       replacementRequirement: String(binding.replacementRequirement || '').trim(),
       identityBackgroundPolicy,
       identityTransparentPixelRatio,
+      xRatio: Number(binding.xRatio),
+      yRatio: Number(binding.yRatio),
+      widthRatio: Number(binding.widthRatio),
+      heightRatio: Number(binding.heightRatio),
       ...(Number(binding.identityReferenceAspectRatio) > 0
         ? { identityReferenceAspectRatio: Number(binding.identityReferenceAspectRatio) }
         : {}),
@@ -2812,31 +2846,43 @@ export const resumeLogoReplaceGenerationResult = async ({
       String(item?.regionId || '').trim() === analysisBindings[index].regionId
       && Number(item?.regionIndex) === analysisBindings[index].regionIndex
     ));
+    const placementMode = resolveLogoReplacePlacementMode({
+      value: rawBinding.placementMode || analysisRegion?.placementMode,
+      logoReplaceMode,
+    });
+    const editContract = buildLogoReplaceEditContract({
+      semanticSelection: region,
+      targetBounds: rawBinding.targetBounds || analysisRegion?.targetBounds || region,
+      placementMode,
+    });
+    if (!editContract) {
+      throw new Error(`R${analysisBindings[index].regionIndex} 的 Logo 编辑范围无效。`);
+    }
+    const effectiveEditEnvelope = rawBinding.editEnvelope && typeof rawBinding.editEnvelope === 'object'
+      ? rawBinding.editEnvelope as Record<string, unknown>
+      : editContract.editEnvelope;
     const geometry = buildLogoReplaceGeometryContract({
-      region,
+      region: editContract.targetBounds,
       identityReferenceAspectRatio: analysisBindings[index].identityReferenceAspectRatio
         || analysisRegion?.logoIdentity?.visibleMarkAspectRatio,
       regionIndex: analysisBindings[index].regionIndex,
     });
-    const storedContainedBounds = rawBinding.identityReferenceContainedBounds;
-    const containedBounds = storedContainedBounds && typeof storedContainedBounds === 'object'
-      ? storedContainedBounds as Record<string, unknown>
-      : geometry.containedBounds;
-    const storedOverlayRect = rawBinding.identityReferenceOverlayRect;
-    const logoOverlayRect = storedOverlayRect && typeof storedOverlayRect === 'object'
-      ? storedOverlayRect as Record<string, unknown>
-      : buildLogoReplaceOverlayRect({
-          containedBounds,
-          cropRect: rawBinding.identityReferenceCropRect && typeof rawBinding.identityReferenceCropRect === 'object'
-            ? rawBinding.identityReferenceCropRect as Record<string, unknown>
-            : null,
-          visibleContentRect: rawBinding.identityReferenceVisibleContentRect && typeof rawBinding.identityReferenceVisibleContentRect === 'object'
-            ? rawBinding.identityReferenceVisibleContentRect as Record<string, unknown>
-            : null,
-          backgroundPolicy: analysisBindings[index].identityBackgroundPolicy,
-        });
+    const logoOverlayRect = buildLogoReplaceOverlayRect({
+      containedBounds: geometry.containedBounds,
+      cropRect: rawBinding.identityReferenceCropRect && typeof rawBinding.identityReferenceCropRect === 'object'
+        ? rawBinding.identityReferenceCropRect as Record<string, unknown>
+        : null,
+      visibleContentRect: rawBinding.identityReferenceVisibleContentRect && typeof rawBinding.identityReferenceVisibleContentRect === 'object'
+        ? rawBinding.identityReferenceVisibleContentRect as Record<string, unknown>
+        : null,
+      backgroundPolicy: analysisBindings[index].identityBackgroundPolicy,
+    });
     return {
       region,
+      targetBounds: editContract.targetBounds,
+      editEnvelope: effectiveEditEnvelope,
+      placementMode,
+      featherRatio: Number(rawBinding.featherRatio || editContract.featherRatio),
       backgroundPolicy: analysisBindings[index].identityBackgroundPolicy,
       transparentPixelRatio: analysisBindings[index].identityTransparentPixelRatio,
       logoOverlayUrl: identityReferenceUrls[index],
@@ -2948,6 +2994,10 @@ const runLogoReplaceWorkflow = async (
         replacementRequirement: String(region.replacementRequirement || '').trim(),
         identityBackgroundPolicy: identityReferences[index]?.backgroundPolicy || 'opaque_canvas_is_identity',
         identityTransparentPixelRatio: Number(identityReferences[index]?.transparentPixelRatio || 0),
+        xRatio: Number(region.xRatio || 0),
+        yRatio: Number(region.yRatio || 0),
+        widthRatio: Number(region.widthRatio || 0),
+        heightRatio: Number(region.heightRatio || 0),
         ...(identityReferenceAspectRatio ? { identityReferenceAspectRatio } : {}),
       };
     });
@@ -2983,7 +3033,7 @@ const runLogoReplaceWorkflow = async (
             shellPurpose: 'logo_replace_analysis',
             subFeature: 'logo_replace',
             logoReplaceMode,
-            logoReplaceProcessingMode: 'ai_native_analysis_generation_v6_region_alpha_guard',
+            logoReplaceProcessingMode: 'ai_native_analysis_generation_v7_semantic_blend_guard',
             batchIndex: referenceIndex + 1,
             batchCount: total,
             referenceIndex: referenceIndex + 1,
@@ -3009,9 +3059,36 @@ const runLogoReplaceWorkflow = async (
       widthRatio: Number(region.widthRatio || 0),
       heightRatio: Number(region.heightRatio || 0),
     }));
+    const logoEditContracts = generationRegionRects.map((semanticSelection, index) => {
+      const analysisRegion = analysis.normalizedAnalysis.regions?.find((item) => (
+        String(item?.regionId || '').trim() === analysisBindings[index].regionId
+        && Number(item?.regionIndex) === analysisBindings[index].regionIndex
+      ));
+      const placementMode = resolveLogoReplacePlacementMode({
+        value: analysisRegion?.placementMode,
+        logoReplaceMode,
+      });
+      const contract = buildLogoReplaceEditContract({
+        semanticSelection,
+        targetBounds: analysisRegion?.targetBounds || semanticSelection,
+        placementMode,
+      });
+      if (!contract) {
+        throw new Error(`R${analysisBindings[index].regionIndex} 的 Logo 编辑范围无效。`);
+      }
+      return contract;
+    });
+    const analysisForExecution = {
+      ...analysis.normalizedAnalysis,
+      regions: analysis.normalizedAnalysis.regions?.map((region, index) => ({
+        ...region,
+        targetBounds: logoEditContracts[index]?.targetBounds,
+        placementMode: logoEditContracts[index]?.placementMode,
+      })),
+    };
     const logoGeometryContracts = generationRegionRects.map((region, index) => (
       buildLogoReplaceGeometryContract({
-        region,
+        region: logoEditContracts[index].targetBounds,
         identityReferenceAspectRatio: analysisBindings[index].identityReferenceAspectRatio
           || analysis.normalizedAnalysis.regions?.find((item) => (
             String(item?.regionId || '').trim() === analysisBindings[index].regionId
@@ -3024,6 +3101,10 @@ const runLogoReplaceWorkflow = async (
       const containedBounds = logoGeometryContracts[index].containedBounds;
       return {
         region,
+        targetBounds: logoEditContracts[index].targetBounds,
+        editEnvelope: logoEditContracts[index].editEnvelope,
+        placementMode: logoEditContracts[index].placementMode as LogoReplacePlacementMode,
+        featherRatio: logoEditContracts[index].featherRatio,
         backgroundPolicy: analysisBindings[index].identityBackgroundPolicy,
         transparentPixelRatio: analysisBindings[index].identityTransparentPixelRatio,
         logoOverlayUrl: identityReferences[index].url,
@@ -3036,7 +3117,7 @@ const runLogoReplaceWorkflow = async (
       };
     });
     const prompt = buildLogoReplaceGenerationPrompt({
-      analysis: analysis.normalizedAnalysis,
+      analysis: analysisForExecution,
       bindings: analysisBindings,
       regionRects: generationRegionRects,
       globalRequirement: input.prompt.trim(),
@@ -3068,7 +3149,7 @@ const runLogoReplaceWorkflow = async (
         subFeature: 'logo_replace',
         logoReplaceMode,
         replacementLogic: logoReplaceMode,
-        logoReplaceProcessingMode: 'ai_native_analysis_generation_v6_region_alpha_guard',
+        logoReplaceProcessingMode: 'ai_native_analysis_generation_v7_semantic_blend_guard',
         skipPromptCleanupSuffix: true,
         preserveInputImageOrder: true,
         batchIndex: referenceIndex + 1,
@@ -3093,6 +3174,11 @@ const runLogoReplaceWorkflow = async (
           identityTransparentPixelRatio: analysisBindings[index]?.identityTransparentPixelRatio,
           identityReferenceContainedBounds: logoGeometryContracts[index]?.containedBounds,
           identityReferenceOverlayRect: logoGuardItems[index]?.logoOverlayRect,
+          semanticSelection: logoEditContracts[index]?.semanticSelection,
+          targetBounds: logoEditContracts[index]?.targetBounds,
+          editEnvelope: logoEditContracts[index]?.editEnvelope,
+          placementMode: logoEditContracts[index]?.placementMode,
+          featherRatio: logoEditContracts[index]?.featherRatio,
           xRatio: Number(region.xRatio || 0),
           yRatio: Number(region.yRatio || 0),
           widthRatio: Number(region.widthRatio || 0),

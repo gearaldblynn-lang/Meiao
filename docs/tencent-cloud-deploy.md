@@ -124,6 +124,8 @@ VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS=10000
 VITE_MEIAO_PRODUCT_REPLACE_SUBMISSION_CONCURRENCY=3
 VITE_MEIAO_PRODUCT_REPLACE_GENERATION_PROMPT_MAX_CHARS=18000
 VITE_LOGO_REPLACE_GENERATION_PROMPT_MAX_CHARS=18000
+VITE_LOGO_REPLACE_EDIT_PADDING_RATIO=0.18
+VITE_LOGO_REPLACE_EDIT_FEATHER_RATIO=0.12
 MEIAO_ADMIN_USERNAME=admin
 MEIAO_ADMIN_PASSWORD=请替换成你的管理员密码
 MEIAO_SUPER_ADMIN_USERS=admin
@@ -252,6 +254,8 @@ location ^~ /api/media-transcodes/ {
 `VITE_MEIAO_PRODUCT_REPLACE_GENERATION_PROMPT_MAX_CHARS` 是产品替换生图提示词的前端构建期上限，默认 `18000`。完整策划回复只是审计产物，生图只能投影一份颜色合同、一份非颜色身份合同和一份场景执行计划。超限必须在付费提交前停止，不可截断产品身份字段；修改后必须重新构建前端。
 
 `VITE_LOGO_REPLACE_GENERATION_PROMPT_MAX_CHARS` 是 Logo 替换生图提示词的前端构建期上限，默认 `18000`。分析模型的完整回复不得无界投影进生图请求；修改该值前必须先用当前 provider 真实接口验证文本上限，修改后重新构建前端。
+
+`VITE_LOGO_REPLACE_EDIT_PADDING_RATIO` 和 `VITE_LOGO_REPLACE_EDIT_FEATHER_RATIO` 分别控制 Logo 策划识别出真实目标边界后，局部编辑包络的外扩比例与合成边缘羽化比例，默认 `0.18` 和 `0.12`，允许 `0.02-0.5`。用户框选只是语义定位，不直接作为硬裁切边界；两个变量都是前端构建期配置，调整后必须重新构建。
 
 ```nginx
 location /__meiao_stored_assets/ {

@@ -1098,6 +1098,10 @@ export const analyzeLogoReplacement = async (input: {
     regionIndex: number;
     targetLogoIndex: number;
     replacementRequirement: string;
+    xRatio?: number;
+    yRatio?: number;
+    widthRatio?: number;
+    heightRatio?: number;
   }>;
   globalRequirement: string;
   apiConfig?: GlobalApiConfig;
@@ -1182,6 +1186,10 @@ export const validateLogoReplacementResult = async (input: {
     regionIndex: number;
     targetLogoIndex: number;
     replacementRequirement: string;
+    xRatio?: number;
+    yRatio?: number;
+    widthRatio?: number;
+    heightRatio?: number;
     identityReferenceAspectRatio?: number;
   }>;
   analysis: Record<string, unknown>;
@@ -1596,6 +1604,10 @@ export const recoverLogoReplacementAnalysis = async (input: {
     regionIndex: number;
     targetLogoIndex: number;
     replacementRequirement: string;
+    xRatio?: number;
+    yRatio?: number;
+    widthRatio?: number;
+    heightRatio?: number;
   }>;
   signal?: AbortSignal;
 }) => {
@@ -1658,6 +1670,7 @@ export const recoverLogoReplacementAnalysis = async (input: {
         expectedBindings: input.bindings,
         allowLegacyVersion2: true,
         allowLegacyVersion3: true,
+        allowLegacyVersion4: true,
       },
     );
     if (!parsed.ok) {
