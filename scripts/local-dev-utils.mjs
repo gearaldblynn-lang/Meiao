@@ -1,12 +1,49 @@
+import path from 'node:path';
+
+const normalizeWorkingDirectory = (directory) =>
+  directory ? path.resolve(directory).replace(/\/$/, '') : '';
+
+export const evaluatePortOwnerReuse = ({ port, owner, processCwd, expectedCwd }) => {
+  const expected = normalizeWorkingDirectory(expectedCwd);
+  const actual = normalizeWorkingDirectory(processCwd);
+
+  if (!actual) {
+    return {
+      ok: false,
+      reason: `${port} 当前由 ${owner || '未知进程'} 监听，但无法确认它的工作目录，不能安全复用。请先释放该端口后再重跑。`,
+    };
+  }
+
+  if (actual !== expected) {
+    return {
+      ok: false,
+      reason: [
+        `${port} 当前由旧版本或其他工作树的进程监听，不能复用。`,
+        `- 当前进程: ${owner || '未知进程'}`,
+        `- 当前目录: ${actual}`,
+        `- 应为目录: ${expected}`,
+        `请先释放 ${port}，或修正对应的 launchd/启动脚本后再重跑。`,
+      ].join('\n'),
+    };
+  }
+
+  return { ok: true };
+};
+
 export const buildDoctorReport = ({ devServer, apiServer, proxyHealthy }) => {
   const devReady = Boolean(devServer?.listening);
   const apiReady = Boolean(apiServer?.listening);
+  const devWorkspaceReady = devReady && devServer?.workspaceOk !== false;
+  const apiWorkspaceReady = apiReady && apiServer?.workspaceOk !== false;
   const proxyReady = Boolean(proxyHealthy);
 
   let status = 'ok';
   let summary = '本地开发环境已就绪，可直接打开 http://localhost:3000。';
 
-  if (!devReady && apiReady) {
+  if ((!devWorkspaceReady && devReady) || (!apiWorkspaceReady && apiReady)) {
+    status = 'warning';
+    summary = '3000 或 3100 正在使用其他版本或工作树，页面与数据源可能分叉，请先修正本地常驻进程。';
+  } else if (!devReady && apiReady) {
     status = 'warning';
     summary = '后端 3100 已启动，但前端 3000 的 Vite 开发页还没启动。请先启动本地开发页。';
   } else if (devReady && !apiReady) {
@@ -25,11 +62,11 @@ export const buildDoctorReport = ({ devServer, apiServer, proxyHealthy }) => {
     summary,
     checks: {
       devServer: {
-        ok: devReady,
+        ok: devWorkspaceReady,
         label: `开发页 3000${devServer?.owner ? ` (${devServer.owner})` : ''}`,
       },
       apiServer: {
-        ok: apiReady,
+        ok: apiWorkspaceReady,
         label: `后端 3100${apiServer?.owner ? ` (${apiServer.owner})` : ''}`,
       },
       proxy: {

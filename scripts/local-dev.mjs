@@ -3,7 +3,11 @@
 import net from 'node:net';
 import { execFileSync, spawn } from 'node:child_process';
 
-import { evaluateBackendReuse, formatStartPlan } from './local-dev-utils.mjs';
+import {
+  evaluateBackendReuse,
+  evaluatePortOwnerReuse,
+  formatStartPlan,
+} from './local-dev-utils.mjs';
 
 const checkPortListening = (port) =>
   new Promise((resolve) => {
@@ -35,6 +39,27 @@ const getPortOwner = (port) => {
     if (lines.length < 2) return '';
     const parts = lines[1].trim().split(/\s+/);
     return `${parts[0]}(${parts[1]})`;
+  } catch {
+    return '';
+  }
+};
+
+const getPortProcessCwd = (port) => {
+  try {
+    const pid = execFileSync('lsof', ['-nP', '-t', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+      encoding: 'utf8',
+    })
+      .trim()
+      .split('\n')[0];
+    if (!pid) return '';
+
+    const output = execFileSync('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], {
+      encoding: 'utf8',
+    });
+    const cwdLine = output
+      .split('\n')
+      .find((line) => line.startsWith('n'));
+    return cwdLine ? cwdLine.slice(1) : '';
   } catch {
     return '';
   }
@@ -74,6 +99,23 @@ const main = async () => {
   if (apiListening && apiOwner && !apiOwner.startsWith('node(')) {
     console.error(`3100 当前被非 Node 进程占用: ${apiOwner}。请先释放端口后再重试。`);
     process.exit(1);
+  }
+
+  for (const [port, listening, owner] of [
+    [3000, devListening, devOwner],
+    [3100, apiListening, apiOwner],
+  ]) {
+    if (!listening) continue;
+    const reuse = evaluatePortOwnerReuse({
+      port,
+      owner,
+      processCwd: getPortProcessCwd(port),
+      expectedCwd: process.cwd(),
+    });
+    if (!reuse.ok) {
+      console.error(reuse.reason);
+      process.exit(1);
+    }
   }
 
   if (apiListening) {

@@ -26,14 +26,14 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test scripts/deploy_tencent.test.mjs`；测试从实际 tar 段断言本地临时目录必须被排除。
 - Avoid next time: 任何由工作目录直接生成的发布包都必须维护自己的允许/排除合同，不能把 `.gitignore` 当成发布边界。
 
-## 2026-08-03 - 本地验收案例不能留在临时 worktree 数据源
+## 2026-08-05 - 本地入口与数据不能继续指向临时 worktree
 
-- Symptom: 同一浏览器曾看到 8 月 3 日产品替换验收项目，重启 3001 并重新登录 `admin` 后列表为空。
-- Environment: local development / Vite 3001 / local JSON backend / Git worktree acceptance run.
-- Root cause: 验收时前端和后端运行于临时 worktree，任务、项目和受管素材写入 worktree 自己的 `server/data`；后来只重启主项目前端并连接主项目 3100，两个同名 `admin` 实际拥有不同 user ID 和独立数据文件。架构级根因见 `CLAUDE.md` #92。
-- Fix: 在无活跃任务时做带备份的定向迁移，只把 4 个项目、18 条既有任务和 21 个受管资源重新归属到主项目 `admin`，不创建或重试任何付费任务；随后重新登录并做 API、素材和真实页面验收。
-- Regression check: 主后端 `/api/state` 返回项目 1/4/6/7；21/21 受管素材经 `admin` 鉴权返回有效图片；3001 页面显示四张已完成卡，项目 7 为 `2/2` 且两张结果图可见。
-- Avoid next time: 付费验收前必须记录并核对后端工作目录、数据文件绝对路径、端口和 user ID；验收产物要写入主数据源，不能把“前端端口相同”当成“后端数据相同”。
+- Symptom: 本机同时出现 `3000`、`3001`、`3002` 多个入口；用户在不同入口登录同名账号时历史案例时有时无。
+- Environment: local development / Vite 3000、3002 / local JSON backend 3100 / Git worktree / launchd 常驻服务。
+- Root cause: `com.meiao.current.vite/server` 两个 LaunchAgent 的 `WorkingDirectory` 仍指向临时 worktree，常驻的旧前后端持续读取 worktree 自己的 `server/data`；主项目另起 3002 后形成两套页面和两套数据。`npm run local` 与 `npm run doctor` 过去只确认端口由 Node 监听，未核对进程 cwd，所以会把旧工作树误判为当前项目。架构级根因见 `CLAUDE.md` #92。
+- Fix: LaunchAgent 统一改为主项目目录并只保留 `3000 + 3100`；在无活跃任务且四份数据文件完成校验备份后，按 username 把旧账号映射到主账号，合并项目、终态任务、会话、素材登记和物理文件，不覆盖主账号密码、余额与系统设置，不恢复已删除素材，也不创建或重试付费任务。`local` 与 `doctor` 新增端口进程 cwd 校验，其他工作树即使健康响应也拒绝复用。
+- Regression check: 合并后共 398 条任务、340 条素材登记、2 个有效会话；将离 46 个项目/200 条任务，admin 9 个项目/38 条任务；33 个新增素材文件全部存在且哈希一致。`localhost:3000` 实际页面显示 4 个产品替换历史项目，4/4 缩略图加载成功；`local-dev-utils.test.mjs` 锁定错误工作树拒绝复用，`npm run doctor` 通过。
+- Avoid next time: 付费验收前必须记录并核对后端工作目录、数据文件绝对路径、端口和 user ID；本地常驻服务、启动脚本与健康检查必须共同验证 cwd，不能把“端口相同、进程是 Node、接口健康”当成“数据源相同”。
 
 ## 2026-08-03 - 结构化策划恢复要兼容真实包装且保留原批次
 

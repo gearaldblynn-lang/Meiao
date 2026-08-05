@@ -3,7 +3,11 @@
 import net from 'node:net';
 import { execFileSync } from 'node:child_process';
 
-import { buildDoctorReport, formatDoctorReport } from './local-dev-utils.mjs';
+import {
+  buildDoctorReport,
+  evaluatePortOwnerReuse,
+  formatDoctorReport,
+} from './local-dev-utils.mjs';
 
 const checkPortListening = (port) =>
   new Promise((resolve) => {
@@ -31,6 +35,27 @@ const getPortOwner = (port) => {
   }
 };
 
+const getPortProcessCwd = (port) => {
+  try {
+    const pid = execFileSync('lsof', ['-nP', '-t', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+      encoding: 'utf8',
+    })
+      .trim()
+      .split('\n')[0];
+    if (!pid) return '';
+
+    const output = execFileSync('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], {
+      encoding: 'utf8',
+    });
+    const cwdLine = output
+      .split('\n')
+      .find((line) => line.startsWith('n'));
+    return cwdLine ? cwdLine.slice(1) : '';
+  } catch {
+    return '';
+  }
+};
+
 const checkProxyHealth = async () => {
   try {
     const response = await fetch('http://127.0.0.1:3000/api/health');
@@ -48,8 +73,28 @@ const main = async () => {
   ]);
 
   const report = buildDoctorReport({
-    devServer: { listening: devListening, port: 3000, owner: devListening ? getPortOwner(3000) : '' },
-    apiServer: { listening: apiListening, port: 3100, owner: apiListening ? getPortOwner(3100) : '' },
+    devServer: {
+      listening: devListening,
+      port: 3000,
+      owner: devListening ? getPortOwner(3000) : '',
+      workspaceOk: !devListening || evaluatePortOwnerReuse({
+        port: 3000,
+        owner: getPortOwner(3000),
+        processCwd: getPortProcessCwd(3000),
+        expectedCwd: process.cwd(),
+      }).ok,
+    },
+    apiServer: {
+      listening: apiListening,
+      port: 3100,
+      owner: apiListening ? getPortOwner(3100) : '',
+      workspaceOk: !apiListening || evaluatePortOwnerReuse({
+        port: 3100,
+        owner: getPortOwner(3100),
+        processCwd: getPortProcessCwd(3100),
+        expectedCwd: process.cwd(),
+      }).ok,
+    },
     proxyHealthy,
   });
 

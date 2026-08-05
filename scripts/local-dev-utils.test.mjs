@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   buildDoctorReport,
   evaluateBackendReuse,
+  evaluatePortOwnerReuse,
   formatDoctorReport,
   formatStartPlan,
 } from './local-dev-utils.mjs';
@@ -31,6 +32,19 @@ test('doctor report is healthy when dev server, api server, and proxy are all re
   assert.equal(report.status, 'ok');
   assert.equal(report.checks.proxy.ok, true);
   assert.match(formatDoctorReport(report), /localhost:3000/);
+});
+
+test('doctor report rejects healthy-looking ports owned by another worktree', () => {
+  const report = buildDoctorReport({
+    devServer: { listening: true, port: 3000, owner: 'node(26864)', workspaceOk: false },
+    apiServer: { listening: true, port: 3100, owner: 'node(79976)', workspaceOk: false },
+    proxyHealthy: true,
+  });
+
+  assert.equal(report.status, 'warning');
+  assert.equal(report.checks.devServer.ok, false);
+  assert.equal(report.checks.apiServer.ok, false);
+  assert.match(report.summary, /其他版本或工作树/);
 });
 
 test('start plan flags occupied ports with actionable guidance', () => {
@@ -89,4 +103,29 @@ test('backend reuse is rejected when health payload is not an object', () => {
   assert.equal(evaluateBackendReuse(null).ok, false);
   assert.equal(evaluateBackendReuse('nonsense').ok, false);
   assert.match(evaluateBackendReuse(null).reason, /kill/);
+});
+
+test('port reuse rejects a Node process started from another worktree', () => {
+  const result = evaluatePortOwnerReuse({
+    port: 3000,
+    owner: 'node(26864)',
+    processCwd: '/repo/.worktrees/old-release',
+    expectedCwd: '/repo/current',
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /旧版本或其他工作树/);
+  assert.match(result.reason, /old-release/);
+  assert.match(result.reason, /current/);
+});
+
+test('port reuse allows a Node process started from the current project root', () => {
+  const result = evaluatePortOwnerReuse({
+    port: 3100,
+    owner: 'node(88520)',
+    processCwd: '/repo/current/',
+    expectedCwd: '/repo/current',
+  });
+
+  assert.deepEqual(result, { ok: true });
 });
