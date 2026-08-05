@@ -138,12 +138,68 @@ const scrubProductMarkerLabels = (value) => {
 const compactRatio = (value) => Number(Number(value).toFixed(4));
 
 const buildGenerationExecutionContract = (planningAnalysis, productGroups, regionBindings) => {
+  const inputIndexesByGroupId = new Map(
+    productGroups.map((group) => [String(group.id || ''), group.inputImageIndexes || []]),
+  );
+  if (planningAnalysis?.version === 7 && planningAnalysis?.generationPrompt) {
+    const plannedProductsByGroupId = new Map(
+      (Array.isArray(planningAnalysis.generationPrompt.products)
+        ? planningAnalysis.generationPrompt.products
+        : []).map((product) => [String(product?.productGroupId || ''), product]),
+    );
+    const plannedRegionsByGroupId = new Map(
+      (Array.isArray(planningAnalysis.generationPrompt.regions)
+        ? planningAnalysis.generationPrompt.regions
+        : []).map((region) => [String(region?.productGroupId || ''), region]),
+    );
+    const products = [];
+    const regions = [];
+    regionBindings.forEach((binding) => {
+      const groupId = String(binding.productGroupId || '');
+      const plannedProduct = plannedProductsByGroupId.get(groupId);
+      const plannedRegion = plannedRegionsByGroupId.get(groupId);
+      if (!plannedProduct || !plannedRegion) return;
+      const groupInputIndexes = inputIndexesByGroupId.get(groupId);
+      const productInputImages = Array.isArray(groupInputIndexes) && groupInputIndexes.length > 0
+        ? groupInputIndexes
+        : binding.targetInputImageIndexes || [];
+      products.push({
+        productNumber: Number(binding.productNumber),
+        productInputImages,
+        identity: plannedProduct.identity,
+      });
+      regions.push({
+        productNumber: Number(binding.productNumber),
+        targetRegion: {
+          xRatio: compactRatio(binding.xRatio),
+          yRatio: compactRatio(binding.yRatio),
+          widthRatio: compactRatio(binding.widthRatio),
+          heightRatio: compactRatio(binding.heightRatio),
+        },
+        requiredVisibleStructure: plannedRegion.requiredVisibleStructure,
+        placement: plannedRegion.placement,
+        perspective: plannedRegion.perspective,
+        geometryAdaptation: plannedRegion.geometryAdaptation,
+        lightingAndColorIntegration: plannedRegion.lightingAndColorIntegration,
+        materialInteraction: plannedRegion.materialInteraction,
+        occlusion: plannedRegion.occlusion,
+        contactShadow: plannedRegion.contactShadow,
+        oldProductRemoval: plannedRegion.oldProductRemoval,
+      });
+    });
+    if (products.length !== regionBindings.length || regions.length !== regionBindings.length) {
+      throw new Error('产品替换策划与当前产品区域绑定不一致，请重新策划。');
+    }
+    return scrubProductMarkerLabels({
+      products,
+      regions,
+      scenePreservation: planningAnalysis.generationPrompt.scenePreservation,
+      negativeConstraints: planningAnalysis.generationPrompt.negativeConstraints,
+    });
+  }
   const planByGroupId = new Map(
     (Array.isArray(planningAnalysis?.regions) ? planningAnalysis.regions : [])
       .map((region) => [String(region?.productGroupId || ''), region]),
-  );
-  const inputIndexesByGroupId = new Map(
-    productGroups.map((group) => [String(group.id || ''), group.inputImageIndexes || []]),
   );
   return scrubProductMarkerLabels(regionBindings.map((binding) => {
     const groupId = String(binding.productGroupId || '');
@@ -231,7 +287,7 @@ export const buildProductReplacePrompt = ({
     : `Image 1 至 Image ${productImageCount} 共同描述产品1；Image ${referenceImageIndex} 是唯一待替换参考图。多张产品图只补充同一产品的角度和细节，不代表多个产品。`;
   const generationExecutionContract = isCombination
     ? buildGenerationExecutionContract(planningAnalysis, productGroups, regionBindings)
-    : [];
+    : null;
   const logoImageIndex = isCombination ? productImageCount + 2 : referenceImageIndex + 1;
   const logoTask = validLogo
     ? `Image ${logoImageIndex} 是 Logo 原图；Image ${logoImageIndex + 1} 是 Logo 位置示意图，只提供位置、方向和比例（${validLogo.placementRatio}）。`
@@ -251,8 +307,12 @@ export const buildProductReplacePrompt = ({
     [
       'T Task 任务',
       mapping,
-      generationExecutionContract.length > 0 ? [
-        '归一化坐标相对 Image 1 左上角。逐项执行以下产品图→目标区域→局部融合计划：',
+      generationExecutionContract && (
+        Array.isArray(generationExecutionContract)
+          ? generationExecutionContract.length > 0
+          : generationExecutionContract.regions?.length > 0
+      ) ? [
+        '归一化坐标相对 Image 1 左上角。以下是策划模型基于当前产品素材与参考图生成的本图专用执行提示；产品图片仍是产品身份的最高真值：',
         serializePromptData('product_replace_execution_contract', generationExecutionContract),
       ].join('\n') : '',
       '移除目标区域内原产品及原品牌信息，放入绑定产品并保持原空间关系。',

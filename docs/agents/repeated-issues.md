@@ -1319,6 +1319,13 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: 用户附件产品 prompt `14568→8738`（40%）；云上真实 Logo prompt `6964→1785`（74.4%）。回归测试锁定单一执行合同、被删重复字段、RTCFE、产品五维真值、Logo 原子排布与长度目标。
 - Avoid next time: 必须定期直接查看真实 provider payload，而不是只检查代码中有没有长度闸门。详细来自唯一事实充足，不是同义反复。
 
+## 2026-08-05 - 产品素材直传仍需要有证据的结构注意力锚点
+
+- Symptom: 组合产品的位置绑定和素材输入均正确，结果却常把具体组件关系、接口、边缘或刚柔结构生成成同类通用产品。
+- Root cause / Fix: 架构级根因与 v7 修复以项目 `CLAUDE.md` #101 为准。v6 把“避免文本误读图片”过度收敛为完全不描述结构，导致生图模型面对多图、遮挡和透视变化时缺少产品专属注意力锚点。v7 让策划基于图片证据输出有界的产品身份与场景融合结构，并由程序校验后编译成单一生图合同；原始产品图片仍是最高真值。
+- Regression check: `node --test src/utils/productReplaceAnalysis.test.mjs src/utils/productReplaceContract.test.mjs`；`node --experimental-strip-types --test src/services/arkService.test.mjs src/adapters/shellWorkflowProductReplace.test.mjs`；复杂三产品离线回放必须证明具体组件拓扑和几何适配各只出现一次、无 P 标记/URL、总提示低于付费前上限。
+- Avoid next time: “图片是真值”不等于“策划不能描述图片”。策划可以输出可验证、具体、无重复的注意力锚点，但不能发明证据或成为第二份视觉真值；身份描述、区域融合和固定约束必须各司其职。
+
 ## 2026-08-04 - 万物替换的交互、展示和控制任务必须分层
 
 - Symptom: 产品区域标记框只能重画、不能直接拖动；万物替换结果详情展示冗长的生图 Prompt；一次模特替换在项目列表出现两张卡，其中一张 0/1 持续“处理中”。

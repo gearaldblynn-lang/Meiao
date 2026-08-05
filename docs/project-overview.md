@@ -186,7 +186,7 @@ npm run dev
 - `VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS`：默认 `5000`；项目卡片视频预缓冲最长等待毫秒数，超时后继续播放。
 - `VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS`：默认 `10000`，下限 `1000` 毫秒；模块工作台周期读取耐久 job 并更新项目卡。页面重新可见、获得焦点、浏览器恢复网络时会立即同步，不等待下一次周期。该变量是前端构建期配置，修改后必须重新构建。
 - `VITE_MEIAO_PRODUCT_REPLACE_SUBMISSION_CONCURRENCY`：默认 `3`，允许 `1-6`；限制产品替换批量任务在浏览器端同时提交的数量。该变量是前端构建期配置，修改后必须重新构建。
-- `VITE_MEIAO_PRODUCT_REPLACE_GENERATION_PROMPT_MAX_CHARS`：默认 `18000`；限制产品替换执行提示词的最大字符数。策划 v6 只投影素材编号、数值区域和局部融合决策，产品身份以上传图像为真值；超限在付费生图提交前停止，不得丢弃图像输入绕过。该变量是前端构建期配置，修改后必须重新构建。
+- `VITE_MEIAO_PRODUCT_REPLACE_ANALYSIS_PROMPT_MAX_CHARS`：默认 `12000`；限制组合产品 v7 策划输出的结构化产品身份与场景融合指令总长。`VITE_MEIAO_PRODUCT_REPLACE_GENERATION_PROMPT_MAX_CHARS`：默认 `18000`；限制最终产品替换执行提示词。产品素材图始终是身份最高真值，策划只提供有图片证据的结构注意力锚点并只投影一次；任一阶段超限都在下一次付费提交前停止。这两个变量是前端构建期配置，修改后必须重新构建。
 - `VITE_LOGO_REPLACE_GENERATION_PROMPT_MAX_CHARS`：默认 `18000`；限制 Logo 替换执行提示词的最大字符数。策划 v5 只投影语义选框、真实目标边界、放置模式和局部融合决策，Logo 素材图是原子图稿真值；超限时在付费生图提交前拒绝。该变量必须低于当前 provider 真实文本上限，是前端构建期配置，修改后必须重新构建。
 - `VITE_LOGO_REPLACE_EDIT_PADDING_RATIO` / `VITE_LOGO_REPLACE_EDIT_FEATHER_RATIO`：默认 `0.18` / `0.12`，允许 `0.02-0.5`；控制真实 Logo 目标边界之外的局部编辑包络和合成羽化。用户框选只负责语义定位，未绑定 Logo 与编辑包络外像素恢复为原图。属于前端构建期配置，修改后必须重新构建。
 

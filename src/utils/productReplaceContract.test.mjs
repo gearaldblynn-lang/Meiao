@@ -312,6 +312,83 @@ test('verbose legacy v5 identity analysis is excluded because uploaded product i
   assert.doesNotMatch(prompt, /unused-generation-prompt|unused-validation-checklist|legacy-identity|legacy-invariant|duplicate-region-instruction|canonical-material|canonical-color|component-color|forbidden-color/);
 });
 
+test('v7 product-specific structure and fusion analysis enters the single generation contract', () => {
+  const productGroups = [{
+    id: 'group-a',
+    productNumber: 1,
+    inputImageIndexes: [2, 3],
+    urls: ['https://assets.example.com/a-front.png', 'https://assets.example.com/a-side.png'],
+  }];
+  const regionBindings = [{
+    regionId: 'product-replace-region-1',
+    regionIndex: 1,
+    productGroupId: 'group-a',
+    productNumber: 1,
+    targetInputImageIndexes: [2, 3],
+    xRatio: 0.1,
+    yRatio: 0.2,
+    widthRatio: 0.3,
+    heightRatio: 0.5,
+  }];
+  const planningAnalysis = {
+    version: 7,
+    taskType: 'combination_product_replacement',
+    generationPrompt: {
+      products: [{
+        productGroupId: 'group-a',
+        productNumber: 1,
+        identity: {
+          physicalBoundary: '仅产品实体',
+          silhouetteAndProportions: '保持顶部收窄与底座厚度比例',
+          componentTopology: '主体、顶盖、右侧扣件和底座共四个组件，位置及连接关系固定',
+          interfacesAndEdges: '保留顶盖接缝、扣件开孔和底座包边',
+          materialsAndFinish: '主体细哑光，扣件半亮硬质',
+          intrinsicColors: '主体中灰、包边深灰、扣件黑色',
+          patternsLogosAndText: '正面图案与 Logo 位置固定',
+          rigidityAndAllowedDeformation: '刚性组件只允许整体透视投影',
+          criticalDetails: ['右侧扣件孔位', '顶盖窄接缝'],
+          forbiddenChanges: ['不得删除组件', '不得移动扣件'],
+          missingCriticalEvidence: [],
+        },
+      }],
+      regions: [{
+        regionId: 'product-replace-region-1',
+        regionIndex: 1,
+        productGroupId: 'group-a',
+        productNumber: 1,
+        placement: '保持中心和占比',
+        perspective: '匹配三分之四俯视角',
+        requiredVisibleStructure: ['顶盖', '右侧扣件', '底座'],
+        geometryAdaptation: '保持刚性组件关系，只做整体透视投影',
+        lightingAndColorIntegration: '继承左上柔光但保持固有中灰',
+        materialInteraction: '半亮扣件保留窄高光',
+        occlusion: '不得遮掉右侧扣件',
+        contactShadow: '重建短软接触阴影',
+        oldProductRemoval: '清除旧产品轮廓、品牌和阴影',
+      }],
+      scenePreservation: '保持未标记背景、人物和文案不变',
+      negativeConstraints: ['不得生成定位标记', '不得带入产品素材背景'],
+    },
+  };
+
+  const prompt = buildProductReplacePrompt({
+    ...basePromptInput,
+    productGroups,
+    isCombination: true,
+    regionBindings,
+    planningAnalysis,
+  });
+  const executionContract = readTaggedPromptJson(prompt, 'product_replace_execution_contract');
+
+  assert.deepEqual(executionContract.products[0].productInputImages, [2, 3]);
+  assert.match(executionContract.products[0].identity.componentTopology, /四个组件/);
+  assert.match(executionContract.regions[0].geometryAdaptation, /整体透视投影/);
+  assert.deepEqual(executionContract.regions[0].requiredVisibleStructure, ['顶盖', '右侧扣件', '底座']);
+  assert.equal(executionContract.scenePreservation, '保持未标记背景、人物和文案不变');
+  assert.equal((prompt.match(/componentTopology/g) || []).length, 1);
+  assert.ok(prompt.length < 8_000, `v7 product-specific prompt should stay bounded, got ${prompt.length}`);
+});
+
 test('product replacement refuses an oversized generation prompt before provider submission', () => {
   assert.throws(
     () => buildProductReplacePrompt({

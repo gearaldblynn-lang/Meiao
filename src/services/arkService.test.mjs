@@ -43,20 +43,45 @@ const makeProductRestoreAnalysisFixture = (targetCount = 1) => ({
 
 const productRestoreAnalysisFixture = makeProductRestoreAnalysisFixture();
 
-const makeProductReplaceV6AnalysisFixture = (bindings) => ({
-  version: 6,
+const makeProductReplaceV7AnalysisFixture = (bindings) => ({
+  version: 7,
   taskType: 'combination_product_replacement',
-  regions: bindings.map((binding) => ({
-    regionId: binding.regionId,
-    regionIndex: binding.regionIndex,
-    productGroupId: binding.productGroupId,
-    productNumber: binding.productNumber,
-    placement: 'keep marked placement and visual footprint',
-    perspective: 'follow local perspective',
-    materialInteraction: 'inherit only local highlights and reflections',
-    occlusion: 'none',
-    contactShadow: 'rebuild contact shadow',
-  })),
+  generationPrompt: {
+    products: bindings.map((binding) => ({
+      productGroupId: binding.productGroupId,
+      productNumber: binding.productNumber,
+      identity: {
+        physicalBoundary: 'physical product only; exclude the reference background and annotations',
+        silhouetteAndProportions: 'preserve the observed outer contour and component proportions',
+        componentTopology: 'preserve every observed component, its assembly order, and relative position',
+        interfacesAndEdges: 'preserve visible seams, openings, borders, fasteners, and connection edges',
+        materialsAndFinish: 'preserve the observed materials, texture, gloss, and transparency',
+        intrinsicColors: 'preserve each component intrinsic hue, lightness, saturation, and relative color relationship',
+        patternsLogosAndText: 'preserve observed graphics, logos, and legible product text without invention',
+        rigidityAndAllowedDeformation: 'respect observed rigid and flexible parts; allow only physically plausible pose adaptation',
+        criticalDetails: ['preserve the identifying component geometry'],
+        forbiddenChanges: ['no component invention, deletion, exchange, or redesign'],
+        missingCriticalEvidence: [],
+      },
+    })),
+    regions: bindings.map((binding) => ({
+      regionId: binding.regionId,
+      regionIndex: binding.regionIndex,
+      productGroupId: binding.productGroupId,
+      productNumber: binding.productNumber,
+      placement: 'keep marked placement and visual footprint',
+      perspective: 'follow local perspective',
+      requiredVisibleStructure: ['retain the identifying component geometry visible from this view'],
+      geometryAdaptation: 'adapt pose and perspective without changing component topology',
+      lightingAndColorIntegration: 'inherit local light while preserving intrinsic product midtones and color relationships',
+      materialInteraction: 'inherit only physically plausible local highlights and reflections',
+      occlusion: 'preserve existing foreground occlusion without hiding critical details',
+      contactShadow: 'rebuild the local contact shadow',
+      oldProductRemoval: 'remove the old product, brand residue, reflection, and contact shadow before replacement',
+    })),
+    scenePreservation: 'preserve all unmarked scene content, people, copy, and products',
+    negativeConstraints: ['do not generate region markers or import product-reference backgrounds'],
+  },
 });
 
 test('translation planning prompt supports global translation while preserving logos trademarks and models', () => {
@@ -429,7 +454,7 @@ test('combination product replacement submits one ordered multimodal planning jo
       heightRatio: 0.39,
     },
   ];
-  const productAnalysis = makeProductReplaceV6AnalysisFixture(bindings);
+  const productAnalysis = makeProductReplaceV7AnalysisFixture(bindings);
   const { calls, module } = await loadArkServiceWithAnalysisFakes({
     analysisFixture: productAnalysis,
   });

@@ -682,7 +682,9 @@ E Example 示例
 - 文件：`src/utils/productReplaceAnalysis.mjs`、`src/utils/productReplaceContract.mjs`
 - 位置：`buildProductReplaceAnalysisPrompt`、`buildProductReplacePrompt`、`buildProductReplaceEditPrompt`
 - 当前用途：单品模式直接执行替换；组合模式按每张参考图的手工 P 区域先输出严格策划 JSON，再执行生图；结果编辑支持“保留产品”和“自由修改”两种模式。
-- 当前状态：已按完整 RTCFE 迁移；组合策划 schema 为 v6，运行时 processing mode 为 `per_reference_manual_region_analysis_generation_v6_execution_plan`，历史 v1-v5 仅允许恢复读取。
+- 当前状态：已按完整 RTCFE 迁移；组合策划 schema 为 v7，运行时 processing mode 为 `per_reference_manual_region_analysis_generation_v7_product_specific_prompt`。每张替换参考图仍独立创建一个策划任务，输入顺序固定为“干净参考图 → P 编号定位图 → 各产品多角度素材”；定位图只进策划，不进生图。
+- v7 策划不是把整张素材重新写成长篇描述，而是输出一份有图片证据的结构化 `generationPrompt`：逐产品记录实体边界、轮廓比例、组件拓扑、接口边缘、材质工艺、固有色、图案文字、刚柔属性和识别细节；逐区域记录当前视角必须露出的结构、透视与几何适配、受光色彩、材质互动、遮挡、接触阴影和旧产品清除。产品图片始终是视觉身份最高真值，策划文字只负责把生图注意力指向图片中的具体事实。
+- 程序校验产品/区域绑定、必填结构字段、关键证据缺失和长度后，只编译一份 `<product_replace_execution_contract>` 给生图模型；不重复附加完整分析或定位标记。单字段、数组和整体结构均有保守上限（整体默认 12000 字符，生图总提示默认 18000 字符，均可由 env 调整），缺少关键角度时在付费生图前停止。历史 v1-v6 仅允许恢复读取，不作为新策划结果接受。
 - 关键约束：
   - 无上传 Logo 时，不得出现 Logo 植入任务、Logo 位置示意图角色或 Logo 植入约束。
   - 组合模式按产品组理解素材；同组图片是同一产品的多角度或细节证据。

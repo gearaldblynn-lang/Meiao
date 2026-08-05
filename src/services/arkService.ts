@@ -1549,6 +1549,7 @@ export const recoverProductReplacementAnalysis = async (input: {
         allowLegacyV3: true,
         allowLegacyV4: true,
         allowLegacyV5: true,
+        allowLegacyV6: true,
       },
     );
     const creditsConsumed = normalizeKnownProductRestoreCredits(job.result?.creditsConsumed);

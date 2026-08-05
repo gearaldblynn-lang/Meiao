@@ -3435,7 +3435,7 @@ const runProductReplaceWorkflow = async (
               shellPurpose: 'product_replace_analysis',
               subFeature: 'product_replace',
               replacementLogic,
-              productReplaceProcessingMode: 'per_reference_manual_region_analysis_generation_v6_execution_plan',
+              productReplaceProcessingMode: 'per_reference_manual_region_analysis_generation_v7_product_specific_prompt',
               batchIndex: currentBatchIndex,
               batchCount: originalReferenceCount,
               referenceIndex: currentBatchIndex,
@@ -3496,7 +3496,7 @@ const runProductReplaceWorkflow = async (
           shellPurpose: 'product_replace_generation',
           subFeature: input.subFeature || 'product_replace',
           replacementLogic,
-          productReplaceProcessingMode: 'per_reference_manual_region_analysis_generation_v6_execution_plan',
+          productReplaceProcessingMode: 'per_reference_manual_region_analysis_generation_v7_product_specific_prompt',
           firstImageColorMode: referenceStrength,
           textPolicy,
           skipPromptCleanupSuffix: true,
@@ -3516,7 +3516,10 @@ const runProductReplaceWorkflow = async (
           productReplaceAnalysisProviderTaskId: analysis.providerTaskId,
           productReplaceAnalysisModel: analysis.modelUsed,
           productReplaceAnalysisCreditsConsumed: analysis.creditsConsumed,
-          productReplaceValidationChecklist: analysis.normalizedAnalysis.validationChecklist,
+          ...('validationChecklist' in analysis.normalizedAnalysis
+            && Array.isArray(analysis.normalizedAnalysis.validationChecklist)
+            ? { productReplaceValidationChecklist: analysis.normalizedAnalysis.validationChecklist }
+            : {}),
         },
         input.onJobCreated,
       );
