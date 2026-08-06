@@ -78,6 +78,36 @@ test('batch reconciliation normalizes harmless source whitespace but does not me
   );
 });
 
+test('batch reconciliation lets a later optimized target replace an unregistered identical mapping', () => {
+  const registry = new Map();
+
+  assert.equal(
+    reconcileTranslationPlanningBatchConsistency({
+      content: '- “上質な質感”本地化为“上質な質感”',
+      registry,
+    }),
+    '- “上質な質感”本地化为“上質な質感”',
+  );
+  assert.equal(registry.has('上質な質感'), false);
+
+  assert.equal(
+    reconcileTranslationPlanningBatchConsistency({
+      content: '- “上質な質感”本地化为“上品な風合い”',
+      registry,
+    }),
+    '- “上質な質感”本地化为“上品な風合い”',
+  );
+  assert.equal(registry.get('上質な質感'), '上品な風合い');
+
+  assert.equal(
+    reconcileTranslationPlanningBatchConsistency({
+      content: '- “上質な質感”本地化为“上質な質感”',
+      registry,
+    }),
+    '- “上質な質感”本地化为“上品な風合い”',
+  );
+});
+
 test('target-language validation accepts localized copy using the expected writing system', () => {
   const cases = [
     ['Japanese', '- “食卓を整える”本地化为“食卓を上品に演出します”'],
@@ -181,6 +211,80 @@ test('planning guard retries one language mismatch and accumulates planning cred
   assert.equal(result.creditsConsumed, 5);
   assert.equal(result.taskId, 'planning-corrected');
   assert.deepEqual(result.taskIds, ['planning-wrong', 'planning-corrected']);
+});
+
+test('planning guard reviews an identical editable mapping once', async () => {
+  const calls = [];
+  const responses = [
+    {
+      content: '- “上質な質感”本地化为“上質な質感”\n- “はっ水加工”本地化为“はっ水加工”',
+      creditsConsumed: 2,
+      taskId: 'planning-identical',
+    },
+    {
+      content: '- “上質な質感”本地化为“上品な風合い”\n- “はっ水加工”本地化为“はっ水加工”',
+      creditsConsumed: 3,
+      taskId: 'planning-reviewed',
+    },
+  ];
+
+  const result = await runTranslationPlanningWithLanguageGuard({
+    targetLanguage: 'Japanese',
+    request: async ({ attempt, correction }) => {
+      calls.push({ attempt, correction });
+      return responses[attempt];
+    },
+  });
+
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], { attempt: 0, correction: '' });
+  assert.match(calls[1].correction, /当前图片中的现有文案/);
+  assert.match(calls[1].correction, /机翻直译感|不自然语序|不地道搭配/);
+  assert.match(calls[1].correction, /上一轮完整映射/);
+  assert.match(calls[1].correction, /“上質な質感”本地化为“上質な質感”/);
+  assert.match(calls[1].correction, /语法正确|能够理解/);
+  assert.match(calls[1].correction, /词义|字根|重复/);
+  assert.match(calls[1].correction, /固定搭配|文案角色/);
+  assert.match(calls[1].correction, /直接原样发布/);
+  assert.match(calls[1].correction, /不得为了制造差异/);
+  assert.equal(result.content, responses[1].content);
+  assert.equal(result.creditsConsumed, 5);
+  assert.deepEqual(result.taskIds, ['planning-identical', 'planning-reviewed']);
+});
+
+test('planning guard does not review protected preserve rows', async () => {
+  let calls = 0;
+  const result = await runTranslationPlanningWithLanguageGuard({
+    targetLanguage: 'Japanese',
+    request: async () => {
+      calls += 1;
+      return {
+        content: '- “ABC-1200”保持不变\n- “ブランドロゴ”保持不变\n- “使用上の注意”保持不变',
+        creditsConsumed: 1,
+        taskId: 'planning-protected',
+      };
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.match(result.content, /ABC-1200/);
+});
+
+test('planning guard accepts an identical mapping after one quality review', async () => {
+  let calls = 0;
+  const content = '- “自然な風合い。”本地化为“自然な風合い。”';
+  const result = await runTranslationPlanningWithLanguageGuard({
+    targetLanguage: 'Japanese',
+    request: async () => {
+      calls += 1;
+      return { content, creditsConsumed: 1, taskId: `planning-${calls}` };
+    },
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(result.content, content);
+  assert.equal(result.creditsConsumed, 2);
+  assert.deepEqual(result.taskIds, ['planning-1', 'planning-2']);
 });
 
 test('planning guard throws after two clear language mismatches', async () => {

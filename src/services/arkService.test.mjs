@@ -111,7 +111,11 @@ test('translation planning prompt supports global translation while preserving l
   assert.doesNotMatch(translationPlanningSource, /商业图像文案翻译与修复助手/);
   assert.match(translationPlanningSource, /识别原文和真实卖点/);
   assert.match(translationPlanningSource, /主标题、副标题、卖点短语、图标标签、功能说明、参数或警示/);
+  assert.match(translationPlanningSource, /检查当前图片中的现有文案/);
   assert.match(translationPlanningSource, /语法或拼写错误/);
+  assert.match(translationPlanningSource, /机翻直译感/);
+  assert.match(translationPlanningSource, /不自然语序/);
+  assert.match(translationPlanningSource, /不地道搭配/);
   assert.match(translationPlanningSource, /名词堆叠/);
   assert.match(translationPlanningSource, /指代不清/);
   assert.match(translationPlanningSource, /语义重复/);
@@ -119,8 +123,9 @@ test('translation planning prompt supports global translation while preserving l
   assert.match(translationPlanningSource, /夸大宣传或绝对化承诺/);
   assert.match(translationPlanningSource, /广告表达吸引力不足时，只能优化措辞、节奏和信息层级，不得新增事实、承诺或卖点/);
   assert.match(translationPlanningSource, /需要改写时，先提炼文案实际含义并摆脱原句结构/);
-  assert.match(translationPlanningSource, /按目标市场母语消费者的语言逻辑和通用电商表达习惯重新写作/);
+  assert.match(translationPlanningSource, /按目标语言和目标市场当地消费者的表达逻辑及通用电商表达习惯重新写作/);
   assert.match(translationPlanningSource, /不基于原句逐词替换/);
+  assert.doesNotMatch(translationPlanningSource, /中文直译感/);
   assert.match(translationPlanningSource, /禁止照搬原文语序、句法结构和不自然的名词拼接/);
   assert.match(translationPlanningSource, /主图标题应简洁、有节奏并具有购买沟通价值/);
   assert.match(translationPlanningSource, /详情页区块标题应准确概括当前卖点或内容/);

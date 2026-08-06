@@ -75,7 +75,9 @@ export const reconcileTranslationPlanningBatchConsistency = ({ content, registry
       return `- “${mapping.source}”本地化为“${registeredTarget}”`;
     }
 
-    registry.set(sourceKey, mapping.target);
+    const isIdentical = normalizeComparableCopy(mapping.source)
+      === normalizeComparableCopy(mapping.target);
+    if (!isIdentical) registry.set(sourceKey, mapping.target);
     return `- “${mapping.source}”本地化为“${mapping.target}”`;
   }).join('\n');
 };
@@ -135,6 +137,28 @@ const buildLanguageCorrection = (targetLanguage, reason) => [
   reason ? `上一轮问题：${reason}` : '',
 ].filter(Boolean).join('\n');
 
+const normalizeComparableCopy = (value) => String(value || '')
+  .normalize('NFKC')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const hasIdenticalEditableMapping = (content) => extractTranslationPlanningMappings(content)
+  .some(({ source, target }) => (
+    normalizeComparableCopy(source) === normalizeComparableCopy(target)
+  ));
+
+const buildIdenticalCopyReviewCorrection = (targetLanguage, previousContent) => [
+  '上一轮策划中存在可编辑文案的原文与成品文案完全相同，请对当前图片中的现有文案再做一次质量复审。',
+  `目标语言：${String(targetLanguage || '').trim()}。`,
+  '重新逐条检查机翻直译感、不自然语序、不地道搭配、词义或字根重复、修饰关系、固定搭配、助词、时态、广告省略和文案角色。',
+  '语法正确、能够理解或在广告中偶尔可见，不等于符合目标市场当地消费者的表达逻辑。',
+  '只有当地母语电商编辑会在相同商品、图片位置和文案角色下直接原样发布时，才允许继续保持相同。',
+  '需要改写时，使用更自然且符合当前商品语境的表达，但不得为了制造差异而强制替换近义词、改变语气、增加事实、承诺或卖点。',
+  '请结合原图重新识别，并完整输出全部文案映射和保持不变项。',
+  '上一轮完整映射：',
+  String(previousContent || '').trim(),
+].filter(Boolean).join('\n');
+
 export const runTranslationPlanningWithLanguageGuard = async ({
   targetLanguage,
   request,
@@ -166,6 +190,10 @@ export const runTranslationPlanningWithLanguageGuard = async ({
           mappingCount: 0,
         };
     if (lastValidation.valid) {
+      if (attempt === 0 && hasIdenticalEditableMapping(normalizedContent)) {
+        correction = buildIdenticalCopyReviewCorrection(targetLanguage, normalizedContent);
+        continue;
+      }
       return {
         ...response,
         content: normalizedContent,

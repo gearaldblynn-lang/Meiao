@@ -1343,3 +1343,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: v5 策划把用户框作为 `semanticSelection`，识别真实 `targetBounds` 并分类 `surface_integrated`/`graphic_overlay`；程序按真实目标生成可配置外扩、带羽化的 `editEnvelope`。包络外始终恢复原图；物体表面保留 AI 融合像素，二维角标才按透明身份参考精确合成。历史 v4 成功任务可只重做本地终态保护，不重新调用付费 provider；不新增 AI 质量验收。
 - Regression check: `node --experimental-strip-types --test src/utils/logoWhitespaceCrop.test.mjs src/utils/logoReplaceAnalysis.test.mjs src/utils/logoReplaceGuard.test.mjs src/adapters/shellWorkflowLogoReplace.test.mjs src/services/arkService.test.mjs`；`npm run verify`；`npm run doctor`。云上旧任务仅用于只读取证与离线回放，不发起新 provider 任务。
 - Avoid next time: 用户粗框、模型识别的真实目标和程序允许编辑的包络必须分层；“框外不变”由原图恢复保证，“表面融合/二维角标”由 placement mode 决定，不能用一个统一的精确贴图规则覆盖所有 Logo 场景。
+
+## 2026-08-06 - 同语种文案不能直接跳过质量复审，也不能锁死批次译法
+
+- Symptom: AI 优化把语法成立但不够地道的日语短语原样送入生图；同批后续图片即使给出更自然译法，也可能被首个同文映射覆盖回原文。
+- Root cause: 目标语言守卫只验证文字体系，首次合法映射会立即通过；批次一致性注册表又把 `source === target` 当成已接受标准。
+- Fix: 可编辑同文映射首次出现时，用现有第二次调用额度复审一次，并携带首轮完整映射与当地电商直接发布标准；第二次合法结果即使仍相同也继续生成。保护项不触发复审，同文映射不登记为首个批次标准，后续首个非同文目标才能成为一致性基准。
+- Regression check: `node --test src/modules/Translation/translationPlanningLanguage.test.mjs src/modules/Translation/translationRetryUtils.test.mjs src/services/arkService.test.mjs`；`npm run build`。
+- Avoid next time: 同语种不等于无需本地化质量判断，但质量判断也不等于必须改写；复审必须有界，批次标准只能由真正的非同文目标建立。
