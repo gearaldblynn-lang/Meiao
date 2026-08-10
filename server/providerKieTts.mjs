@@ -10,6 +10,7 @@ import {
 import { getVoiceoverConfig } from './voiceoverContract.mjs';
 
 const SPEAKER = 'Speaker 1';
+const TTS_CHILD_KEY = /^tts:(continuous|0|[1-9]\d?):attempt:(0|[1-9]\d{0,2})$/u;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 4_000;
 const DEFAULT_POLL_MAX_ATTEMPTS = 180;
@@ -133,8 +134,11 @@ const normalizePayload = (job, env, voiceoverConfig = null) => {
   }
   const parentJobId = String(payload.parentJobId || '').trim();
   const childKey = String(payload.childKey || '').trim();
-  const childMatch = childKey.match(/^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d*)$/u);
+  const childMatch = childKey.match(TTS_CHILD_KEY);
   const groupIndex = payload.groupIndex;
+  const childGroupIndex = childMatch?.[1] === 'continuous'
+    ? 0
+    : Number(childMatch?.[1]);
   const attemptIndex = Number(childMatch?.[2]);
   if (payload.executionOwner !== 'parent'
     || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/u.test(parentJobId)
@@ -142,7 +146,7 @@ const normalizePayload = (job, env, voiceoverConfig = null) => {
     || !Number.isSafeInteger(groupIndex)
     || groupIndex < 0
     || groupIndex > 99
-    || Number(childMatch?.[1]) !== groupIndex
+    || childGroupIndex !== groupIndex
     || !Number.isSafeInteger(attemptIndex)) {
     throw createTtsError('provider_bad_request', 'KIE TTS 父子任务身份无效', {
       providerStage: 'validation',

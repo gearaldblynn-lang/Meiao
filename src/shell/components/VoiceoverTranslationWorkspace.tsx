@@ -14,6 +14,7 @@ import type {
   SystemPublicConfig,
 } from '../../types';
 import {
+  resolveCanonicalManagedSource,
   type VoiceoverTranslationDraft,
   type VoiceoverTranslationMode,
   type VoiceoverTranslationSource,
@@ -291,9 +292,12 @@ const VoiceoverTranslationWorkspace: React.FC<VoiceoverTranslationWorkspaceProps
       if (!result.fileUrl || !result.assetId) {
         throw new Error('视频已处理，但未返回可用的托管素材身份');
       }
-      const prepared: PreparedVoiceoverSource = {
+      const canonicalSource = resolveCanonicalManagedSource({
         sourceAssetId: result.assetId,
-        sourceUrl: result.fileUrl,
+      });
+      const prepared: PreparedVoiceoverSource = {
+        sourceAssetId: canonicalSource.assetId,
+        sourceUrl: canonicalSource.url,
         sourceProjectId: origin?.sourceProjectId,
         sourceResultId: origin?.sourceResultId,
         fileName: result.fileName || file.name,

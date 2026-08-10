@@ -1514,3 +1514,19 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 提示要求 `startMs/endMs` 对应本句第一/最后实际可听语音，真实静音必须留空，相邻段仅在语音连续时共享边界，禁止把时间戳规则化或拉伸填满视频；字幕变化和画面动作变化用于交叉验证语义边界。分析证据版本升级到 3，使旧未完成检查点在重试时重新分析而不复用旧时间轴。
 - Regression check: `server/voiceoverAnalysis.test.mjs` 锁定实际语音起止、静音留空、非强制相邻、字幕/动作交叉校验和禁止规则化；`server/voiceoverContract.test.mjs` 锁定证据版本 3；`node --test server/voiceover*.test.mjs scripts/probe-voiceover-translation.test.mjs` 为 207/207。
 - Avoid next time: 逐段验收必须同时看语义、TTS 文本、原始时长、倍率、实际开口/收尾与画面动作。连续铺满整段视频或规则化时间戳应视为时间证据风险，不能用任务成功、总时长正确或音轨干净替代。
+
+## 2026-08-02 - 同一音色分段独立 TTS 仍会产生前后音色和节奏漂移
+
+- Symptom: 口播翻译前后段选择同一个预置音色，听感仍明显不同；六段 Fenrir 的前四段与后两段还形成两组不同语速，拼接处的音色、语气和节奏变化可直接听出。
+- Evidence: version 1 为每个分析分段创建独立 KIE Gemini TTS child，每次请求都重新采样且旧温度为 `1`；真实六段的前四段约为 `1.44-1.67x`，后两段约为 `1.17-1.19x`。同名音色只约束 preset，不提供跨请求共享的说话人状态。
+- Root cause / fix: 架构级根因与永久合同见 `CLAUDE.md` #92。version 2 把全部译文按顺序放入一次 `temperature: 0` 的连续 TTS，只保留一个 `ttsBatch` 和一个 continuous child；固定本地 faster-whisper 找回每句真实声学边界，FFmpeg 从同一 WAV 逐句裁切并映射到原视频窗口。最终成品只保留新口播。
+- Regression check: `server/voiceoverContract.test.mjs` 与 `server/voiceoverTranslationRunner.test.mjs` 锁定新任务唯一 create、连续 child、单一 speaker/音色、`temperature: 0`、文本顺序、已有 provider ID 只恢复和 version 1 不升级；`scripts/probe-voiceover-translation.test.mjs` 锁定真实 child payload、`alignmentSimilarity`、声学/目标边界、逐句 `atempo`、纯新音轨及源/成品 H.264 stream hash。
+- Avoid next time: 只把多个独立请求的 temperature 调低不能建立跨段连续性，不能报告为已修复。跨段一致口播必须采用“一条视频一次连续 TTS + 离线强制对齐 + 单 WAV 分句映射”，并用付费 create 次数和最终媒体证据验收。
+
+## 2026-08-10 - 功能数据已回主项目不等于功能代码也已进入主版本
+
+- Symptom: 本地 3000/3100 端口和历史数据都存在，但视频模块没有“口播翻译”入口，已有测试任务也无法从页面看到。
+- Evidence: 常驻进程 cwd 与 LaunchAgent 均正确指向当前主项目，主数据包含口播任务；当前主基线却缺少 `VoiceoverTranslationWorkspace`、`voiceover_translation` 子功能和后端 capability，完整实现只存在于独立发布 worktree。
+- Root cause: 功能在临时 worktree 中持续验收，主分支同时独立演进；数据统一和运行目录纠偏已完成，但缺少“已验收功能必须合入当前主基线”的版本门禁。
+- Fix: 选择性移植完整口播提交链和真实 canary 后续修正到当前主基线，保留主版本已有安全/恢复逻辑；常驻服务继续只指向主项目。结构回归锁定 UI 入口、工作台、历史项目恢复、health/config/readiness 和生产 runner 接线。
+- Avoid next time: worktree 不能充当产品版本。切换主版本、备份或发布前，必须在当前主基线同时验证 UI 入口、后端 capability、历史任务水合和生产构建；端口健康、数据存在、临时分支能运行都不足以证明功能已交付。

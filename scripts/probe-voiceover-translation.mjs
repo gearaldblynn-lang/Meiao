@@ -1,29 +1,33 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, open, rm, stat } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   getVoiceoverConfig,
   normalizeVoiceoverCheckpoint,
 } from '../server/voiceoverContract.mjs';
-import { buildVoiceoverTtsGroups } from '../server/voiceoverAnalysis.mjs';
+import { buildVoiceoverContinuousTtsPlan } from '../server/voiceoverAnalysis.mjs';
 import {
   createMediaTranscodeService,
   inspectMp4Container,
+  resolvePackagedFfmpegPath,
 } from '../server/mediaTranscodeService.mjs';
 import { loadServerEnvFile } from '../server/envLoader.mjs';
 import {
-  alignVoiceoverGroups,
+  alignContinuousVoiceover,
   buildVocalOnlyAnalysisVideo,
+  calculateAtempo,
   extractVoiceoverAudio,
   mixVoiceoverResult,
+  runVoiceoverProcess,
 } from '../server/voiceoverAudio.mjs';
 import {
-  checkVoiceoverSeparationReadiness,
   separateVoiceover,
 } from '../server/voiceoverSeparation.mjs';
+import { alignVoiceoverTurns } from '../server/voiceoverForcedAlignment.mjs';
+import { checkVoiceoverRuntimeReadiness } from '../server/voiceoverRuntimeReadiness.mjs';
 import {
   getVoiceoverSourceMaxBytes,
   streamVoiceoverAssetToFile,
@@ -35,7 +39,8 @@ import {
 
 const MANAGED_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/u;
 const INTERNAL_JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u;
-const CHILD_KEY_TTS_PATTERN = /^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d{0,2})$/u;
+const CHILD_KEY_TTS_PATTERN = /^tts:(?:continuous|(?:0|[1-9]\d?)):attempt:(?:0|[1-9]\d{0,2})$/u;
+const CHILD_KEY_TTS_CONTINUOUS_PATTERN = /^tts:continuous:attempt:(?:0|[1-9]\d{0,2})$/u;
 const CHILD_KEY_GOLDEN_PATTERN = /^golden:attempt:(0|[1-9]\d{0,2})$/u;
 const TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const VOICEOVER_CHECKPOINT_STAGES = new Set([
@@ -52,6 +57,17 @@ const VOICEOVER_CHECKPOINT_STAGES = new Set([
 ]);
 const DEFAULT_POLL_INTERVAL_MS = 4_000;
 const DEFAULT_TIMEOUT_MS = 40 * 60_000;
+const DEFAULT_ALIGNMENT_MIN_SIMILARITY = 0.82;
+const NARRATION_PCM_SAMPLE_RATE = 8_000;
+const NARRATION_PCM_MAX_BYTES = 64 * 1024 * 1024;
+const NARRATION_SIMILARITY_MINIMUM = 0.95;
+const FIXTURE_CONTINUOUS_AUDIO_PATH = fileURLToPath(
+  new URL('../public/voiceover-previews/Charon.wav', import.meta.url),
+);
+const FIXTURE_DIALOGUE_TURNS = Object.freeze([Object.freeze({
+  speaker: 'Speaker 1',
+  text: '你好，这是一段口播音色试听。',
+})]);
 
 class VoiceoverProbeUsageError extends Error {
   constructor(message) {
@@ -63,6 +79,68 @@ class VoiceoverProbeUsageError extends Error {
 const clean = (value) => String(value || '').trim();
 const usageError = (message) => new VoiceoverProbeUsageError(message);
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+
+const pcmSamples = (buffer) => {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 2 || buffer.length % 2 !== 0) {
+    throw new Error('口播音轨 PCM 证据无效。');
+  }
+  const samples = new Int16Array(buffer.length / 2);
+  for (let index = 0; index < samples.length; index += 1) {
+    samples[index] = buffer.readInt16LE(index * 2);
+  }
+  return samples;
+};
+
+const pcmCorrelationAtLag = (source, target, lag, limit) => {
+  const sourceStart = Math.max(0, -lag);
+  const sourceEnd = Math.min(source.length, target.length - lag, sourceStart + limit);
+  const count = sourceEnd - sourceStart;
+  if (count < NARRATION_PCM_SAMPLE_RATE / 4) return 0;
+  let sumSource = 0;
+  let sumTarget = 0;
+  let sumSourceSquared = 0;
+  let sumTargetSquared = 0;
+  let sumProduct = 0;
+  for (let sourceIndex = sourceStart; sourceIndex < sourceEnd; sourceIndex += 1) {
+    const sourceValue = source[sourceIndex];
+    const targetValue = target[sourceIndex + lag];
+    sumSource += sourceValue;
+    sumTarget += targetValue;
+    sumSourceSquared += sourceValue * sourceValue;
+    sumTargetSquared += targetValue * targetValue;
+    sumProduct += sourceValue * targetValue;
+  }
+  const covariance = sumProduct - ((sumSource * sumTarget) / count);
+  const sourceVariance = sumSourceSquared - ((sumSource * sumSource) / count);
+  const targetVariance = sumTargetSquared - ((sumTarget * sumTarget) / count);
+  const denominator = Math.sqrt(sourceVariance * targetVariance);
+  return denominator > 0 ? Math.abs(covariance / denominator) : 0;
+};
+
+export function measurePcmSimilarity(sourceBuffer, targetBuffer) {
+  const source = pcmSamples(sourceBuffer);
+  const target = pcmSamples(targetBuffer);
+  const probeLimit = Math.min(source.length, target.length, NARRATION_PCM_SAMPLE_RATE * 30);
+  let bestLag = 0;
+  let bestScore = 0;
+  for (let lag = -1_024; lag <= 1_024; lag += 16) {
+    const score = pcmCorrelationAtLag(source, target, lag, probeLimit);
+    if (score > bestScore) {
+      bestScore = score;
+      bestLag = lag;
+    }
+  }
+  for (let lag = bestLag - 15; lag <= bestLag + 15; lag += 1) {
+    const score = pcmCorrelationAtLag(source, target, lag, probeLimit);
+    if (score > bestScore) {
+      bestScore = score;
+      bestLag = lag;
+    }
+  }
+  return Number(
+    pcmCorrelationAtLag(source, target, bestLag, Number.MAX_SAFE_INTEGER).toFixed(6),
+  );
+}
 
 const takeValue = (argv, index, option) => {
   const value = argv[index + 1];
@@ -286,6 +364,12 @@ const defaultQueryChildTask = async (childJobId, remote, deps) => {
     && validProviderContract
     && clean(payload.clientSubmissionKey) === `voiceover-child:${parentJobId}:${childKey}`,
   );
+  const dialogueTurns = Array.isArray(payload?.dialogueTurns)
+    ? payload.dialogueTurns.slice(0, 100).map((turn) => ({
+        speaker: clean(turn?.speaker),
+        text: typeof turn?.text === 'string' ? turn.text : '',
+      }))
+    : [];
   return {
     found: valid,
     ...(valid ? {
@@ -295,6 +379,12 @@ const defaultQueryChildTask = async (childJobId, remote, deps) => {
       taskType,
       provider,
       status: safeStatus(job.status),
+      ...(isTts ? {
+        temperature: payload?.temperature,
+        voiceName: clean(payload?.voiceName),
+        targetLanguage: clean(payload?.targetLanguage),
+        dialogueTurns,
+      } : {}),
     } : {}),
   };
 };
@@ -368,6 +458,14 @@ const buildSafeCheckpointEvidenceFromCheckpoint = (checkpoint) => {
     : null;
   const ttsGroups = (Array.isArray(checkpoint?.ttsGroups) ? checkpoint.ttsGroups : [])
     .slice(0, 100);
+  const ttsBatch = checkpoint?.ttsBatch
+    && typeof checkpoint.ttsBatch === 'object'
+    && !Array.isArray(checkpoint.ttsBatch)
+    ? checkpoint.ttsBatch
+    : null;
+  const ttsRenderVersion = [1, 2].includes(Number(checkpoint?.ttsRenderVersion))
+    ? Number(checkpoint.ttsRenderVersion)
+    : 1;
   const childJobIds = [];
   const addChildJobId = (value) => {
     const childJobId = clean(value);
@@ -378,12 +476,23 @@ const buildSafeCheckpointEvidenceFromCheckpoint = (checkpoint) => {
     ) childJobIds.push(childJobId);
   };
   addChildJobId(subtitleRemoval?.childJobId);
-  for (const group of ttsGroups) addChildJobId(group?.childJobId);
+  if (ttsBatch) addChildJobId(ttsBatch.childJobId);
+  else for (const group of ttsGroups) addChildJobId(group?.childJobId);
+  const ttsAttempts = ttsBatch ? [ttsBatch] : ttsGroups;
   return {
     finalCheckpointStage: safeCheckpointStage(checkpoint?.stage),
     analysisAttempt: boundedInteger(checkpoint?.analysisAttempt, 0, 0, 100),
     childJobIds,
-    ttsSummary: summarizeTtsStatuses(ttsGroups),
+    ttsRenderVersion,
+    continuousTtsChildCount: ttsBatch ? 1 : 0,
+    acousticTurnCount: ttsBatch ? ttsGroups.length : 0,
+    alignmentSimilarityAccepted: (
+      typeof checkpoint?.alignmentSimilarity === 'number'
+      && Number.isFinite(checkpoint.alignmentSimilarity)
+      && checkpoint.alignmentSimilarity >= DEFAULT_ALIGNMENT_MIN_SIMILARITY
+      && checkpoint.alignmentSimilarity <= 1
+    ),
+    ttsSummary: summarizeTtsStatuses(ttsAttempts),
     goldenSummary: {
       present: Boolean(subtitleRemoval),
       status: subtitleRemoval ? safeAttemptStatus(subtitleRemoval.status) : 'unknown',
@@ -435,8 +544,35 @@ const resolveFinalManagedIdentity = (job, baseUrl) => {
   });
 };
 
-const defaultVerifyFinalResult = async (identity, remote, deps) => {
+const decodeAudioToPcm = async (inputPath, outputPath, env, deps = {}) => {
+  const runProcess = deps.runProcess || runVoiceoverProcess;
+  const ffmpegPath = clean(env.MEIAO_FFMPEG_PATH) || resolvePackagedFfmpegPath();
+  await runProcess(ffmpegPath, [
+    '-v', 'error',
+    '-y',
+    '-i', inputPath,
+    '-map', '0:a:0',
+    '-vn',
+    '-ac', '1',
+    '-ar', String(NARRATION_PCM_SAMPLE_RATE),
+    '-c:a', 'pcm_s16le',
+    '-f', 's16le',
+    outputPath,
+  ]);
+  const metadata = await stat(outputPath);
+  if (!metadata.isFile() || metadata.size < 2 || metadata.size > NARRATION_PCM_MAX_BYTES) {
+    throw new Error('口播音轨 PCM 证据超出安全范围。');
+  }
+  return readFile(outputPath);
+};
+
+const defaultVerifyFinalResult = async (identity, remote, deps, context = {}) => {
   const fetchImpl = deps.fetchImpl || globalThis.fetch;
+  const sourceAssetId = clean(context.sourceAssetId);
+  const alignedAudioAssetId = clean(context.alignedAudioAssetId);
+  if (!MANAGED_ID_PATTERN.test(sourceAssetId) || !MANAGED_ID_PATTERN.test(alignedAudioAssetId)) {
+    throw new Error('口播翻译最终验证缺少源视频或对齐音轨身份。');
+  }
   const rangeResponse = await fetchImpl(identity.canonicalUrl, {
     method: 'GET',
     headers: authHeaders(remote.sessionToken, { Range: 'bytes=0-0' }),
@@ -445,29 +581,60 @@ const defaultVerifyFinalResult = async (identity, remote, deps) => {
     && clean(rangeResponse.headers?.get?.('content-range')).startsWith('bytes 0-0/');
   await Promise.resolve(rangeResponse.body?.cancel?.()).catch(() => null);
   const workspace = await mkdtemp(path.join(tmpdir(), 'meiao-voiceover-live-verify-'));
-  const outputPath = path.join(workspace, 'final.mp4');
+  const finalPath = path.join(workspace, 'final.mp4');
+  const sourcePath = path.join(workspace, 'source.mp4');
+  const alignedPath = path.join(workspace, 'aligned.wav');
+  const finalPcmPath = path.join(workspace, 'final.pcm');
+  const alignedPcmPath = path.join(workspace, 'aligned.pcm');
   try {
-    await streamVoiceoverAssetToFile({
-      remoteUrl: identity.canonicalUrl,
-      destinationPath: outputPath,
-      maxBytes: getVoiceoverSourceMaxBytes(deps.env || process.env),
-      timeoutMs: Math.min(remote.timeoutMs, 300_000),
-      deps: {
-        fetchImpl: (url, init = {}) => fetchImpl(url, {
-          ...init,
-          headers: authHeaders(remote.sessionToken, init.headers || {}),
-        }),
-      },
+    const authenticatedFetch = (url, init = {}) => fetchImpl(url, {
+      ...init,
+      headers: authHeaders(remote.sessionToken, init.headers || {}),
     });
+    const maxBytes = getVoiceoverSourceMaxBytes(deps.env || process.env);
+    const timeoutMs = Math.min(remote.timeoutMs, 300_000);
+    const streamAssetToFile = deps.streamAssetToFile || streamVoiceoverAssetToFile;
+    const downloadController = new AbortController();
+    const downloadResults = await Promise.allSettled([
+      [identity.canonicalUrl, finalPath],
+      [`${remote.baseUrl}/api/assets/file/${encodeURIComponent(sourceAssetId)}`, sourcePath],
+      [`${remote.baseUrl}/api/assets/file/${encodeURIComponent(alignedAudioAssetId)}`, alignedPath],
+    ].map(async ([remoteUrl, destinationPath]) => {
+      try {
+        return await streamAssetToFile({
+          remoteUrl,
+          destinationPath,
+          maxBytes,
+          timeoutMs,
+          signal: downloadController.signal,
+          deps: { fetchImpl: authenticatedFetch },
+        });
+      } catch (error) {
+        downloadController.abort();
+        throw error;
+      }
+    }));
+    const failedDownload = downloadResults.find(({ status }) => status === 'rejected');
+    if (failedDownload) throw failedDownload.reason;
     const service = createMediaTranscodeService({
       env: { ...(deps.env || process.env), MEIAO_MEDIA_TRANSCODE_ENABLED: '1' },
     });
-    const metadata = await service.probe(outputPath, 'video');
-    const container = await inspectMp4Container(outputPath);
+    const metadata = await service.probe(finalPath, 'video');
+    const container = await inspectMp4Container(finalPath);
+    const [sourceVideoHash, finalVideoHash, alignedPcm, finalPcm] = await Promise.all([
+      sha256VideoStream(sourcePath, deps.env || process.env, deps),
+      sha256VideoStream(finalPath, deps.env || process.env, deps),
+      decodeAudioToPcm(alignedPath, alignedPcmPath, deps.env || process.env, deps),
+      decodeAudioToPcm(finalPath, finalPcmPath, deps.env || process.env, deps),
+    ]);
     return {
       managedAsset: true,
       h264: metadata.videoCodec === 'h264',
       aac: metadata.audioCodec === 'aac',
+      narrationOnlyAudio: (
+        measurePcmSimilarity(alignedPcm, finalPcm) >= NARRATION_SIMILARITY_MINIMUM
+      ),
+      sourceVideoStreamPreserved: sourceVideoHash === finalVideoHash,
       rangeReadable,
       ftypPresent: Boolean(container.containerBrand),
       durationMs: Math.round(Number(metadata.durationSeconds) * 1000),
@@ -482,15 +649,6 @@ const verifiedDurationMs = (value) => {
   return Number.isSafeInteger(durationMs) && durationMs > 0 ? durationMs : 0;
 };
 
-const latestTtsGroups = (groups) => {
-  const latestByIndex = new Map();
-  for (const group of groups) {
-    const previous = latestByIndex.get(group.index);
-    if (!previous || group.attempt > previous.attempt) latestByIndex.set(group.index, group);
-  }
-  return [...latestByIndex.values()];
-};
-
 const translationMatchesAnalysis = (analysisSegments, translationSegments) => (
   analysisSegments.length === translationSegments.length
   && analysisSegments.every((analysisSegment, index) => {
@@ -503,10 +661,18 @@ const translationMatchesAnalysis = (analysisSegments, translationSegments) => (
   })
 );
 
+const alignmentMinSimilarity = (env = {}) => {
+  const configured = Number(env.MEIAO_VOICEOVER_ALIGNMENT_MIN_SIMILARITY);
+  return Number.isFinite(configured) && configured >= 0.5 && configured <= 1
+    ? configured
+    : DEFAULT_ALIGNMENT_MIN_SIMILARITY;
+};
+
 const requireCanonicalLiveCheckpoint = ({
   job,
   removeText,
   targetLanguage,
+  sourceAssetId,
   finalIdentity,
   durationMs,
   env,
@@ -528,6 +694,7 @@ const requireCanonicalLiveCheckpoint = ({
   });
   if (
     checkpoint.stage !== 'result_persisted'
+    || checkpoint.baseVideoAssetId !== sourceAssetId
     || checkpoint.finalAssetId !== finalIdentity.assetId
     || !checkpoint.analysis
     || !checkpoint.translation
@@ -546,32 +713,43 @@ const requireCanonicalLiveCheckpoint = ({
   ) {
     throw new Error('口播翻译持久化检查点与本次分析、文本或音色合同不一致。');
   }
-  const plannedGroups = buildVoiceoverTtsGroups({
+  if (checkpoint.ttsRenderVersion !== 2) {
+    throw new Error('口播翻译生产验收只接受连续 TTS 渲染版本。');
+  }
+  const continuousPlan = buildVoiceoverContinuousTtsPlan({
     segments: checkpoint.translation.segments,
     selectedVoiceName: checkpoint.translation.selectedVoiceName,
     maxInputTokens: config.ttsMaxInputTokens,
-    groupGapMs: config.groupGapMs,
   });
-  const latestGroups = latestTtsGroups(checkpoint.ttsGroups);
-  const latestByIndex = new Map(latestGroups.map((group) => [group.index, group]));
+  const ttsBatch = checkpoint.ttsBatch;
+  const acousticGroups = checkpoint.ttsGroups;
   if (
-    latestGroups.length !== plannedGroups.length
-    || plannedGroups.some((planned) => {
-      const group = latestByIndex.get(planned.groupIndex);
-      return (
-        !group
-        || group.startMs !== planned.startMs
-        || group.endMs !== planned.endMs
-      );
-    })
-    || latestGroups.some((group) => (
-      group.status !== 'succeeded'
-      || !INTERNAL_JOB_ID_PATTERN.test(group.childJobId)
-      || !MANAGED_ID_PATTERN.test(group.providerTaskId)
-      || !MANAGED_ID_PATTERN.test(group.assetId)
-    ))
+    ttsBatch?.status !== 'succeeded'
+    || !INTERNAL_JOB_ID_PATTERN.test(ttsBatch?.childJobId)
+    || !MANAGED_ID_PATTERN.test(ttsBatch?.providerTaskId)
+    || !MANAGED_ID_PATTERN.test(ttsBatch?.assetId)
+    || acousticGroups.length !== continuousPlan.segments.length
   ) {
-    throw new Error('口播翻译持久化检查点缺少已成功的最新 TTS 子任务证据。');
+    throw new Error('口播翻译持久化检查点缺少唯一且已成功的连续 TTS 子任务证据。');
+  }
+  const atempoEvidenceValid = acousticGroups.every((group, index) => {
+    const segment = checkpoint.translation.segments[index];
+    const expected = calculateAtempo({
+      actualDurationMs: group.actualDurationMs,
+      targetDurationMs: segment.endMs - segment.startMs,
+      minAtempo: config.minAtempo,
+      maxAtempo: config.maxAtempo,
+    });
+    return group.index === index
+      && group.startMs === segment.startMs
+      && group.endMs === segment.endMs
+      && group.atempo === expected;
+  });
+  if (!atempoEvidenceValid) {
+    throw new Error('口播翻译持久化检查点的逐句语速证据无效。');
+  }
+  if (checkpoint.alignmentSimilarity < alignmentMinSimilarity(env)) {
+    throw new Error('口播翻译持久化检查点的声学对齐相似度未达标。');
   }
   const subtitleRemoval = checkpoint.subtitleRemoval;
   if (
@@ -588,7 +766,55 @@ const requireCanonicalLiveCheckpoint = ({
   if (!removeText && subtitleRemoval !== undefined) {
     throw new Error('未启用去文案时不能接受 Golden 去文案检查点。');
   }
-  return checkpoint;
+  return Object.freeze({
+    checkpoint,
+    continuousPlan,
+    atempoEvidenceValid,
+  });
+};
+
+const requireCanonicalContinuousTtsChild = async ({
+  checkpoint,
+  continuousPlan,
+  parentJobId,
+  remote,
+  deps,
+}) => {
+  const query = deps.queryChildTask
+    || ((id) => defaultQueryChildTask(id, remote, deps));
+  const child = await query(checkpoint.ttsBatch.childJobId, remote);
+  const expectedChildKey = `tts:continuous:attempt:${checkpoint.ttsBatch.attempt}`;
+  const turns = Array.isArray(child?.dialogueTurns) ? child.dialogueTurns : [];
+  const speakers = new Set(turns.map((turn) => clean(turn?.speaker)).filter(Boolean));
+  const textOrderMatched = turns.length === continuousPlan.dialogueTurns.length
+    && turns.every((turn, index) => (
+      clean(turn?.speaker)
+      && turn?.text === continuousPlan.dialogueTurns[index].text
+    ));
+  const voiceMatched = child?.voiceName === continuousPlan.voiceName;
+  const temperatureZero = child?.temperature === 0;
+  if (
+    child?.found !== true
+    || child.childJobId !== checkpoint.ttsBatch.childJobId
+    || child.parentJobId !== parentJobId
+    || child.childKey !== expectedChildKey
+    || !CHILD_KEY_TTS_CONTINUOUS_PATTERN.test(child.childKey)
+    || child.taskType !== 'kie_tts'
+    || child.provider !== 'kie'
+    || child.status !== 'succeeded'
+    || child.targetLanguage && child.targetLanguage !== checkpoint.translation.targetLanguage
+    || speakers.size !== 1
+    || !textOrderMatched
+    || !voiceMatched
+    || !temperatureZero
+  ) {
+    throw new Error('连续 TTS 子任务的音色、文本顺序、温度或父任务身份不一致。');
+  }
+  return Object.freeze({
+    ttsTextOrderMatched: true,
+    ttsVoiceMatched: true,
+    ttsTemperatureZero: true,
+  });
 };
 
 const assertLocalRangeReadable = async (filePath) => {
@@ -608,10 +834,32 @@ const assertLocalRangeReadable = async (filePath) => {
   }
 };
 
+const sha256VideoStream = async (filePath, env, deps = {}) => {
+  const runProcess = deps.runProcess || runVoiceoverProcess;
+  const ffmpegPath = clean(env.MEIAO_FFMPEG_PATH) || resolvePackagedFfmpegPath();
+  const result = await runProcess(ffmpegPath, [
+    '-v', 'error',
+    '-i', filePath,
+    '-map', '0:v:0',
+    '-c', 'copy',
+    '-f', 'hash',
+    '-hash', 'sha256',
+    '-',
+  ]);
+  const match = String(result?.stdout || '').match(/^SHA256=([a-f0-9]{64})$/imu);
+  if (!match) throw new Error('无法验证口播翻译视频码流。');
+  return match[1].toLowerCase();
+};
+
 async function defaultRunFixtureProbe(fixturePath, { env, deps }) {
   const config = getVoiceoverConfig(env);
-  const readiness = await checkVoiceoverSeparationReadiness({ env });
-  if (!readiness.ready) throw new Error('本地 Demucs/FFmpeg readiness 未通过。');
+  const checkReadiness = deps.checkReadiness || checkVoiceoverRuntimeReadiness;
+  const readiness = await checkReadiness({
+    env,
+    config,
+    verifyModelLoad: true,
+  });
+  if (!readiness.ready) throw new Error('本地 Demucs/Whisper/FFmpeg readiness 未通过。');
   const mediaService = createMediaTranscodeService({
     env: { ...env, MEIAO_MEDIA_TRANSCODE_ENABLED: '1' },
   });
@@ -647,13 +895,26 @@ async function defaultRunFixtureProbe(fixturePath, { env, deps }) {
       outputPath: analysisVideoPath,
       config,
     });
-    await alignVoiceoverGroups({
-      groups: [{
-        index: 0,
-        startMs: 0,
-        endMs: durationMs,
-        audioPath: separated.vocalsPath,
-      }],
+    const alignTurns = deps.alignTurns || alignVoiceoverTurns;
+    const acoustic = await alignTurns({
+      audioPath: FIXTURE_CONTINUOUS_AUDIO_PATH,
+      turns: FIXTURE_DIALOGUE_TURNS,
+      targetLanguage: 'cmn',
+      env,
+      config,
+    });
+    const acousticGroups = acoustic.groups.map((group, index) => ({
+      index,
+      startMs: 0,
+      endMs: durationMs,
+      sourceStartMs: group.sourceStartMs,
+      sourceEndMs: group.sourceEndMs,
+      actualDurationMs: group.actualDurationMs,
+    }));
+    const alignAudio = deps.alignContinuousAudio || alignContinuousVoiceover;
+    const aligned = await alignAudio({
+      audioPath: FIXTURE_CONTINUOUS_AUDIO_PATH,
+      turns: acousticGroups,
       outputPath: alignedAudioPath,
       totalDurationMs: durationMs,
       config,
@@ -666,12 +927,22 @@ async function defaultRunFixtureProbe(fixturePath, { env, deps }) {
     });
     const container = await inspectMp4Container(finalVideoPath);
     const rangeReadable = await assertLocalRangeReadable(finalVideoPath);
+    const [sourceVideoHash, finalVideoHash] = await Promise.all([
+      sha256VideoStream(fixturePath, env, deps),
+      sha256VideoStream(finalVideoPath, env, deps),
+    ]);
     return Object.freeze({
       inputH264Aac,
       separationReady: true,
       vocalOnlyAnalysisMedia: true,
       alignmentReady: true,
+      alignmentSimilarityAccepted: (
+        acoustic.similarity >= alignmentMinSimilarity(env)
+      ),
+      continuousSourceCount: 1,
+      acousticTurnCount: aligned.groups.length,
       narrationOnlyMixReady: true,
+      videoStreamPreserved: sourceVideoHash === finalVideoHash,
       outputH264Aac: final.videoCodec === 'h264' && final.audioCodec === 'aac',
       durationWithinTolerance: Math.abs(final.durationMs - durationMs) <= config.durationToleranceMs,
       ftypPresent: Boolean(container.containerBrand),
@@ -684,8 +955,12 @@ async function defaultRunFixtureProbe(fixturePath, { env, deps }) {
 
 const readinessSummary = async (env, deps) => {
   const config = getVoiceoverConfig(env);
-  const check = deps.checkReadiness || checkVoiceoverSeparationReadiness;
-  const readiness = await check({ env, config });
+  const check = deps.checkReadiness || checkVoiceoverRuntimeReadiness;
+  const readiness = await check({
+    env,
+    config,
+    verifyModelLoad: true,
+  });
   const pythonReady = readiness?.pythonReady === true;
   const modelReady = readiness?.modelReady === true;
   const ffmpegReady = readiness?.ffmpegReady === true;
@@ -739,7 +1014,7 @@ const buildLiveRequest = (args, deps) => {
   };
 };
 
-const liveSummary = (job, args, verification, checkpoint) => {
+const liveSummary = (job, args, verification, checkpoint, ttsVerification) => {
   const parentJobId = clean(job?.id);
   return {
     mode: 'live',
@@ -750,10 +1025,13 @@ const liveSummary = (job, args, verification, checkpoint) => {
     finalManagedAssetPresent: verification.managedAsset === true,
     finalH264: verification.h264 === true,
     finalAac: verification.aac === true,
+    narrationOnlyAudio: verification.narrationOnlyAudio === true,
+    sourceVideoStreamPreserved: verification.sourceVideoStreamPreserved === true,
     rangeReadable: verification.rangeReadable === true,
     ftypPresent: verification.ftypPresent === true,
     removeText: args.removeText,
     goldenPaidStageRequested: args.removeText,
+    ...ttsVerification,
   };
 };
 
@@ -784,21 +1062,36 @@ export async function runVoiceoverProbe(argv = [], deps = {}) {
       }
       const runFixture = deps.runFixtureProbe || defaultRunFixtureProbe;
       const result = await runFixture(args.fixturePath, { env, deps });
+      const summary = {
+        mode: 'fixture',
+        inputH264Aac: result?.inputH264Aac === true,
+        separationReady: result?.separationReady === true,
+        vocalOnlyAnalysisMedia: result?.vocalOnlyAnalysisMedia === true,
+        alignmentReady: result?.alignmentReady === true,
+        alignmentSimilarityAccepted: result?.alignmentSimilarityAccepted === true,
+        continuousSourceCount: result?.continuousSourceCount === 1 ? 1 : 0,
+        acousticTurnCount: boundedInteger(result?.acousticTurnCount, 0, 0, 100),
+        narrationOnlyMixReady: result?.narrationOnlyMixReady === true,
+        videoStreamPreserved: result?.videoStreamPreserved === true,
+        outputH264Aac: result?.outputH264Aac === true,
+        durationWithinTolerance: result?.durationWithinTolerance === true,
+        ftypPresent: result?.ftypPresent === true,
+        rangeReadable: result?.rangeReadable === true,
+        providerCreateCalls: 0,
+      };
+      if (
+        Object.entries(summary).some(([key, value]) => (
+          !['mode', 'continuousSourceCount', 'acousticTurnCount', 'providerCreateCalls'].includes(key)
+          && value !== true
+        ))
+        || summary.continuousSourceCount !== 1
+        || summary.acousticTurnCount < 1
+      ) {
+        throw new Error('本地连续口播 fixture 未通过完整媒体与对齐证据。');
+      }
       return {
         exitCode: 0,
-        stdout: `${JSON.stringify({
-          mode: 'fixture',
-          inputH264Aac: result?.inputH264Aac === true,
-          separationReady: result?.separationReady === true,
-          vocalOnlyAnalysisMedia: result?.vocalOnlyAnalysisMedia === true,
-          alignmentReady: result?.alignmentReady === true,
-          narrationOnlyMixReady: result?.narrationOnlyMixReady === true,
-          outputH264Aac: result?.outputH264Aac === true,
-          durationWithinTolerance: result?.durationWithinTolerance === true,
-          ftypPresent: result?.ftypPresent === true,
-          rangeReadable: result?.rangeReadable === true,
-          providerCreateCalls: 0,
-        })}\n`,
+        stdout: `${JSON.stringify(summary)}\n`,
         stderr: '',
       };
     }
@@ -935,30 +1228,57 @@ export async function runVoiceoverProbe(argv = [], deps = {}) {
     }
     const finalIdentity = resolveFinalManagedIdentity(job, remote.baseUrl);
     const verifyFinal = deps.verifyFinalResult
-      || ((identity) => defaultVerifyFinalResult(identity, remote, { ...deps, env }));
-    const verification = await verifyFinal(finalIdentity, remote);
+      || ((identity, _remote, context) => defaultVerifyFinalResult(
+        identity,
+        remote,
+        { ...deps, env },
+        context,
+      ));
+    const verification = await verifyFinal(finalIdentity, remote, {
+      sourceAssetId: args.sourceAssetId,
+      alignedAudioAssetId: clean(job?.result?.voiceoverCheckpoint?.alignedAudioAssetId),
+    });
     const durationMs = verifiedDurationMs(verification?.durationMs);
     if (
       verification?.managedAsset !== true
       || verification?.h264 !== true
       || verification?.aac !== true
+      || verification?.narrationOnlyAudio !== true
+      || verification?.sourceVideoStreamPreserved !== true
       || verification?.rangeReadable !== true
       || verification?.ftypPresent !== true
       || durationMs === 0
     ) {
-      throw new Error('口播翻译最终托管视频未通过 H.264/AAC/Range/ftyp/时长验证。');
+      throw new Error('口播翻译最终托管视频未通过新口播纯音轨、原画面码流或媒体合同验证。');
     }
-    const checkpoint = requireCanonicalLiveCheckpoint({
+    const canonical = requireCanonicalLiveCheckpoint({
       job,
       removeText: args.removeText,
       targetLanguage: args.targetLanguage,
+      sourceAssetId: args.sourceAssetId,
       finalIdentity,
       durationMs,
       env,
     });
+    const ttsVerification = await requireCanonicalContinuousTtsChild({
+      checkpoint: canonical.checkpoint,
+      continuousPlan: canonical.continuousPlan,
+      parentJobId: jobId,
+      remote,
+      deps,
+    });
     return {
       exitCode: 0,
-      stdout: `${JSON.stringify(liveSummary(job, args, verification, checkpoint))}\n`,
+      stdout: `${JSON.stringify(liveSummary(
+        job,
+        args,
+        verification,
+        canonical.checkpoint,
+        {
+          ...ttsVerification,
+          atempoEvidenceValid: canonical.atempoEvidenceValid,
+        },
+      ))}\n`,
       stderr: '',
     };
   } catch (error) {

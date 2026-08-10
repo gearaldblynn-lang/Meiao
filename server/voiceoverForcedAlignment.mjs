@@ -1,7 +1,12 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
+import {
+  loadWhisperManifest,
+  verifyWhisperModelFiles,
+} from '../scripts/install-voiceover-demucs.mjs';
 import { buildVoiceoverError, getVoiceoverConfig } from './voiceoverContract.mjs';
+import { acquireVoiceoverHeavyProcessPermit } from './voiceoverHeavyProcessLimiter.mjs';
 
 const FASTER_WHISPER_VERSION = '1.2.1';
 const DEFAULT_ALIGNMENT_TIMEOUT_MS = 600_000;
@@ -10,6 +15,9 @@ const DEFAULT_MIN_SIMILARITY = 0.82;
 const DEFAULT_MIN_TURN_DURATION_MS = 40;
 const MAX_ALIGNMENT_INPUT_BYTES = 256 * 1024;
 const MAX_LOOKAHEAD_CHARACTERS = 12;
+const MAX_LOCAL_INDEL_CHARACTERS = 2;
+const PROCESS_TERMINATION_GRACE_MS = 5_000;
+const WHISPER_MANIFEST_URL = new URL('../deploy/voiceover/whisper-model.json', import.meta.url);
 const ALIGNMENT_ENV_ALLOWLIST = Object.freeze([
   'LANG',
   'LC_ALL',
@@ -58,10 +66,10 @@ const PYTHON_ALIGNMENT_SCRIPT = [
   'kwargs = {',
   '    "beam_size": 5,',
   '    "temperature": 0,',
-  '    "condition_on_previous_text": True,',
+  '    "condition_on_previous_text": False,',
   '    "word_timestamps": True,',
   '    "vad_filter": False,',
-  '    "initial_prompt": payload["initialPrompt"],',
+  '    "initial_prompt": None,',
   '}',
   'if payload.get("language"):',
   '    kwargs["language"] = payload["language"]',
@@ -151,6 +159,13 @@ function normalizedAlignmentConfig(env, providedConfig) {
       2_000,
       true,
     ),
+    separationConcurrency: boundedNumber(
+      base.separationConcurrency ?? env.MEIAO_VOICEOVER_SEPARATION_CONCURRENCY,
+      1,
+      1,
+      2,
+      true,
+    ),
   });
 }
 
@@ -181,6 +196,9 @@ function defaultRunProcess(command, args, {
   maxOutputBytes,
   env,
   spawnProcess = spawn,
+  killProcessGroup = defaultKillProcessGroup,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -203,16 +221,37 @@ function defaultRunProcess(command, args, {
     let stderr = '';
     let outputBytes = 0;
     let settled = false;
+    let terminalError = null;
+    let killTimer = null;
+    let closeTimer = null;
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimer(timer);
+      if (killTimer) clearTimer(killTimer);
+      if (closeTimer) clearTimer(closeTimer);
       signal?.removeEventListener('abort', onAbort);
       callback(value);
     };
     const terminate = (error) => {
-      try { child.kill?.('SIGKILL'); } catch {}
-      finish(reject, error);
+      if (terminalError) return;
+      terminalError = error;
+      try { killProcessGroup(child?.pid, 'SIGTERM'); } catch {}
+      killTimer = setTimer(() => {
+        try { killProcessGroup(child?.pid, 'SIGKILL'); } catch {}
+        closeTimer = setTimer(() => {
+          if (settled) return;
+          Object.defineProperty(terminalError, 'releasePermitWhenClosed', {
+            value: closed,
+            enumerable: false,
+          });
+          finish(reject, terminalError);
+        }, PROCESS_TERMINATION_GRACE_MS);
+        closeTimer?.unref?.();
+      }, PROCESS_TERMINATION_GRACE_MS);
+      killTimer?.unref?.();
     };
     const append = (target, chunk) => {
       if (settled) return;
@@ -226,7 +265,7 @@ function defaultRunProcess(command, args, {
       else stderr += text;
     };
     const onAbort = () => terminate(abortError());
-    const timer = setTimeout(() => {
+    const timer = setTimer(() => {
       terminate(Object.assign(new Error('voiceover alignment timed out'), {
         code: 'voiceover_alignment_timeout',
       }));
@@ -235,14 +274,26 @@ function defaultRunProcess(command, args, {
     signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout?.on('data', (chunk) => append('stdout', chunk));
     child.stderr?.on('data', (chunk) => append('stderr', chunk));
-    child.once?.('error', () => finish(reject, unavailableError()));
-    child.once?.('close', (exitCode) => finish(resolve, { exitCode, stdout, stderr }));
+    child.once?.('error', () => {
+      if (terminalError) return;
+      finish(reject, unavailableError());
+    });
+    child.once?.('close', (exitCode) => {
+      resolveClosed();
+      if (terminalError) finish(reject, terminalError);
+      else finish(resolve, { exitCode, stdout, stderr });
+    });
     try {
       child.stdin?.end(input);
     } catch {
       terminate(unavailableError());
     }
   });
+}
+
+function defaultKillProcessGroup(pid, signal) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try { process.kill(-pid, signal); } catch {}
 }
 
 function assertKnownKeys(value, allowed) {
@@ -314,6 +365,7 @@ function findWithin(characters, start, target) {
 
 function mapExpectedCharacters(expected, recognized) {
   const mappings = new Array(expected.length);
+  const recognizedCharacters = recognized.map(({ character }) => character);
   let expectedIndex = 0;
   let recognizedIndex = 0;
   let exactMatches = 0;
@@ -325,7 +377,6 @@ function mapExpectedCharacters(expected, recognized) {
       recognizedIndex += 1;
       continue;
     }
-    const recognizedCharacters = recognized.map(({ character }) => character);
     const recognizedMatch = findWithin(
       recognizedCharacters,
       recognizedIndex,
@@ -338,11 +389,17 @@ function mapExpectedCharacters(expected, recognized) {
     );
     const recognizedDistance = recognizedMatch < 0 ? Infinity : recognizedMatch - recognizedIndex;
     const expectedDistance = expectedMatch < 0 ? Infinity : expectedMatch - expectedIndex;
-    if (recognizedDistance < expectedDistance) {
+    if (
+      recognizedDistance <= MAX_LOCAL_INDEL_CHARACTERS
+      && recognizedDistance < expectedDistance
+    ) {
       recognizedIndex = recognizedMatch;
       continue;
     }
-    if (expectedDistance < Infinity) {
+    if (
+      expectedDistance <= MAX_LOCAL_INDEL_CHARACTERS
+      && expectedDistance < recognizedDistance
+    ) {
       expectedIndex = expectedMatch;
       continue;
     }
@@ -473,6 +530,16 @@ export async function checkVoiceoverAlignmentReadiness({
   }
   const runProcess = deps.runProcess || defaultRunProcess;
   try {
+    const manifest = await (deps.loadWhisperManifest || loadWhisperManifest)(
+      WHISPER_MANIFEST_URL,
+      deps,
+    );
+    const inventory = await (deps.verifyWhisperModelFiles || verifyWhisperModelFiles)({
+      manifest,
+      modelDir: config.whisperModelDir,
+      deps,
+    });
+    if (!inventory?.ready) throw unavailableError();
     const result = await runProcess(
       config.alignmentPython,
       ['-c', PYTHON_READINESS_SCRIPT],
@@ -528,12 +595,15 @@ export async function alignVoiceoverTurns({
     audioPath,
     modelPath: config.whisperModelDir,
     language: resolveVoiceoverWhisperLanguage(targetLanguage) || null,
-    initialPrompt: normalizedTurns.map(({ text }) => text).join('\n'),
   });
   if (Buffer.byteLength(processInput, 'utf8') > MAX_ALIGNMENT_INPUT_BYTES) {
     throw alignmentError();
   }
   const runProcess = deps.runProcess || defaultRunProcess;
+  const acquirePermit = deps.acquireHeavyProcessPermit
+    || acquireVoiceoverHeavyProcessPermit;
+  const release = await acquirePermit(signal, config.separationConcurrency);
+  let releaseAfterClose = null;
   try {
     const result = await runProcess(
       config.alignmentPython,
@@ -544,6 +614,10 @@ export async function alignVoiceoverTurns({
         timeoutMs: config.alignmentTimeoutMs,
         maxOutputBytes: config.alignmentMaxOutputBytes,
         env: buildAlignmentProcessEnv(env, config.alignmentPython),
+        ...(deps.spawnProcess ? { spawnProcess: deps.spawnProcess } : {}),
+        ...(deps.killProcessGroup ? { killProcessGroup: deps.killProcessGroup } : {}),
+        ...(deps.setTimeout ? { setTimer: deps.setTimeout } : {}),
+        ...(deps.clearTimeout ? { clearTimer: deps.clearTimeout } : {}),
       },
     );
     const recognition = parseProcessJson(result, config.alignmentMaxOutputBytes);
@@ -554,8 +628,20 @@ export async function alignVoiceoverTurns({
       minTurnDurationMs: config.alignmentMinTurnDurationMs,
     });
   } catch (error) {
+    if (error?.releasePermitWhenClosed) {
+      releaseAfterClose = error.releasePermitWhenClosed.then(release);
+    }
     if (error?.name === 'AbortError') throw error;
     if (error?.code === 'voiceover_alignment_unavailable') throw error;
-    throw alignmentError();
+    const normalizedError = alignmentError();
+    if (error?.releasePermitWhenClosed) {
+      Object.defineProperty(normalizedError, 'releasePermitWhenClosed', {
+        value: error.releasePermitWhenClosed,
+        enumerable: false,
+      });
+    }
+    throw normalizedError;
+  } finally {
+    if (!releaseAfterClose) release();
   }
 }

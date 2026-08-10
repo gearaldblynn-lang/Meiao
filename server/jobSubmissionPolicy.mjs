@@ -196,12 +196,14 @@ export const resolveJobSubmissionPolicy = ({
     }
     const parentJobId = String(payload?.parentJobId || '').trim();
     const childKey = String(payload?.childKey || '').trim();
-    const childMatch = childKey.match(/^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d*)$/u);
+    const childMatch = childKey.match(
+      /^tts:(?:continuous|0|[1-9]\d?):attempt:(0|[1-9]\d{0,2})$/u,
+    );
     if (
       payload?.executionOwner !== 'parent'
       || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/u.test(parentJobId)
       || !childMatch
-      || !Number.isSafeInteger(Number(childMatch?.[2]))
+      || !Number.isSafeInteger(Number(childMatch?.[1]))
     ) {
       throw createPolicyError(
         'parent_owned_job_invalid',

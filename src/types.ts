@@ -158,6 +158,7 @@ export interface VoiceoverCheckpointV1 {
   backgroundAssetId?: string;
   analysisEvidenceVersion?: number;
   alignmentVersion?: number;
+  alignmentSimilarity?: number;
   ttsAttemptBase?: number;
   ttsRenderVersion?: 1 | 2;
   ttsBatch?: VoiceoverTtsBatch;

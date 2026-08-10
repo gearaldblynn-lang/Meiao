@@ -38,8 +38,8 @@
 
 ### 短视频 / 口播翻译
 
-- 输入必须是当前登录账号拥有的梅奥托管视频。流程为从原视频提取音轨、本地非量化 Demucs `mdx` 分离人声、Gemini 结合人声与原画面可见字幕完成单次分析和翻译、KIE Gemini 3.1 Flash TTS 按每个口播时间段独立合成、本地对齐，并用新口播完全替换原视频音轨，再把 H.264/AAC MP4 作为托管结果写回原任务卡。成品不保留原口播、背景音乐或环境声，后期可重新配乐。
-- 每段新口播按自己的持久时间窗独立对齐：长语音在 `maxAtempo` 内加速，短语音可在 `minAtempo` 内安全减速；仍短于时间窗时把剩余静音均分到语音前后。超出可理解速度范围时任务失败，不截断口播，也不删除或篡改语义来硬塞时长。
+- 输入必须是当前登录账号拥有的梅奥托管视频。流程为从原视频提取音轨、本地非量化 Demucs `mdx` 分离人声、Gemini 结合人声与原画面可见字幕完成单次分析和翻译，再把全部译文以同一音色、`temperature: 0` 交给 KIE Gemini 3.1 Flash TTS 一次性连续合成。固定的离线 faster-whisper 从这一个 WAV 恢复每句真实声学边界，本地 FFmpeg 再逐句映射回原视频口播窗口。成品用新口播完全替换原视频音轨，不保留原口播、背景音乐或环境声，后期可重新配乐。
+- 每句新口播从同一个连续 WAV 裁切并按自己的持久时间窗对齐：长语音在 `maxAtempo` 内加速，短语音可在 `minAtempo` 内安全减速；仍短于时间窗时把剩余静音均分到语音前后。低 transcript 相似度、缺失或重叠声学边界、超出可理解速度范围都会 fail closed，不按比例猜切、不截断口播，也不删除或篡改语义来硬塞时长。
 - “同时去文案”是可选 Golden 阶段，默认区域为底部 30%。Golden 结果只作为最终无字幕底片，原视频始终是音频提取和语义分析证据；它会增加一次 Golden 计费边界，关闭该选项不会调用 Golden。
 - 本地和腾讯云都使用同一套 readiness、父子任务检查点和托管素材合同；旧分析证据或旧对齐算法的未完成检查点必须升级后重跑，不能静默复用。正式发布必须在服务端确认 `voiceoverTranslation.ready=true`，并用最小真实任务逐段验收原文、译文、TTS 文本身份、实际起止位置、画面动作和最终资源链。
 - 回滚只把 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=0` 并正常 reload，停止新提交；历史任务、原视频和已经托管的翻译结果继续可查看和下载。
@@ -228,7 +228,7 @@ npm run dev
 
 ### 5.1 口播翻译环境合同
 
-应用运行时数值越界或非法值都回落到保守默认值；路径和密钥只存在服务端，不进入公开配置、health 或探针输出。两个 Demucs 一次性安装网络旋钮只用于安装命令、无需持久化，非法值会在创建 venv 前 fail-closed。
+应用运行时数值越界或非法值都回落到保守默认值；路径和密钥只存在服务端，不进入公开配置、health 或探针输出。两个一次性安装网络旋钮只用于安装 Demucs、faster-whisper 和固定模型，无需持久化，非法值会在创建 venv 前 fail-closed。
 
 | 变量 | 默认值 | 合法范围 / 合同 |
 |---|---:|---|
@@ -236,16 +236,22 @@ npm run dev
 | `MEIAO_VOICEOVER_SEPARATION_PYTHON` | 空 | 运维提供的 venv Python 绝对路径 |
 | `MEIAO_VOICEOVER_DEMUCS_MODEL` | `mdx` | 仅 `mdx` |
 | `MEIAO_VOICEOVER_DEMUCS_MODEL_DIR` | 空 | Git 和 release 目录外的模型绝对路径 |
+| `MEIAO_VOICEOVER_ALIGNMENT_PYTHON` | 空 | 固定 Python 3.11 venv；通常与分离 Python 相同 |
+| `MEIAO_VOICEOVER_WHISPER_MODEL_DIR` | 空 | Git 和 release 目录外的 faster-whisper base 固定 revision |
+| `MEIAO_VOICEOVER_ALIGNMENT_TIMEOUT_MS` | `600000` | 整数 `30000-3600000` |
+| `MEIAO_VOICEOVER_ALIGNMENT_MAX_OUTPUT_BYTES` | `524288` | 整数 `16384-2097152`；超过即终止子进程 |
+| `MEIAO_VOICEOVER_ALIGNMENT_MIN_SIMILARITY` | `0.82` | `0.5-1`；低于阈值禁止进入 FFmpeg |
+| `MEIAO_VOICEOVER_ALIGNMENT_MIN_TURN_DURATION_MS` | `40` | 整数 `20-2000` |
 | `MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS` | `600` | 一次性安装 socket 超时；整数 `30-3600` 秒 |
 | `MEIAO_VOICEOVER_PIP_RETRIES` | `8` | 一次性安装单连接重试；整数 `0-20` |
-| `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY` | `1` | 整数 `1-2`；生产首发保持 `1` |
+| `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY` | `1` | 整数 `1-2`；Demucs/Whisper 共用 FIFO 许可，生产保持 `1` |
 | `MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS` | `3600000` | 整数 `300000-7200000` |
 | `MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS` | `120000` | 整数 `30000-180000`；仅发布前独立模型加载门禁，启动不加载 |
 | `MEIAO_GEMINI_INLINE_DATA_MAX_BYTES` | `12582912` | 整数 `1024-15728640`；Gemini 分析内联音频字节上限，超限在付费提交前拒绝 |
 | `MEIAO_VOICEOVER_MIN_ATEMPO` | `0.75` | `0.5-1`；短口播可安全减速到该下限，并在原时间窗内居中 |
 | `MEIAO_VOICEOVER_MAX_ATEMPO` | `1.75` | `1-2` |
 | `MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS` | `8192` | 整数 `1-8192`，不得超过语音模型上限 |
-| `MEIAO_VOICEOVER_GROUP_GAP_MS` | `800` | 整数 `0-3000`；保留兼容，当前每个口播时间段独立 TTS |
+| `MEIAO_VOICEOVER_GROUP_GAP_MS` | `800` | 整数 `0-3000`；仅供 version 1 历史检查点恢复 |
 | `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS` | `150` | 整数 `0-1000` |
 | `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND` | `24` | 整数 `16-512`；空格分词语言提示同时限制约 3 词/秒 |
 | `MEIAO_VOICEOVER_FADE_MS` | `40` | 整数 `0-200` |
@@ -280,9 +286,9 @@ test -n "$MEIAO_VOICEOVER_FIXTURE_PATH"
 npm run probe:voiceover-translation -- --fixture-path "$MEIAO_VOICEOVER_FIXTURE_PATH"
 ```
 
-fixture 只运行本机 FFmpeg/Demucs，验证 H.264/AAC 输入、人声/背景输出、人声分析媒体、对齐、成品仅含新口播、H.264/AAC 最终视频、时长容差、`ftyp` 和本地字节区间读取；不会调用 Gemini、KIE 或 Golden。`--resume-parent-job-id` / `--resume-child-task-id` 只查询已有任务。只有 `--live --source-asset-id <明确托管ID> --target-language <code>` 可以创建任务，且还必须配置受认证 base URL、会话和一次性 `MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1`；`--remove-text` 会先提示额外 Golden 费用。
+fixture 只运行本机 FFmpeg/Demucs/faster-whisper，使用一个已提交的连续 WAV 验证声学相似度、声学边界、逐句 `atempo`、成品仅含新口播、源/成品 H.264 码流 SHA-256 一致、H.264/AAC、时长容差、`ftyp` 和本地字节区间读取；不会调用 Gemini、KIE 或 Golden。`--resume-parent-job-id` / `--resume-child-task-id` 只查询已有任务。只有 `--live --source-asset-id <明确托管ID> --target-language <code>` 可以创建任务，且还必须配置受认证 base URL、会话和一次性 `MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1`；`--remove-text` 会先提示额外 Golden 费用。
 
-远程探针使用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 作为梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 只能在当前 shell/命令临时注入并在执行后清除，不能写入任何 env 文件；`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 也只接受探针启动前的单次命令环境，持久化在 `.env.server` / `.env.local` 中会被忽略。live 和失败证据会输出安全的内部 `parentJobId` / `childJobId`；`--resume-child-task-id` 只接受该内部 `childJobId` 并直查 `/api/jobs/:id`，不会按 `providerTaskId` 搜索或扫描父任务列表。
+远程探针使用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 作为梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。成功验收要求 version 2 只有一个 `ttsBatch` 和 `tts:continuous` child，并核对 child 的音色、`temperature: 0`、`dialogueTurns` 文本顺序、`alignmentSimilarity`、声学/目标窗口、每句 `atempo`、aligned WAV 与成品音轨相关性及原画面码流哈希。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 只能在当前 shell/命令临时注入并在执行后清除，不能写入任何 env 文件；`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 也只接受探针启动前的单次命令环境，持久化在 `.env.server` / `.env.local` 中会被忽略。输出只保留安全布尔值、数量和内部 `parentJobId` / `childJobId`；`--resume-child-task-id` 只接受该内部 `childJobId` 并直查 `/api/jobs/:id`，不会按 `providerTaskId` 搜索或扫描父任务列表。
 
 计费边界：本机 Demucs 只消耗腾讯云计算资源，没有第三方按次费用；Gemini 分析/翻译、KIE TTS，以及可选 Golden 都可能计费。技术验收（任务/检查点/托管素材、H.264/AAC、Range、重启恢复）、语义验收（原文、译文、TTS 文本和画面动作逐段对应）与感知验收（原口播、背景音乐和环境声均不可辨，目标语言、语速和起止位置正确，画面不变）必须分别记录，自动化通过不能代替真人试听/观看。
 

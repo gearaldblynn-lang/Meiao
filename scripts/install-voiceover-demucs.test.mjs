@@ -9,8 +9,10 @@ import { fileURLToPath } from 'node:url';
 
 import {
   loadDemucsManifest,
+  loadWhisperManifest,
   runInstaller,
   verifyDemucsModelFiles,
+  verifyWhisperModelFiles,
 } from './install-voiceover-demucs.mjs';
 
 const mdxYaml = `models: ['0d19c1c6', '7ecf8ec1', 'c511e2ab', '7d865c68']\nweights: [\n  [1., 1., 0., 0.],\n  [0., 1., 0., 0.],\n  [1., 0., 1., 1.],\n  [1., 0., 1., 1.],\n]\nsegment: 44\n`;
@@ -56,12 +58,16 @@ test('Linux CPU lock controls only PyPI and official PyTorch CPU sources and has
   assert.match(source, /^torch==2\.7\.1\+cpu$/m);
   assert.match(source, /^torchaudio==2\.7\.1\+cpu$/m);
   assert.match(source, /^soundfile==0\.13\.1$/m);
+  assert.match(source, /^faster-whisper==1\.2\.1$/m);
+  assert.match(source, /^ctranslate2==4\.6\.0$/m);
   assert.match(lock, /^--index-url https:\/\/pypi\.org\/simple$/m);
   assert.match(lock, /^--extra-index-url https:\/\/download\.pytorch\.org\/whl\/cpu$/m);
   assert.match(lock, /^torch==2\.7\.1\+cpu \\/m);
   assert.match(lock, /^torchaudio==2\.7\.1\+cpu \\/m);
   assert.match(lock, /^soundfile==0\.13\.1 \\/m);
-  assertEveryPinHasHashes(lock, 20);
+  assert.match(lock, /^faster-whisper==1\.2\.1 \\/m);
+  assert.match(lock, /^ctranslate2==4\.6\.0 \\/m);
+  assertEveryPinHasHashes(lock, 30);
   const buildLock = await readFile(new URL('../deploy/voiceover/build-requirements.lock', import.meta.url), 'utf8');
   assert.match(buildLock, /^setuptools==80\.9\.0 \\/m);
   assert.match(buildLock, /^wheel==0\.45\.1 \\/m);
@@ -77,12 +83,84 @@ test('macOS arm64 lock uses official PyPI torch packages and hashes every pin', 
   assert.match(source, /^torch==2\.7\.1$/m);
   assert.match(source, /^torchaudio==2\.7\.1$/m);
   assert.match(source, /^soundfile==0\.13\.1$/m);
+  assert.match(source, /^faster-whisper==1\.2\.1$/m);
+  assert.match(source, /^ctranslate2==4\.6\.0$/m);
   assert.match(lock, /^--index-url https:\/\/pypi\.org\/simple$/m);
   assert.doesNotMatch(lock, /download\.pytorch\.org/);
   assert.match(lock, /^torch==2\.7\.1 \\/m);
   assert.match(lock, /^torchaudio==2\.7\.1 \\/m);
   assert.match(lock, /^soundfile==0\.13\.1 \\/m);
-  assertEveryPinHasHashes(lock, 20);
+  assert.match(lock, /^faster-whisper==1\.2\.1 \\/m);
+  assert.match(lock, /^ctranslate2==4\.6\.0 \\/m);
+  assertEveryPinHasHashes(lock, 30);
+});
+
+test('shipped Whisper manifest pins the exact official faster-whisper base inventory', async () => {
+  const manifest = await loadWhisperManifest(
+    new URL('../deploy/voiceover/whisper-model.json', import.meta.url),
+  );
+  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.repository, 'Systran/faster-whisper-base');
+  assert.equal(manifest.revision, 'ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66');
+  assert.deepEqual(manifest.runtime, {
+    package: 'faster-whisper',
+    version: '1.2.1',
+    ctranslate2Version: '4.6.0',
+    device: 'cpu',
+    computeType: 'int8',
+  });
+  assert.deepEqual(manifest.files, [
+    {
+      name: 'config.json',
+      url: 'https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66/config.json',
+      size: 2309,
+      sha256: '56a6d8110d311f19c8f0471e562832c7527f146b567275bfca59fcf7c184da9a',
+    },
+    {
+      name: 'model.bin',
+      url: 'https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66/model.bin',
+      size: 145217532,
+      sha256: 'd01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9',
+    },
+    {
+      name: 'tokenizer.json',
+      url: 'https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66/tokenizer.json',
+      size: 2203239,
+      sha256: 'fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab',
+    },
+    {
+      name: 'vocabulary.txt',
+      url: 'https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66/vocabulary.txt',
+      size: 459861,
+      sha256: '34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913',
+    },
+  ]);
+});
+
+test('Whisper model verification requires the exact regular-file inventory, sizes, and hashes', async (t) => {
+  const root = await withTempRoot(t);
+  const modelDir = join(root, 'whisper');
+  await (await import('node:fs/promises')).mkdir(modelDir);
+  const bodies = new Map([
+    ['config.json', Buffer.from('config')],
+    ['model.bin', Buffer.from('model')],
+    ['tokenizer.json', Buffer.from('tokenizer')],
+    ['vocabulary.txt', Buffer.from('vocabulary')],
+  ]);
+  const manifest = testWhisperManifest(bodies);
+  for (const [name, body] of bodies) await writeFile(join(modelDir, name), body);
+
+  assert.equal((await verifyWhisperModelFiles({ manifest, modelDir })).ready, true);
+  await writeFile(join(modelDir, 'unexpected.json'), '{}');
+  assert.equal((await verifyWhisperModelFiles({ manifest, modelDir })).ready, false);
+  await rm(join(modelDir, 'unexpected.json'));
+  await writeFile(join(modelDir, 'model.bin'), 'drift');
+  assert.equal((await verifyWhisperModelFiles({ manifest, modelDir })).ready, false);
+  await rm(join(modelDir, 'model.bin'));
+  const linkedModel = join(root, 'linked-model.bin');
+  await writeFile(linkedModel, bodies.get('model.bin'));
+  await symlink(linkedModel, join(modelDir, 'model.bin'));
+  assert.equal((await verifyWhisperModelFiles({ manifest, modelDir })).ready, false);
 });
 
 test('model verification requires exact byte size and sha256', async (t) => {
@@ -109,16 +187,26 @@ test('model verification requires exact byte size and sha256', async (t) => {
 test('installer check is read-only and does not download or create a venv', async (t) => {
   const root = await withTempRoot(t);
   const calls = [];
+  const whisperManifestPath = join(root, 'whisper-manifest.json');
+  const whisperModelDir = join(root, 'whisper');
+  await writeFile(whisperManifestPath, JSON.stringify(testWhisperManifest(new Map([
+    ['config.json', Buffer.from('config')],
+    ['model.bin', Buffer.from('model')],
+    ['tokenizer.json', Buffer.from('tokenizer')],
+    ['vocabulary.txt', Buffer.from('vocabulary')],
+  ]))));
   const result = await runInstaller(['--check'], {
     paths: {
       requirementsLock: join(root, 'requirements.lock'), requirementsIn: join(root, 'requirements.in'),
       manifestPath: join(root, 'manifest.json'), yamlPath: join(root, 'mdx.yaml'),
       venvDir: join(root, 'venv'), modelDir: join(root, 'models'),
+      whisperManifestPath, whisperModelDir,
     },
     spawnProcess: async (...args) => { calls.push(args); return { exitCode: 0 }; },
     downloadToFile: async () => { throw new Error('must not download'); },
   });
   assert.equal(result.mode, 'check');
+  assert.equal(result.whisperReady, false);
   assert.equal(calls.length, 0);
   assert.equal(result.downloadCalls, 0);
 });
@@ -134,11 +222,79 @@ test('installer check uses modelDir/mdx.yaml rather than the source YAML as runt
   await writeFile(yamlPath, mdxYaml);
   const paths = { manifestPath, yamlPath, modelDir, venvDir: join(root, 'venv'), requirementsLock: join(root, 'requirements.lock'), buildRequirementsLock: join(root, 'build.lock') };
   const missingRuntimeYaml = await runInstaller(['--check'], { paths });
-  assert.deepEqual(missingRuntimeYaml, { mode: 'check', yamlReady: false, modelReady: false, downloadCalls: 0 });
+  assert.deepEqual(missingRuntimeYaml, {
+    mode: 'check',
+    yamlReady: false,
+    modelReady: false,
+    whisperReady: false,
+    downloadCalls: 0,
+  });
   await (await import('node:fs/promises')).mkdir(modelDir);
   await writeFile(join(modelDir, 'mdx.yaml'), 'models: []\n');
   const driftedRuntimeYaml = await runInstaller(['--check'], { paths });
-  assert.deepEqual(driftedRuntimeYaml, { mode: 'check', yamlReady: false, modelReady: false, downloadCalls: 0 });
+  assert.deepEqual(driftedRuntimeYaml, {
+    mode: 'check',
+    yamlReady: false,
+    modelReady: false,
+    whisperReady: false,
+    downloadCalls: 0,
+  });
+});
+
+test('explicit Whisper download verifies all files before publishing one complete directory', async (t) => {
+  const root = await withTempRoot(t);
+  const whisperModelDir = join(root, 'faster-whisper-base');
+  const whisperManifestPath = join(root, 'whisper-manifest.json');
+  const bodies = new Map([
+    ['config.json', Buffer.from('config')],
+    ['model.bin', Buffer.from('model')],
+    ['tokenizer.json', Buffer.from('tokenizer')],
+    ['vocabulary.txt', Buffer.from('vocabulary')],
+  ]);
+  await writeFile(whisperManifestPath, JSON.stringify(testWhisperManifest(bodies)));
+  const urls = [];
+  const result = await runInstaller(['--download-whisper-model'], {
+    paths: { whisperManifestPath, whisperModelDir },
+    downloadToFile: async (url, target) => {
+      urls.push(url);
+      const name = new URL(url).pathname.split('/').at(-1);
+      await writeFile(target, bodies.get(name));
+    },
+  });
+  assert.equal(result.mode, 'download-whisper-model');
+  assert.equal(result.whisperReady, true);
+  assert.equal(result.downloadCalls, 4);
+  assert.deepEqual(urls, [...bodies.keys()].map((name) => (
+    `https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66/${name}`
+  )));
+  assert.deepEqual((await (await import('node:fs/promises')).readdir(whisperModelDir)).sort(), [...bodies.keys()].sort());
+});
+
+test('Whisper publication never overwrites a target directory which appears during download', async (t) => {
+  const root = await withTempRoot(t);
+  const whisperModelDir = join(root, 'faster-whisper-base');
+  const whisperManifestPath = join(root, 'whisper-manifest.json');
+  const bodies = new Map([
+    ['config.json', Buffer.from('config')],
+    ['model.bin', Buffer.from('model')],
+    ['tokenizer.json', Buffer.from('tokenizer')],
+    ['vocabulary.txt', Buffer.from('vocabulary')],
+  ]);
+  await writeFile(whisperManifestPath, JSON.stringify(testWhisperManifest(bodies)));
+  let calls = 0;
+  await assert.rejects(runInstaller(['--download-whisper-model'], {
+    paths: { whisperManifestPath, whisperModelDir },
+    downloadToFile: async (url, target) => {
+      const name = new URL(url).pathname.split('/').at(-1);
+      await writeFile(target, bodies.get(name));
+      calls += 1;
+      if (calls === bodies.size) {
+        await (await import('node:fs/promises')).mkdir(whisperModelDir);
+        await writeFile(join(whisperModelDir, 'claimed.txt'), 'keep');
+      }
+    },
+  }), /target already exists/i);
+  assert.equal(await readFile(join(whisperModelDir, 'claimed.txt'), 'utf8'), 'keep');
 });
 
 test('CLI check reports a non-ready runtime with a nonzero status and no path disclosure', () => {
@@ -391,3 +547,25 @@ test('installer rejects a manifest with a non-mdx model before creating a venv',
   }), /invalid model configuration/i);
   assert.equal(spawnCalls, 0);
 });
+
+function testWhisperManifest(bodies) {
+  const revision = 'ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66';
+  return {
+    schemaVersion: 1,
+    repository: 'Systran/faster-whisper-base',
+    revision,
+    runtime: {
+      package: 'faster-whisper',
+      version: '1.2.1',
+      ctranslate2Version: '4.6.0',
+      device: 'cpu',
+      computeType: 'int8',
+    },
+    files: [...bodies].map(([name, body]) => ({
+      name,
+      url: `https://huggingface.co/Systran/faster-whisper-base/resolve/${revision}/${name}`,
+      size: body.length,
+      sha256: createHash('sha256').update(body).digest('hex'),
+    })),
+  };
+}

@@ -660,7 +660,7 @@ const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
   }
 
   if (item.type === 'input_file') {
-    if (item.file_data !== undefined && isKieGemini35FlashModel(options.model)) {
+    if (item.file_data !== undefined) {
       let inlineData;
       try {
         inlineData = normalizeGeminiInlineData({
@@ -670,6 +670,31 @@ const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
         });
       } catch {
         throw createProviderError('provider_bad_request', 'Gemini inline data 无效或超过大小上限');
+      }
+      if (!isKieGemini35FlashModel(options.model)) {
+        const fileName = ensureProviderFileNameWithExtension(
+          item.filename || item.name || 'inline-file',
+          inlineData.mimeType,
+        );
+        const uploaded = await uploadAssetViaKieWithFallbackWithDeps({
+          fileBuffer: Buffer.from(inlineData.data, 'base64'),
+          mimeType: inlineData.mimeType,
+          fileName,
+          uploadPath: 'mayo-storage/internal',
+        }, buildAssetTransferOptions(env, signal, options));
+        const fileUrl = String(uploaded?.result?.fileUrl || '').trim();
+        if (!fileUrl) {
+          throw createProviderError('provider_bad_response', 'Gemini inline data 上传成功但未返回素材地址', {
+            providerStage: 'asset_upload',
+          });
+        }
+        return {
+          type: 'input_file',
+          file_url: fileUrl,
+          url: fileUrl,
+          mime_type: inlineData.mimeType,
+          ...(fileName ? { filename: fileName } : {}),
+        };
       }
       return {
         type: 'input_file',

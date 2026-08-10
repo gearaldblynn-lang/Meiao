@@ -210,7 +210,7 @@ const requiredCheckpointFields = (stageIndex, options, ttsRenderVersion) => Obje
     ? [ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION ? 'ttsBatch' : 'ttsGroups']
     : []),
   ...(ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION && stageIndex >= STAGE_INDEX.get('audio_aligned')
-    ? ['ttsGroups']
+    ? ['ttsGroups', 'alignmentSimilarity']
     : []),
   ...(options.removeText && stageIndex >= STAGE_INDEX.get('subtitle_removal') ? ['subtitleRemoval'] : []),
 ]);
@@ -465,7 +465,7 @@ export function normalizeVoiceoverCheckpoint(value, options = {}) {
     'backgroundAssetId', 'subtitleRemoval', 'analysis', 'translation', 'ttsRenderVersion',
     'ttsBatch', 'ttsGroups',
     'alignedAudioAssetId', 'finalAssetId', 'analysisAttempt', 'analysisEvidenceVersion',
-    'alignmentVersion', 'ttsAttemptBase',
+    'alignmentVersion', 'alignmentSimilarity', 'ttsAttemptBase',
   ]);
   assertKnownKeys(value, allowed, 'voiceover_checkpoint_invalid');
   if (Number(value.version) !== VOICEOVER_CHECKPOINT_VERSION || !STAGE_INDEX.has(value.stage) || !isAssetId(value.baseVideoAssetId)) {
@@ -583,6 +583,17 @@ export function normalizeVoiceoverCheckpoint(value, options = {}) {
     && output.ttsBatch?.status !== 'succeeded') {
     throw buildVoiceoverError('voiceover_checkpoint_invalid', '连续 TTS 尚未成功');
   }
+  if (value.alignmentSimilarity !== undefined) {
+    if (ttsRenderVersion !== VOICEOVER_TTS_RENDER_VERSION
+      || stageIndex < STAGE_INDEX.get('audio_aligned')
+      || typeof value.alignmentSimilarity !== 'number'
+      || !Number.isFinite(value.alignmentSimilarity)
+      || value.alignmentSimilarity < 0
+      || value.alignmentSimilarity > 1) {
+      throw buildVoiceoverError('voiceover_checkpoint_invalid', '连续 TTS 对齐相似度无效');
+    }
+    output.alignmentSimilarity = value.alignmentSimilarity;
+  }
   if (value.finalAssetId !== undefined) {
     if (stageIndex < 9 || !isAssetId(value.finalAssetId)) throw buildVoiceoverError('voiceover_checkpoint_invalid', '结果阶段无效');
     output.finalAssetId = value.finalAssetId;
@@ -696,7 +707,7 @@ export function mergeVoiceoverCheckpoint(current, patch = {}, options = {}) {
   for (const field of [
     'baseVideoAssetId', 'originalAudioAssetId', 'vocalAssetId', 'backgroundAssetId',
     'alignedAudioAssetId', 'finalAssetId', 'analysisEvidenceVersion',
-    'alignmentVersion', 'ttsAttemptBase', 'ttsRenderVersion',
+    'alignmentVersion', 'alignmentSimilarity', 'ttsAttemptBase', 'ttsRenderVersion',
   ]) {
     merged[field] = mergeDurableId(currentCheckpoint[field], patch[field], field);
   }
@@ -816,6 +827,7 @@ export function prepareVoiceoverEvidenceUpgradeCheckpoint(
         alignedAudioAssetId: undefined,
         finalAssetId: undefined,
         alignmentVersion: undefined,
+        alignmentSimilarity: undefined,
       }, options);
     }
     const reusableTtsGroups = current.ttsGroups.map((group) => {

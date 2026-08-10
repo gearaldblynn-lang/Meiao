@@ -23,7 +23,10 @@ import {
 } from './accountCredits.mjs';
 import { requestLocalRetryJob } from './localJobStore.mjs';
 import { probeVoiceoverManagedMedia } from './voiceoverMediaProbe.mjs';
-import { VOICEOVER_ANALYSIS_EVIDENCE_VERSION } from './voiceoverContract.mjs';
+import {
+  VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
+  VOICEOVER_TTS_RENDER_VERSION,
+} from './voiceoverContract.mjs';
 
 const VALID_ANALYSIS = {
   sourceLanguage: 'cmn',
@@ -45,6 +48,17 @@ const VALID_ANALYSIS = {
 };
 
 const jsonAnalysis = (value = VALID_ANALYSIS) => JSON.stringify(value);
+
+const CONTINUOUS_ANALYSIS = {
+  ...VALID_ANALYSIS,
+  segments: Array.from({ length: 6 }, (_, index) => ({
+    id: `segment-${index + 1}`,
+    startMs: index * 600,
+    endMs: (index + 1) * 600,
+    sourceText: `原文${index + 1}`,
+    targetText: `Line ${index + 1}`,
+  })),
+};
 
 test('remote managed video materialization streams through a bounded part file and atomically publishes', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'voiceover-download-test-'));
@@ -380,6 +394,74 @@ const checkpointAt = (stage) => {
   return checkpoint;
 };
 
+const continuousCheckpointAt = (stage, overrides = {}) => {
+  const checkpoint = checkpointAt(stage);
+  checkpoint.ttsRenderVersion = VOICEOVER_TTS_RENDER_VERSION;
+  delete checkpoint.ttsGroups;
+  const rank = [
+    'input_prepared',
+    'audio_extracted',
+    'voice_separated',
+    'speech_analysis_submitting',
+    'speech_analyzed',
+    'translated',
+    'tts_generating',
+    'audio_aligned',
+    'result_persisted',
+  ].indexOf(stage);
+  if (rank >= 6) {
+    checkpoint.ttsBatch = rank >= 7
+      ? {
+          attempt: 0,
+          childJobId: 'child-tts-continuous',
+          providerTaskId: 'provider-tts-continuous',
+          assetId: 'asset-tts-0',
+          status: 'succeeded',
+          actualDurationMs: 900,
+        }
+      : {
+          attempt: 0,
+          childJobId: 'child-tts-continuous',
+          status: 'queued',
+        };
+  }
+  if (rank >= 7) {
+    checkpoint.ttsGroups = [{
+      index: 0,
+      startMs: 0,
+      endMs: 1_000,
+      sourceStartMs: 0,
+      sourceEndMs: 900,
+      actualDurationMs: 900,
+      atempo: 0.9,
+    }];
+    checkpoint.alignmentSimilarity = 1;
+  }
+  return { ...checkpoint, ...overrides };
+};
+
+const genericOwnedAssetResolver = async ({
+  assetId,
+  sourceUrl,
+  userId,
+  destinationPath,
+}) => {
+  const resolvedAssetId = assetId || String(sourceUrl || '').replace(/^managed:\/\//u, '');
+  await mkdir(path.dirname(destinationPath), { recursive: true });
+  await writeFile(destinationPath, resolvedAssetId);
+  return {
+    assetId: resolvedAssetId,
+    url: `managed://${resolvedAssetId}`,
+    durationMs: 4_000,
+    sizeBytes: 1_024,
+    width: 1080,
+    height: 1920,
+    hasAudio: true,
+    userId,
+    path: destinationPath,
+  };
+};
+
 const createParentJob = (overrides = {}) => {
   const { payload: payloadOverrides = {}, result = null, ...jobOverrides } = overrides;
   return {
@@ -571,7 +653,27 @@ const createHarness = async ({
       return {
         audioUrl: 'managed://asset-tts-0',
         audioUrlAssetId: 'asset-tts-0',
-        durationMs: 900,
+      };
+    },
+    alignTurns: async ({ turns }) => {
+      events.push('align-turns');
+      return {
+        similarity: 1,
+        transcript: turns.map(({ text }) => text).join(' '),
+        groups: turns.map((_, index) => ({
+          index,
+          sourceStartMs: index * 900,
+          sourceEndMs: (index + 1) * 900,
+          actualDurationMs: 900,
+        })),
+      };
+    },
+    alignContinuousAudio: async ({ turns, outputPath }) => {
+      events.push('align-continuous');
+      await writeOutput(outputPath);
+      return {
+        durationMs: 4_000,
+        groups: turns.map((turn) => ({ ...turn, atempo: 0.9 })),
       };
     },
     alignAudio: async ({ outputPath }) => {
@@ -636,10 +738,14 @@ test('orchestrates the checkpoint-driven happy path in durable side-effect order
     'persist:speech_analyzed',
     'persist:translated',
     'child:tts:0:create',
+    'persist:tts_generating',
+    'persist:tts_generating',
     'child:tts:0:provider-checkpoint',
+    'persist:tts_generating',
     'child:tts:0:succeeded',
     'persist:tts_generating',
-    'align',
+    'align-turns',
+    'align-continuous',
     'persist:audio_aligned',
     'mix',
     'persist-final',
@@ -658,6 +764,309 @@ test('orchestrates the checkpoint-driven happy path in durable side-effect order
     finalAssetId: 'asset-final',
   });
   assert.equal(harness.events.at(-1), 'cleanup');
+});
+
+test('new multi-turn tasks use one continuous TTS child and checkpoint its provider identity before polling', async (t) => {
+  let harness;
+  let childCreates = 0;
+  let childPayload;
+  let providerCheckpointObserved = false;
+  const child = {
+    id: 'child-tts-continuous',
+    status: 'running',
+    providerTaskId: '',
+    result: null,
+  };
+  const childJobs = {
+    getOrCreate: async (input) => {
+      childCreates += 1;
+      childPayload = input;
+      return { ...child, payload: input.payload };
+    },
+    checkpointProviderTaskId: async (_childId, providerTaskId) => {
+      child.providerTaskId = providerTaskId;
+      return { ...child, payload: childPayload.payload };
+    },
+    markSucceeded: async (_childId, result) => {
+      child.status = 'succeeded';
+      child.result = result;
+      return { ...child, payload: childPayload.payload };
+    },
+    markFailed: async (_childId, error) => {
+      child.status = 'failed';
+      child.errorCode = error?.code;
+      return { ...child, payload: childPayload.payload };
+    },
+  };
+  harness = await createHarness({
+    analysisContent: jsonAnalysis(CONTINUOUS_ANALYSIS),
+    overrides: {
+      childJobs,
+      runTts: async ({ job: ttsJob, onProviderTaskId }) => {
+        assert.equal(ttsJob.providerTaskId, '');
+        await onProviderTaskId('provider-tts-continuous');
+        const latest = harness.checkpoints.at(-1);
+        assert.equal(latest.stage, 'tts_generating');
+        assert.equal(latest.ttsBatch.status, 'submitted');
+        assert.equal(latest.ttsBatch.providerTaskId, 'provider-tts-continuous');
+        providerCheckpointObserved = true;
+        return {
+          providerTaskId: 'provider-tts-continuous',
+          result: { audioUrl: 'https://provider.example/continuous.mp3' },
+        };
+      },
+      alignTurns: async ({ turns }) => {
+        assert.deepEqual(
+          turns.map(({ text }) => text),
+          CONTINUOUS_ANALYSIS.segments.map(({ targetText }) => targetText),
+        );
+        return {
+          similarity: 1,
+          transcript: CONTINUOUS_ANALYSIS.segments.map(({ targetText }) => targetText).join(' '),
+          groups: CONTINUOUS_ANALYSIS.segments.map((_, index) => ({
+          index,
+          sourceStartMs: index * 120,
+          sourceEndMs: index * 120 + 100,
+          actualDurationMs: 100,
+          })),
+        };
+      },
+      alignContinuousAudio: async ({ turns, outputPath }) => {
+        await mkdir(path.dirname(outputPath), { recursive: true });
+        await writeFile(outputPath, 'continuous-aligned');
+        return {
+          durationMs: 4_000,
+          groups: turns.map((turn) => ({ ...turn, atempo: 0.75 })),
+        };
+      },
+      alignAudio: async () => {
+        assert.fail('new tasks must not use the legacy multi-input aligner');
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await harness.result();
+
+  assert.equal(childCreates, 1);
+  assert.equal(providerCheckpointObserved, true);
+  assert.equal(childPayload.childKey, 'tts:continuous:attempt:0');
+  assert.equal(childPayload.payload.temperature, 0);
+  assert.equal(childPayload.payload.voiceName, 'Kore');
+  assert.deepEqual(childPayload.payload.dialogueTurns, [{
+    speaker: 'Speaker 1',
+    text: CONTINUOUS_ANALYSIS.segments.map(({ targetText }) => targetText).join(' '),
+  }]);
+  const translated = harness.checkpoints.find((item) => item.stage === 'translated');
+  assert.equal(translated.ttsRenderVersion, VOICEOVER_TTS_RENDER_VERSION);
+  const aligned = harness.checkpoints.find((item) => item.stage === 'audio_aligned');
+  assert.equal(aligned.ttsBatch.status, 'succeeded');
+  assert.equal(aligned.ttsGroups.length, 6);
+  assert.equal(aligned.ttsGroups.some((group) => group.childJobId), false);
+  assert.equal(aligned.alignmentSimilarity, 1);
+  assert.equal(JSON.stringify(aligned).includes('transcript'), false);
+});
+
+test('continuous TTS recovery queries the existing provider identity without a second child', async (t) => {
+  const checkpoint = continuousCheckpointAt('tts_generating', {
+    ttsBatch: {
+      attempt: 0,
+      childJobId: 'child-tts-continuous',
+      providerTaskId: 'provider-tts-continuous',
+      status: 'submitted',
+    },
+  });
+  let childCreates = 0;
+  let runTtsCalls = 0;
+  const harness = await createHarness({
+    job: createParentJob({ result: { voiceoverCheckpoint: checkpoint } }),
+    overrides: {
+      resolveOwnedAsset: genericOwnedAssetResolver,
+      childJobs: {
+        getOrCreate: async (input) => {
+          childCreates += 1;
+          assert.equal(input.childKey, 'tts:continuous:attempt:0');
+          return {
+            id: 'child-tts-continuous',
+            status: 'running',
+            providerTaskId: 'provider-tts-continuous',
+            result: null,
+            payload: input.payload,
+          };
+        },
+        checkpointProviderTaskId: async () => {
+          assert.fail('recovery already has a provider identity');
+        },
+        markSucceeded: async (_childId, result) => ({
+          id: 'child-tts-continuous',
+          status: 'succeeded',
+          providerTaskId: 'provider-tts-continuous',
+          result,
+        }),
+        markFailed: async () => {
+          assert.fail('recovery must not fail the child');
+        },
+      },
+      runTts: async ({ job: ttsJob }) => {
+        runTtsCalls += 1;
+        assert.equal(ttsJob.providerTaskId, 'provider-tts-continuous');
+        return {
+          providerTaskId: 'provider-tts-continuous',
+          result: { audioUrl: 'https://provider.example/continuous.mp3' },
+        };
+      },
+      alignTurns: async () => ({
+        similarity: 1,
+        transcript: 'Translation',
+        groups: [{
+          index: 0,
+          sourceStartMs: 50,
+          sourceEndMs: 950,
+          actualDurationMs: 900,
+        }],
+      }),
+      alignContinuousAudio: async ({ turns, outputPath }) => {
+        await mkdir(path.dirname(outputPath), { recursive: true });
+        await writeFile(outputPath, 'aligned');
+        return { groups: turns.map((turn) => ({ ...turn, atempo: 0.9 })) };
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await harness.result();
+
+  assert.equal(childCreates, 1);
+  assert.equal(runTtsCalls, 1);
+  assert.equal(
+    harness.checkpoints.filter((item) => item.ttsBatch?.providerTaskId === 'provider-tts-continuous').length > 0,
+    true,
+  );
+});
+
+test('continuous TTS persists a pre-submit marker and refuses an automatic second POST after a crash', async (t) => {
+  const child = {
+    id: 'child-tts-continuous',
+    status: 'running',
+    providerTaskId: '',
+    result: null,
+  };
+  let childPayload;
+  let providerPosts = 0;
+  const childJobs = {
+    getOrCreate: async (input) => {
+      childPayload = input.payload;
+      return { ...child, payload: childPayload };
+    },
+    checkpointProviderTaskId: async (_childId, providerTaskId) => {
+      child.providerTaskId = providerTaskId;
+      return { ...child, payload: childPayload };
+    },
+    markSucceeded: async (_childId, result) => {
+      child.status = 'succeeded';
+      child.result = result;
+      return { ...child, payload: childPayload };
+    },
+    markFailed: async (_childId, error) => {
+      child.status = 'failed';
+      child.errorCode = error?.code;
+      return { ...child, payload: childPayload };
+    },
+  };
+  const runTts = async () => {
+    providerPosts += 1;
+    throw new Error('simulated process crash at the provider boundary');
+  };
+  const initialCheckpoint = continuousCheckpointAt('tts_generating', {
+    ttsBatch: {
+      attempt: 0,
+      childJobId: 'child-tts-continuous',
+      status: 'queued',
+    },
+  });
+  const firstHarness = await createHarness({
+    job: createParentJob({ result: { voiceoverCheckpoint: initialCheckpoint } }),
+    overrides: {
+      resolveOwnedAsset: genericOwnedAssetResolver,
+      childJobs,
+      runTts,
+    },
+  });
+  t.after(firstHarness.cleanup);
+
+  await assert.rejects(
+    firstHarness.result(),
+    /simulated process crash at the provider boundary/u,
+  );
+  const durableCheckpoint = firstHarness.checkpoints.at(-1);
+
+  const recoveryHarness = await createHarness({
+    job: createParentJob({ result: { voiceoverCheckpoint: durableCheckpoint } }),
+    overrides: {
+      resolveOwnedAsset: genericOwnedAssetResolver,
+      childJobs,
+      runTts,
+    },
+  });
+  t.after(recoveryHarness.cleanup);
+
+  await assert.rejects(
+    recoveryHarness.result(),
+    (error) => error?.code === 'provider_submission_unknown'
+      && error?.submissionUnknown === true
+      && error?.retryable === false,
+  );
+  assert.equal(durableCheckpoint.ttsBatch.status, 'submitted');
+  assert.equal(durableCheckpoint.ttsBatch.providerTaskId, undefined);
+  assert.equal(child.status, 'running');
+  assert.equal(providerPosts, 1);
+});
+
+test('forced-alignment failure preserves the succeeded batch and never guesses audio cuts', async (t) => {
+  let continuousAlignCalls = 0;
+  const harness = await createHarness({
+    overrides: {
+      alignTurns: async () => {
+        throw Object.assign(new Error('low similarity'), {
+          code: 'voiceover_forced_alignment_failed',
+        });
+      },
+      alignContinuousAudio: async () => {
+        continuousAlignCalls += 1;
+      },
+    },
+  });
+  t.after(harness.cleanup);
+
+  await assert.rejects(
+    harness.result(),
+    (error) => error.code === 'voiceover_forced_alignment_failed',
+  );
+  assert.equal(continuousAlignCalls, 0);
+  const latest = harness.checkpoints.at(-1);
+  assert.equal(latest.stage, 'tts_generating');
+  assert.equal(latest.ttsBatch.status, 'succeeded');
+  assert.equal(latest.ttsGroups, undefined);
+});
+
+test('audio-aligned version 2 resume skips TTS, model alignment, and FFmpeg alignment', async (t) => {
+  const checkpoint = continuousCheckpointAt('audio_aligned');
+  const harness = await createHarness({
+    job: createParentJob({ result: { voiceoverCheckpoint: checkpoint } }),
+    overrides: {
+      resolveOwnedAsset: genericOwnedAssetResolver,
+      runTts: async () => assert.fail('aligned resume must not run TTS'),
+      alignTurns: async () => assert.fail('aligned resume must not load Whisper'),
+      alignContinuousAudio: async () => assert.fail('aligned resume must not realign audio'),
+      alignAudio: async () => assert.fail('aligned resume must not use legacy alignment'),
+    },
+  });
+  t.after(harness.cleanup);
+
+  const output = await harness.result();
+
+  assert.equal(output.result.finalAssetId, 'asset-final');
+  assert.equal(harness.events.includes('mix'), true);
 });
 
 test('inline analysis audio remains ephemeral and never enters checkpoints or logs', async (t) => {
@@ -1063,7 +1472,7 @@ test('probes unknown source audio state and only fails immediately on authoritat
           url: `managed://${assetId}`,
           path: destinationPath,
           userId,
-          durationMs: Number.NaN,
+          durationMs: assetId === 'asset-source' ? Number.NaN : 900,
         };
       },
       probeMedia: async () => {
@@ -1675,7 +2084,7 @@ test('runner creates and completes TTS through the real local child ledger contr
 
   assert.equal(output.result.voiceoverStage, 'result_persisted');
   assert.equal(child?.status, 'succeeded');
-  assert.equal(child?.payload?.childKey, 'tts:0:attempt:0');
+  assert.equal(child?.payload?.childKey, 'tts:continuous:attempt:0');
   assert.equal(child?.result?.assetId, 'asset-tts-0');
 });
 
@@ -1766,7 +2175,7 @@ test('runner creates Golden and TTS children through the real local ledger contr
   assert.deepEqual(
     children.map((item) => [item.taskType, item.payload.childKey, item.status]).sort(),
     [
-      ['kie_tts', 'tts:0:attempt:0', 'succeeded'],
+      ['kie_tts', 'tts:continuous:attempt:0', 'succeeded'],
       ['subtitle_remove_video', 'golden:attempt:0', 'succeeded'],
     ],
   );

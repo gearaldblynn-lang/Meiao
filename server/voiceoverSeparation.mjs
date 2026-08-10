@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { buildVoiceoverError, getVoiceoverConfig } from './voiceoverContract.mjs';
 import { resolvePackagedFfmpegPath, resolvePackagedFfprobePath } from './mediaTranscodeService.mjs';
 import { runVoiceoverProcess } from './voiceoverAudio.mjs';
+import { acquireVoiceoverHeavyProcessPermit } from './voiceoverHeavyProcessLimiter.mjs';
 import { EXPECTED_MDX_YAML, loadDemucsManifest, verifyDemucsModelFiles } from '../scripts/install-voiceover-demucs.mjs';
 
 const REQUIRED_FILTERS = Object.freeze(['sidechaincompress', 'amix', 'adelay', 'afade', 'atempo', 'alimiter']);
@@ -51,9 +52,6 @@ const PYTHON_RUNTIME_PROBE = [
   'print("|".join((sys.platform, platform.machine().lower(), m.version("demucs"), m.version("torch"), m.version("torchaudio"), m.version("soundfile"), "soundfile", *wav_metadata)))',
 ].join('\n');
 
-let activeSeparations = 0;
-const separationQueue = [];
-
 function buildDemucsProcessEnv(env, pythonPath, mediaExecutablePaths = []) {
   const executableDirs = [path.dirname(pythonPath)];
   for (const executablePath of mediaExecutablePaths) {
@@ -84,43 +82,6 @@ function isPinnedPythonRuntime(raw) {
   return Boolean(expected)
     && versions.length === expected.length
     && versions.every((version, index) => version === expected[index]);
-}
-
-function acquireSeparationPermit(signal, limit) {
-  return new Promise((resolve, reject) => {
-    const entry = { signal, limit, resolve, reject, settled: false };
-    const abort = () => {
-      if (entry.settled) return;
-      entry.settled = true;
-      const index = separationQueue.indexOf(entry);
-      if (index >= 0) separationQueue.splice(index, 1);
-      reject(abortError());
-    };
-    entry.abort = abort;
-    if (signal?.aborted) return abort();
-    signal?.addEventListener('abort', abort, { once: true });
-    separationQueue.push(entry);
-    pumpSeparationQueue();
-  });
-}
-
-function pumpSeparationQueue() {
-  while (separationQueue.length > 0) {
-    const entry = separationQueue[0];
-    if (entry.signal?.aborted) { entry.abort(); continue; }
-    if (activeSeparations >= entry.limit) return;
-    separationQueue.shift();
-    entry.settled = true;
-    entry.signal?.removeEventListener('abort', entry.abort);
-    activeSeparations += 1;
-    let released = false;
-    entry.resolve(() => {
-      if (released) return;
-      released = true;
-      activeSeparations = Math.max(0, activeSeparations - 1);
-      pumpSeparationQueue();
-    });
-  }
 }
 
 function runCommand(command, args, {
@@ -418,7 +379,9 @@ export async function separateVoiceover({
 } = {}) {
   const config = providedConfig || getVoiceoverConfig(env);
   if (typeof inputWavPath !== 'string' || !inputWavPath) throw buildVoiceoverError('voiceover_separation_unavailable', '本地人声分离输入无效');
-  const release = await acquireSeparationPermit(signal, config.separationConcurrency);
+  const acquirePermit = deps.acquireHeavyProcessPermit
+    || acquireVoiceoverHeavyProcessPermit;
+  const release = await acquirePermit(signal, config.separationConcurrency);
   let effectiveWorkDir = workDir;
   const ownsWorkDir = !workDir;
   const cleanup = deps.rm || rm;

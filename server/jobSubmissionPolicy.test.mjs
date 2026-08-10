@@ -444,6 +444,14 @@ test('parent-owned KIE TTS children require trusted internal policy context', ()
     submissionOperation: 'recover',
     trustedParentExecution: true,
   }));
+  assert.doesNotThrow(() => resolveJobSubmissionPolicy({
+    ...input,
+    payload: {
+      ...input.payload,
+      childKey: 'tts:continuous:attempt:0',
+    },
+    trustedParentExecution: true,
+  }));
 
   for (const payload of [
     { ...input.payload, executionOwner: 'browser' },

@@ -18,9 +18,9 @@ const SPEAKER = 'Speaker 1';
 const GROUP_SCENE = 'Translated product voiceover with natural, controlled pacing.';
 const GROUP_SAMPLE_CONTEXT = 'Use one consistent narrator and preserve punctuation and pauses.';
 const CONTINUOUS_SCENE = 'Continuous translated product narration with natural, controlled pacing.';
-const CONTINUOUS_SAMPLE_CONTEXT = 'Use the same narrator for every dialogue turn. Preserve exact text and order. Leave a clear pause between turns.';
+const CONTINUOUS_SAMPLE_CONTEXT = 'Use the same narrator for the entire passage. Preserve every sentence exactly and in order. Let punctuation create a clear pause between sentences while keeping the delivery natural.';
 const ALLOWED_SOURCE_LANGUAGE_CODES = VOICEOVER_LANGUAGES.map(({ code }) => code).join(', ');
-const JSON_FENCE = /^```json[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu;
+const JSON_FENCE = /^```json[ \t]*\r?\n([\s\S]*?)(?:\r?\n)?```$/iu;
 const ANALYSIS_KEYS = new Set(['sourceLanguage', 'speakerCount', 'voiceProfile', 'segments']);
 const PROFILE_KEYS = new Set(['pitch', 'brightness', 'energy', 'pace', 'accentDescription']);
 const SEGMENT_KEYS = new Set(['id', 'startMs', 'endMs', 'sourceText', 'targetText']);
@@ -529,10 +529,10 @@ export function buildVoiceoverContinuousTtsPlan({
   }).segments;
   assertMonotonicSegments(normalized);
   const immutableSegments = Object.freeze(normalized.map(freezeSegment));
-  const dialogueTurns = Object.freeze(immutableSegments.map((segment) => Object.freeze({
+  const dialogueTurns = Object.freeze([Object.freeze({
     speaker: SPEAKER,
-    text: segment.targetText,
-  })));
+    text: immutableSegments.map((segment) => segment.targetText).join(' '),
+  })]);
   const temperature = 0;
   const estimatedInputTokens = estimateVoiceoverTtsInputTokens({
     voiceName,

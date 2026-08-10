@@ -56,6 +56,10 @@ test('workspace prepares direct and existing-result sources with the voiceover m
   assert.match(source, /profile: 'voiceover_translation'/);
   assert.match(source, /kind: 'video'/);
   assert.match(source, /convertMediaTranscodeSession\(\{/);
+  assert.match(source, /resolveCanonicalManagedSource\(\{\s*sourceAssetId: result\.assetId,\s*\}\)/);
+  assert.match(source, /sourceAssetId: canonicalSource\.assetId/);
+  assert.match(source, /sourceUrl: canonicalSource\.url/);
+  assert.doesNotMatch(source, /sourceUrl: result\.fileUrl/);
   assert.match(source, /initialSource/);
   assert.match(source, /sourceProjectId/);
   assert.match(source, /sourceResultId/);

@@ -412,6 +412,18 @@ test('voiceover managed persistence rechecks the active owner on the held MySQL 
   );
 });
 
+test('voiceover strict-json analysis disables provider thought output', () => {
+  const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const dependencyStart = source.indexOf('const createVoiceoverRunnerDependencies = async');
+  const dependencyEnd = source.indexOf('const executeApplicationJob = async', dependencyStart);
+  const dependencyBlock = source.slice(dependencyStart, dependencyEnd);
+  const analysisStart = dependencyBlock.indexOf('analyzeSpeech: async');
+  const analysisEnd = dependencyBlock.indexOf('runGolden:', analysisStart);
+  const analysisBlock = dependencyBlock.slice(analysisStart, analysisEnd);
+
+  assert.match(analysisBlock, /payload:\s*\{\s*messages,\s*model,\s*includeThoughts:\s*false\s*}/);
+});
+
 test('voiceover remote materialization is bounded streaming and internal copy is verified after copy', () => {
   const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
   const materializeStart = source.indexOf('const materializeOwnedVoiceoverAsset = async');

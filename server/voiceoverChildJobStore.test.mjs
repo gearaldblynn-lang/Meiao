@@ -11,7 +11,10 @@ import {
   persistMysqlVoiceoverParentCheckpoint,
   prepareVoiceoverJobRetryResult,
 } from './voiceoverChildJobStore.mjs';
-import { VOICEOVER_ANALYSIS_EVIDENCE_VERSION } from './voiceoverContract.mjs';
+import {
+  VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
+  VOICEOVER_TTS_RENDER_VERSION,
+} from './voiceoverContract.mjs';
 
 const validParentPayload = (overrides = {}) => ({
   taskPurpose: 'voiceover_translation',
@@ -65,6 +68,49 @@ const validTtsPayload = (overrides = {}) => ({
   scene: 'Product narration',
   sampleContext: 'Natural commercial voice',
   ...overrides,
+});
+
+const continuousTtsCheckpoint = (ttsBatch) => ({
+  version: 1,
+  stage: 'tts_generating',
+  baseVideoAssetId: 'asset-base',
+  originalAudioAssetId: 'asset-audio',
+  vocalAssetId: 'asset-vocal',
+  backgroundAssetId: 'asset-background',
+  analysisAttempt: 0,
+  analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
+  ttsRenderVersion: VOICEOVER_TTS_RENDER_VERSION,
+  analysis: {
+    sourceLanguage: 'cmn',
+    speakerCount: 1,
+    voiceProfile: {
+      pitch: 'medium',
+      brightness: 'balanced',
+      energy: 'balanced',
+      pace: 'natural',
+      accentDescription: 'clear',
+    },
+    segments: [{
+      id: 'segment-1',
+      startMs: 0,
+      endMs: 1_000,
+      sourceText: '原文',
+      targetText: 'Translation',
+    }],
+  },
+  translation: {
+    targetLanguage: 'en',
+    mode: 'natural',
+    selectedVoiceName: 'Kore',
+    segments: [{
+      id: 'segment-1',
+      startMs: 0,
+      endMs: 1_000,
+      sourceText: '原文',
+      targetText: 'Translation',
+    }],
+  },
+  ttsBatch,
 });
 
 const validGoldenPayload = (overrides = {}) => ({
@@ -142,6 +188,48 @@ test('deterministic voiceover child IDs fit the internal_jobs VARCHAR(24) contra
   assert.notEqual(
     buildVoiceoverChildJobId('parent-job-other', childKeys[0]),
     childJobIds[0],
+  );
+});
+
+test('continuous TTS child identity keeps provider group index zero and a stable submission key', async () => {
+  const parent = validParent({
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'input_prepared',
+        baseVideoAssetId: 'asset-base',
+        analysisAttempt: 0,
+        ttsRenderVersion: VOICEOVER_TTS_RENDER_VERSION,
+      },
+    },
+  });
+  const harness = createLocalHarness([parent]);
+  const ledger = createLocalLedger(harness, { createJobId: undefined });
+  const child = await ledger.getOrCreate({
+    parentJob: parent,
+    childKey: 'tts:continuous:attempt:0',
+    taskType: 'kie_tts',
+    provider: 'kie',
+    payload: validTtsPayload({
+      groupIndex: 0,
+      temperature: 0,
+      dialogueTurns: [
+        { speaker: 'Speaker 1', text: 'First.' },
+        { speaker: 'Speaker 1', text: 'Second.' },
+      ],
+    }),
+  });
+
+  assert.equal(
+    child.id,
+    buildVoiceoverChildJobId(parent.id, 'tts:continuous:attempt:0'),
+  );
+  assert.equal(child.payload.groupIndex, 0);
+  assert.equal(child.payload.temperature, 0);
+  assert.equal(child.payload.childKey, 'tts:continuous:attempt:0');
+  assert.equal(
+    child.payload.clientSubmissionKey,
+    'voiceover-child:parent-job-1:tts:continuous:attempt:0',
   );
 });
 
@@ -716,6 +804,69 @@ test('retry request accepts only the server-owned confirmation bit', () => {
     }),
     (error) => error?.code === 'voiceover_retry_invalid',
   );
+});
+
+test('version 2 retry advances the one continuous TTS batch only after explicit confirmation', () => {
+  const failedParent = validParent({
+    status: 'failed',
+    errorCode: 'provider_job_failed',
+    result: {
+      auditMarker: 'preserve-me',
+      voiceoverCheckpoint: continuousTtsCheckpoint({
+        attempt: 0,
+        childJobId: 'child-tts-continuous-0',
+        providerTaskId: 'provider-tts-continuous-0',
+        status: 'failed',
+      }),
+    },
+  });
+  const expectedChildJobId = buildVoiceoverChildJobId(
+    failedParent.id,
+    'tts:continuous:attempt:1',
+  );
+  const unconfirmed = deriveVoiceoverRetryPlan(failedParent, {
+    confirmNewProviderAttempt: false,
+  });
+  assert.deepEqual(unconfirmed, {
+    kind: 'provider',
+    target: 'tts',
+    userConfirmed: false,
+    nextChildJobId: expectedChildJobId,
+  });
+  assert.throws(
+    () => prepareVoiceoverJobRetryResult(failedParent, unconfirmed),
+    (error) => error?.code === 'voiceover_retry_confirmation_required',
+  );
+
+  const confirmed = deriveVoiceoverRetryPlan(failedParent, {
+    confirmNewProviderAttempt: true,
+  });
+  const retryResult = prepareVoiceoverJobRetryResult(failedParent, confirmed);
+  assert.equal(retryResult.auditMarker, 'preserve-me');
+  assert.deepEqual(retryResult.voiceoverCheckpoint.ttsBatch, {
+    attempt: 1,
+    childJobId: expectedChildJobId,
+    status: 'queued',
+  });
+  assert.equal(retryResult.voiceoverCheckpoint.ttsGroups, undefined);
+
+  const submittedParent = {
+    ...failedParent,
+    errorCode: 'provider_timeout',
+    result: {
+      voiceoverCheckpoint: continuousTtsCheckpoint({
+        attempt: 0,
+        childJobId: 'child-tts-continuous-0',
+        providerTaskId: 'provider-tts-continuous-0',
+        status: 'submitted',
+      }),
+    },
+  };
+  assert.deepEqual(deriveVoiceoverRetryPlan(submittedParent, {
+    confirmNewProviderAttempt: false,
+  }), {
+    kind: 'reuse',
+  });
 });
 
 test('server derives Golden retry target and deterministic next child identity from the checkpoint', async () => {

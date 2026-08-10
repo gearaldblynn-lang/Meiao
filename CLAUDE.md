@@ -23,7 +23,7 @@
   - 前端 `.test.mjs`(会 `import './xxx.ts'`)→ 必须加 `node --experimental-strip-types --test src/.../xxx.test.mjs`,否则 Node 报 `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`(文档里写的 `node --test` 漏了这个 flag)。
   - 全量:`find src -name "*.test.mjs" | xargs node --experimental-strip-types --test` / `find server -name "*.test.mjs" | xargs node --test`。
 
-## 3. 已诊断根因库 ★(持续维护,截至 2026-08-04 已记录至 #94)
+## 3. 已诊断根因库 ★(持续维护,截至 2026-08-10 已记录至 #107)
 
 > 🔗 本节是 Claude 与 Codex **共享的架构根因库主源**(单一真相)。Codex 通过 `AGENTS.md` 顶部指针 + `docs/agents/repeated-issues.md` 顶部指针读到这里。沉淀架构级根因写本节;`repeated-issues.md` 只留指针或记纯操作型问题,两边不抄全文以免漂移。
 
@@ -546,37 +546,47 @@
   修复:新试听身份收敛为“账号 + 音色”；请求新身份前扫描并复用同账号同音色的旧语言维度 ready 记录，非零 TTL 配置仍尊重有效期，旧记录不迁移、不删除，跨账号绝不复用。跨语言并发首次点击命中同一个 processing 身份，旧 processing/unknown 身份也继续复用或阻断新提交，避免双提交；前端内存缓存同步改为音色键，缓存查询状态改成“正在加载”。本地中文页面点击已有英文 Puck 试听直接进入播放，registry 记录数和原 provider task ID 均未变化。
   如何避免:**付费缓存键必须只包含会改变持久产物身份的维度；仅影响首次样本文案、展示或调用上下文的参数不能进入复用身份。缓存合同变更必须同时覆盖 ready 复用、processing 并发去重、旧 key 兼容、账号隔离、有效期和真实 UI 点击后的 provider task 数。**
 
-- **#85 ✅ 已修(2026-07-31)· 口播翻译确定性子任务 ID 超出 `internal_jobs.id` 的 24 位合同**
+- **#99 ✅ 已修(2026-07-31)· 口播翻译确定性子任务 ID 超出 `internal_jobs.id` 的 24 位合同**
   根因:口播翻译为了让 Golden/TTS 重试稳定命中同一子任务，把父任务 ID 与 child key 的 SHA-256 摘要拼成 `voiceover-child-<32 hex>`，总长 48；共享 `internal_jobs.id` 从建表起固定为 `VARCHAR(24)`，普通任务则统一使用 12 随机字节的 24 位十六进制 ID。测试注入 `mysql-child-*` 等短 ID，模拟 MySQL 又不执行真实字段长度校验，因此“去文案”路径在 `input_prepared` 后首次插入 Golden 子任务才在线上以 `ER_DATA_TOO_LONG` 失败。
   修复:`buildVoiceoverChildJobId` 仍以父任务 ID 与 child key 做 SHA-256 确定性派生，但输出收敛为 24 位十六进制，与共享任务主键合同一致；不改数据库 schema、不改变父子幂等、重试身份或 provider 提交规则。回归使用故障父任务 `90f38769e8355105dd439b5f`，同时锁定 Golden、TTS 初次和 TTS 重试 ID 均为 24 位、稳定且互不相同；父任务变化也必须产生不同 ID。
   如何避免:**任何写入共享 ID 字段的自定义确定性生成器，必须复用或显式回归该字段的真实 schema 长度与字符集；测试桩不能只验证“值相等”，还要验证生产持久化边界。新增父子任务、缓存键或恢复身份时，至少覆盖真实字段上限、稳定性、同父不同 key 和不同父同 key 四类合同。**
 
-- **#86 ✅ 本地已修、待发布(2026-07-31)· 稳定托管素材身份未恢复真实媒体路径，口播去文案在 provider 提交前失败**
+- **#100 ✅ 本地已修、待发布(2026-07-31)· 稳定托管素材身份未恢复真实媒体路径，口播去文案在 provider 提交前失败**
   根因:口播翻译父任务会把已验证素材规范化为不含临时签名的 `managed://<assetId>` 稳定身份，Golden 子任务也正确持久化该身份；但 provider 素材路由只识别 `/api/assets/file/<assetId>/...`，既不能从稳定身份提取 asset ID，也没有从 owner 匹配的 active 资产记录恢复真实 `publicUrl`。结果是 `managed://...` 被直接交给 FFprobe/媒体暂存，在任何 Golden、Gemini 或 TTS provider 提交前立即以 `media_process_failed` 结束。故障父任务 `86b04cd1237f5dab4b145e6d` 的 Golden 子任务 `1f5e0338d606c77372b79e29` 因此没有 `providerTaskId`，不是上游处理失败或重复计费。
   修复:统一的托管素材身份解析器新增严格 `managed://<safe-id>` 提取；任何保留 `managed:` scheme 但带 query/hash、缺 host 或非规范分隔的输入都在 provider 入口拒绝。读取解析必须经过数据库 active、未删除、非空真实 owner 校验，再验证资产行 `publicUrl` 确实为同一 asset ID 的规范 `/api/assets/file/<id>[/<filename>]` 路径；点段、编码点段、额外层级、尾随空段和 URL 规范化前后不一致的路径全部在 capability 签发前拒绝。provider 暂存只使用恢复后的真实 URL 推导 MP4 文件名和 MIME；稳定身份缺少 owner-aware resolver、resolver 返回空或资产行路径失配时，必须在 fetch/upload 前以 `managed_asset_unavailable` fail closed，不得回落到通用 URL 归一化。稳定身份、回环 capability 或正式域名无凭证直链都不能交给外部 provider。现有规范 `/api/assets/file/...`、COS 签名 URL、明确 allowlist 的共享虚拟模特、跨账号拒绝和已有 `providerTaskId` 只查询不重提的合同保持不变。
   如何避免:**持久化稳定身份、数据库公开路径、应用内可读地址和 provider 可消费地址是四种不同合同。任何新增 `managed://` 消费者必须通过统一解析器恢复资产记录，不能把身份串或仅凭正则前缀命中的路径交给 FFprobe 或第三方；回归必须同时锁定规范 scheme、active/owner、资产行路径与 ID 一致且无规范化歧义、真实文件名/MIME、capability 不外泄、跨账号拒绝，以及所有拒绝分支 fetch/upload/HEAD/sign 均为 0。**
 
-- **#87 ✅ 本地已修、待发布(2026-07-31)· Golden 外部暂存地址被误当作服务端媒体探测源，提交前失败又遗留 running 子任务**
+- **#101 ✅ 本地已修、待发布(2026-07-31)· Golden 外部暂存地址被误当作服务端媒体探测源，提交前失败又遗留 running 子任务**
   根因:#86 修复后，口播 Golden 链已经能把稳定身份安全暂存为外部 provider 可读地址，但去字幕适配器把同一个外部暂存地址同时用于本机 FFprobe。真实唯一 canary 父任务 `75fac841b819e03bbddf33e8` 的源素材经 owner-bound 本机地址可稳定探测为 22.221 秒 H.264/AAC，而外部暂存地址在本机探测失败，任务因此仍在 Golden POST 前以 `media_process_failed` 结束。该错误不在子任务确定性失败集合中，Golden 子任务 `1d43d9cbce7e65188e2bf53d` 又被遗留为 `running`；父子均无 `providerTaskId`，没有发生 Golden、Gemini 或 TTS 付费提交。
   修复:去字幕输入拆成两个明确合同：owner-aware `resolveManagedAssetReadUrl` 产生的受控读取地址只用于服务端 FFprobe 和媒体尺寸/时长校验；校验通过后才调用必需的 `resolveProviderSourceUrl` 暂存，外部地址只进入 Golden 提交体，缺少暂存依赖或暂存结果为空都在 POST 前 fail closed。适配器先读取已有 `providerTaskId`，恢复分支不再解析、探测或暂存源素材，只轮询同一上游任务；Golden POST 已返回 task ID 但 child checkpoint 失败时，错误必须保留该 ID 和 `provider_checkpoint/checkpoint_failed`，不能伪装成未提交。普通 retry 仅在父 checkpoint、Golden child、attempt 和 provider ID 完全匹配时把父 ID 回填 child 并写入 `subtitle_removal/submitted`，随后只查询原任务；任一身份冲突都落 `provider_recovery_manual` 并禁止普通 retry。积分 reservation 动作不能决定口播父 ID 是否清空：`reuse` 始终保留，只有用户明确确认新的 `kind:provider` attempt 才在本地/MySQL 入队时清旧 ID。Golden 使用独立于 TTS 的 child 生命周期判定：无 provider ID 的确定性提交前失败原子落为 child failed 并写入 `subtitle_removal/failed`；`request_cancelled`、`AbortError`、显式 cancelled 或已中止 signal 均保持非终态；提交未知、checkpoint 失败和已有 provider ID 的查询错误保持可恢复，只有上游明确 `provider_job_failed` 才结束 child。
   如何避免:**服务端可验证地址与 provider 可消费地址不能因为都长得像 URL 就合并成一个变量。任何“探测→暂存→付费提交”链必须锁定顺序和用途：受控源先探测，暂存成功后只提交；恢复先按 provider ID 分流且只能查询；新提交缺少外部暂存能力必须拒绝。父任务、child、checkpoint、attempt、积分 reservation 与 retry plan 是六个独立合同，不能用任一层的 `reserve/reuse` 猜另一层是否应清 provider ID。回归必须覆盖真实 retry route，并同时断言调用顺序、提交 URL、恢复路径零素材依赖、provider POST 次数、checkpoint 失败仍保留 task ID、各类取消不落失败、child 终态和 providerTaskId 状态。**
 
-- **#88 ✅ 本地已修、待发布(2026-08-01)· Golden 成功文件的 `yuvj420p` 被最终交付合同误拒绝**
+- **#102 ✅ 本地已修、待发布(2026-08-01)· Golden 成功文件的 `yuvj420p` 被最终交付合同误拒绝**
   根因:真实 canary 的 Golden attempt 1 已成功并只提交一次，上游结果也已托管为 22.221 秒 H.264/AAC、720x1280、fast-start MP4；但 Golden 返回的中间视频像素格式是兼容的 full-range `yuvj420p`。公共检查点探针把 provider 中间视频和最终交付视频共用同一条 `pixelFormat === 'yuv420p'` 规则，导致成功 child 已写入 `subtitle_removal/succeeded` 后，父任务在读取托管结果时以 `voiceover_checkpoint_asset_invalid` 失败，未进入 Gemini 或 TTS。
   修复:只对 `golden_video` 检查点额外接受 H.264 `yuvj420p`；容器、H.264、AAC、正尺寸、正时长、fast-start 和时长容差仍全部校验。`source_video`、`analysis_video`、`final_video` 继续严格要求 `yuv420p`，最终混流仍由 FFmpeg 重编码为 H.264/yuv420p/AAC/fast-start。
   如何避免:**第三方 provider 中间产物与用户最终交付产物必须分阶段定义媒体合同；不要因为二者都是 MP4 就共用最严格的像素格式白名单。放宽必须限定到精确阶段，并用真实 provider 元数据写正例，同时用最终阶段负例锁住交付格式不漂移。**
 
-- **#89 ✅ 本地已修、待发布(2026-08-01)· Demucs 模型推理成功但 Linux Torchaudio 没有 WAV 写入后端**
+- **#103 ✅ 本地已修、待发布(2026-08-01)· Demucs 模型推理成功但 Linux Torchaudio 没有 WAV 写入后端**
   根因:Linux CPU 依赖锁只固定 Demucs、Torch 和 Torchaudio，没有安装 `soundfile`；生产 venv 的 `torchaudio.list_audio_backends()` 因此为空。readiness 只验证包版本、模型文件和 `get_model("mdx")`，真实 22.2215 秒 WAV 的四个模型推理全部完成后，直到保存 `vocals.wav` 才以 `Couldn't find appropriate backend` 退出。子进程又使用 `stdio:'ignore'`，业务日志只剩笼统的 `voiceover_separation_unavailable`。
   修复:Linux 可复现依赖合同补入带哈希的 `soundfile==0.13.1` 及其传递依赖；Python readiness 固定 SoundFile 版本和 `soundfile` backend，并实际写入、回读一个 48 kHz 双声道 PCM_16 WAV，格式、采样率、声道、位深或帧数任一不符即 fail closed。所有 Python 探针都使用最小环境，stdout/stderr 合计上限 64 KiB。缺包、backend 不可用或 WAV 不可写会在任务开始前拒绝，不再消耗约 3 GiB 内存完成整段模型推理后才失败。依赖仍只允许运维在维护窗口通过 `install-voiceover-demucs.mjs --install` 安装，应用运行时不联网下载。
   如何避免:**媒体模型 readiness 不能止于“包能 import、模型能 load”；凡运行链最后还要编码或落盘，必须把真实输出 backend 纳入固定运行时合同。平台依赖锁要覆盖同一能力，生产升级用哈希锁显式安装，运行时继续最小环境与零下载。**
 
-- **#90 ✅ 本地已修、待发布(2026-08-01)· 去字幕结果提前污染口播分析证据，错误 ASR 又被原样合成**
+- **#104 ✅ 本地已修、待发布(2026-08-01)· 去字幕结果提前污染口播分析证据，错误 ASR 又被原样合成**
   根因:真实父任务 `75fac841b819e03bbddf33e8` 的源视频是带中文字幕的中文壁挂脏衣篮演示，旧分析却输出三段西班牙语通用 AI 频道文案；TTS 子任务逐段忠实消费了这份错误译文，所以成品内容与画面完全无关。`removeText=true` 时编排器先把 Golden 结果赋给 `baseVideo`，随后从这份去字幕视频提取原音并生成 Gemini 分析视频，既错误改变了音频证据来源，也删除了可用于校验 Demucs 噪声音轨的原中文字幕。旧提示词还允许“省略次要修饰”和“不复制所有细节”，没有强制保留指令、数量、否定和商品卖点。时间轴把短 TTS 强制为 `atempo>=1` 并全部从窗口左边开始，真实第二、三段分别比窗口提前约 2.72 秒和 2.68 秒结束。
   修复:原视频始终负责原音提取和分析视频的画面，分析视频只替换为 Demucs vocal 音轨；Golden 输出只作为最终无字幕画面底片。RTCFE 提示明确音频是主要证据、原可见字幕只做噪声交叉校验，禁止臆造通用主题并要求保留每条指令、数量、否定和商品卖点。短 TTS 使用 `max(actual/target, minAtempo)` 安全减速；仍短于窗口时把剩余静音均分到前后。旧三段真实 WAV 本地重放得到 `atempo=0.82/0.75/0.75`，第二段居中在约 `7.147-12.853s`，第三段居中在约 `15.787-20.213s`；新分析视频抽帧确认原中文字幕仍完整可见。
   如何避免:**去字幕是最终视觉处理，不得改变语音识别的原始音频或视觉证据。ASR/翻译验收必须先核对源语言、逐段语义和画面动作，再核对 TTS 文本身份和 FFmpeg 时间轴；“任务成功、TTS 文案一致、视频时长正确”都不能替代内容对应。短语音窗口必须同时记录倍率和实际起止位置，禁止只看 `atempo` 或总时长。**
 
-- **#91 ✅ 本地已修、待发布(2026-08-02)· Gemini 把口播分段首尾相接铺满视频，语义正确仍会错过画面动作**
+- **#105 ✅ 本地已修、待发布(2026-08-02)· Gemini 把口播分段首尾相接铺满视频，语义正确仍会错过画面动作**
   根因:唯一生产 canary 父任务 `a481ee4548872173fff21be1` 已正确识别中文脏衣篮口播并生成 6 段对应英文，但 Gemini 返回的时间窗被规则化为从 `100ms` 到 `22221ms` 全程首尾相接，没有保留真实句间静音。第 5 段仍在约 `15.11-17.54s` 播放“安装网兜并扣紧”，画面和中文字幕却在约 `16.37s` 已进入“按大小分类收纳”；对应第 6 段直到约 `17.98s` 才开口，形成约 1.6 秒语义动作延迟。旧提示只要求整数毫秒、顺序合法和同一画面动作，没有定义 `startMs/endMs` 必须是实际可听语音边界，也没有禁止把整段视频连续铺满；结构校验因此把整齐但不真实的时间轴当成有效分析。最终混音本身无重复路径：成品音频与 aligned narration 相关性为 `0.968`，与旧 vocal/background 仅 `0.015/0.003`。
   修复:分析提示明确 `startMs` 是本句第一处实际可听语音、`endMs` 是最后一处实际可听语音；前导、句间和尾部静音必须留空，除非语音真实连续否则禁止相邻段共享边界，禁止把时间戳四舍五入成规则间隔或拉伸填满视频。原字幕变化和画面动作变化用于交叉确认语义边界，音频起止仍是权威。`VOICEOVER_ANALYSIS_EVIDENCE_VERSION` 升级为 `3`，未完成或重试的旧分析检查点不能继续复用版本 2 时间轴；已完成结果仍保持历史只读。
   如何避免:**口播音画验收必须同时交付原文、译文、TTS 实际文本、原始 TTS 时长、`atempo`、实际开口/收尾和对应画面动作。连续覆盖全视频、规则化整百毫秒边界或所有相邻段零间隔都是高风险信号，不能仅因 schema 合法而放行；任务成功、TTS 文本一致、总时长一致和无旧声也不能替代逐段语义动作核对。**
+
+- **#106 ✅ 本地已修、待发布(2026-08-02)· 同一预置音色分段独立生成仍会出现前后音色与节奏漂移**
+  根因:version 1 按分析分段分别创建 KIE Gemini TTS 任务；即使每段选择同一个预置音色，独立请求也没有共享说话人状态，并各自重新采样。真实六段 Fenrir 成品因此出现前后段听感不同，旧请求又使用 `temperature: 1`，逐段 `atempo` 的不同倍率进一步放大了音色、语气和节奏差异。仅把多个独立请求的温度调低，仍无法建立跨请求连续性。
+  修复:新任务使用 `ttsRenderVersion: 2`，把全部译文按顺序放入一次 KIE TTS 请求，固定单一 speaker、同一音色和 `temperature: 0`，只持久化一个 `ttsBatch` 与一个 `tts:continuous:attempt:<n>` child。固定 revision 的本地 faster-whisper 从唯一连续 WAV 提取每句真实声学边界，FFmpeg 从同一音源逐句裁切、按原视频口播窗口独立变速并居中放置；最终 MP4 只映射原画面与新口播，不混入原声、背景音乐或环境声。version 1 已完成结果保持只读；未完成 version 1 只能恢复既有 child，禁止静默升级或创建新的 version 2 付费任务。已有 `providerTaskId` 始终只查询恢复。
+  如何避免:**需要跨段一致性的口播不能用多个独立 TTS 请求拼接。永久合同必须是“一条视频一次连续 TTS + `temperature: 0` + 离线强制对齐 + 单 WAV 分句映射”；降低温度的多请求方案只能算缓解，禁止冒充根因修复。验收必须同时核对唯一 create、child payload 文本/音色、声学相似度、逐句 `atempo`、最终纯新口播和原视频码流不变。**
+
+- **#107 ✅ 本地已修、未部署(2026-08-10)· 主版本切换后口播翻译代码仍滞留临时 worktree，入口和历史任务一起从页面消失**
+  根因:口播翻译在独立发布 worktree 中持续开发和真实验收，但当前主分支随后独立演进；历史任务数据已按 #92 合回主项目，LaunchAgent 也正确固定到主项目，功能代码却没有进入当前主基线。于是 3000/3100 端口、health 和数据目录都正常，但主前端没有 `voiceover_translation` 入口、主后端也没有对应运行能力，页面无法渲染已有口播任务。
+  修复:把已提交的口播功能链和真实 canary 验证后的连续 TTS、离线强制对齐、运行时 readiness 改动选择性合入当前主基线；保留主项目的账号锁、产品/Logo 重试和运行目录门禁，不再把常驻服务临时指向功能 worktree。UI 架构测试锁定视频子功能入口、工作台渲染和项目卡恢复，后端测试锁定 health/config/readiness 与生产 runner 接线；本地服务只从主项目读取统一历史数据。
+  如何避免:**worktree 只用于隔离开发，不能成为产品运行版本。任何真实验收通过的功能在切换主版本、备份或发布前，必须同时验证当前主基线包含 UI 入口、后端 capability、历史任务水合和构建回归；端口健康、数据已迁移或临时 worktree 可用都不能替代“代码已进入主版本”的证据。**

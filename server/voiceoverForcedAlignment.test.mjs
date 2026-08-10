@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 import {
@@ -7,6 +8,7 @@ import {
   checkVoiceoverAlignmentReadiness,
   resolveVoiceoverWhisperLanguage,
 } from './voiceoverForcedAlignment.mjs';
+import { acquireVoiceoverHeavyProcessPermit } from './voiceoverHeavyProcessLimiter.mjs';
 
 const alignmentConfig = Object.freeze({
   alignmentPython: '/opt/meiao/voiceover/bin/python',
@@ -51,6 +53,30 @@ test('normalization tolerates punctuation and case drift but preserves the provi
   assert.deepEqual(result.groups, [
     { index: 0, sourceStartMs: 50, sourceEndMs: 600, actualDurationMs: 550 },
   ]);
+});
+
+test('one-character ASR substitutions stay local instead of corrupting a short turn', () => {
+  const result = buildVoiceoverTurnAlignment({
+    turns: [{ text: 'Fold down to save space. Very convenient.' }],
+    recognition: recognition([
+      word('Fold', 100, 350),
+      word(' down', 350, 600),
+      word(' to', 600, 750),
+      word(' safe', 750, 1_000),
+      word(' space', 1_000, 1_300),
+      word(' Very', 1_500, 1_800),
+      word(' convenient', 1_800, 2_300),
+    ], 'Fold down to safe space. Very convenient.'),
+    minSimilarity: 0.82,
+  });
+
+  assert.equal(result.similarity > 0.95, true);
+  assert.deepEqual(result.groups, [{
+    index: 0,
+    sourceStartMs: 100,
+    sourceEndMs: 2_300,
+    actualDurationMs: 2_200,
+  }]);
 });
 
 test('Mandarin and documented aliases use Whisper language codes with no-space text', () => {
@@ -109,12 +135,18 @@ test('alignment fails closed for low similarity, shared words, and invalid times
 
 test('runtime sends only bounded local alignment input and uses automatic detection when needed', async () => {
   const calls = [];
+  const permitCalls = [];
+  let releaseCalls = 0;
   const result = await alignVoiceoverTurns({
     audioPath: '/tmp/continuous.wav',
     turns: [{ text: 'Maayong adlaw' }],
     targetLanguage: 'ceb',
     config: alignmentConfig,
     deps: {
+      acquireHeavyProcessPermit: async (...args) => {
+        permitCalls.push(args);
+        return () => { releaseCalls += 1; };
+      },
       runProcess: async (command, args, options) => {
         calls.push({ command, args, options });
         return {
@@ -129,6 +161,8 @@ test('runtime sends only bounded local alignment input and uses automatic detect
     },
   });
   assert.equal(result.groups.length, 1);
+  assert.deepEqual(permitCalls, [[undefined, 1]]);
+  assert.equal(releaseCalls, 1);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, alignmentConfig.alignmentPython);
   assert.equal(calls[0].args[0], '-c');
@@ -138,9 +172,83 @@ test('runtime sends only bounded local alignment input and uses automatic detect
     audioPath: '/tmp/continuous.wav',
     modelPath: alignmentConfig.whisperModelDir,
     language: null,
-    initialPrompt: 'Maayong adlaw',
   });
+  assert.match(calls[0].args[1], /"condition_on_previous_text": False/u);
+  assert.match(calls[0].args[1], /"initial_prompt": None/u);
+  assert.doesNotMatch(calls[0].args[1], /payload\["initialPrompt"\]/u);
   assert.doesNotMatch(JSON.stringify(result), /\/tmp\/|models\/faster-whisper/);
+});
+
+test('alignment keeps the shared heavy-process permit until an aborted child closes', async () => {
+  const controller = new AbortController();
+  const child = fakeChild();
+  const pending = alignVoiceoverTurns({
+    audioPath: '/tmp/continuous.wav',
+    turns: [{ text: 'Hello world' }],
+    targetLanguage: 'en',
+    signal: controller.signal,
+    config: alignmentConfig,
+    deps: {
+      spawnProcess: () => child,
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  controller.abort();
+  let nextStarted = false;
+  const nextPermit = acquireVoiceoverHeavyProcessPermit(undefined, 1).then((release) => {
+    nextStarted = true;
+    return release;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(nextStarted, false);
+
+  child.emit('close', null);
+  await assert.rejects(pending, (error) => error?.name === 'AbortError');
+  const releaseNext = await nextPermit;
+  assert.equal(nextStarted, true);
+  releaseNext();
+});
+
+test('alignment preserves process-close evidence when timeout errors are normalized', async () => {
+  let closeProcess;
+  const processClosed = new Promise((resolve) => {
+    closeProcess = resolve;
+  });
+  let permitReleases = 0;
+  const processError = Object.assign(new Error('private timeout detail'), {
+    code: 'voiceover_alignment_timeout',
+  });
+  Object.defineProperty(processError, 'releasePermitWhenClosed', {
+    value: processClosed,
+    enumerable: false,
+  });
+
+  await assert.rejects(
+    alignVoiceoverTurns({
+      audioPath: '/tmp/continuous.wav',
+      turns: [{ text: 'Hello world' }],
+      targetLanguage: 'en',
+      config: alignmentConfig,
+      deps: {
+        acquireHeavyProcessPermit: async () => () => {
+          permitReleases += 1;
+        },
+        runProcess: async () => {
+          throw processError;
+        },
+      },
+    }),
+    (error) => (
+      error?.code === 'voiceover_forced_alignment_failed'
+      && error.releasePermitWhenClosed === processClosed
+      && !String(error.message).includes('private timeout detail')
+    ),
+  );
+  assert.equal(permitReleases, 0);
+  closeProcess();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(permitReleases, 1);
 });
 
 test('runtime rejects oversized output, cancellation, timeout, and malformed process results', async () => {
@@ -209,6 +317,8 @@ test('readiness verifies the pinned package and a local-only model load', async 
   const ready = await checkVoiceoverAlignmentReadiness({
     config: alignmentConfig,
     deps: {
+      loadWhisperManifest: async () => ({ files: [] }),
+      verifyWhisperModelFiles: async () => ({ ready: true }),
       runProcess: async (command, args, options) => {
         calls.push({ command, args, options });
         return {
@@ -237,6 +347,8 @@ test('readiness verifies the pinned package and a local-only model load', async 
   const unavailable = await checkVoiceoverAlignmentReadiness({
     config: alignmentConfig,
     deps: {
+      loadWhisperManifest: async () => ({ files: [] }),
+      verifyWhisperModelFiles: async () => ({ ready: true }),
       runProcess: async () => ({
         exitCode: 0,
         stdout: JSON.stringify({
@@ -251,10 +363,44 @@ test('readiness verifies the pinned package and a local-only model load', async 
   assert.equal(unavailable.code, 'voiceover_alignment_unavailable');
 });
 
+test('readiness rejects a drifted Whisper inventory before starting Python', async () => {
+  let processCalls = 0;
+  const unavailable = await checkVoiceoverAlignmentReadiness({
+    config: alignmentConfig,
+    deps: {
+      loadWhisperManifest: async () => ({ files: [] }),
+      verifyWhisperModelFiles: async ({ modelDir }) => {
+        assert.equal(modelDir, alignmentConfig.whisperModelDir);
+        return { ready: false };
+      },
+      runProcess: async () => {
+        processCalls += 1;
+        return { exitCode: 0, stdout: '{}', stderr: '' };
+      },
+    },
+  });
+  assert.equal(processCalls, 0);
+  assert.deepEqual(unavailable, {
+    ready: false,
+    code: 'voiceover_alignment_unavailable',
+    pythonReady: false,
+    modelReady: false,
+  });
+});
+
 function word(text, startMs, endMs) {
   return { text, startMs, endMs };
 }
 
 function recognition(words, transcript = words.map(({ text }) => text).join(''), detectedLanguage = 'en') {
   return { transcript, detectedLanguage, words };
+}
+
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdin = { end() {} };
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => true;
+  return child;
 }

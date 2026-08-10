@@ -207,8 +207,10 @@ test('parser accepts one complete JSON object or one whole JSON fence and return
   const raw = JSON.stringify(validAnalysis());
   const plain = parse(raw);
   const fenced = parse(`\`\`\`json\n${raw}\n\`\`\``);
+  const compactFenced = parse(`\`\`\`json\n${raw}\`\`\``);
 
   assert.deepEqual(fenced, plain);
+  assert.deepEqual(compactFenced, plain);
   assert.equal(Object.isFrozen(plain), true);
   assert.equal(Object.isFrozen(plain.voiceProfile), true);
   assert.equal(Object.isFrozen(plain.segments), true);
@@ -488,7 +490,7 @@ test('UTF-8 estimator is the conservative serialized provider-input byte upper b
   );
 });
 
-test('continuous TTS planning preserves every turn in one deterministic provider request', () => {
+test('continuous TTS planning merges every segment into one deterministic provider turn', () => {
   const segments = [
     validSegment({ id: 's1', startMs: 100, endMs: 500, targetText: 'First.' }),
     validSegment({ id: 's2', startMs: 900, endMs: 1_300, targetText: 'Second.' }),
@@ -503,11 +505,10 @@ test('continuous TTS planning preserves every turn in one deterministic provider
 
   assert.deepEqual(plan.segmentIds, ['s1', 's2', 's3']);
   assert.deepEqual(plan.segments, snapshot);
-  assert.deepEqual(plan.dialogueTurns, [
-    { speaker: 'Speaker 1', text: 'First.' },
-    { speaker: 'Speaker 1', text: 'Second.' },
-    { speaker: 'Speaker 1', text: 'Third.' },
-  ]);
+  assert.deepEqual(plan.dialogueTurns, [{
+    speaker: 'Speaker 1',
+    text: 'First. Second. Third.',
+  }]);
   assert.equal(plan.voiceName, 'Kore');
   assert.equal(plan.temperature, 0);
   assert.match(plan.scene, /continuous/i);

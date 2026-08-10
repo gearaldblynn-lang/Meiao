@@ -3486,6 +3486,79 @@ test('executeProviderJob maps inline file data to Gemini native inline_data with
   }
 });
 
+test('executeProviderJob uploads inline audio before Gemini Flash OpenAI chat submission', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  const audioData = Buffer.from('voice-evidence').toString('base64');
+  const stagedAudioUrl = 'https://tempfile.redpandaai.co/kieai/mayo-storage/internal/vocal-evidence.m4a';
+  const supportingVideoUrl = 'https://managed.example/supporting-video.mp4';
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: stagedAudioUrl },
+      });
+    }
+    if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
+      return createJsonResponse({
+        choices: [{ message: { content: 'voiceover analysis ok' } }],
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        module: 'video',
+        subFeature: 'voiceover_translation',
+        taskType: 'kie_chat',
+        provider: 'kie',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          includeThoughts: false,
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'input_file',
+                file_data: audioData,
+                mime_type: 'audio/mp4',
+                filename: 'vocal-evidence.m4a',
+              },
+              {
+                type: 'input_file',
+                file_url: supportingVideoUrl,
+                mime_type: 'video/mp4',
+                filename: 'supporting-video.mp4',
+              },
+              { type: 'text', text: 'Transcribe faithfully.' },
+            ],
+          }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal,
+    );
+
+    assert.equal(result.result.content, 'voiceover analysis ok');
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    const chatRequest = requests.find((item) => item.url.includes('/gemini-3-flash/v1/chat/completions'));
+    const requestBody = JSON.parse(String(chatRequest.init.body));
+    assert.equal(requestBody.include_thoughts, false);
+    assert.equal(requestBody.messages[0].content[0].image_url.url, stagedAudioUrl);
+    assert.equal(requestBody.messages[0].content[1].image_url.url, supportingVideoUrl);
+    assert.equal(
+      requestBody.messages[0].content.some((item) => item.type === 'image_url' && !item.image_url?.url),
+      false,
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob rejects oversized Gemini inline data before provider fetch', async () => {
   const originalFetch = global.fetch;
   let fetchCalls = 0;

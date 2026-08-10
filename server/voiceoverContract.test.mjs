@@ -210,8 +210,29 @@ test('render version 2 stores acoustic groups only after forced alignment', () =
   const aligned = normalizeVoiceoverCheckpoint(checkpointAtV2('audio_aligned'));
   assert.deepEqual(aligned.ttsGroups, [validAcousticTtsGroup(0)]);
   assert.equal(aligned.ttsBatch.status, 'succeeded');
+  assert.equal(aligned.alignmentSimilarity, 0.98);
   assert.throws(
     () => normalizeVoiceoverCheckpoint(checkpointAtV2('audio_aligned', { ttsGroups: undefined })),
+    (error) => error.code === 'voiceover_checkpoint_invalid',
+  );
+  assert.throws(
+    () => normalizeVoiceoverCheckpoint(checkpointAtV2('audio_aligned', {
+      alignmentSimilarity: undefined,
+    })),
+    (error) => error.code === 'voiceover_checkpoint_invalid',
+  );
+  for (const alignmentSimilarity of [Number.NaN, Number.POSITIVE_INFINITY, -0.01, 1.01, '0.98']) {
+    assert.throws(
+      () => normalizeVoiceoverCheckpoint(checkpointAtV2('audio_aligned', {
+        alignmentSimilarity,
+      })),
+      (error) => error.code === 'voiceover_checkpoint_invalid',
+    );
+  }
+  assert.throws(
+    () => normalizeVoiceoverCheckpoint(checkpointAtV2('tts_generating', {
+      alignmentSimilarity: 0.98,
+    })),
     (error) => error.code === 'voiceover_checkpoint_invalid',
   );
   assert.throws(
@@ -620,6 +641,9 @@ function checkpointAtV2(stage, overrides = {}) {
       actualDurationMs: 1_000,
     })
     : validTtsBatch();
-  if (STAGE_WITH_ALIGNED_AUDIO.has(stage)) checkpoint.ttsGroups = [validAcousticTtsGroup(0)];
+  if (STAGE_WITH_ALIGNED_AUDIO.has(stage)) {
+    checkpoint.ttsGroups = [validAcousticTtsGroup(0)];
+    checkpoint.alignmentSimilarity = 0.98;
+  }
   return { ...checkpoint, ...overrides };
 }

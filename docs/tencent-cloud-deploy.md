@@ -119,6 +119,12 @@ MEIAO_VOICEOVER_TRANSLATION_ENABLED=0
 MEIAO_VOICEOVER_SEPARATION_PYTHON=/opt/meiao/voiceover/venv/bin/python
 MEIAO_VOICEOVER_DEMUCS_MODEL=mdx
 MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=/opt/meiao/voiceover/models
+MEIAO_VOICEOVER_ALIGNMENT_PYTHON=/opt/meiao/voiceover/venv/bin/python
+MEIAO_VOICEOVER_WHISPER_MODEL_DIR=/opt/meiao/voiceover/faster-whisper-base
+MEIAO_VOICEOVER_ALIGNMENT_TIMEOUT_MS=600000
+MEIAO_VOICEOVER_ALIGNMENT_MAX_OUTPUT_BYTES=524288
+MEIAO_VOICEOVER_ALIGNMENT_MIN_SIMILARITY=0.82
+MEIAO_VOICEOVER_ALIGNMENT_MIN_TURN_DURATION_MS=40
 MEIAO_VOICEOVER_SEPARATION_CONCURRENCY=1
 MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS=3600000
 MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS=120000
@@ -342,6 +348,7 @@ sudo install -d \
 sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -w /opt/meiao/voiceover
 export MEIAO_VOICEOVER_VENV_DIR=/opt/meiao/voiceover/venv
 export MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=/opt/meiao/voiceover/models
+export MEIAO_VOICEOVER_WHISPER_MODEL_DIR=/opt/meiao/voiceover/faster-whisper-base
 # 跨境链路较慢时可调；脚本默认 600 秒、8 次，合法范围分别为 30-3600 秒、0-20 次。
 export MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS=600
 export MEIAO_VOICEOVER_PIP_RETRIES=8
@@ -349,6 +356,7 @@ sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
   "PATH=$PATH" \
   "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
   "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
+  "MEIAO_VOICEOVER_WHISPER_MODEL_DIR=$MEIAO_VOICEOVER_WHISPER_MODEL_DIR" \
   "MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS=$MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS" \
   "MEIAO_VOICEOVER_PIP_RETRIES=$MEIAO_VOICEOVER_PIP_RETRIES" \
   node scripts/install-voiceover-demucs.mjs --install
@@ -356,11 +364,19 @@ sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
   "PATH=$PATH" \
   "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
   "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
+  "MEIAO_VOICEOVER_WHISPER_MODEL_DIR=$MEIAO_VOICEOVER_WHISPER_MODEL_DIR" \
   node scripts/install-voiceover-demucs.mjs --download-models
 sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
   "PATH=$PATH" \
   "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
   "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
+  "MEIAO_VOICEOVER_WHISPER_MODEL_DIR=$MEIAO_VOICEOVER_WHISPER_MODEL_DIR" \
+  node scripts/install-voiceover-demucs.mjs --download-whisper-model
+sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
+  "PATH=$PATH" \
+  "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
+  "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
+  "MEIAO_VOICEOVER_WHISPER_MODEL_DIR=$MEIAO_VOICEOVER_WHISPER_MODEL_DIR" \
   node scripts/install-voiceover-demucs.mjs --check
 sudo chown -R root:root /opt/meiao/voiceover
 sudo find /opt/meiao/voiceover -type d -exec chmod 0555 {} +
@@ -368,18 +384,22 @@ sudo find /opt/meiao/voiceover -type f -perm /111 -exec chmod 0555 {} +
 sudo find /opt/meiao/voiceover -type f ! -perm /111 -exec chmod 0444 {} +
 test "$MEIAO_VOICEOVER_SERVICE_USER" != root
 sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -r /opt/meiao/voiceover/models/mdx.yaml
+sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -r /opt/meiao/voiceover/faster-whisper-base/model.bin
 ! sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -w /opt/meiao/voiceover/models
+! sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -w /opt/meiao/voiceover/faster-whisper-base
 ```
 
 `MEIAO_VOICEOVER_SERVICE_USER` 必须替换为实际启动 PM2/Node 口播服务的系统用户；不要照抄一个假定用户名。安装阶段可由当前 PM2 用户写入，但安装与校验完成后必须切成 root 所有、服务用户只读；需要升级模型时仅在维护窗口临时恢复写权限，完成后重新执行全部哈希检查和只读收口。若 PM2 仍由 root 运行，可以安装和做关闭态 readiness，但禁止启用新口播任务，必须先迁移到独立的非 root 服务用户。任一步失败都停止启用。
 
 `MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS` 是单次 socket 读取超时，`MEIAO_VOICEOVER_PIP_RETRIES` 是单连接重试次数，都不是整次安装的总时限；非法值会在创建 venv 前 fail-closed。两者只用于一次性安装命令，不需要写入 `.env.server`。维护窗口若需要总时限，应由运维在命令外层另加受控 timeout。
 
-`deploy/voiceover/requirements.lock`、`build-requirements.lock`、`demucs-models.json` 和 `mdx.yaml` 是受版本控制的安装合同；venv、`.th` 权重和运行时临时媒体不得进入 Git、release 包或 `git status`。安装后仍先保持功能关闭，写好候选环境路径和 KIE 凭证，再执行：
+`deploy/voiceover/requirements.lock`、`build-requirements.lock`、`demucs-models.json`、`whisper-model.json` 和 `mdx.yaml` 是受版本控制的安装合同；Whisper 固定为 `Systran/faster-whisper-base` revision `ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66`，`--check` 必须同时验证 Demucs 与 Whisper 的精确文件清单、字节数和 SHA-256。venv、`.th` 权重、Whisper 模型文件和运行时临时媒体不得进入 Git、release 包或 `git status`。安装后仍先保持功能关闭，写好候选环境路径和 KIE 凭证，再执行：
 
 Torch 2.6+ 默认使用受限的 `weights_only` 加载，而 Demucs 4.0.1 的官方 `mdx` 文件是完整的旧式 pickled model。应用拿到单并发许可后会再次拒绝符号链接、核对 manifest 字节数与 SHA-256，再只在紧邻执行的 Demucs readiness/分离子进程中设置 `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`；子进程使用最小环境白名单，不继承数据库、provider、COS 或签名密钥，并主动移除冲突的 `TORCH_FORCE_WEIGHTS_ONLY_LOAD`。禁止把用户上传文件、任意第三方 checkpoint 或未校验权重放入模型目录；该兼容边界不得扩展到主 Node 进程或其他 Python/provider 任务。
 
-服务启动和每个真实分离任务前的内置 readiness 校验固定 Python/SoundFile 版本、Torchaudio 的 `soundfile` backend，并实际写入和回读一个 48 kHz 双声道 PCM_16 WAV；格式、采样率、声道、位深或帧数任一不符即 fail closed。它还校验模型文件字节/哈希、`mdx.yaml` 与 FFmpeg filters，但不额外把约 1.6 GiB 的 Demucs 模型载入内存；实际分离子进程自身是该任务唯一一次模型加载。启用或发布前必须另行执行上面的独立 readiness 探针，它会真实调用 `get_model("mdx")` 完成加载门禁。独立加载门禁使用 `MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS`，默认 `120000ms`、范围 `30000-180000ms`；该超时不用于服务启动，也不触发后台重试。这样既保留供应链、实际输出和 Torch 兼容验证，又避免零停机 reload 同时存在新旧 Node 时把一次试加载与真实任务加载重复叠加。
+服务启动和每个真实任务前的内置 readiness 同时校验 Demucs 与 faster-whisper。Demucs 校验固定 Python/SoundFile 版本、Torchaudio 的 `soundfile` backend，并实际写入和回读一个 48 kHz 双声道 PCM_16 WAV；Whisper 校验固定 `faster-whisper==1.2.1`、本地模型清单/哈希和 CPU `int8` 离线加载合同。格式、版本、模型或输出任一不符即 fail closed。服务启动不会额外把约 1.6 GiB 的 Demucs 模型载入内存；实际分离子进程自身是该任务唯一一次 Demucs 模型加载。启用或发布前必须另行执行上面的独立 readiness 探针，它会真实调用 `get_model("mdx")` 并加载本地 Whisper base 模型。独立加载门禁使用 `MEIAO_VOICEOVER_READINESS_MODEL_TIMEOUT_MS`，默认 `120000ms`、范围 `30000-180000ms`；该超时不用于服务启动，也不触发后台重试。这样既保留供应链、实际输出和 Torch 兼容验证，又避免零停机 reload 同时存在新旧 Node 时把一次试加载与真实任务加载重复叠加。
+
+Demucs 分离和 Whisper 强制对齐共用一个进程内 FIFO 重媒体许可，许可数量沿用 `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY`。腾讯云生产保持 `1`，禁止让两类模型子进程重叠占用内存；超时或取消必须等进程关闭后才能释放许可。
 
 口播分析会把 Demucs 人声轨压成单声道 16 kHz AAC，并以内联音频作为 Gemini 的主要语音证据；原视频只用于可见字幕和画面交叉校验。`MEIAO_GEMINI_INLINE_DATA_MAX_BYTES` 默认 `12582912` 字节、范围 `1024-15728640`；生成、探测或读取后的字节任一超限都会在 `speech_analysis_submitting` 检查点和付费 Gemini 请求之前 fail closed。内联音频只存在于当前请求内存，不写入 parent/child checkpoint、日志或托管素材。
 
@@ -398,7 +418,7 @@ test -n "$MEIAO_VOICEOVER_FIXTURE_PATH"
 npm run probe:voiceover-translation -- --fixture-path "$MEIAO_VOICEOVER_FIXTURE_PATH"
 ```
 
-它只验证本机 H.264/AAC、Demucs 输出、人声分析媒体、对齐、成品仅含新口播、最终 MP4、时长、`ftyp` 与本地字节区间读取，不调用 Gemini、KIE 或 Golden。远程模式用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 指向梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 必须通过当前 shell 隐式输入并在执行后清除，不得写入 `.env.server` / `.env.local`、命令历史、日志或交接文档。`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 只接受启动脚本前的单次命令环境；即使误写入 env 文件也会被探针忽略。
+它只验证本机 H.264/AAC、Demucs 输出、人声分析媒体、单个连续 WAV 的 Whisper 声学边界、逐句 `atempo`、成品仅含新口播、源/成品 H.264 码流 SHA-256 一致、最终 MP4、时长、`ftyp` 与本地字节区间读取，不调用 Gemini、KIE 或 Golden。远程模式用 `MEIAO_VOICEOVER_PROBE_BASE_URL` 指向梅奥 HTTP(S) 根地址；`MEIAO_VOICEOVER_PROBE_POLL_INTERVAL_MS` 默认 `4000ms`、范围 `500-30000ms`，`MEIAO_VOICEOVER_PROBE_TIMEOUT_MS` 默认 `2400000ms`、范围 `60000-7200000ms`。`MEIAO_VOICEOVER_PROBE_SESSION_TOKEN` 必须通过当前 shell 隐式输入并在执行后清除，不得写入 `.env.server` / `.env.local`、命令历史、日志或交接文档。`MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED=1` 只接受启动脚本前的单次命令环境；即使误写入 env 文件也会被探针忽略。
 
 真实 canary 只允许用户明确确认的当前账号 managed asset ID，并要求一次性确认：
 
@@ -418,10 +438,10 @@ unset MEIAO_VOICEOVER_PROBE_SESSION_TOKEN
 
 `--remove-text` 还会触发 Golden，必须再次取得费用确认。成功或 post-create 失败证据会输出安全的内部 `parentJobId`、`childJobId` 与检查点状态，不输出 provider task ID、转录或 URL。`--resume-parent-job-id` 使用内部父 ID；`--resume-child-task-id` 只接受 live 证据中的内部 `childJobId`，直接只读 GET `/api/jobs/:id` 并核对父持有 child 合同，不支持 `providerTaskId`、不扫描父任务列表，也不重新 create。回滚把 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=0` 并走正常 PM2 ready-gated reload；这只阻止新提交，历史卡片和托管结果继续可读。
 
-发布后分别记录两类验收：
+发布后分别记录三类验收：
 
-- 技术：parent/child 检查点、每个分析时间段独立且仅一次 TTS create、每组 `actualDurationMs/atempo` 在配置上下限内、窗口内实际起止位置、托管最终素材、H.264/AAC、fast-start、HTTP Range、刷新与本地服务重启恢复。KIE `waiting/queuing/generating` 必须继续查询原 task ID。
-- 音频：量化原混音、Demucs vocal、每段 TTS 和最终混音；最终频谱必须证明原人声、背景音乐和分离伪影均未重新混入，只保留新口播。两个 stem 文件存在不能替代最终音轨检查。
+- 技术：version 2 必须只有一个 `ttsBatch` 和一个 `tts:continuous:attempt:<n>` child；真实 child payload 必须是 `temperature: 0`、单一音色/说话人，并与译文 `dialogueTurns` 顺序和文本完全一致。父任务、child、attempt 和 provider identity 必须一致；已有 `providerTaskId` 只查询恢复。逐句记录 `alignmentSimilarity`、声学边界、目标窗口、`actualDurationMs/atempo` 和实际起止位置；最终素材必须为 H.264/AAC、fast-start、HTTP Range，且源/成品 H.264 stream SHA-256 一致。
+- 音频：量化原混音、Demucs vocal、唯一连续 TTS WAV、aligned narration 和最终混音；aligned WAV 与成品 AAC 解码 PCM 的相关性必须达到探针阈值。成品不得重新混入原人声、背景音乐、环境声或分离伪影，只保留新口播。两个 stem 文件存在不能替代最终音轨检查。
 - 感知：源语言与逐段语义对应画面动作，原口播和背景声不再可辨，目标语言正确，每段语速和起止位置可接受；去字幕时最终画面无原字幕，但分析媒体必须保留原可见字幕作为辅助证据。技术通过不能代替真人试听/观看。
 
 ## 启动

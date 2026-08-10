@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import {
+  VOICEOVER_TTS_RENDER_VERSION,
   getVoiceoverConfig,
   hasLegacyVoiceoverCheckpointProvenance,
   mergeVoiceoverCheckpoint,
@@ -20,7 +21,8 @@ import { normalizeManagedAssetIdentity } from './managedAssetIdentity.mjs';
 
 const CHILD_MAX_SERIALIZED_BYTES = 256 * 1024;
 const CHILD_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
-const CHILD_KEY_TTS = /^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d{0,2})$/u;
+const CHILD_KEY_TTS_LEGACY = /^tts:(0|[1-9]\d?):attempt:(0|[1-9]\d{0,2})$/u;
+const CHILD_KEY_TTS_CONTINUOUS = /^tts:continuous:attempt:(0|[1-9]\d{0,2})$/u;
 const CHILD_KEY_GOLDEN = /^golden:attempt:(0|[1-9]\d{0,2})$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u;
 const VOICEOVER_ANALYSIS_RETRY_ERROR_CODES = new Set([
@@ -103,10 +105,29 @@ const mapJobRow = (row = {}) => ({
 
 const childSubmissionKey = (parentJobId, childKey) => `voiceover-child:${parentJobId}:${childKey}`;
 
+const parseTtsChildKey = (value) => {
+  const childKey = String(value || '').trim();
+  const continuous = childKey.match(CHILD_KEY_TTS_CONTINUOUS);
+  if (continuous) {
+    return {
+      continuous: true,
+      groupIndex: 0,
+      attempt: Number(continuous[1]),
+    };
+  }
+  const legacy = childKey.match(CHILD_KEY_TTS_LEGACY);
+  if (!legacy) return null;
+  return {
+    continuous: false,
+    groupIndex: Number(legacy[1]),
+    attempt: Number(legacy[2]),
+  };
+};
+
 export const buildVoiceoverChildJobId = (parentJobId, childKey) => {
   const parentId = assertSafeId(parentJobId, 'parentJobId', 'voiceover_retry_invalid');
   const normalizedChildKey = String(childKey || '').trim();
-  if (!CHILD_KEY_TTS.test(normalizedChildKey) && !CHILD_KEY_GOLDEN.test(normalizedChildKey)) {
+  if (!parseTtsChildKey(normalizedChildKey) && !CHILD_KEY_GOLDEN.test(normalizedChildKey)) {
     throw createStoreError('voiceover_retry_invalid', '口播翻译子任务身份无效。', 400);
   }
   const digest = createHash('sha256')
@@ -336,14 +357,14 @@ const normalizeTtsPayload = (payload, childKey) => {
     'scene',
     'sampleContext',
   ]));
-  const keyMatch = String(childKey || '').match(CHILD_KEY_TTS);
+  const parsedKey = parseTtsChildKey(childKey);
   const groupIndex = payload.groupIndex;
-  const attempt = Number(keyMatch?.[2]);
+  const attempt = parsedKey?.attempt;
   if (
-    !keyMatch
+    !parsedKey
     || typeof groupIndex !== 'number'
     || !Number.isInteger(groupIndex)
-    || groupIndex !== Number(keyMatch[1])
+    || groupIndex !== parsedKey.groupIndex
     || groupIndex < 0
     || groupIndex > 99
     || !Number.isInteger(attempt)
@@ -987,13 +1008,6 @@ export const deriveVoiceoverRetryPlan = (job, retryRequest = {}, options = {}) =
     };
   }
 
-  const latestTtsAttemptByGroup = new Map();
-  for (const group of checkpoint.ttsGroups || []) {
-    const previous = latestTtsAttemptByGroup.get(group.index);
-    if (!previous || group.attempt > previous.attempt) {
-      latestTtsAttemptByGroup.set(group.index, group);
-    }
-  }
   const needsNewProviderAttempt = (attempt) => (
     attempt?.status === 'failed'
     || (attempt?.status === 'submitted' && !attempt.providerTaskId)
@@ -1009,6 +1023,28 @@ export const deriveVoiceoverRetryPlan = (job, retryRequest = {}, options = {}) =
         `golden:attempt:${nextAttempt}`,
       ),
     };
+  }
+  if (
+    checkpoint.ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION
+    && needsNewProviderAttempt(checkpoint.ttsBatch)
+  ) {
+    const nextAttempt = checkpoint.ttsBatch.attempt + 1;
+    return {
+      kind: 'provider',
+      target: 'tts',
+      userConfirmed: request.confirmNewProviderAttempt,
+      nextChildJobId: buildVoiceoverChildJobId(
+        normalized.id,
+        `tts:continuous:attempt:${nextAttempt}`,
+      ),
+    };
+  }
+  const latestTtsAttemptByGroup = new Map();
+  for (const group of checkpoint.ttsGroups || []) {
+    const previous = latestTtsAttemptByGroup.get(group.index);
+    if (!previous || group.attempt > previous.attempt) {
+      latestTtsAttemptByGroup.set(group.index, group);
+    }
   }
   const ttsAttempt = [...latestTtsAttemptByGroup.values()]
     .sort((left, right) => left.index - right.index)
@@ -1083,38 +1119,68 @@ export const prepareVoiceoverJobRetryResult = (job, voiceoverRetryPlan = {}, opt
       'voiceover_retry_invalid',
     );
     if (voiceoverRetryPlan.target === 'tts') {
-      const groupIndex = Number(voiceoverRetryPlan.groupIndex);
-      const attempts = (current.ttsGroups || []).filter((group) => group.index === groupIndex);
-      const previous = attempts.sort((left, right) => right.attempt - left.attempt)[0];
-      if (
-        !previous
-        || !(
-          previous.status === 'failed'
-          || (previous.status === 'submitted' && !previous.providerTaskId)
-        )
-      ) {
-        throw createStoreError('voiceover_retry_invalid', 'TTS 分组不是明确失败状态。', 409);
+      if (current.ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION) {
+        const previous = current.ttsBatch;
+        if (
+          !previous
+          || !(
+            previous.status === 'failed'
+            || (previous.status === 'submitted' && !previous.providerTaskId)
+          )
+        ) {
+          throw createStoreError('voiceover_retry_invalid', '连续 TTS 批次不是明确失败状态。', 409);
+        }
+        const nextAttempt = previous.attempt + 1;
+        const expectedChildJobId = buildVoiceoverChildJobId(
+          normalized.id,
+          `tts:continuous:attempt:${nextAttempt}`,
+        );
+        if (nextChildJobId !== expectedChildJobId) {
+          throw createStoreError('voiceover_retry_invalid', '连续 TTS 子任务身份与检查点不一致。', 409);
+        }
+        voiceoverCheckpoint = normalizeVoiceoverCheckpoint({
+          ...current,
+          ttsAttemptBase: nextAttempt,
+          ttsBatch: {
+            attempt: nextAttempt,
+            childJobId: nextChildJobId,
+            status: 'queued',
+          },
+        }, checkpointOptions);
+      } else {
+        const groupIndex = Number(voiceoverRetryPlan.groupIndex);
+        const attempts = (current.ttsGroups || []).filter((group) => group.index === groupIndex);
+        const previous = attempts.sort((left, right) => right.attempt - left.attempt)[0];
+        if (
+          !previous
+          || !(
+            previous.status === 'failed'
+            || (previous.status === 'submitted' && !previous.providerTaskId)
+          )
+        ) {
+          throw createStoreError('voiceover_retry_invalid', 'TTS 分组不是明确失败状态。', 409);
+        }
+        const expectedChildJobId = buildVoiceoverChildJobId(
+          normalized.id,
+          `tts:${groupIndex}:attempt:${previous.attempt + 1}`,
+        );
+        if (nextChildJobId !== expectedChildJobId) {
+          throw createStoreError('voiceover_retry_invalid', 'TTS 子任务身份与检查点不一致。', 409);
+        }
+        const next = {
+          index: previous.index,
+          attempt: previous.attempt + 1,
+          childJobId: nextChildJobId,
+          status: 'queued',
+          startMs: previous.startMs,
+          endMs: previous.endMs,
+        };
+        voiceoverCheckpoint = mergeVoiceoverCheckpoint(
+          current,
+          { ttsGroups: [next] },
+          checkpointOptions,
+        );
       }
-      const expectedChildJobId = buildVoiceoverChildJobId(
-        normalized.id,
-        `tts:${groupIndex}:attempt:${previous.attempt + 1}`,
-      );
-      if (nextChildJobId !== expectedChildJobId) {
-        throw createStoreError('voiceover_retry_invalid', 'TTS 子任务身份与检查点不一致。', 409);
-      }
-      const next = {
-        index: previous.index,
-        attempt: previous.attempt + 1,
-        childJobId: nextChildJobId,
-        status: 'queued',
-        startMs: previous.startMs,
-        endMs: previous.endMs,
-      };
-      voiceoverCheckpoint = mergeVoiceoverCheckpoint(
-        current,
-        { ttsGroups: [next] },
-        checkpointOptions,
-      );
     } else if (voiceoverRetryPlan.target === 'golden') {
       const previous = current.subtitleRemoval;
       if (
@@ -1154,7 +1220,9 @@ export const prepareVoiceoverJobRetryResult = (job, voiceoverRetryPlan = {}, opt
     }
     const currentProviderAttempts = [
       ...(current.subtitleRemoval ? [current.subtitleRemoval] : []),
-      ...latestTtsAttemptByGroup.values(),
+      ...(current.ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION
+        ? (current.ttsBatch ? [current.ttsBatch] : [])
+        : latestTtsAttemptByGroup.values()),
     ];
     const hasDefinitiveChildFailure = currentProviderAttempts.some(
       (attempt) => attempt.status === 'failed',

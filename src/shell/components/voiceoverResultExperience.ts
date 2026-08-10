@@ -97,7 +97,7 @@ export const requiresVoiceoverRetryConfirmation = (
   const checkpoint = result.voiceoverCheckpoint;
   if (
     checkpoint?.stage === 'speech_analysis_submitting'
-    && ['provider_bad_response', 'provider_config_error'].includes(
+    && ['voiceover_analysis_invalid', 'provider_bad_response', 'provider_config_error'].includes(
       String(result.errorCode || '').trim(),
     )
   ) {

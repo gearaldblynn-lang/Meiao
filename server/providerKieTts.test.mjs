@@ -454,6 +454,51 @@ test('new task checkpoints its provider id before the first record query', async
   });
 });
 
+test('continuous narration child reaches the real KIE adapter with one speaker and temperature zero', async () => {
+  const deps = fakeKieTts({ states: ['success'] });
+  const result = await runKieTtsJob({
+    job: newTtsJob({
+      payload: {
+        ...newTtsJob().payload,
+        childKey: 'tts:continuous:attempt:0',
+        dialogueTurns: [
+          { speaker: 'Speaker 1', text: 'First translated sentence.' },
+          { speaker: 'Speaker 1', text: 'Second translated sentence.' },
+        ],
+        temperature: 0,
+      },
+    }),
+    env: enabledEnv(),
+    onProviderTaskId: async () => {},
+    deps,
+  });
+
+  assert.equal(deps.calls.create, 1);
+  assert.equal(deps.calls.query, 1);
+  assert.equal(result.providerTaskId, 'tts-1');
+  assert.equal(result.providerStatus, 'success');
+
+  const mismatchedDeps = fakeKieTts();
+  await assert.rejects(
+    runKieTtsJob({
+      job: newTtsJob({
+        payload: {
+          ...newTtsJob().payload,
+          childKey: 'tts:continuous:attempt:0',
+          groupIndex: 1,
+          temperature: 0,
+        },
+      }),
+      env: enabledEnv(),
+      onProviderTaskId: async () => {},
+      deps: mismatchedDeps,
+    }),
+    (error) => error?.code === 'provider_bad_request'
+      && error?.providerStatus === 'invalid_parent_child',
+  );
+  assert.equal(mismatchedDeps.calls.create, 0);
+});
+
 test('existing provider task id is query-only', async () => {
   const deps = fakeKieTts({ states: ['success'] });
   const result = await runKieTtsJob({

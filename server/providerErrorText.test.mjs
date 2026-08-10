@@ -12,6 +12,7 @@ test('isProviderErrorText keeps historical provider error sentinels', () => {
     'Internal error, please try again later',
     'file mime type is not supported',
     'image download failed',
+    'Invalid image: The image URL must not be empty.',
     'HTTP 404: Not Found',
     'failed to get the file information',
     'please convert or change the file',
@@ -60,6 +61,7 @@ test('providerErrorCodeFromText preserves refusal and bad-response classificatio
   assert.equal(providerErrorCodeFromText('I cannot fulfill this request'), 'provider_refusal');
   assert.equal(providerErrorCodeFromText('无法满足该请求'), 'provider_refusal');
   assert.equal(providerErrorCodeFromText('failed to get the file information'), 'provider_bad_response');
+  assert.equal(providerErrorCodeFromText('Invalid image: The image URL must not be empty.'), 'provider_bad_request');
   assert.equal(providerErrorCodeFromText('Unauthorized – Authentication failed'), 'provider_bad_request');
 });
 

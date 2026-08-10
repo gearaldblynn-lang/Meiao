@@ -7,17 +7,47 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  measurePcmSimilarity,
   parseVoiceoverProbeArgs,
   redactVoiceoverProbeText,
   runVoiceoverProbe,
 } from './probe-voiceover-translation.mjs';
-import { VOICEOVER_ANALYSIS_EVIDENCE_VERSION } from '../server/voiceoverContract.mjs';
+import {
+  VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
+  VOICEOVER_TTS_RENDER_VERSION,
+} from '../server/voiceoverContract.mjs';
 
 const readyLocal = Object.freeze({
   ready: true,
   pythonReady: true,
   modelReady: true,
   ffmpegReady: true,
+});
+
+const pcm16 = (samples) => {
+  const output = Buffer.alloc(samples.length * 2);
+  samples.forEach((sample, index) => output.writeInt16LE(sample, index * 2));
+  return output;
+};
+
+test('PCM similarity tolerates encoder gain and short delay but rejects an extra unrelated track', () => {
+  const narration = Array.from({ length: 16_000 }, (_, index) => (
+    Math.round(
+      Math.sin(index / 19) * 12_000
+      + Math.sin(index / 43) * 4_000
+      + ((index % 97) - 48) * 30,
+    )
+  ));
+  const delayed = [
+    ...Array.from({ length: 160 }, () => 0),
+    ...narration.map((sample) => Math.round(sample * 0.82)),
+  ];
+  const mixed = narration.map((sample, index) => (
+    Math.max(-32_768, Math.min(32_767, sample + Math.sin(index / 7) * 14_000))
+  ));
+
+  assert.equal(measurePcmSimilarity(pcm16(narration), pcm16(delayed)) > 0.99, true);
+  assert.equal(measurePcmSimilarity(pcm16(narration), pcm16(mixed)) < 0.95, true);
 });
 
 const canonicalVoiceoverCheckpoint = ({ removeText = false, ...overrides } = {}) => {
@@ -31,13 +61,15 @@ const canonicalVoiceoverCheckpoint = ({ removeText = false, ...overrides } = {})
   return {
     version: 1,
     stage: 'result_persisted',
-    baseVideoAssetId: 'asset-base',
+    baseVideoAssetId: 'owned-managed-asset',
     originalAudioAssetId: 'asset-original-audio',
     vocalAssetId: 'asset-vocals',
     backgroundAssetId: 'asset-background',
     analysisEvidenceVersion: VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
     alignmentVersion: 1,
+    alignmentSimilarity: 0.98,
     analysisAttempt: 0,
+    ttsRenderVersion: VOICEOVER_TTS_RENDER_VERSION,
     ...(removeText ? {
       subtitleRemoval: {
         childJobId: 'voiceover-child-golden-safe',
@@ -65,17 +97,22 @@ const canonicalVoiceoverCheckpoint = ({ removeText = false, ...overrides } = {})
       selectedVoiceName: 'Charon',
       segments: [{ ...segment }],
     },
-    ttsGroups: [{
-      index: 0,
+    ttsBatch: {
       attempt: 0,
       childJobId: 'voiceover-child-tts-safe',
       providerTaskId: 'tts-provider-never-print',
       assetId: 'asset-tts-safe',
       status: 'succeeded',
+      actualDurationMs: 780,
+    },
+    ttsGroups: [{
+      index: 0,
       startMs: 0,
       endMs: 800,
+      sourceStartMs: 0,
+      sourceEndMs: 780,
       actualDurationMs: 780,
-      atempo: 1,
+      atempo: 0.975,
     }],
     alignedAudioAssetId: 'asset-aligned-audio',
     finalAssetId: 'managed-final',
@@ -186,6 +223,7 @@ const probeDeps = ({
     childQuery: 0,
     health: 0,
     finalVerify: 0,
+    readinessVerifyModelLoad: [],
   };
   return {
     env: {
@@ -194,7 +232,10 @@ const probeDeps = ({
       ...env,
     },
     calls,
-    checkReadiness: async () => readiness,
+    checkReadiness: async (options) => {
+      calls.readinessVerifyModelLoad.push(options?.verifyModelLoad);
+      return readiness;
+    },
     runFixtureProbe: async () => {
       calls.fixture += 1;
       return fixtureResult || {
@@ -202,7 +243,11 @@ const probeDeps = ({
         separationReady: true,
         vocalOnlyAnalysisMedia: true,
         alignmentReady: true,
+        alignmentSimilarityAccepted: true,
+        continuousSourceCount: 1,
+        acousticTurnCount: 1,
         narrationOnlyMixReady: true,
+        videoStreamPreserved: true,
         outputH264Aac: true,
         durationWithinTolerance: true,
         ftypPresent: true,
@@ -218,11 +263,14 @@ const probeDeps = ({
       return childResult || {
         found: true,
         childJobId,
-        parentJobId: 'parent-job-1',
-        childKey: 'tts:0:attempt:0',
+        parentJobId: 'parent-job-safe',
+        childKey: 'tts:continuous:attempt:0',
         taskType: 'kie_tts',
         provider: 'kie',
-        status: 'submitted',
+        status: 'succeeded',
+        temperature: 0,
+        voiceName: 'Charon',
+        dialogueTurns: [{ speaker: 'Speaker 1', text: 'Translation' }],
       };
     },
     fetchHealth: async () => {
@@ -261,6 +309,8 @@ const probeDeps = ({
         managedAsset: true,
         h264: true,
         aac: true,
+        narrationOnlyAudio: true,
+        sourceVideoStreamPreserved: true,
         rangeReadable: true,
         ftypPresent: true,
         durationMs: 1_000,
@@ -282,6 +332,7 @@ test('default and readiness modes cannot create provider tasks', async () => {
     assert.equal(deps.calls.fixture, 0);
     assert.equal(deps.calls.parentQuery, 0);
     assert.equal(deps.calls.childQuery, 0);
+    assert.deepEqual(deps.calls.readinessVerifyModelLoad, [true]);
   }
 });
 
@@ -346,8 +397,45 @@ test('fixture mode is absolute-path local-only and cannot create provider tasks'
   assert.equal(output.mode, 'fixture');
   assert.equal(output.providerCreateCalls, 0);
   assert.equal(output.outputH264Aac, true);
+  assert.equal(output.continuousSourceCount, 1);
+  assert.equal(output.acousticTurnCount, 1);
+  assert.equal(output.alignmentSimilarityAccepted, true);
+  assert.equal(output.videoStreamPreserved, true);
   assert.equal(output.rangeReadable, true);
   assert.doesNotMatch(result.stdout, /owned-fixture|\/tmp\//);
+});
+
+test('fixture mode fails closed when continuous alignment or final media evidence is incomplete', async () => {
+  for (const failedField of [
+    'alignmentSimilarityAccepted',
+    'videoStreamPreserved',
+    'narrationOnlyMixReady',
+  ]) {
+    const deps = probeDeps({
+      fixtureResult: {
+        inputH264Aac: true,
+        separationReady: true,
+        vocalOnlyAnalysisMedia: true,
+        alignmentReady: true,
+        alignmentSimilarityAccepted: true,
+        continuousSourceCount: 1,
+        acousticTurnCount: 1,
+        narrationOnlyMixReady: true,
+        videoStreamPreserved: true,
+        outputH264Aac: true,
+        durationWithinTolerance: true,
+        ftypPresent: true,
+        rangeReadable: true,
+        [failedField]: false,
+      },
+    });
+    const result = await runVoiceoverProbe(
+      ['--fixture-path', '/tmp/owned-fixture.mp4'],
+      deps,
+    );
+    assert.equal(result.exitCode, 1, failedField);
+    assert.equal(deps.calls.providerCreate, 0, failedField);
+  }
 });
 
 test('parent and authoritative child resume modes are query-only and never submit or create', async () => {
@@ -421,8 +509,11 @@ test('child resume reads the authoritative child by internal ID and ignores stal
           payload: {
             executionOwner: 'parent',
             parentJobId: 'parent-job-1',
-            childKey: 'tts:0:attempt:1',
-            clientSubmissionKey: 'voiceover-child:parent-job-1:tts:0:attempt:1',
+            childKey: 'tts:continuous:attempt:1',
+            clientSubmissionKey: 'voiceover-child:parent-job-1:tts:continuous:attempt:1',
+            temperature: 0,
+            voiceName: 'Charon',
+            dialogueTurns: [{ speaker: 'Speaker 1', text: 'Translation' }],
           },
           result: {
             transcript: 'never print child provider output',
@@ -439,7 +530,7 @@ test('child resume reads the authoritative child by internal ID and ignores stal
     found: true,
     childJobId,
     parentJobId: 'parent-job-1',
-    childKey: 'tts:0:attempt:1',
+    childKey: 'tts:continuous:attempt:1',
     taskType: 'kie_tts',
     provider: 'kie',
     status: 'succeeded',
@@ -530,6 +621,8 @@ test('confirmed live mode creates exactly once with only the explicitly supplied
   assert.equal(JSON.parse(result.stdout).parentJobCreated, true);
   assert.equal(JSON.parse(result.stdout).finalH264, true);
   assert.equal(JSON.parse(result.stdout).finalAac, true);
+  assert.equal(JSON.parse(result.stdout).narrationOnlyAudio, true);
+  assert.equal(JSON.parse(result.stdout).sourceVideoStreamPreserved, true);
   assert.equal(JSON.parse(result.stdout).rangeReadable, true);
   assert.equal(JSON.parse(result.stdout).parentJobId, 'parent-job-safe');
   assert.equal(JSON.parse(result.stdout).finalCheckpointStage, 'result_persisted');
@@ -586,24 +679,29 @@ test('successful live evidence contains only bounded internal checkpoint identit
                 targetText: 'Second.',
               }],
             },
+            ttsBatch: {
+              ...canonicalVoiceoverCheckpoint().ttsBatch,
+              childJobId: 'voiceover-child-tts-continuous',
+              providerTaskId: 'tts-provider-continuous-never-print',
+              assetId: 'asset-tts-continuous',
+              actualDurationMs: 600,
+            },
             ttsGroups: [{
               index: 0,
-              attempt: 0,
-              childJobId: 'voiceover-child-tts-0',
-              providerTaskId: 'tts-provider-zero-never-print',
-              assetId: 'asset-tts-zero',
-              status: 'succeeded',
               startMs: 0,
               endMs: 400,
+              sourceStartMs: 0,
+              sourceEndMs: 300,
+              actualDurationMs: 300,
+              atempo: 0.75,
             }, {
               index: 1,
-              attempt: 0,
-              childJobId: 'voiceover-child-tts-1',
-              providerTaskId: 'tts-provider-one-never-print',
-              assetId: 'asset-tts-one',
-              status: 'succeeded',
               startMs: 500,
               endMs: 800,
+              sourceStartMs: 300,
+              sourceEndMs: 600,
+              actualDurationMs: 300,
+              atempo: 1,
             }],
           }),
           finalAssetId: 'managed-final',
@@ -612,6 +710,21 @@ test('successful live evidence contains only bounded internal checkpoint identit
           providerResponse: { raw: 'never print provider body' },
         },
       },
+    },
+    childResult: {
+      found: true,
+      childJobId: 'voiceover-child-tts-continuous',
+      parentJobId: 'parent-job-evidence',
+      childKey: 'tts:continuous:attempt:0',
+      taskType: 'kie_tts',
+      provider: 'kie',
+      status: 'succeeded',
+      temperature: 0,
+      voiceName: 'Charon',
+      dialogueTurns: [{
+        speaker: 'Speaker 1',
+        text: 'First. Second.',
+      }],
     },
   });
   const result = await runVoiceoverProbe([
@@ -629,17 +742,24 @@ test('successful live evidence contains only bounded internal checkpoint identit
   assert.equal(output.analysisAttempt, 3);
   assert.deepEqual(output.childJobIds, [
     'voiceover-child-golden-safe',
-    'voiceover-child-tts-0',
-    'voiceover-child-tts-1',
+    'voiceover-child-tts-continuous',
   ]);
   assert.deepEqual(output.ttsSummary, {
-    total: 2,
+    total: 1,
     queued: 0,
     submitted: 0,
-    succeeded: 2,
+    succeeded: 1,
     failed: 0,
     unknown: 0,
   });
+  assert.equal(output.ttsRenderVersion, 2);
+  assert.equal(output.continuousTtsChildCount, 1);
+  assert.equal(output.acousticTurnCount, 2);
+  assert.equal(output.alignmentSimilarityAccepted, true);
+  assert.equal(output.ttsTextOrderMatched, true);
+  assert.equal(output.ttsVoiceMatched, true);
+  assert.equal(output.ttsTemperatureZero, true);
+  assert.equal(output.atempoEvidenceValid, true);
   assert.deepEqual(output.goldenSummary, { present: true, status: 'succeeded' });
   assert.doesNotMatch(
     result.stdout,
@@ -653,7 +773,6 @@ test('succeeded live jobs fail closed unless the authoritative final checkpoint 
     MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
     MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
   };
-  const baseTtsGroup = canonicalVoiceoverCheckpoint().ttsGroups[0];
   const missingAnalysisAttempt = canonicalVoiceoverCheckpoint();
   delete missingAnalysisAttempt.analysisAttempt;
   const cases = [{
@@ -704,21 +823,16 @@ test('succeeded live jobs fail closed unless the authoritative final checkpoint 
       videoUrl: '/api/assets/file/managed-final',
     },
   }, {
-    name: 'latest TTS attempt submitted',
+    name: 'continuous TTS batch not succeeded',
     removeText: false,
     result: {
       voiceoverCheckpoint: canonicalVoiceoverCheckpoint({
-        ttsGroups: [
-          baseTtsGroup,
-          {
-            ...baseTtsGroup,
-            attempt: 1,
-            childJobId: 'voiceover-child-tts-latest',
-            providerTaskId: 'tts-provider-latest-never-print',
-            assetId: undefined,
-            status: 'submitted',
-          },
-        ],
+        ttsBatch: {
+          ...canonicalVoiceoverCheckpoint().ttsBatch,
+          assetId: undefined,
+          actualDurationMs: undefined,
+          status: 'submitted',
+        },
       }),
       finalAssetId: 'managed-final',
       videoUrl: '/api/assets/file/managed-final',
@@ -829,22 +943,29 @@ test('succeeded live jobs require durable TTS groups to match the production log
       ...base.translation,
       segments: structuredClone(plannedSegments),
     },
+    ttsBatch: {
+      ...base.ttsBatch,
+      childJobId: 'voiceover-child-tts-continuous',
+      providerTaskId: 'provider-tts-continuous-never-print',
+      assetId: 'asset-tts-continuous',
+      actualDurationMs: 600,
+    },
     ttsGroups: [{
-      ...base.ttsGroups[0],
       index: 0,
-      childJobId: 'voiceover-child-tts-0',
-      providerTaskId: 'provider-tts-0-never-print',
-      assetId: 'asset-tts-0',
       startMs: 0,
       endMs: 400,
+      sourceStartMs: 0,
+      sourceEndMs: 300,
+      actualDurationMs: 300,
+      atempo: 0.75,
     }, {
-      ...base.ttsGroups[0],
       index: 1,
-      childJobId: 'voiceover-child-tts-1',
-      providerTaskId: 'provider-tts-1-never-print',
-      assetId: 'asset-tts-1',
       startMs: 500,
       endMs: 800,
+      sourceStartMs: 300,
+      sourceEndMs: 600,
+      actualDurationMs: 300,
+      atempo: 1,
     }],
   });
   const [group0, group1] = plannedCheckpoint.ttsGroups;
@@ -870,9 +991,6 @@ test('succeeded live jobs require durable TTS groups to match the production log
         {
           ...group1,
           index: 2,
-          childJobId: 'voiceover-child-tts-extra',
-          providerTaskId: 'provider-tts-extra-never-print',
-          assetId: 'asset-tts-extra',
         },
       ],
     },
@@ -881,6 +999,18 @@ test('succeeded live jobs require durable TTS groups to match the production log
     checkpoint: {
       ...plannedCheckpoint,
       ttsGroups: [group0, { ...group1, startMs: 550 }],
+    },
+  }, {
+    name: 'wrong atempo evidence',
+    checkpoint: {
+      ...plannedCheckpoint,
+      ttsGroups: [group0, { ...group1, atempo: 0.9 }],
+    },
+  }, {
+    name: 'low alignment similarity',
+    checkpoint: {
+      ...plannedCheckpoint,
+      alignmentSimilarity: 0.5,
     },
   }, {
     name: 'translation text drift',
@@ -959,6 +1089,21 @@ test('succeeded live jobs require durable TTS groups to match the production log
         },
       },
     },
+    childResult: {
+      found: true,
+      childJobId: 'voiceover-child-tts-continuous',
+      parentJobId: 'parent-plan-stable-windows',
+      childKey: 'tts:continuous:attempt:0',
+      taskType: 'kie_tts',
+      provider: 'kie',
+      status: 'succeeded',
+      temperature: 0,
+      voiceName: 'Charon',
+      dialogueTurns: [{
+        speaker: 'Speaker 1',
+        text: 'First. Second.',
+      }],
+    },
   });
   const stableResult = await runVoiceoverProbe([
     '--live',
@@ -966,6 +1111,81 @@ test('succeeded live jobs require durable TTS groups to match the production log
     '--target-language', 'en',
   ], stableWindowPlan);
   assert.equal(stableResult.exitCode, 0);
+});
+
+test('succeeded live jobs require the one continuous child to preserve voice, text order, and temperature zero', async () => {
+  const parentJobId = 'parent-continuous-child-contract';
+  const baseChild = {
+    found: true,
+    childJobId: 'voiceover-child-tts-safe',
+    parentJobId,
+    childKey: 'tts:continuous:attempt:0',
+    taskType: 'kie_tts',
+    provider: 'kie',
+    status: 'succeeded',
+    temperature: 0,
+    voiceName: 'Charon',
+    dialogueTurns: [{ speaker: 'Speaker 1', text: 'Translation' }],
+  };
+  const cases = [{
+    name: 'temperature drift',
+    child: { ...baseChild, temperature: 1 },
+  }, {
+    name: 'voice drift',
+    child: { ...baseChild, voiceName: 'Kore' },
+  }, {
+    name: 'text drift',
+    child: {
+      ...baseChild,
+      dialogueTurns: [{ speaker: 'Speaker 1', text: 'Different text' }],
+    },
+  }, {
+    name: 'multiple speakers',
+    child: {
+      ...baseChild,
+      dialogueTurns: [
+        { speaker: 'Speaker 1', text: 'Translation' },
+        { speaker: 'Speaker 2', text: 'Extra line' },
+      ],
+    },
+  }, {
+    name: 'wrong parent',
+    child: { ...baseChild, parentJobId: 'parent-other' },
+  }];
+
+  for (const item of cases) {
+    const deps = probeDeps({
+      env: {
+        MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED: '1',
+        MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
+        MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+      },
+      childResult: item.child,
+      liveResult: {
+        job: {
+          id: parentJobId,
+          status: 'succeeded',
+          result: {
+            voiceoverCheckpoint: canonicalVoiceoverCheckpoint(),
+            finalAssetId: 'managed-final',
+            videoUrl: '/api/assets/file/managed-final',
+          },
+        },
+      },
+    });
+    const result = await runVoiceoverProbe([
+      '--live',
+      '--source-asset-id', 'owned-managed-asset',
+      '--target-language', 'en',
+    ], deps);
+
+    assert.equal(result.exitCode, 1, item.name);
+    assert.doesNotMatch(
+      result.stderr,
+      /Different text|Translation|providerTaskId|session-secret/,
+      item.name,
+    );
+  }
 });
 
 test('post-create timeout and terminal failure preserve safe parent recovery evidence without recreating', async () => {
@@ -982,11 +1202,12 @@ test('post-create timeout and terminal failure preserve safe parent recovery evi
       voiceoverCheckpoint: {
         stage: 'tts_generating',
         analysisAttempt: 2,
-        ttsGroups: [{
+        ttsRenderVersion: 2,
+        ttsBatch: {
           childJobId: 'voiceover-child-running',
           providerTaskId: 'provider-task-never-print',
           status: 'submitted',
-        }],
+        },
       },
     },
   };
@@ -1092,6 +1313,59 @@ test('live success fails closed without a canonical final asset or verified H.26
   assert.equal(invalidMedia.calls.finalVerify, 1);
   assert.equal(JSON.parse(invalidMediaResult.stderr).parentJobId, 'parent-job-safe');
   assert.equal(JSON.parse(invalidMediaResult.stderr).finalCheckpointStage, 'result_persisted');
+});
+
+test('live verification aborts and settles sibling downloads before cleaning its workspace', async () => {
+  const deps = probeDeps({
+    env: {
+      MEIAO_VOICEOVER_LIVE_CANARY_CONFIRMED: '1',
+      MEIAO_VOICEOVER_PROBE_BASE_URL: 'https://meiao.test',
+      MEIAO_VOICEOVER_PROBE_SESSION_TOKEN: 'session-secret',
+    },
+  });
+  delete deps.verifyFinalResult;
+  deps.fetchImpl = async () => ({
+    status: 206,
+    headers: {
+      get: (name) => name.toLowerCase() === 'content-range'
+        ? 'bytes 0-0/1024'
+        : null,
+    },
+    body: { cancel: async () => {} },
+  });
+  let streamCalls = 0;
+  let activeStreams = 0;
+  let abortedStreams = 0;
+  deps.streamAssetToFile = async ({ destinationPath, signal }) => {
+    streamCalls += 1;
+    if (destinationPath.endsWith('final.mp4')) {
+      throw new Error('final download failed');
+    }
+    activeStreams += 1;
+    try {
+      await new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          abortedStreams += 1;
+          reject(Object.assign(new Error('sibling download cancelled'), {
+            name: 'AbortError',
+          }));
+        }, { once: true });
+      });
+    } finally {
+      activeStreams -= 1;
+    }
+  };
+
+  const result = await runVoiceoverProbe([
+    '--live',
+    '--source-asset-id', 'owned-managed-asset',
+    '--target-language', 'en',
+  ], deps);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(streamCalls, 3);
+  assert.equal(abortedStreams, 2);
+  assert.equal(activeStreams, 0);
 });
 
 test('ambiguous modes, missing values, and unknown arguments fail closed before side effects', async () => {

@@ -706,6 +706,20 @@ test('video generation permission keeps history tabs visible and gates new gener
   assert.match(subFeatureTabs, /item\.description \|\| '待制作'/);
 });
 
+test('root and shell voiceover checkpoint types expose continuous alignment evidence', () => {
+  const types = read('../types.ts');
+  const shellTypes = read('../shell/types.ts');
+
+  for (const source of [types, shellTypes]) {
+    const checkpoint = source.match(
+      /export interface VoiceoverCheckpointV1 \{[\s\S]*?\n\}/,
+    )?.[0] || '';
+    assert.match(checkpoint, /ttsRenderVersion\?: 1 \| 2/);
+    assert.match(checkpoint, /ttsBatch\?: VoiceoverTtsBatch/);
+    assert.match(checkpoint, /alignmentSimilarity\?: number/);
+  }
+});
+
 test('shell refresh restores current workspace and keeps in-flight project cards', () => {
   const app = read('../ShellMigratedApp.tsx');
   const applyShellSnapshotBody = app

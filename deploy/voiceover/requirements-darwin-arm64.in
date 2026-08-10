@@ -2,5 +2,7 @@
 
 demucs==4.0.1
 soundfile==0.13.1
+faster-whisper==1.2.1
+ctranslate2==4.6.0
 torch==2.7.1
 torchaudio==2.7.1

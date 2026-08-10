@@ -90,6 +90,13 @@ test('voiceover retry confirmation derives paid checkpoint attempts and catches 
     },
   }), true);
   assert.equal(experience.requiresVoiceoverRetryConfirmation({
+    errorCode: 'voiceover_analysis_invalid',
+    voiceoverCheckpoint: {
+      stage: 'speech_analysis_submitting',
+      ttsGroups: [],
+    },
+  }), true);
+  assert.equal(experience.requiresVoiceoverRetryConfirmation({
     errorCode: 'provider_bad_response',
     voiceoverCheckpoint: {
       stage: 'tts_generating',

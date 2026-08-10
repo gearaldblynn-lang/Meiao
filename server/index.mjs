@@ -181,16 +181,18 @@ import { loadVoiceoverPreviewLibrary } from './voiceoverPreviewLibrary.mjs';
 import { createVoiceoverPreviewService } from './voiceoverPreviewService.mjs';
 import { probeVoiceoverManagedMedia } from './voiceoverMediaProbe.mjs';
 import {
-  checkVoiceoverSeparationReadiness,
   separateVoiceover,
 } from './voiceoverSeparation.mjs';
 import {
+  alignContinuousVoiceover,
   alignVoiceoverGroups,
   buildVoiceoverAnalysisAudioEvidence,
   buildVocalOnlyAnalysisVideo,
   extractVoiceoverAudio,
   mixVoiceoverResult,
 } from './voiceoverAudio.mjs';
+import { alignVoiceoverTurns } from './voiceoverForcedAlignment.mjs';
+import { checkVoiceoverRuntimeReadiness } from './voiceoverRuntimeReadiness.mjs';
 import {
   getVoiceoverSourceMaxBytes,
   prepareVoiceoverSubmission as prepareVoiceoverSubmissionInput,
@@ -4788,14 +4790,23 @@ const createVoiceoverRunnerDependencies = async (job, env) => {
         ? await getDbSystemSettings()
         : getLocalSystemSettings(readLocalStore());
       const model = resolveConfiguredVideoAnalysisModel(systemSettings);
-      return executeProviderJobWithManagedAssetScrub({
+      const analysisOutput = await executeProviderJobWithManagedAssetScrub({
         id: `${job.id}:analysis`,
         userId: job.userId,
         module: 'video',
         taskType: 'kie_chat',
         provider: 'kie',
-        payload: { messages, model },
+        payload: { messages, model, includeThoughts: false },
       }, env, signal);
+      if (process.env.MEIAO_VOICEOVER_ANALYSIS_DEBUG === '1') {
+        // [DEBUG-voiceover-analysis-response] Temporary real-provider response capture.
+        writeFileSync(
+          path.join(dataDir, `voiceover-analysis-response-${job.id}.json`),
+          JSON.stringify({ model, analysisOutput }, null, 2),
+          { encoding: 'utf8', mode: 0o600 },
+        );
+      }
+      return analysisOutput;
     },
     runGolden: (options) => executeProviderJobWithManagedAssetScrub(
       options.job,
@@ -4827,6 +4838,16 @@ const createVoiceoverRunnerDependencies = async (job, env) => {
       return persisted?.result || {};
     },
     alignAudio: ({ config, ...options }) => alignVoiceoverGroups({
+      ...options,
+      config,
+      deps: { env },
+    }),
+    alignTurns: ({ config, ...options }) => alignVoiceoverTurns({
+      ...options,
+      env,
+      config,
+    }),
+    alignContinuousAudio: ({ config, ...options }) => alignContinuousVoiceover({
       ...options,
       config,
       deps: { env },
@@ -14474,8 +14495,6 @@ const handleMysqlRequest = async (req, res, url) => {
       respondJobSubmissionPolicyError(res, error);
       return;
     }
-
-    const pool = await getMysqlPool();
     const submission = await withManagedAssetUserLock(user.id, async (lockedPool) => {
       await assertActiveDbUserUnderManagedAssetLock(lockedPool, user.id, '账号已删除，未创建任务');
       const authorizedPayload = await prepareAuthorizedManagedAssetJobPayload({
@@ -18861,12 +18880,11 @@ const bootstrap = async () => {
     console.warn('[media-transcode] runtime is enabled but a binary readiness check failed', mediaTranscodeReadiness);
   }
   if (getVoiceoverConfig(process.env).enabled) {
-    voiceoverTranslationReadiness = await checkVoiceoverSeparationReadiness({
+    voiceoverTranslationReadiness = await checkVoiceoverRuntimeReadiness({
       env: process.env,
-      verifyModelLoad: false,
     });
     if (!voiceoverTranslationReadiness.ready) {
-      console.warn('[voiceover] runtime is enabled but local separation readiness failed', {
+      console.warn('[voiceover] runtime is enabled but local media readiness failed', {
         pythonReady: voiceoverTranslationReadiness.pythonReady,
         modelReady: voiceoverTranslationReadiness.modelReady,
         ffmpegReady: voiceoverTranslationReadiness.ffmpegReady,

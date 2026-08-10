@@ -33,6 +33,7 @@ const UPSTREAM_INTERNAL_PATTERNS = [
 const PROVIDER_BAD_REQUEST_PATTERNS = [
   /file mime type is not supported/i,
   /image download failed/i,
+  /invalid\s+image:\s*the\s+image\s+url\s+must\s+not\s+be\s+empty/i,
   /http 404:\s*not found/i,
   /please convert or change the file/i,
   /unauthorized\s*[\u2013-]\s*authentication failed/i,

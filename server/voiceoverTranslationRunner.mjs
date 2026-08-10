@@ -4,6 +4,7 @@ import path from 'node:path';
 import { selectAutomaticVoice } from '../src/utils/voiceoverCatalog.mjs';
 import {
   buildVoiceoverAnalysisMessages,
+  buildVoiceoverContinuousTtsPlan,
   buildVoiceoverTtsGroups,
   parseVoiceoverAnalysis,
 } from './voiceoverAnalysis.mjs';
@@ -11,6 +12,7 @@ import {
   VOICEOVER_ALIGNMENT_VERSION,
   VOICEOVER_ANALYSIS_EVIDENCE_VERSION,
   VOICEOVER_CHECKPOINT_VERSION,
+  VOICEOVER_TTS_RENDER_VERSION,
   buildVoiceoverError,
   getVoiceoverConfig,
   hasLegacyVoiceoverCheckpointProvenance,
@@ -354,6 +356,24 @@ const goldenCheckpoint = (child, {
   status,
 });
 
+const ttsBatchCheckpoint = (child, {
+  attempt,
+  status,
+  assetId,
+  actualDurationMs,
+}) => ({
+  attempt,
+  childJobId: safeId(child.id, 'childJobId'),
+  ...(child.providerTaskId
+    ? { providerTaskId: safeId(child.providerTaskId, 'providerTaskId') }
+    : {}),
+  ...(assetId ? { assetId: safeId(assetId, 'assetId') } : {}),
+  status,
+  ...(actualDurationMs !== undefined
+    ? { actualDurationMs: Number(actualDurationMs) }
+    : {}),
+});
+
 const safelyLog = (logger, level, event) => {
   const method = logger?.[level];
   if (typeof method !== 'function') return;
@@ -666,6 +686,7 @@ export async function runVoiceoverTranslationJob({
         stage: 'input_prepared',
         baseVideoAssetId: source.assetId,
         analysisAttempt: 0,
+        ttsRenderVersion: VOICEOVER_TTS_RENDER_VERSION,
       }, durationMs);
     } else if (checkpoint.baseVideoAssetId !== source.assetId) {
       throw buildVoiceoverError('voiceover_checkpoint_invalid', '检查点源素材与当前父任务不一致');
@@ -1045,14 +1066,18 @@ export async function runVoiceoverTranslationJob({
         segments: analysis.segments,
         selectedVoiceName,
       };
-      const buildGroups = deps.buildTtsGroups || buildVoiceoverTtsGroups;
+      const buildPlan = checkpoint.ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION
+        ? (deps.buildContinuousTtsPlan || buildVoiceoverContinuousTtsPlan)
+        : (deps.buildTtsGroups || buildVoiceoverTtsGroups);
       // Planning is intentionally done before the translated checkpoint so an
-      // invalid/oversized group cannot advance durable state.
-      buildGroups({
+      // invalid/oversized request cannot advance durable state.
+      buildPlan({
         segments: translation.segments,
         selectedVoiceName,
         maxInputTokens: config.ttsMaxInputTokens,
-        groupGapMs: config.groupGapMs,
+        ...(checkpoint.ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION
+          ? {}
+          : { groupGapMs: config.groupGapMs }),
       });
       await persistStage({
         stage: 'translated',
@@ -1060,208 +1085,504 @@ export async function runVoiceoverTranslationJob({
       }, durationMs);
     }
 
-    const buildGroups = deps.buildTtsGroups || buildVoiceoverTtsGroups;
-    const plannedGroups = buildGroups({
-      segments: translation.segments,
-      selectedVoiceName: translation.selectedVoiceName,
-      maxInputTokens: config.ttsMaxInputTokens,
-      groupGapMs: config.groupGapMs,
-    });
-    const attempts = latestGroupAttempts(checkpoint.ttsGroups);
-    const childJobs = deps.childJobs;
-    if (!childJobs || typeof childJobs.getOrCreate !== 'function') {
-      throw buildVoiceoverError('voiceover_unavailable', 'TTS 子任务账本不可用');
-    }
-    const completedGroups = [];
-    const durableGroups = [];
-    for (const planned of plannedGroups) {
-      throwIfAborted(signal);
-      const index = planned.groupIndex;
-      const existingAttempt = attempts.get(index);
-      if (
-        existingAttempt
-        && (
-          existingAttempt.startMs !== planned.startMs
-          || existingAttempt.endMs !== planned.endMs
-        )
-      ) {
-        throw buildVoiceoverError(
-          'voiceover_checkpoint_invalid',
-          'TTS 检查点时间窗与当前分段计划不一致',
-        );
-      }
-      const attempt = Number(existingAttempt?.attempt ?? checkpoint.ttsAttemptBase ?? 0);
-      const childKey = `tts:${index}:attempt:${attempt}`;
-      let child = existingAttempt?.status === 'succeeded' && existingAttempt?.assetId
-        ? {
-            id: existingAttempt.childJobId,
-            status: 'succeeded',
-            providerTaskId: existingAttempt.providerTaskId || '',
-            result: {
-              assetId: existingAttempt.assetId,
-              durationMs: existingAttempt.actualDurationMs,
-            },
+    let alignedAudio;
+    if (checkpoint.ttsRenderVersion === VOICEOVER_TTS_RENDER_VERSION) {
+      if (checkpoint.stage === 'audio_aligned') {
+        alignedAudio = await resolveIntoWorkRoot({
+          assetId: checkpoint.alignedAudioAssetId,
+          fileName: 'aligned.wav',
+          kind: 'aligned_audio',
+          expectedDurationMs: durationMs,
+        });
+      } else {
+        const buildContinuousPlan = deps.buildContinuousTtsPlan
+          || buildVoiceoverContinuousTtsPlan;
+        const planned = buildContinuousPlan({
+          segments: translation.segments,
+          selectedVoiceName: translation.selectedVoiceName,
+          maxInputTokens: config.ttsMaxInputTokens,
+        });
+        const attempt = Number(checkpoint.ttsBatch?.attempt ?? checkpoint.ttsAttemptBase ?? 0);
+        const childKey = `tts:continuous:attempt:${attempt}`;
+        let batch = checkpoint.ttsBatch;
+        let assetId = batch?.assetId || '';
+        let actualDurationMs = batch?.actualDurationMs;
+        let continuousAudio;
+
+        if (!assetId) {
+          const childJobs = deps.childJobs;
+          if (!childJobs || typeof childJobs.getOrCreate !== 'function') {
+            throw buildVoiceoverError('voiceover_unavailable', 'TTS 子任务账本不可用');
           }
-        : await childJobs.getOrCreate({
+          let child = await childJobs.getOrCreate({
             parentJob: job,
             childKey,
             taskType: 'kie_tts',
             provider: 'kie',
             payload: {
-              groupIndex: index,
+              groupIndex: 0,
               targetLanguage: translation.targetLanguage,
-              voiceName: translation.selectedVoiceName,
+              voiceName: planned.voiceName,
               dialogueTurns: planned.dialogueTurns,
-              temperature: 1,
+              temperature: planned.temperature,
               scene: planned.scene,
               sampleContext: planned.sampleContext,
             },
           });
-      let assetId = existingAttempt?.assetId || child.result?.assetId || '';
-      let actualDurationMs = existingAttempt?.actualDurationMs || child.result?.durationMs;
-      if (!assetId) {
-        if (child.status === 'failed') {
+          if (batch?.childJobId && batch.childJobId !== child.id) {
+            throw buildVoiceoverError(
+              'voiceover_checkpoint_invalid',
+              '连续 TTS 子任务身份与检查点不一致',
+            );
+          }
+          if (
+            batch?.providerTaskId
+            && child.providerTaskId
+            && batch.providerTaskId !== child.providerTaskId
+          ) {
+            throw Object.assign(new Error('连续 TTS provider 恢复身份不一致，需要人工核验。'), {
+              code: 'provider_recovery_manual',
+              providerTaskId: batch.providerTaskId,
+              providerStage: 'provider_checkpoint',
+              providerStatus: 'checkpoint_identity_mismatch',
+            });
+          }
+          if (
+            batch?.providerTaskId
+            && !child.providerTaskId
+            && child.status === 'running'
+          ) {
+            child = await childJobs.checkpointProviderTaskId(
+              child.id,
+              batch.providerTaskId,
+            );
+          }
+          if (!batch) {
+            const initialStatus = child.status === 'succeeded'
+              ? 'succeeded'
+              : child.providerTaskId
+                ? 'submitted'
+                : child.status === 'failed'
+                  ? 'failed'
+                  : 'queued';
+            const childAssetId = child.result?.assetId || '';
+            const childDurationMs = child.result?.durationMs;
+            batch = ttsBatchCheckpoint(child, {
+              attempt,
+              status: initialStatus,
+              ...(childAssetId ? { assetId: childAssetId } : {}),
+              ...(childDurationMs !== undefined
+                ? { actualDurationMs: childDurationMs }
+                : {}),
+            });
+            await persistStage({
+              stage: 'tts_generating',
+              ttsBatch: batch,
+            }, durationMs);
+          } else if (
+            child.providerTaskId
+            && (
+              batch.providerTaskId !== child.providerTaskId
+              || batch.status === 'queued'
+            )
+          ) {
+            batch = ttsBatchCheckpoint(child, {
+              attempt,
+              status: 'submitted',
+            });
+            await persistStage({
+              stage: 'tts_generating',
+              ttsBatch: batch,
+            }, durationMs);
+          }
+          if (child.status === 'failed') {
+            batch = ttsBatchCheckpoint(child, {
+              attempt,
+              status: 'failed',
+            });
+            await persistStage({
+              stage: 'tts_generating',
+              ttsBatch: batch,
+            }, durationMs);
+            throw Object.assign(new Error(child.errorMessage || 'TTS 子任务失败'), {
+              code: child.errorCode || 'provider_job_failed',
+              providerTaskId: child.providerTaskId || '',
+            });
+          }
+          assetId = child.result?.assetId || '';
+          actualDurationMs = child.result?.durationMs;
+          if (!assetId) {
+            if (
+              batch?.status === 'submitted'
+              && !batch.providerTaskId
+              && !child.providerTaskId
+            ) {
+              throw Object.assign(
+                new Error('连续 TTS 提交结果未知，已停止自动重提'),
+                {
+                  code: 'provider_submission_unknown',
+                  providerStage: 'provider_submit',
+                  providerStatus: 'submission_unknown',
+                  submissionUnknown: true,
+                  retryable: false,
+                },
+              );
+            }
+            const runTts = requireDependency(deps, 'runTts');
+            if (
+              typeof childJobs.checkpointProviderTaskId !== 'function'
+              || typeof childJobs.markSucceeded !== 'function'
+              || typeof childJobs.markFailed !== 'function'
+            ) {
+              throw buildVoiceoverError('voiceover_unavailable', 'TTS 子任务账本写入能力不可用');
+            }
+            batch = ttsBatchCheckpoint(child, {
+              attempt,
+              status: 'submitted',
+            });
+            await persistStage({
+              stage: 'tts_generating',
+              ttsBatch: batch,
+            }, durationMs);
+            try {
+              const output = await runTts({
+                job: child,
+                env,
+                signal,
+                config,
+                trustedParentExecution: true,
+                onProviderTaskId: async (providerTaskId) => {
+                  child = await childJobs.checkpointProviderTaskId(child.id, providerTaskId);
+                  batch = ttsBatchCheckpoint(child, {
+                    attempt,
+                    status: 'submitted',
+                  });
+                  await persistStage({
+                    stage: 'tts_generating',
+                    ttsBatch: batch,
+                  }, durationMs);
+                },
+              });
+              const persistTtsOutput = requireDependency(deps, 'persistTtsOutput');
+              const persisted = await persistTtsOutput({
+                child,
+                output,
+                parentJob: job,
+                config,
+              });
+              assetId = safeId(persisted?.audioUrlAssetId, 'audioUrlAssetId');
+              actualDurationMs = Number(persisted?.durationMs);
+              child = await childJobs.markSucceeded(child.id, {
+                audioUrl: persisted.audioUrl,
+                assetId,
+                ...(Number.isInteger(actualDurationMs) && actualDurationMs > 0
+                  ? { durationMs: actualDurationMs }
+                  : {}),
+              });
+            } catch (error) {
+              const uncertainWithoutId = error?.code === 'provider_submission_unknown'
+                || error?.submissionUnknown === true;
+              if (
+                CHILD_DEFINITIVE_FAILURE_CODES.has(error?.code)
+                && !uncertainWithoutId
+              ) {
+                child = await childJobs.markFailed(child.id, error).catch(() => child);
+              }
+              const hasProviderTaskId = Boolean(child.providerTaskId || error?.providerTaskId);
+              batch = ttsBatchCheckpoint(child, {
+                attempt,
+                status: child.status === 'failed'
+                  ? 'failed'
+                  : hasProviderTaskId || uncertainWithoutId
+                    ? 'submitted'
+                    : 'queued',
+              });
+              await persistStage({
+                stage: 'tts_generating',
+                ttsBatch: batch,
+              }, durationMs);
+              throw error;
+            }
+          }
+          continuousAudio = await resolveIntoWorkRoot({
+            assetId,
+            fileName: 'tts-continuous.wav',
+            kind: 'tts_audio',
+            expectedDurationMs: actualDurationMs,
+          });
+          if (!Number.isSafeInteger(actualDurationMs) || actualDurationMs <= 0) {
+            actualDurationMs = Math.round(Number(continuousAudio.durationMs));
+          }
+          if (!Number.isSafeInteger(actualDurationMs) || actualDurationMs <= 0) {
+            throw buildVoiceoverError(
+              'voiceover_checkpoint_invalid',
+              '连续 TTS 音频时长无效',
+            );
+          }
+          batch = ttsBatchCheckpoint(child, {
+            attempt,
+            status: 'succeeded',
+            assetId,
+            actualDurationMs,
+          });
           await persistStage({
             stage: 'tts_generating',
-            ttsGroups: [childCheckpoint(child, {
+            ttsBatch: batch,
+          }, durationMs);
+        }
+
+        if (!continuousAudio) {
+          continuousAudio = await resolveIntoWorkRoot({
+            assetId,
+            fileName: 'tts-continuous.wav',
+            kind: 'tts_audio',
+            expectedDurationMs: actualDurationMs,
+          });
+        }
+        throwIfAborted(signal);
+        const alignTurns = requireDependency(deps, 'alignTurns');
+        const acoustic = await alignTurns({
+          audioPath: continuousAudio.path,
+          turns: planned.segments.map(({ targetText }) => ({ text: targetText })),
+          targetLanguage: translation.targetLanguage,
+          signal,
+          env,
+          config,
+        });
+        const acousticGroups = (acoustic.groups || []).map((group, index) => {
+          const target = translation.segments[index];
+          return {
+            index,
+            startMs: target?.startMs,
+            endMs: target?.endMs,
+            sourceStartMs: group?.sourceStartMs,
+            sourceEndMs: group?.sourceEndMs,
+            actualDurationMs: group?.actualDurationMs,
+          };
+        });
+        const alignContinuousAudio = requireDependency(deps, 'alignContinuousAudio');
+        const alignedPath = await prepareOutputPath('audio', 'aligned.wav');
+        const aligned = await alignContinuousAudio({
+          audioPath: continuousAudio.path,
+          turns: acousticGroups,
+          outputPath: alignedPath,
+          totalDurationMs: durationMs,
+          config,
+          signal,
+        });
+        alignedAudio = await persistLocal(alignedPath, 'audio_aligned');
+        await persistStage({
+          stage: 'audio_aligned',
+          alignedAudioAssetId: alignedAudio.assetId,
+          alignmentVersion: VOICEOVER_ALIGNMENT_VERSION,
+          alignmentSimilarity: acoustic.similarity,
+          ttsBatch: batch,
+          ttsGroups: aligned.groups,
+        }, durationMs);
+      }
+    } else {
+      const buildGroups = deps.buildTtsGroups || buildVoiceoverTtsGroups;
+      const plannedGroups = buildGroups({
+        segments: translation.segments,
+        selectedVoiceName: translation.selectedVoiceName,
+        maxInputTokens: config.ttsMaxInputTokens,
+        groupGapMs: config.groupGapMs,
+      });
+      const attempts = latestGroupAttempts(checkpoint.ttsGroups);
+      const childJobs = deps.childJobs;
+      if (!childJobs || typeof childJobs.getOrCreate !== 'function') {
+        throw buildVoiceoverError('voiceover_unavailable', 'TTS 子任务账本不可用');
+      }
+      const completedGroups = [];
+      const durableGroups = [];
+      for (const planned of plannedGroups) {
+        throwIfAborted(signal);
+        const index = planned.groupIndex;
+        const existingAttempt = attempts.get(index);
+        if (
+          existingAttempt
+          && (
+            existingAttempt.startMs !== planned.startMs
+            || existingAttempt.endMs !== planned.endMs
+          )
+        ) {
+          throw buildVoiceoverError(
+            'voiceover_checkpoint_invalid',
+            'TTS 检查点时间窗与当前分段计划不一致',
+          );
+        }
+        const attempt = Number(existingAttempt?.attempt ?? checkpoint.ttsAttemptBase ?? 0);
+        const childKey = `tts:${index}:attempt:${attempt}`;
+        let child = existingAttempt?.status === 'succeeded' && existingAttempt?.assetId
+          ? {
+              id: existingAttempt.childJobId,
+              status: 'succeeded',
+              providerTaskId: existingAttempt.providerTaskId || '',
+              result: {
+                assetId: existingAttempt.assetId,
+                durationMs: existingAttempt.actualDurationMs,
+              },
+            }
+          : await childJobs.getOrCreate({
+              parentJob: job,
+              childKey,
+              taskType: 'kie_tts',
+              provider: 'kie',
+              payload: {
+                groupIndex: index,
+                targetLanguage: translation.targetLanguage,
+                voiceName: translation.selectedVoiceName,
+                dialogueTurns: planned.dialogueTurns,
+                temperature: 1,
+                scene: planned.scene,
+                sampleContext: planned.sampleContext,
+              },
+            });
+        let assetId = existingAttempt?.assetId || child.result?.assetId || '';
+        let actualDurationMs = existingAttempt?.actualDurationMs || child.result?.durationMs;
+        if (!assetId) {
+          if (child.status === 'failed') {
+            await persistStage({
+              stage: 'tts_generating',
+              ttsGroups: [childCheckpoint(child, {
+                index,
+                attempt,
+                startMs: planned.startMs,
+                endMs: planned.endMs,
+                status: 'failed',
+              })],
+            }, durationMs);
+            throw Object.assign(new Error(child.errorMessage || 'TTS 子任务失败'), {
+              code: child.errorCode || 'provider_job_failed',
+              providerTaskId: child.providerTaskId || '',
+            });
+          }
+          const runTts = requireDependency(deps, 'runTts');
+          if (
+            typeof childJobs.checkpointProviderTaskId !== 'function'
+            || typeof childJobs.markSucceeded !== 'function'
+            || typeof childJobs.markFailed !== 'function'
+          ) {
+            throw buildVoiceoverError('voiceover_unavailable', 'TTS 子任务账本写入能力不可用');
+          }
+          try {
+            const output = await runTts({
+              job: child,
+              env,
+              signal,
+              config,
+              trustedParentExecution: true,
+              onProviderTaskId: async (providerTaskId) => {
+                child = await childJobs.checkpointProviderTaskId(child.id, providerTaskId);
+              },
+            });
+            const persistTtsOutput = requireDependency(deps, 'persistTtsOutput');
+            const persisted = await persistTtsOutput({
+              child,
+              output,
+              parentJob: job,
+              config,
+            });
+            // Task 3 names the managed ID `audioUrlAssetId`; the child ledger
+            // contract deliberately stores it as `assetId`.
+            assetId = safeId(persisted?.audioUrlAssetId, 'audioUrlAssetId');
+            actualDurationMs = Number(persisted?.durationMs);
+            child = await childJobs.markSucceeded(child.id, {
+              audioUrl: persisted.audioUrl,
+              assetId,
+              ...(Number.isInteger(actualDurationMs) && actualDurationMs > 0
+                ? { durationMs: actualDurationMs }
+                : {}),
+            });
+          } catch (error) {
+            if (CHILD_DEFINITIVE_FAILURE_CODES.has(error?.code)) {
+              child = await childJobs.markFailed(child.id, error).catch(() => child);
+            }
+            const hasProviderTaskId = Boolean(child.providerTaskId || error?.providerTaskId);
+            const uncertainWithoutId = error?.code === 'provider_submission_unknown'
+              || error?.submissionUnknown === true;
+            const failedCheckpoint = childCheckpoint(child, {
               index,
               attempt,
               startMs: planned.startMs,
               endMs: planned.endMs,
-              status: 'failed',
-            })],
-          }, durationMs);
-          throw Object.assign(new Error(child.errorMessage || 'TTS 子任务失败'), {
-            code: child.errorCode || 'provider_job_failed',
-            providerTaskId: child.providerTaskId || '',
-          });
-        }
-        const runTts = requireDependency(deps, 'runTts');
-        if (
-          typeof childJobs.checkpointProviderTaskId !== 'function'
-          || typeof childJobs.markSucceeded !== 'function'
-          || typeof childJobs.markFailed !== 'function'
-        ) {
-          throw buildVoiceoverError('voiceover_unavailable', 'TTS 子任务账本写入能力不可用');
-        }
-        try {
-          const output = await runTts({
-            job: child,
-            env,
-            signal,
-            config,
-            trustedParentExecution: true,
-            onProviderTaskId: async (providerTaskId) => {
-              child = await childJobs.checkpointProviderTaskId(child.id, providerTaskId);
-            },
-          });
-          const persistTtsOutput = requireDependency(deps, 'persistTtsOutput');
-          const persisted = await persistTtsOutput({
-            child,
-            output,
-            parentJob: job,
-            config,
-          });
-          // Task 3 names the managed ID `audioUrlAssetId`; the child ledger
-          // contract deliberately stores it as `assetId`.
-          assetId = safeId(persisted?.audioUrlAssetId, 'audioUrlAssetId');
-          actualDurationMs = Number(persisted?.durationMs);
-          child = await childJobs.markSucceeded(child.id, {
-            audioUrl: persisted.audioUrl,
-            assetId,
-            ...(Number.isInteger(actualDurationMs) && actualDurationMs > 0
-              ? { durationMs: actualDurationMs }
-              : {}),
-          });
-        } catch (error) {
-          if (CHILD_DEFINITIVE_FAILURE_CODES.has(error?.code)) {
-            child = await childJobs.markFailed(child.id, error).catch(() => child);
+              status: child.status === 'failed'
+                ? 'failed'
+                : hasProviderTaskId || uncertainWithoutId
+                  ? 'submitted'
+                  : 'queued',
+            });
+            await persistStage({ stage: 'tts_generating', ttsGroups: [failedCheckpoint] }, durationMs);
+            throw error;
           }
-          const hasProviderTaskId = Boolean(child.providerTaskId || error?.providerTaskId);
-          const uncertainWithoutId = error?.code === 'provider_submission_unknown'
-            || error?.submissionUnknown === true;
-          const failedCheckpoint = childCheckpoint(child, {
-            index,
-            attempt,
-            startMs: planned.startMs,
-            endMs: planned.endMs,
-            status: child.status === 'failed'
-              ? 'failed'
-              : hasProviderTaskId || uncertainWithoutId
-                ? 'submitted'
-                : 'queued',
-          });
-          await persistStage({ stage: 'tts_generating', ttsGroups: [failedCheckpoint] }, durationMs);
-          throw error;
         }
+        const groupCheckpoint = childCheckpoint(child, {
+          index,
+          attempt,
+          startMs: planned.startMs,
+          endMs: planned.endMs,
+          status: 'succeeded',
+          assetId,
+          ...(Number.isInteger(actualDurationMs) && actualDurationMs > 0 ? { actualDurationMs } : {}),
+        });
+        const resolvedTtsAudio = await resolveIntoWorkRoot({
+          assetId,
+          fileName: `tts-${index}.wav`,
+          kind: 'tts_audio',
+          expectedDurationMs: actualDurationMs,
+        });
+        durableGroups.push(groupCheckpoint);
+        completedGroups.push({
+          index,
+          assetId,
+          audioPath: resolvedTtsAudio.path,
+          startMs: planned.startMs,
+          endMs: planned.endMs,
+          actualDurationMs,
+        });
       }
-      const groupCheckpoint = childCheckpoint(child, {
-        index,
-        attempt,
-        startMs: planned.startMs,
-        endMs: planned.endMs,
-        status: 'succeeded',
-        assetId,
-        ...(Number.isInteger(actualDurationMs) && actualDurationMs > 0 ? { actualDurationMs } : {}),
-      });
-      const resolvedTtsAudio = await resolveIntoWorkRoot({
-        assetId,
-        fileName: `tts-${index}.wav`,
-        kind: 'tts_audio',
-        expectedDurationMs: actualDurationMs,
-      });
-      durableGroups.push(groupCheckpoint);
-      completedGroups.push({
-        index,
-        assetId,
-        audioPath: resolvedTtsAudio.path,
-        startMs: planned.startMs,
-        endMs: planned.endMs,
-        actualDurationMs,
-      });
-    }
-    if (checkpoint.stage === 'translated' || checkpoint.stage === 'tts_generating') {
-      await persistStage({
-        stage: 'tts_generating',
-        ttsGroups: durableGroups,
-      }, durationMs);
-    }
+      if (checkpoint.stage === 'translated' || checkpoint.stage === 'tts_generating') {
+        await persistStage({
+          stage: 'tts_generating',
+          ttsGroups: durableGroups,
+        }, durationMs);
+      }
 
-    let alignedAudio;
-    if (checkpoint.stage === 'tts_generating') {
-      throwIfAborted(signal);
-      const alignAudio = requireDependency(deps, 'alignAudio');
-      const alignedPath = await prepareOutputPath('audio', 'aligned.wav');
-      const aligned = await alignAudio({
-        groups: completedGroups,
-        outputPath: alignedPath,
-        totalDurationMs: durationMs,
-        config,
-        signal,
-      });
-      alignedAudio = await persistLocal(alignedPath, 'audio_aligned');
-      const alignmentByIndex = new Map((aligned.groups || []).map((group) => [group.index, group]));
-      const alignedCheckpoints = durableGroups.map((group) => {
-        const alignment = alignmentByIndex.get(group.index);
-        return {
-          ...group,
-          ...(alignment?.actualDurationMs ? { actualDurationMs: alignment.actualDurationMs } : {}),
-          ...(alignment?.atempo ? { atempo: alignment.atempo } : {}),
-        };
-      });
-      await persistStage({
-        stage: 'audio_aligned',
-        alignedAudioAssetId: alignedAudio.assetId,
-        alignmentVersion: VOICEOVER_ALIGNMENT_VERSION,
-        ttsGroups: alignedCheckpoints,
-      }, durationMs);
-    } else {
-      alignedAudio = await resolveIntoWorkRoot({
-        assetId: checkpoint.alignedAudioAssetId,
-        fileName: 'aligned.wav',
-        kind: 'aligned_audio',
-        expectedDurationMs: durationMs,
-      });
+      if (checkpoint.stage === 'tts_generating') {
+        throwIfAborted(signal);
+        const alignAudio = requireDependency(deps, 'alignAudio');
+        const alignedPath = await prepareOutputPath('audio', 'aligned.wav');
+        const aligned = await alignAudio({
+          groups: completedGroups,
+          outputPath: alignedPath,
+          totalDurationMs: durationMs,
+          config,
+          signal,
+        });
+        alignedAudio = await persistLocal(alignedPath, 'audio_aligned');
+        const alignmentByIndex = new Map((aligned.groups || []).map((group) => [group.index, group]));
+        const alignedCheckpoints = durableGroups.map((group) => {
+          const alignment = alignmentByIndex.get(group.index);
+          return {
+            ...group,
+            ...(alignment?.actualDurationMs ? { actualDurationMs: alignment.actualDurationMs } : {}),
+            ...(alignment?.atempo ? { atempo: alignment.atempo } : {}),
+          };
+        });
+        await persistStage({
+          stage: 'audio_aligned',
+          alignedAudioAssetId: alignedAudio.assetId,
+          alignmentVersion: VOICEOVER_ALIGNMENT_VERSION,
+          ttsGroups: alignedCheckpoints,
+        }, durationMs);
+      } else {
+        alignedAudio = await resolveIntoWorkRoot({
+          assetId: checkpoint.alignedAudioAssetId,
+          fileName: 'aligned.wav',
+          kind: 'aligned_audio',
+          expectedDurationMs: durationMs,
+        });
+      }
     }
 
     throwIfAborted(signal);

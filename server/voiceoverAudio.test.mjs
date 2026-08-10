@@ -664,7 +664,7 @@ test('runVoiceoverProcess terminates but stays pending until the child closes', 
     signal: controller.signal,
     timeoutMs: 1000,
     terminationGraceMs: 5,
-    terminationCloseTimeoutMs: 100,
+    terminationCloseTimeoutMs: 1000,
   }).finally(() => { settled = true; });
   controller.abort();
   await new Promise((resolve) => setImmediate(resolve));
@@ -680,7 +680,7 @@ test('runVoiceoverProcess terminates but stays pending until the child closes', 
     spawnImpl: () => timeoutChild,
     timeoutMs: 5,
     terminationGraceMs: 5,
-    terminationCloseTimeoutMs: 100,
+    terminationCloseTimeoutMs: 1000,
   });
   const killDeadline = Date.now() + 250;
   while (timeoutChild.killCalls.length < 2 && Date.now() < killDeadline) {
