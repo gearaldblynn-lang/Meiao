@@ -278,6 +278,7 @@ test('deploy_tencent fully loads the enabled voiceover model before zero-downtim
   assert.ok(source.includes('runuser -u \\"\\$APP_SERVICE_USER\\" --preserve-environment'));
   assert.ok(source.includes('chown root:\\"\\$APP_SERVICE_GROUP\\" .env.server'));
   assert.ok(source.includes('chown -R \\"\\$APP_SERVICE_USER:\\$APP_SERVICE_GROUP\\" server/data'));
+  assert.ok(source.includes('install -d -o \\"\\$APP_SERVICE_USER\\" -g \\"\\$APP_SERVICE_GROUP\\" -m 0750 /var/log/meiao'));
 });
 
 test('deploy_tencent cleanup never stops the last process and restores static assets on failed release health', () => {

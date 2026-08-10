@@ -330,7 +330,7 @@ stat -c '%U:%G %a %n' /www/wwwroot/meiao-internal/.env.server
 namei -l /www/wwwroot/meiao-internal/server/data/assets
 ```
 
-预期应用根目录为可穿越的 `0755`。未配置应用服务账号时 `.env.server` 为 `root:root 0600`；配置后应为 `root:<service-group> 0640`，让子进程只读密钥、不能改写。`server/data` 必须由服务账号持有，但不得递归放宽原有文件模式。再从一个当前账号真实、有效的本地托管结果素材取得授权 URL，分别请求 Node 直连地址和正式域名；两端都必须返回 `200`、正确 `Content-Type` 和相同字节数/哈希。公网任一 `403` 都视为发布失败，即使任务状态、文件落盘和 Node 直连已经成功。
+预期应用根目录为可穿越的 `0755`。未配置应用服务账号时 `.env.server` 为 `root:root 0600`；配置后应为 `root:<service-group> 0640`，让子进程只读密钥、不能改写。`server/data` 必须由服务账号持有，但不得递归放宽原有文件模式。PM2 子进程日志固定写入 `/var/log/meiao/app-out.log` 和 `app-error.log`，目录由服务账号持有且不依赖不可穿越的 `/root/.pm2`。再从一个当前账号真实、有效的本地托管结果素材取得授权 URL，分别请求 Node 直连地址和正式域名；两端都必须返回 `200`、正确 `Content-Type` 和相同字节数/哈希。公网任一 `403` 都视为发布失败，即使任务状态、文件落盘和 Node 直连已经成功。
 
 ### 口播翻译 disabled-first 部署
 

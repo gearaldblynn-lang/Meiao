@@ -31,6 +31,9 @@ module.exports = {
       autorestart: true,
       watch: false,
       max_memory_restart: '1500M',
+      out_file: '/var/log/meiao/app-out.log',
+      error_file: '/var/log/meiao/app-error.log',
+      merge_logs: true,
       ...serviceIdentity,
       env: {
         NODE_ENV: 'production',

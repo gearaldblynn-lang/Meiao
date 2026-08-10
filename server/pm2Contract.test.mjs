@@ -17,6 +17,9 @@ test('production PM2 app uses one ready-gated cluster instance', () => {
   assert.equal(app.listen_timeout, 120000);
   assert.equal(app.kill_timeout, 30000);
   assert.equal(app.env.MEIAO_BIND_HOST, '0.0.0.0');
+  assert.equal(app.out_file, '/var/log/meiao/app-out.log');
+  assert.equal(app.error_file, '/var/log/meiao/app-error.log');
+  assert.equal(app.merge_logs, true);
 });
 
 test('production PM2 app drops to the configured non-root service identity', () => {

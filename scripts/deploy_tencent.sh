@@ -262,9 +262,14 @@ tar \
       chown root:\"\$APP_SERVICE_GROUP\" .env.server
       chmod 0640 .env.server
       chown -R \"\$APP_SERVICE_USER:\$APP_SERVICE_GROUP\" server/data
+      install -d -o \"\$APP_SERVICE_USER\" -g \"\$APP_SERVICE_GROUP\" -m 0750 /var/log/meiao
+      touch /var/log/meiao/app-out.log /var/log/meiao/app-error.log
+      chown \"\$APP_SERVICE_USER:\$APP_SERVICE_GROUP\" /var/log/meiao/app-out.log /var/log/meiao/app-error.log
+      chmod 0640 /var/log/meiao/app-out.log /var/log/meiao/app-error.log
     else
       chown root:root .env.server
       chmod 0600 .env.server
+      install -d -o root -g root -m 0750 /var/log/meiao
     fi
     # 图片上传是所有业务入口的基础能力。真探针在停旧服务前完成；失败时 set -e
     # 直接终止发布，旧进程和旧 dist 继续服务，不再留下 disabled 半发布状态。
