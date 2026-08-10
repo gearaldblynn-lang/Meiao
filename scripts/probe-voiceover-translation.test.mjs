@@ -382,6 +382,29 @@ test('readiness prints the fixed boolean and numeric schema only', async () => {
   assert.doesNotMatch(result.stdout, /\/Users|private\/models|must-not-print/i);
 });
 
+test('require-ready keeps readiness output bounded and fails closed only when not ready', async () => {
+  const notReadyDeps = probeDeps({
+    readiness: {
+      ready: false,
+      pythonReady: true,
+      modelReady: false,
+      ffmpegReady: true,
+    },
+  });
+  const failed = await runVoiceoverProbe(['--readiness', '--require-ready'], notReadyDeps);
+  assert.equal(failed.exitCode, 2);
+  assert.equal(JSON.parse(failed.stdout).ready, false);
+  assert.match(failed.stderr, /readiness/);
+  assert.equal(notReadyDeps.calls.providerCreate, 0);
+
+  const readyDeps = probeDeps();
+  const passed = await runVoiceoverProbe(['--readiness', '--require-ready'], readyDeps);
+  assert.equal(passed.exitCode, 0);
+  assert.equal(JSON.parse(passed.stdout).ready, true);
+  assert.equal(passed.stderr, '');
+  assert.equal(readyDeps.calls.providerCreate, 0);
+});
+
 test('fixture mode is absolute-path local-only and cannot create provider tasks', async () => {
   const invalidDeps = probeDeps();
   const invalid = await runVoiceoverProbe(['--fixture-path', 'relative.mp4'], invalidDeps);
@@ -1371,6 +1394,7 @@ test('live verification aborts and settles sibling downloads before cleaning its
 test('ambiguous modes, missing values, and unknown arguments fail closed before side effects', async () => {
   for (const args of [
     ['--readiness', '--fixture-path', '/tmp/fixture.mp4'],
+    ['--live', '--require-ready', '--source-asset-id', 'asset-1', '--target-language', 'en'],
     ['--live', '--source-asset-id', 'asset-1', '--target-language', 'en', '--resume-parent-job-id', 'parent-1'],
     ['--fixture-path'],
     ['--unknown'],

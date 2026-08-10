@@ -114,6 +114,9 @@ MEIAO_SUBTITLE_REMOVAL_BATCH_MAX_ITEMS=10
 MEIAO_SUBTITLE_REMOVAL_BATCH_PREP_CONCURRENCY=2
 MEIAO_SUBTITLE_REMOVAL_BATCH_SUBMIT_CONCURRENCY=2
 MEIAO_SUBTITLE_REMOVAL_PROBE_INSPECTION_MS=0
+# PM2 master 可由 root 管理，应用子进程必须降权到专用非 root 账号；两项必须同时配置。
+MEIAO_APP_SERVICE_USER=meiao-app
+MEIAO_APP_SERVICE_GROUP=meiao-app
 # 口播翻译首发必须保持 disabled；完成独立 sizing、模型安装、readiness 和用户发布确认后才可改 1。
 MEIAO_VOICEOVER_TRANSLATION_ENABLED=0
 MEIAO_VOICEOVER_SEPARATION_PYTHON=/opt/meiao/voiceover/venv/bin/python
@@ -291,7 +294,7 @@ location ^~ /api/media-transcodes/ {
 
 `MEIAO_ASSET_X_ACCEL` 默认保持 `0`。只有在 Nginx 已配置内部资源映射后才可设为 `1`，让 `/api/assets/file/:id` 由 Node 校验权限和缓存头，再通过 `X-Accel-Redirect` 交给 Nginx 直出文件，降低大视频经过 Node 流式转发的抖动。示例：
 
-开启 X-Accel 后，应用根目录 `/www/wwwroot/meiao-internal` 是资源交付合同的一部分：Nginx 的 `www` 用户必须能够穿越该目录。标准部署脚本会在源码同步后只执行 `chmod 0755 /www/wwwroot/meiao-internal`；不得递归放宽权限，`.env.server` 必须继续保持 `0600`。`rsync -a`、tar 解包等操作会携带本地目录权限，如果把开发机根目录的 `0700` 元数据复制到线上，会出现“任务成功、文件存在、Node 直连 200，但公网图片 403/不显示”。
+开启 X-Accel 后，应用根目录 `/www/wwwroot/meiao-internal` 是资源交付合同的一部分：Nginx 的 `www` 用户必须能够穿越该目录。标准部署脚本会在源码同步后只执行 `chmod 0755 /www/wwwroot/meiao-internal`；不得递归放宽权限。`.env.server` 在 root 子进程兼容模式为 `root:root 0600`，配置专用应用账号后为 `root:<service-group> 0640`。`rsync -a`、tar 解包等操作会携带本地目录权限，如果把开发机根目录的 `0700` 元数据复制到线上，会出现“任务成功、文件存在、Node 直连 200，但公网图片 403/不显示”。
 
 `VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS` 和 `VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS` 是前端构建期变量，控制项目卡片视频播放前的预缓冲。默认值分别为 `3` 秒和 `5000` 毫秒；线上网络较慢时可小幅上调，调整后需要重新构建前端。
 
@@ -327,7 +330,7 @@ stat -c '%U:%G %a %n' /www/wwwroot/meiao-internal/.env.server
 namei -l /www/wwwroot/meiao-internal/server/data/assets
 ```
 
-预期应用根目录为可穿越的 `0755`，`.env.server` 仍为 `0600`。再从一个当前账号真实、有效的本地托管结果素材取得授权 URL，分别请求 Node 直连地址和正式域名；两端都必须返回 `200`、正确 `Content-Type` 和相同字节数/哈希。公网任一 `403` 都视为发布失败，即使任务状态、文件落盘和 Node 直连已经成功。
+预期应用根目录为可穿越的 `0755`。未配置应用服务账号时 `.env.server` 为 `root:root 0600`；配置后应为 `root:<service-group> 0640`，让子进程只读密钥、不能改写。`server/data` 必须由服务账号持有，但不得递归放宽原有文件模式。再从一个当前账号真实、有效的本地托管结果素材取得授权 URL，分别请求 Node 直连地址和正式域名；两端都必须返回 `200`、正确 `Content-Type` 和相同字节数/哈希。公网任一 `403` 都视为发布失败，即使任务状态、文件落盘和 Node 直连已经成功。
 
 ### 口播翻译 disabled-first 部署
 
@@ -336,23 +339,23 @@ namei -l /www/wwwroot/meiao-internal/server/data/assets
 venv 和非量化 `mdx` 权重必须安装在 Git 仓库与 `/www/wwwroot/meiao-internal` release 目录之外。安装是显式运维步骤，readiness 不会自动下载或修改服务器：
 
 ```bash
-export MEIAO_VOICEOVER_SERVICE_USER=CHANGE_ME_TO_PM2_OS_USER
-test "$MEIAO_VOICEOVER_SERVICE_USER" != CHANGE_ME_TO_PM2_OS_USER
-id "$MEIAO_VOICEOVER_SERVICE_USER"
-export MEIAO_VOICEOVER_SERVICE_GROUP="$(id -gn "$MEIAO_VOICEOVER_SERVICE_USER")"
+export MEIAO_APP_SERVICE_USER=meiao-app
+export MEIAO_APP_SERVICE_GROUP=meiao-app
+test "$MEIAO_APP_SERVICE_USER" != root
+id "$MEIAO_APP_SERVICE_USER"
 sudo install -d \
-  -o "$MEIAO_VOICEOVER_SERVICE_USER" \
-  -g "$MEIAO_VOICEOVER_SERVICE_GROUP" \
+  -o "$MEIAO_APP_SERVICE_USER" \
+  -g "$MEIAO_APP_SERVICE_GROUP" \
   -m 0750 \
   /opt/meiao/voiceover
-sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -w /opt/meiao/voiceover
+sudo -u "$MEIAO_APP_SERVICE_USER" test -w /opt/meiao/voiceover
 export MEIAO_VOICEOVER_VENV_DIR=/opt/meiao/voiceover/venv
 export MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=/opt/meiao/voiceover/models
 export MEIAO_VOICEOVER_WHISPER_MODEL_DIR=/opt/meiao/voiceover/faster-whisper-base
 # 跨境链路较慢时可调；脚本默认 600 秒、8 次，合法范围分别为 30-3600 秒、0-20 次。
 export MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS=600
 export MEIAO_VOICEOVER_PIP_RETRIES=8
-sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
+sudo -u "$MEIAO_APP_SERVICE_USER" env \
   "PATH=$PATH" \
   "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
   "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
@@ -360,19 +363,19 @@ sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
   "MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS=$MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS" \
   "MEIAO_VOICEOVER_PIP_RETRIES=$MEIAO_VOICEOVER_PIP_RETRIES" \
   node scripts/install-voiceover-demucs.mjs --install
-sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
+sudo -u "$MEIAO_APP_SERVICE_USER" env \
   "PATH=$PATH" \
   "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
   "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
   "MEIAO_VOICEOVER_WHISPER_MODEL_DIR=$MEIAO_VOICEOVER_WHISPER_MODEL_DIR" \
   node scripts/install-voiceover-demucs.mjs --download-models
-sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
+sudo -u "$MEIAO_APP_SERVICE_USER" env \
   "PATH=$PATH" \
   "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
   "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
   "MEIAO_VOICEOVER_WHISPER_MODEL_DIR=$MEIAO_VOICEOVER_WHISPER_MODEL_DIR" \
   node scripts/install-voiceover-demucs.mjs --download-whisper-model
-sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" env \
+sudo -u "$MEIAO_APP_SERVICE_USER" env \
   "PATH=$PATH" \
   "MEIAO_VOICEOVER_VENV_DIR=$MEIAO_VOICEOVER_VENV_DIR" \
   "MEIAO_VOICEOVER_DEMUCS_MODEL_DIR=$MEIAO_VOICEOVER_DEMUCS_MODEL_DIR" \
@@ -382,14 +385,14 @@ sudo chown -R root:root /opt/meiao/voiceover
 sudo find /opt/meiao/voiceover -type d -exec chmod 0555 {} +
 sudo find /opt/meiao/voiceover -type f -perm /111 -exec chmod 0555 {} +
 sudo find /opt/meiao/voiceover -type f ! -perm /111 -exec chmod 0444 {} +
-test "$MEIAO_VOICEOVER_SERVICE_USER" != root
-sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -r /opt/meiao/voiceover/models/mdx.yaml
-sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -r /opt/meiao/voiceover/faster-whisper-base/model.bin
-! sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -w /opt/meiao/voiceover/models
-! sudo -u "$MEIAO_VOICEOVER_SERVICE_USER" test -w /opt/meiao/voiceover/faster-whisper-base
+test "$MEIAO_APP_SERVICE_USER" != root
+sudo -u "$MEIAO_APP_SERVICE_USER" test -r /opt/meiao/voiceover/models/mdx.yaml
+sudo -u "$MEIAO_APP_SERVICE_USER" test -r /opt/meiao/voiceover/faster-whisper-base/model.bin
+! sudo -u "$MEIAO_APP_SERVICE_USER" test -w /opt/meiao/voiceover/models
+! sudo -u "$MEIAO_APP_SERVICE_USER" test -w /opt/meiao/voiceover/faster-whisper-base
 ```
 
-`MEIAO_VOICEOVER_SERVICE_USER` 必须替换为实际启动 PM2/Node 口播服务的系统用户；不要照抄一个假定用户名。安装阶段可由当前 PM2 用户写入，但安装与校验完成后必须切成 root 所有、服务用户只读；需要升级模型时仅在维护窗口临时恢复写权限，完成后重新执行全部哈希检查和只读收口。若 PM2 仍由 root 运行，可以安装和做关闭态 readiness，但禁止启用新口播任务，必须先迁移到独立的非 root 服务用户。任一步失败都停止启用。
+`MEIAO_APP_SERVICE_USER/GROUP` 是整个应用子进程的持久身份，不是一次性安装变量。PM2 master 可继续由 root 管理，`ecosystem.config.cjs` 会将 Node 子进程降权到该账号；开启口播翻译但缺少该身份时，标准发布必须失败。安装与校验完成后模型目录必须切成 root 所有、服务用户只读；需要升级模型时仅在维护窗口临时恢复写权限，完成后重新执行全部哈希检查和只读收口。任一步失败都停止启用。
 
 `MEIAO_VOICEOVER_PIP_TIMEOUT_SECONDS` 是单次 socket 读取超时，`MEIAO_VOICEOVER_PIP_RETRIES` 是单连接重试次数，都不是整次安装的总时限；非法值会在创建 venv 前 fail-closed。两者只用于一次性安装命令，不需要写入 `.env.server`。维护窗口若需要总时限，应由运维在命令外层另加受控 timeout。
 
@@ -403,13 +406,13 @@ Demucs 分离和 Whisper 强制对齐共用一个进程内 FIFO 重媒体许可�
 
 口播分析会把 Demucs 人声轨压成单声道 16 kHz AAC，并以内联音频作为 Gemini 的主要语音证据；原视频只用于可见字幕和画面交叉校验。`MEIAO_GEMINI_INLINE_DATA_MAX_BYTES` 默认 `12582912` 字节、范围 `1024-15728640`；生成、探测或读取后的字节任一超限都会在 `speech_analysis_submitting` 检查点和付费 Gemini 请求之前 fail closed。内联音频只存在于当前请求内存，不写入 parent/child checkpoint、日志或托管素材。
 
-标准发布脚本检测到 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=1/true/on/yes` 时，会在旧进程仍独占正式端口、创建 drain marker 和 PM2 reload 之前执行该独立 readiness 探针；探针失败则旧版本继续服务且发布 fail-closed。禁止把真实模型加载挪到新旧 Node 重叠的启动窗口。
+标准发布脚本检测到 `MEIAO_VOICEOVER_TRANSLATION_ENABLED=1/true/on/yes` 时，会用专用服务账号在旧进程仍独占正式端口、创建 drain marker 和 PM2 reload 之前执行 `--readiness --require-ready`。命令仍输出有界 JSON，但只要 `ready=false` 就以非零状态退出，旧版本继续服务且发布 fail-closed。禁止把真实模型加载挪到新旧 Node 重叠的启动窗口。
 
 ```bash
-npm run probe:voiceover-translation -- --readiness
+npm run probe:voiceover-translation -- --readiness --require-ready
 ```
 
-当 `enabled=false` 时总 `ready` 可以是 `false`，但 `pythonReady/modelReady/ffmpegReady` 必须分别为 `true`；经用户批准后在候选环境临时把开关设为 `1`，重新启动并确认 `/api/health.voiceoverTranslation` 的全部布尔值以及 `ready=true`。readiness 输出只能包含布尔值和 `separationConcurrency`，不得出现 Python/模型目录、KIE 根地址、token 或签名 URL。
+当 `enabled=false` 时总 `ready` 会是 `false`，所以只读检查使用不带 `--require-ready` 的 `--readiness`，并单独确认 `pythonReady/modelReady/ffmpegReady=true`。启用后和正式发布必须使用 `--require-ready`；重新启动后还要确认 `/api/health.voiceoverTranslation.ready=true`。readiness 输出只能包含布尔值和 `separationConcurrency`，不得出现 Python/模型目录、KIE 根地址、token 或签名 URL。
 
 本地非付费 fixture 仅在用户显式提供安全绝对路径时运行：
 

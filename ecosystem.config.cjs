@@ -3,6 +3,20 @@ const readPositiveInteger = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const readServiceIdentity = (env) => {
+  const user = String(env.MEIAO_APP_SERVICE_USER || '').trim();
+  const group = String(env.MEIAO_APP_SERVICE_GROUP || '').trim();
+  if (Boolean(user) !== Boolean(group)) {
+    throw new Error('MEIAO_APP_SERVICE_USER 和 MEIAO_APP_SERVICE_GROUP 必须同时配置。');
+  }
+  if (user === 'root' || group === 'root') {
+    throw new Error('生产 PM2 子进程不得使用 root 身份。');
+  }
+  return user ? { uid: user, gid: group } : {};
+};
+
+const serviceIdentity = readServiceIdentity(process.env);
+
 module.exports = {
   apps: [
     {
@@ -17,6 +31,7 @@ module.exports = {
       autorestart: true,
       watch: false,
       max_memory_restart: '1500M',
+      ...serviceIdentity,
       env: {
         NODE_ENV: 'production',
         PORT: 3100,

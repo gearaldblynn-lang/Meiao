@@ -1530,3 +1530,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Root cause: 功能在临时 worktree 中持续验收，主分支同时独立演进；数据统一和运行目录纠偏已完成，但缺少“已验收功能必须合入当前主基线”的版本门禁。
 - Fix: 选择性移植完整口播提交链和真实 canary 后续修正到当前主基线，保留主版本已有安全/恢复逻辑；常驻服务继续只指向主项目。结构回归锁定 UI 入口、工作台、历史项目恢复、health/config/readiness 和生产 runner 接线。
 - Avoid next time: worktree 不能充当产品版本。切换主版本、备份或发布前，必须在当前主基线同时验证 UI 入口、后端 capability、历史任务水合和生产构建；端口健康、数据存在、临时分支能运行都不足以证明功能已交付。
+
+## 2026-08-10 - 发布脚本调用信息型 readiness，`ready=false` 仍能切换生产版本
+
+- Symptom: 口播翻译代码和 UI 已切到腾讯云，但 `/api/health.voiceoverTranslation` 持续返回 `ready=false`，新任务不可用。
+- Root cause: `--readiness` 为了方便 disabled-first 巡检，无论布尔结果都固定退出 0；标准发布直接把这个信息型命令当作强制门禁。同时云端 Node 子进程仍是 root，Whisper 对齐模型未安装。
+- Fix: 新增 `--require-ready`，仅在 readiness 模式中允许，结果为 false 时返回非零状态且仍只输出有界字段；发布脚本开启口播时强制该门禁。PM2 master 保留 root 管理，子进程通过 `MEIAO_APP_SERVICE_USER/GROUP` 降权；`.env.server` 保持 root 所有、服务组只读，`server/data` 交给服务账号持有。
+- Regression check: `scripts/probe-voiceover-translation.test.mjs` 覆盖 false→2、true→0 且 provider create 为 0；`scripts/deploy_tencent.test.mjs` 锁定降权探针、密钥/数据权限和 reload 顺序；`server/pm2Contract.test.mjs` 锁定非 root 身份及缺失/root 配置失败。
+- Avoid next time: 运维命令必须区分“打印状态”与“强制通过”；任何布尔 readiness 用作发布门禁时，测试都必须证明 false 会中止发布。需要本地模型的生产功能还必须用真实子进程身份运行探针，不能用 root 成功代替应用账号成功。

@@ -242,13 +242,42 @@ tar \
     set -a
     source .env.server
     set +a
+    APP_SERVICE_USER=\"\${MEIAO_APP_SERVICE_USER:-}\"
+    APP_SERVICE_GROUP=\"\${MEIAO_APP_SERVICE_GROUP:-}\"
+    if [ -n \"\$APP_SERVICE_USER\" ] || [ -n \"\$APP_SERVICE_GROUP\" ]; then
+      if [ -z \"\$APP_SERVICE_USER\" ] || [ -z \"\$APP_SERVICE_GROUP\" ]; then
+        echo 'MEIAO_APP_SERVICE_USER 和 MEIAO_APP_SERVICE_GROUP 必须同时配置。'
+        exit 2
+      fi
+      if [ \"\$APP_SERVICE_USER\" = 'root' ] || [ \"\$APP_SERVICE_GROUP\" = 'root' ]; then
+        echo '生产 PM2 子进程不得使用 root 身份。'
+        exit 2
+      fi
+      getent passwd \"\$APP_SERVICE_USER\" >/dev/null
+      getent group \"\$APP_SERVICE_GROUP\" >/dev/null
+      if ! id -nG \"\$APP_SERVICE_USER\" | tr ' ' '\n' | grep -Fx \"\$APP_SERVICE_GROUP\" >/dev/null; then
+        echo '应用服务账号不属于配置的服务组。'
+        exit 2
+      fi
+      chown root:\"\$APP_SERVICE_GROUP\" .env.server
+      chmod 0640 .env.server
+      chown -R \"\$APP_SERVICE_USER:\$APP_SERVICE_GROUP\" server/data
+    else
+      chown root:root .env.server
+      chmod 0600 .env.server
+    fi
     # 图片上传是所有业务入口的基础能力。真探针在停旧服务前完成；失败时 set -e
     # 直接终止发布，旧进程和旧 dist 继续服务，不再留下 disabled 半发布状态。
     npm run probe:managed-image-cos
     case \"\${MEIAO_VOICEOVER_TRANSLATION_ENABLED:-0}\" in
       1|true|TRUE|on|ON|yes|YES)
+        if [ -z \"\$APP_SERVICE_USER\" ]; then
+          echo '口播翻译开启时必须配置专用非 root 应用服务账号。'
+          exit 2
+        fi
         # 真实加载 Demucs 只在旧进程仍独占服务时做一次；新进程 bootstrap 只做轻量完整性检查。
-        npm run probe:voiceover-translation -- --readiness
+        runuser -u \"\$APP_SERVICE_USER\" --preserve-environment -- \
+          npm run probe:voiceover-translation -- --readiness --require-ready
         ;;
     esac
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs

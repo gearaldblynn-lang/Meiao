@@ -153,6 +153,7 @@ const takeValue = (argv, index, option) => {
 export function parseVoiceoverProbeArgs(argv = []) {
   const parsed = {
     mode: 'readiness',
+    requireReady: false,
     fixturePath: '',
     sourceAssetId: '',
     targetLanguage: '',
@@ -181,6 +182,9 @@ export function parseVoiceoverProbeArgs(argv = []) {
     if (option === '--readiness') {
       if (inlineValue !== undefined) throw usageError('--readiness 不接受参数值。');
       explicitReadiness = true;
+    } else if (option === '--require-ready') {
+      if (inlineValue !== undefined) throw usageError('--require-ready 不接受参数值。');
+      parsed.requireReady = true;
     } else if (option === '--fixture-path') {
       parsed.fixturePath = valueFor();
     } else if (option === '--live') {
@@ -216,6 +220,9 @@ export function parseVoiceoverProbeArgs(argv = []) {
   else if (parsed.resumeChildTaskId) parsed.mode = 'resume-child';
   if (parsed.mode !== 'live' && (parsed.sourceAssetId || parsed.targetLanguage || parsed.removeText)) {
     throw usageError('--source-asset-id、--target-language 和 --remove-text 只能用于 --live。');
+  }
+  if (parsed.requireReady && parsed.mode !== 'readiness') {
+    throw usageError('--require-ready 只能用于 readiness 模式。');
   }
   return Object.freeze(parsed);
 }
@@ -1050,10 +1057,11 @@ export async function runVoiceoverProbe(argv = [], deps = {}) {
   try {
     args = parseVoiceoverProbeArgs(argv);
     if (args.mode === 'readiness') {
+      const summary = await readinessSummary(env, deps);
       return {
-        exitCode: 0,
-        stdout: `${JSON.stringify(await readinessSummary(env, deps))}\n`,
-        stderr: '',
+        exitCode: args.requireReady && !summary.ready ? 2 : 0,
+        stdout: `${JSON.stringify(summary)}\n`,
+        stderr: args.requireReady && !summary.ready ? '口播翻译 readiness 未通过。\n' : '',
       };
     }
     if (args.mode === 'fixture') {
