@@ -1534,7 +1534,7 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 ## 2026-08-10 - 发布脚本调用信息型 readiness，`ready=false` 仍能切换生产版本
 
 - Symptom: 口播翻译代码和 UI 已切到腾讯云，但 `/api/health.voiceoverTranslation` 持续返回 `ready=false`，新任务不可用。
-- Root cause: `--readiness` 为了方便 disabled-first 巡检，无论布尔结果都固定退出 0；标准发布直接把这个信息型命令当作强制门禁。同时云端 Node 子进程仍是 root，Whisper 对齐模型未安装。子进程降权后又暴露两个隐藏的 root-only 依赖：PM2 沿用 `/root/.pm2/logs`，部署 marker 创建为 `0600`，导致应用既无法启动写日志，也无法读门禁生成 health。
-- Fix: 新增 `--require-ready`，仅在 readiness 模式中允许，结果为 false 时返回非零状态且仍只输出有界字段；发布脚本开启口播时强制该门禁。PM2 master 保留 root 管理，子进程通过 `MEIAO_APP_SERVICE_USER/GROUP` 降权；`.env.server` 保持 root 所有、服务组只读，`server/data` 交给服务账号持有。应用日志改到 `/var/log/meiao`，由服务账号持有；marker 保持 root 所有但固定 `0644`，使非 root 应用只读感知门禁。
-- Regression check: `scripts/probe-voiceover-translation.test.mjs` 覆盖 false→2、true→0 且 provider create 为 0；`scripts/deploy_tencent.test.mjs` 锁定降权探针、密钥/数据权限、专用日志目录和 reload 顺序；`scripts/deploy-ownership.test.mjs` 锁定 active/manual marker 均为 `0644`；`server/pm2Contract.test.mjs` 锁定非 root 身份及缺失/root 配置失败。
+- Root cause: `--readiness` 为了方便 disabled-first 巡检，无论布尔结果都固定退出 0；标准发布直接把这个信息型命令当作强制门禁。同时云端 Node 子进程仍是 root，Whisper 对齐模型未安装。子进程降权后又暴露三个隐藏的 root-only 依赖：PM2 沿用 `/root/.pm2/logs`，部署 marker 创建为 `0600`，COS 发布探针也以 root 写入 `0600` readiness 文件；这会使应用无法启动写日志，或无法读取门禁/COS 状态生成 health。
+- Fix: 新增 `--require-ready`，仅在 readiness 模式中允许，结果为 false 时返回非零状态且仍只输出有界字段；发布脚本开启口播时强制该门禁。PM2 master 保留 root 管理，子进程通过 `MEIAO_APP_SERVICE_USER/GROUP` 降权；`.env.server` 保持 root 所有、服务组只读，`server/data` 交给服务账号持有。应用日志改到 `/var/log/meiao`，由服务账号持有；marker 保持 root 所有但固定 `0644`，使非 root 应用只读感知门禁；COS 真探针直接以应用账号运行，readiness 文件保持该账号所有的 `0600`。
+- Regression check: `scripts/probe-voiceover-translation.test.mjs` 覆盖 false→2、true→0 且 provider create 为 0；`scripts/deploy_tencent.test.mjs` 锁定口播/COS 探针的降权身份、密钥/数据权限、专用日志目录和 reload 顺序；`scripts/deploy-ownership.test.mjs` 锁定 active/manual marker 均为 `0644`；`server/pm2Contract.test.mjs` 锁定非 root 身份及缺失/root 配置失败。
 - Avoid next time: 运维命令必须区分“打印状态”与“强制通过”；任何布尔 readiness 用作发布门禁时，测试都必须证明 false 会中止发布。需要本地模型的生产功能还必须用真实子进程身份运行探针，不能用 root 成功代替应用账号成功。降权评审必须同时枚举日志、密钥、可变数据、部署门禁和模型运行时的读写权限，不能只看源码目录。

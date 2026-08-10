@@ -273,7 +273,12 @@ tar \
     fi
     # 图片上传是所有业务入口的基础能力。真探针在停旧服务前完成；失败时 set -e
     # 直接终止发布，旧进程和旧 dist 继续服务，不再留下 disabled 半发布状态。
-    npm run probe:managed-image-cos
+    if [ -n \"\$APP_SERVICE_USER\" ]; then
+      runuser -u \"\$APP_SERVICE_USER\" --preserve-environment -- \
+        npm run probe:managed-image-cos
+    else
+      npm run probe:managed-image-cos
+    fi
     case \"\${MEIAO_VOICEOVER_TRANSLATION_ENABLED:-0}\" in
       1|true|TRUE|on|ON|yes|YES)
         if [ -z \"\$APP_SERVICE_USER\" ]; then

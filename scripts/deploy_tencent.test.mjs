@@ -253,6 +253,10 @@ test('deploy_tencent proves managed image COS readiness before entering the drai
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const buildIndex = source.indexOf('npm run build -- --outDir dist-next');
   const probeIndex = source.indexOf('npm run probe:managed-image-cos');
+  const probeRunAsAppIndex = source.lastIndexOf(
+    'runuser -u \\"\\$APP_SERVICE_USER\\" --preserve-environment --',
+    probeIndex,
+  );
   const finalReadinessIndex = source.indexOf(
     "MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs",
   );
@@ -260,6 +264,8 @@ test('deploy_tencent proves managed image COS readiness before entering the drai
 
   assert.ok(buildIndex >= 0, 'remote build must exist');
   assert.ok(probeIndex > buildIndex, 'COS probe must run after the new source is installed and built');
+  assert.ok(probeRunAsAppIndex >= 0 && probeRunAsAppIndex < probeIndex,
+    'COS probe must write its readiness file as the unprivileged app user');
   assert.ok(finalReadinessIndex > probeIndex, 'job readiness must be rechecked after the COS probe');
   assert.ok(markerIndex > finalReadinessIndex, 'COS probe and readiness must pass before the marker');
 });

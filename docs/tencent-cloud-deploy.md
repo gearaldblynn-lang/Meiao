@@ -236,7 +236,7 @@ KIE Gemini 当前会在完整读取前探测视频元数据；腾讯 COS 的 V5 
 - CAM 密钥必须与视频 COS 分开，只对该桶的 `managed-images/*` 授予 `PutObject`、`GetObject`/`HeadObject` 和 `DeleteObject`；禁止 `DeleteBucket`、修改桶策略、修改 ACL 及访问其他桶。Secret 只写服务端 `.env.server`，不进 Git、页面、日志或诊断看板。`MEIAO_MANAGED_ASSET_ACCESS_SECRET` 用于生成绑定素材与用户的访问 capability；轮换时先把旧值放入 `MEIAO_MANAGED_ASSET_ACCESS_PREVIOUS_SECRET`，等旧 URL 完成更新后再清空。
 - 生命周期只配置“终止 1 天前未完成的分块上传”，不配置定时删除正常对象；正常图片由用户/项目/任务/会话删除触发的持久清理队列精确删除。删除前 worker 会再次检查存活引用，防止并发误删。
 - CORS 不开放上传；如页面确需 canvas 跨域读图，只允许 `https://meiaoyuntai.com` 和 `https://www.meiaoyuntai.com` 的 `GET/HEAD`。强制 HTTPS。
-- 云资源和成对密钥必须先配好，且 `MEIAO_MANAGED_IMAGE_UPLOAD_MODE=cos`。标准部署在写请求 drain/PM2 平滑 reload 之前自动执行 `npm run probe:managed-image-cos`；只有 `put -> head -> signed HTTPS GET -> byte equality -> delete -> head/not-found` 全部通过才继续。任何一步失败都原地中止，旧进程和旧 `dist` 继续服务。
+- 云资源和成对密钥必须先配好，且 `MEIAO_MANAGED_IMAGE_UPLOAD_MODE=cos`。标准部署在写请求 drain/PM2 平滑 reload 之前自动执行 `npm run probe:managed-image-cos`；配置专用应用账号时，探针也必须以该账号执行，使 readiness 状态文件与 PM2 子进程共享同一读写身份。只有 `put -> head -> signed HTTPS GET -> byte equality -> delete -> head/not-found` 全部通过才继续。任何一步失败都原地中止，旧进程和旧 `dist` 继续服务。
 - 紧急回滚仍可把上传模式设为 `disabled`以防错写，并保留 COS-aware 代码读删既有素材；这是明确的降级状态，`managedImageUpload.ready=false`，不得报告为发布完成。
 - `/api/health` 的 `managedImageUpload` 暴露模式、配置完整性、最近一次真探针、时效和告警；`managedAssetCleanup` 另行暴露 backlog、最老等待时间、retry attempts、manual review、upload failed 和 alerting。密钥、SecretId、bucket 和签名 URL 都不进入 health。
 
