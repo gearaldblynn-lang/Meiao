@@ -45,6 +45,54 @@ test('a temporary session is owner-only and expires by TTL', async (t) => {
   assert.equal(await store.count(), 0);
 });
 
+test('an in-process conversion lease survives TTL cleanup and remains cancellable', async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'meiao-media-store-'));
+  let now = 1_000;
+  const store = createMediaTranscodeSessionStore({
+    rootDir,
+    ttlMs: 100,
+    clock: { now: () => now },
+  });
+  t.after(async () => { await store.destroy(); });
+  const created = await store.create({
+    userId: 'u1', kind: 'video', fileName: 'source.mov', fileBuffer: Buffer.from('source'), probe: videoProbe,
+  });
+
+  await store.claimConversion(created.id, 'u1');
+  now = 10_000;
+  assert.deepEqual(await store.cleanupExpired(), { removed: 0 });
+  assert.equal((await store.getOwned(created.id, 'u1')).state, 'converting');
+  const cancellation = await store.requestCancel(created.id, 'u1');
+  assert.equal(cancellation.cancelled, true);
+  assert.equal(cancellation.session.state, 'cancelled');
+  assert.equal(await store.remove(created.id), true);
+  assert.equal(await store.count(), 0);
+});
+
+test('a restarted store expires an abandoned converting sidecar after TTL', async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'meiao-media-store-'));
+  let now = 1_000;
+  const firstStore = createMediaTranscodeSessionStore({
+    rootDir,
+    ttlMs: 100,
+    clock: { now: () => now },
+  });
+  t.after(async () => { await firstStore.destroy(); });
+  const created = await firstStore.create({
+    userId: 'u1', kind: 'video', fileName: 'source.mov', fileBuffer: Buffer.from('source'), probe: videoProbe,
+  });
+  await firstStore.claimConversion(created.id, 'u1');
+
+  now = 10_000;
+  const restartedStore = createMediaTranscodeSessionStore({
+    rootDir,
+    ttlMs: 100,
+    clock: { now: () => now },
+  });
+  assert.deepEqual(await restartedStore.cleanupExpired(), { removed: 1 });
+  assert.equal(await restartedStore.count(), 0);
+});
+
 test('session sidecars sanitize names and never persist the source path', async (t) => {
   const rootDir = await mkdtemp(join(tmpdir(), 'meiao-media-store-'));
   const store = createMediaTranscodeSessionStore({ rootDir });
@@ -84,6 +132,29 @@ test('session sidecars persist and hydrate the trusted media profile', async (t)
       userId: 'u1', kind: 'video', profile: 'body_override', fileName: 'bad.mp4', fileBuffer: Buffer.from('x'),
     }),
     (error) => error?.code === 'media_profile_unsupported',
+  );
+});
+
+test('voiceover sessions persist only the server-owned video profile', async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'meiao-media-store-'));
+  const store = createMediaTranscodeSessionStore({ rootDir });
+  t.after(async () => { await store.destroy(); });
+  const created = await store.create({
+    userId: 'u1',
+    kind: 'video',
+    profile: 'voiceover_translation',
+    fileName: 'voiceover-source.mp4',
+    fileBuffer: Buffer.from('source'),
+    probe: videoProbe,
+  });
+
+  assert.equal(created.profile, 'voiceover_translation');
+  assert.equal((await store.getOwned(created.id, 'u1')).profile, 'voiceover_translation');
+  await assert.rejects(
+    () => store.create({
+      userId: 'u1', kind: 'audio', profile: 'voiceover_translation', fileName: 'voice.mp3', fileBuffer: Buffer.from('x'),
+    }),
+    (error) => error?.code === 'media_kind_unsupported',
   );
 });
 

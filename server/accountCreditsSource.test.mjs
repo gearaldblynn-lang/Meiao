@@ -61,13 +61,13 @@ test('job workers settle or release account credits in mysql local and temporal 
   const localJobSource = readFileSync(new URL('./localJobStore.mjs', import.meta.url), 'utf8');
   const temporalSource = readFileSync(new URL('./temporalWorker.mjs', import.meta.url), 'utf8');
 
-  assert.match(jobManagerSource, /settleJobCredits\?\.\(\{ job: refreshedJob, output, finishedAt, aborted: controller\.signal\.aborted \}\)/);
+  assert.match(jobManagerSource, /settleJobCredits\?\.\(\{\s*job: latestBeforeComplete,\s*output,\s*finishedAt,\s*aborted: controller\.signal\.aborted,\s*\}\)/);
   assert.match(jobManagerSource, /releaseJobCredits\?\.\(\{ job: latestJob, error, finishedAt, retryWaiting: failure\.status === 'retry_waiting' \}\)/);
   assert.match(localJobSource, /const finishedJob = await mutate\(\(completeStore\)[\s\S]{0,300}settleJobCredits\?\.\(\{ store: completeStore, job: nextJob, output, aborted: controller\.signal\.aborted \}\)/);
-  assert.match(localJobSource, /const failedJob = await mutate\(\(failureStore\)[\s\S]{0,900}isProviderCompletedOutputRejectedError\(error\)[\s\S]{0,900}settleJobCredits\?\.[\s\S]{0,900}releaseJobCredits\?\./);
+  assert.match(localJobSource, /const failureOutcome = await mutate\(\(failureStore\)[\s\S]{0,1800}isProviderCompletedOutputRejectedError\(error\)[\s\S]{0,900}settleJobCredits\?\.[\s\S]{0,900}releaseJobCredits\?\.[\s\S]{0,400}if \(failureOutcome\.stale\) return/);
   assert.match(temporalSource, /const finishedJob = await mutate\(\(completeStore\)[\s\S]{0,300}settleJobCredits\?\.\(\{ store: completeStore, job: nextJob, output, aborted: controller\.signal\.aborted \}\)/);
-  assert.match(temporalSource, /const failedJob = await mutate\(\(failureStore\)[\s\S]{0,900}isProviderCompletedOutputRejectedError\(error\)[\s\S]{0,900}settleJobCredits\?\.[\s\S]{0,900}releaseJobCredits\?\./);
-  assert.match(temporalSource, /settleJobCredits\?\.\(\{ job: refreshedJob, output, finishedAt, aborted: controller\.signal\.aborted \}\)/);
+  assert.match(temporalSource, /const failureOutcome = await mutate\(\(failureStore\)[\s\S]{0,1800}isProviderCompletedOutputRejectedError\(error\)[\s\S]{0,900}settleJobCredits\?\.[\s\S]{0,900}releaseJobCredits\?\.[\s\S]{0,500}if \(failureOutcome\.stale\)/);
+  assert.match(temporalSource, /settleJobCredits\?\.\(\{\s*job: latestBeforeComplete,\s*output,\s*finishedAt,\s*aborted: controller\.signal\.aborted,\s*\}\)/);
   assert.match(temporalSource, /releaseJobCredits\?\.\(\{ job: latestJob, error, finishedAt, retryWaiting: failure\.status === 'retry_waiting' \}\)/);
   assert.match(jobManagerSource, /isProviderCompletedOutputRejectedError\(error\)[\s\S]{0,900}settleJobCredits\?\.[\s\S]{0,900}releaseJobCredits\?\./);
   assert.match(temporalSource, /isProviderCompletedOutputRejectedError\(error\)[\s\S]{0,900}settleJobCredits\?\.[\s\S]{0,900}releaseJobCredits\?\./);

@@ -16,7 +16,7 @@ test('structured shell subfeature contract recognizes every durable module scope
     everything_replace: ['product_replace', 'background_replace', 'logo_replace'],
     image_crop: ['long_slice', 'resize'],
     buyer_show: ['image', 'copy'],
-    video: ['generation', 'storyboard', 'subtitle_removal', 'diagnosis'],
+    video: ['generation', 'storyboard', 'voiceover_translation', 'subtitle_removal', 'diagnosis'],
     xhs_cover: ['cover'],
     agent_center: ['chat', 'management', 'knowledge', 'versions'],
     smart_factory: ['factory'],
@@ -30,6 +30,13 @@ test('structured shell subfeature contract recognizes every durable module scope
       );
     });
   });
+});
+
+test('video scope recognizes the durable voiceover translation alias', () => {
+  assert.equal(
+    normalizeStructuredShellSubFeature('video', '口播翻译'),
+    'voiceover_translation',
+  );
 });
 
 test('product restoration durable evidence repairs scope and canonical project id together', () => {

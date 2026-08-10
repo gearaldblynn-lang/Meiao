@@ -2,7 +2,11 @@ import React, { useMemo } from 'react';
 import { Clapperboard, Film, Sparkles } from 'lucide-react';
 import ProjectListView from '../../components/ProjectListView';
 import type { GeneratedResult, Project, SubFeatureOption, Task } from '../../../ShellMigratedApp';
-import type { SubtitleRemovalSourceDraft, VideoPersistentState, VideoStoryboardProject } from '../../../types';
+import type { SubtitleRemovalSourceDraft, SystemPublicConfig, VideoPersistentState, VideoStoryboardProject } from '../../../types';
+import type {
+  VoiceoverTranslationDraft,
+  VoiceoverTranslationSource,
+} from '../../../services/voiceoverTranslationClient';
 import { buildDiagnosisReportText, hasDiagnosisReportContent } from '../../../modules/Video/videoDiagnosisUtils.mjs';
 import {
   toStoryboardShellProjectStatus,
@@ -13,18 +17,21 @@ import SubtitleRemovalWorkspace, {
   type SubtitleRemovalSubmitInput,
   type SubtitleRemovalSubmitOutcome,
 } from '../../components/SubtitleRemovalWorkspace';
+import VoiceoverTranslationWorkspace from '../../components/VoiceoverTranslationWorkspace';
 
 interface Props {
   projects: Project[];
   tasks: Task[];
   onDeleteResult: (projectId: string, resultId: string) => void;
   onDeleteProject: (projectId: string) => void;
-  onRegenerateResult?: (projectId: string, resultId: string, instruction?: string) => void;
+  onRegenerateResult?: (projectId: string, resultId: string, instruction?: string, options?: { confirmNewProviderAttempt?: boolean }) => void;
   onEditResult?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
   onConfirmStoryboardImaging?: (projectId: string) => void;
   onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number, imageUrl?: string) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
   onRemoveVideoSubtitles?: (projectId: string, resultId: string) => void;
+  onTranslateVideoVoiceover?: (projectId: string, resultId: string) => void;
+  onVoiceoverResultDownloaded: (projectId: string, resultId: string) => void | Promise<void>;
   onCancelTask: (taskId: string) => void;
   subFeatures?: SubFeatureOption[];
   activeSubFeature?: string;
@@ -39,6 +46,12 @@ interface Props {
   subtitleRemovalSubmitting?: boolean;
   subtitleRemovalFeatureAvailable?: boolean;
   subtitleRemovalBatchLimits?: Partial<SubtitleRemovalBatchLimits>;
+  voiceoverInitialSource: VoiceoverTranslationSource | null;
+  onClearVoiceoverInitialSource: () => void;
+  voiceoverTranslationConfig: SystemPublicConfig['voiceoverTranslation'];
+  voiceoverCreationDisabledReason?: string;
+  voiceoverAccountScopeKey: string;
+  onSubmitVoiceoverTranslation: (draft: VoiceoverTranslationDraft) => Promise<void>;
 }
 
 
@@ -160,6 +173,8 @@ const VideoModule: React.FC<Props> = ({
   onImportStoryboardToGeneration,
   onRecoverResult,
   onRemoveVideoSubtitles,
+  onTranslateVideoVoiceover,
+  onVoiceoverResultDownloaded,
   onCancelTask,
   subFeatures,
   activeSubFeature = 'generation',
@@ -174,6 +189,12 @@ const VideoModule: React.FC<Props> = ({
   subtitleRemovalSubmitting,
   subtitleRemovalFeatureAvailable,
   subtitleRemovalBatchLimits,
+  voiceoverInitialSource,
+  onClearVoiceoverInitialSource,
+  voiceoverTranslationConfig,
+  voiceoverCreationDisabledReason,
+  voiceoverAccountScopeKey,
+  onSubmitVoiceoverTranslation,
 }) => {
   const storyboardCards = useMemo(() => toStoryboardCards(persistentState.storyboard?.projects || []), [persistentState.storyboard?.projects]);
   const diagnosisCards = useMemo(() => toDiagnosisCards(persistentState), [persistentState]);
@@ -182,19 +203,36 @@ const VideoModule: React.FC<Props> = ({
       : activeSubFeature === 'diagnosis' ? diagnosisCards
         : projects;
   const activeTasks = activeSubFeature === 'generation' ? tasks : [];
-  const subtitleRemovalWorkspace = (
-    <div hidden={activeSubFeature !== 'subtitle_removal'}>
-      <SubtitleRemovalWorkspace
-        active={activeSubFeature === 'subtitle_removal'}
-        composerSlotId="subtitle-removal-composer-slot"
-        draft={subtitleRemovalDraft}
-        onDraftChange={onSubtitleRemovalDraftChange}
-        onSubmit={onSubtitleRemovalSubmit}
-        submitting={subtitleRemovalSubmitting}
-        featureAvailable={subtitleRemovalFeatureAvailable}
-        limits={subtitleRemovalBatchLimits}
+  const voiceoverTranslationWorkspace = (
+    <div hidden={activeSubFeature !== 'voiceover_translation'}>
+      <VoiceoverTranslationWorkspace
+        key={voiceoverAccountScopeKey}
+        active={activeSubFeature === 'voiceover_translation'}
+        composerSlotId="voiceover-translation-composer-slot"
+        initialSource={voiceoverInitialSource}
+        publicConfig={voiceoverTranslationConfig}
+        creationDisabledReason={voiceoverCreationDisabledReason}
+        onSubmit={onSubmitVoiceoverTranslation}
+        onClearInitialSource={onClearVoiceoverInitialSource}
       />
     </div>
+  );
+  const subtitleRemovalWorkspace = (
+    <>
+      {voiceoverTranslationWorkspace}
+      <div hidden={activeSubFeature !== 'subtitle_removal'}>
+        <SubtitleRemovalWorkspace
+          active={activeSubFeature === 'subtitle_removal'}
+          composerSlotId="subtitle-removal-composer-slot"
+          draft={subtitleRemovalDraft}
+          onDraftChange={onSubtitleRemovalDraftChange}
+          onSubmit={onSubtitleRemovalSubmit}
+          submitting={subtitleRemovalSubmitting}
+          featureAvailable={subtitleRemovalFeatureAvailable}
+          limits={subtitleRemovalBatchLimits}
+        />
+      </div>
+    </>
   );
 
   const handleProjectDelete = (projectId: string) => {
@@ -227,13 +265,26 @@ const VideoModule: React.FC<Props> = ({
     onDeleteProject(projectId);
   };
 
+  const isVoiceoverTranslation = activeSubFeature === 'voiceover_translation';
+  const isSubtitleRemoval = activeSubFeature === 'subtitle_removal';
+
   return (
     <ProjectListView
-      title={activeSubFeature === 'subtitle_removal' ? '视频去字幕' : '短视频生成'}
-      description={activeSubFeature === 'subtitle_removal' ? '上传原视频并选择字幕区域，任务完成后可对比原片与结果' : '底部输入框负责配置与提交，中间区域只展示项目状态和结果'}
+      title={isVoiceoverTranslation ? '口播翻译' : isSubtitleRemoval ? '视频去字幕' : '短视频生成'}
+      description={isVoiceoverTranslation
+        ? '保留原画面与背景声音，将单人口播转换为目标语言'
+        : isSubtitleRemoval
+          ? '上传原视频并选择字幕区域，任务完成后可对比原片与结果'
+          : '底部输入框负责配置与提交，中间区域只展示项目状态和结果'}
       emptyIcon={activeSubFeature === 'diagnosis' ? <Sparkles size={30} strokeWidth={1.3} /> : activeSubFeature === 'storyboard' ? <Clapperboard size={30} strokeWidth={1.3} /> : <Film size={30} strokeWidth={1.3} />}
-      emptyTitle={activeSubFeature === 'diagnosis' ? '视频诊断结果' : activeSubFeature === 'storyboard' ? '分镜生成结果' : '生成产品短视频'}
-      emptySubtitle={activeSubFeature === 'diagnosis' ? '在底部输入链接并提交诊断后，这里展示分析结果' : activeSubFeature === 'storyboard' ? '在底部配置分镜生成并提交后，这里展示分镜方案' : '上传产品素材，输入视频脚本、目标人群或卖点，提交后会在这里展示任务状态与视频结果'}
+      emptyTitle={isVoiceoverTranslation ? '还没有口播翻译项目' : activeSubFeature === 'diagnosis' ? '视频诊断结果' : activeSubFeature === 'storyboard' ? '分镜生成结果' : '生成产品短视频'}
+      emptySubtitle={isVoiceoverTranslation
+        ? '从底部上传一个 MP4 或 MOV 视频，配置目标语言后开始处理'
+        : activeSubFeature === 'diagnosis'
+          ? '在底部输入链接并提交诊断后，这里展示分析结果'
+          : activeSubFeature === 'storyboard'
+            ? '在底部配置分镜生成并提交后，这里展示分镜方案'
+            : '上传产品素材，输入视频脚本、目标人群或卖点，提交后会在这里展示任务状态与视频结果'}
       projects={activeProjects}
       tasks={activeTasks}
       onDeleteResult={onDeleteResult}
@@ -244,6 +295,8 @@ const VideoModule: React.FC<Props> = ({
       onImportStoryboardToGeneration={onImportStoryboardToGeneration}
       onRecoverResult={onRecoverResult}
       onRemoveVideoSubtitles={onRemoveVideoSubtitles}
+      onTranslateVideoVoiceover={onTranslateVideoVoiceover}
+      onVoiceoverResultDownloaded={onVoiceoverResultDownloaded}
       onCancelTask={activeSubFeature === 'subtitle_removal' ? undefined : onCancelTask}
       subFeatures={subFeatures}
       activeSubFeature={activeSubFeature}

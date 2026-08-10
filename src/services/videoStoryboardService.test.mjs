@@ -1,9 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { buildVoiceoverAnalysisMessages } from '../../server/voiceoverAnalysis.mjs';
 
 const source = readFileSync(new URL('./videoStoryboardService.ts', import.meta.url), 'utf8');
 const planningSource = readFileSync(new URL('../utils/videoStoryboardPlanning.ts', import.meta.url), 'utf8');
+
+test('voiceover analysis reuses the current storyboard input_file and file_url video contract', () => {
+  const fileUrl = 'https://managed.example/vocal-only.mp4';
+  const messages = buildVoiceoverAnalysisMessages({
+    vocalOnlyVideoUrl: fileUrl,
+    targetLanguage: 'en',
+    translationMode: 'natural',
+    durationMs: 12_000,
+  });
+  const voiceoverFileItem = messages[0].content.find((item) => item.type === 'input_file');
+  const storyboardFileContract = source.match(
+    /type:\s*'input_file',\s*file_url:\s*safeReferenceVideoUrl,/,
+  )?.[0] || '';
+
+  assert.deepEqual(voiceoverFileItem, { type: 'input_file', file_url: fileUrl });
+  assert.match(storyboardFileContract, /type:\s*'input_file'/);
+  assert.match(storyboardFileContract, /file_url:\s*safeReferenceVideoUrl/);
+});
 
 test('original storyboard segment labels come from an explicit shared runtime import', async () => {
   const planning = await import(new URL('../utils/videoStoryboardPlanning.ts', import.meta.url).href);

@@ -11,6 +11,7 @@ import {
   findJobByProviderTaskIdForUser,
   findReusableJobRecord,
   findReusableJobSubmission,
+  getJobQueueStats,
   getJobByIdForUpdate,
   isRunningJobConcurrencyBlocking,
   reconcileRestartedMysqlJobs,
@@ -26,6 +27,8 @@ import {
   shouldMysqlWorkerProcessTaskEngine,
   withMysqlSubmissionLock,
 } from './jobManager.mjs';
+import { isParentOwnedChildJob } from './voiceoverChildJobStore.mjs';
+import { shouldReleaseJobCreditReservation } from './accountCredits.mjs';
 
 const jobManagerSource = readFileSync(new URL('./jobManager.mjs', import.meta.url), 'utf8');
 const serverSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
@@ -1311,6 +1314,80 @@ test('reconcileRestartedMysqlJobs safely requeues providerless internal work', (
   assert.equal(reconciled.finishedAt, null);
 });
 
+test('classic MySQL restart then cancel keeps a speech-analysis submission reservation pending', async () => {
+  const [restarted] = reconcileRestartedMysqlJobs([{
+    id: 'voiceover-analysis-restarted-mysql',
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'running',
+    providerTaskId: '',
+    result: {
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'speech_analysis_submitting',
+        baseVideoAssetId: 'asset-base',
+        originalAudioAssetId: 'asset-original',
+        vocalAssetId: 'asset-vocal',
+        backgroundAssetId: 'asset-background',
+        analysisAttempt: 0,
+      },
+    },
+    createdAt: 500,
+    updatedAt: 1000,
+    startedAt: 1000,
+  }], 2000);
+  const row = {
+    id: restarted.id,
+    user_id: restarted.userId,
+    module: restarted.module,
+    task_type: restarted.taskType,
+    provider: restarted.provider,
+    status: restarted.status,
+    provider_task_id: null,
+    payload_json: '{}',
+    result_json: JSON.stringify(restarted.result),
+    error_code: restarted.errorCode,
+    error_message: restarted.errorMessage,
+    retry_count: 0,
+    max_retries: 0,
+    created_at: restarted.createdAt,
+    updated_at: restarted.updatedAt,
+    started_at: null,
+    finished_at: null,
+    cancel_requested_at: null,
+  };
+  let releaseDecision = null;
+  const connection = {
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    async query(sql) {
+      if (sql.startsWith('SELECT * FROM internal_jobs')) return [[row]];
+      if (sql.includes('UPDATE internal_jobs')) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() {},
+  };
+
+  await requestCancelJob({
+    async getConnection() {
+      return connection;
+    },
+  }, restarted, {
+    releaseQueuedCredits: async (_connection, freshJob) => {
+      releaseDecision = shouldReleaseJobCreditReservation({
+        job: freshJob,
+        error: { code: 'request_cancelled' },
+      });
+    },
+  });
+
+  assert.equal(restarted.errorCode, 'service_restarted');
+  assert.equal(releaseDecision, false);
+});
+
 test('reconcileRestartedMysqlJobs never resubmits a non-queryable kie chat response id', () => {
   const [reconciled] = reconcileRestartedMysqlJobs([{
     id: 'storyboard-chat-restarted',
@@ -1952,4 +2029,515 @@ test('mysql provider recovery lookup is scoped to the authenticated user', async
   assert.equal(observedValues.includes('kie_recover'), false);
   assert.equal(source?.id, 'source-job-1');
   assert.equal(source?.userId, 'user-1');
+});
+
+const parentOwnedMysqlJob = (overrides = {}) => ({
+  id: 'child-mysql-1',
+  userId: 'user-1',
+  module: 'video',
+  taskType: 'kie_tts',
+  provider: 'kie',
+  status: 'running',
+  payload: {
+    executionOwner: 'parent',
+    parentJobId: 'parent-mysql-1',
+    childKey: 'tts:0:attempt:0',
+    clientSubmissionKey: 'voiceover-child:parent-mysql-1:tts:0:attempt:0',
+  },
+  providerTaskId: '',
+  result: null,
+  retryCount: 0,
+  maxRetries: 0,
+  createdAt: 1,
+  updatedAt: 1,
+  startedAt: 1,
+  finishedAt: null,
+  cancelRequestedAt: null,
+  ...overrides,
+});
+
+test('pure mysql restart and stale reconcilers ignore parent-owned child jobs', () => {
+  const providerless = parentOwnedMysqlJob();
+  const submitted = parentOwnedMysqlJob({
+    providerTaskId: 'provider-1',
+    updatedAt: 1,
+  });
+  const cancelled = parentOwnedMysqlJob({
+    providerTaskId: 'provider-1',
+    cancelRequestedAt: 1,
+    errorCode: 'request_cancelled',
+  });
+  assert.equal(isParentOwnedChildJob(providerless), true);
+  assert.deepEqual(reconcileRestartedMysqlJobs([providerless], 10_000), []);
+  assert.deepEqual(reconcileStaleProviderlessRunningMysqlJobs([providerless], 10_000, 1), []);
+  assert.deepEqual(reconcileStaleSubmittedRunningMysqlJobs([submitted], 10_000, 1), []);
+  assert.deepEqual(reconcileStaleCancelledRunningMysqlJobs([cancelled], 10_000, 1), []);
+});
+
+test('mysql generic cancel, retry, and delete cannot mutate a parent-owned child', async () => {
+  const toRow = (job) => ({
+    id: job.id,
+    user_id: job.userId,
+    module: job.module,
+    task_type: job.taskType,
+    provider: job.provider,
+    status: job.status,
+    payload_json: JSON.stringify(job.payload),
+    provider_task_id: job.providerTaskId || null,
+    result_json: job.result ? JSON.stringify(job.result) : null,
+    retry_count: job.retryCount,
+    max_retries: job.maxRetries,
+    created_at: job.createdAt,
+    updated_at: job.updatedAt,
+    started_at: job.startedAt,
+    finished_at: job.finishedAt,
+    cancel_requested_at: job.cancelRequestedAt,
+  });
+
+  for (const operation of ['cancel', 'delete']) {
+    const child = parentOwnedMysqlJob({
+      status: operation === 'cancel' ? 'queued' : 'succeeded',
+      startedAt: null,
+      finishedAt: operation === 'delete' ? 2 : null,
+    });
+    let mutations = 0;
+    const connection = {
+      async beginTransaction() {},
+      async commit() {},
+      async rollback() {},
+      release() {},
+      async query(sql) {
+        if (/SELECT \* FROM internal_jobs WHERE id = \?/.test(sql)) return [[toRow(child)]];
+        if (/^(?:UPDATE|DELETE) internal_jobs/.test(sql.trim())) {
+          mutations += 1;
+          return [{ affectedRows: 1 }];
+        }
+        throw new Error(`Unhandled SQL: ${sql}`);
+      },
+    };
+    const pool = { async getConnection() { return connection; } };
+    await assert.rejects(
+      operation === 'cancel'
+        ? requestCancelJob(pool, child, {})
+        : deleteJobById(pool, child.id, { userId: child.userId }),
+      (error) => error.code === 'job_parent_owned_child_immutable',
+      operation,
+    );
+    assert.equal(mutations, 0, operation);
+  }
+
+  const failedChild = parentOwnedMysqlJob({
+    status: 'failed',
+    startedAt: null,
+    finishedAt: 2,
+  });
+  let retryMutations = 0;
+  await assert.rejects(
+    requestRetryJob({
+      async query() {
+        retryMutations += 1;
+        return [{ affectedRows: 1 }];
+      },
+    }, failedChild, {}),
+    (error) => error.code === 'job_parent_owned_child_immutable',
+  );
+  assert.equal(retryMutations, 0);
+});
+
+test('mysql queue stats query excludes parent-owned children at the database boundary', async () => {
+  let observedSql = '';
+  const counts = await getJobQueueStats({
+    async query(sql) {
+      observedSql = sql;
+      return [[{ status: 'queued', count: 2 }]];
+    },
+  });
+  assert.deepEqual(counts, { queued: 2, running: 0 });
+  assert.match(observedSql, /JSON_UNQUOTE\(JSON_EXTRACT\(payload_json, '\$\.executionOwner'\)\)/);
+  assert.match(observedSql, /<> 'parent'/);
+});
+
+test('all mysql generic selectors, claims, and stale recovery queries include the parent ownership SQL predicate', () => {
+  const compactSource = jobManagerSource.replace(/\s+/g, ' ');
+  const requiredFragments = [
+    "WHERE status = 'running' AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}",
+    "WHERE status IN ('queued', 'retry_waiting') AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}",
+    "WHERE id = ? AND status IN ('queued', 'retry_waiting') AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}",
+    "WHERE status = 'running' AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION} AND (provider_task_id IS NULL OR provider_task_id = '')",
+    "WHERE status = 'running' AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION} AND provider_task_id IS NOT NULL",
+    "WHERE status = 'running' AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION} AND cancel_requested_at IS NOT NULL",
+    "WHERE user_id = ? AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION} ORDER BY created_at DESC LIMIT ?",
+    "WHERE user_id = ? AND task_type = 'subtitle_remove_video' AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}",
+  ];
+  for (const fragment of requiredFragments) {
+    assert.ok(compactSource.includes(fragment), `expected protected SQL fragment ${fragment}`);
+  }
+});
+
+test('mysql voiceover retry preserves checkpoint and guards the failed-to-queued transition', async () => {
+  const queries = [];
+  const checkpoint = {
+    version: 1,
+    stage: 'speech_analysis_submitting',
+    baseVideoAssetId: 'asset-base',
+    originalAudioAssetId: 'asset-audio',
+    vocalAssetId: 'asset-vocal',
+    backgroundAssetId: 'asset-background',
+    analysisAttempt: 0,
+  };
+  const job = {
+    id: 'parent-mysql-1',
+    userId: 'user-1',
+    module: 'video',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'failed',
+    payload: { removeText: false },
+    result: { audit: 'keep', voiceoverCheckpoint: checkpoint },
+    errorCode: 'voiceover_analysis_submission_unknown',
+  };
+  const pool = {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      return [{ affectedRows: 1 }];
+    },
+  };
+
+  await requestRetryJob(pool, job, {
+    voiceoverRetryPlan: { kind: 'analysis', userConfirmed: true },
+  });
+
+  assert.equal(queries.length, 1);
+  assert.match(queries[0].sql, /WHERE id = \? AND status = \?/);
+  assert.equal(queries[0].values.at(-1), 'failed');
+  const serializedResult = queries[0].values.find((value) => (
+    typeof value === 'string' && value.includes('"voiceoverCheckpoint"')
+  ));
+  const nextResult = JSON.parse(serializedResult);
+  assert.equal(nextResult.audit, 'keep');
+  assert.equal(nextResult.voiceoverCheckpoint.stage, 'voice_separated');
+  assert.equal(nextResult.voiceoverCheckpoint.analysisAttempt, 1);
+});
+
+test('mysql voiceover retry rejects active parents and accepts cancelled query-only recovery with an exact CAS', async () => {
+  const checkpoint = {
+    version: 1,
+    stage: 'subtitle_removal',
+    baseVideoAssetId: 'asset-base',
+    subtitleRemoval: {
+      childJobId: 'golden-child-0',
+      providerTaskId: 'golden-provider-0',
+      attempt: 0,
+      status: 'submitted',
+    },
+    analysisAttempt: 0,
+  };
+  let mutations = 0;
+  const pool = {
+    async query(sql, values) {
+      mutations += 1;
+      assert.match(sql, /WHERE id = \? AND status = \?/);
+      assert.equal(values.at(-1), 'cancelled');
+      return [{ affectedRows: 1 }];
+    },
+  };
+  const parent = {
+    id: 'parent-mysql-cancelled',
+    userId: 'user-1',
+    module: 'video',
+    taskType: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'running',
+    payload: { removeText: true },
+    result: { voiceoverCheckpoint: checkpoint },
+    errorCode: 'request_cancelled',
+  };
+  await assert.rejects(
+    requestRetryJob(pool, parent, {
+      voiceoverRetryPlan: { kind: 'reuse' },
+    }),
+    (error) => error?.code === 'job_state_changed',
+  );
+  assert.equal(mutations, 0);
+
+  await requestRetryJob(pool, {
+    ...parent,
+    status: 'cancelled',
+  }, {
+    voiceoverRetryPlan: { kind: 'reuse' },
+  });
+  assert.equal(mutations, 1);
+});
+
+test('classic mysql abort finalization receives the latest submitted child checkpoint', async () => {
+  const row = {
+    id: 'parent-classic-checkpoint',
+    user_id: 'user-1',
+    module: 'video',
+    task_type: 'voiceover_translate_video',
+    provider: 'internal',
+    status: 'queued',
+    priority: 0,
+    payload_json: JSON.stringify({ taskPurpose: 'voiceover_translation', removeText: true }),
+    provider_task_id: null,
+    result_json: JSON.stringify({
+      audit: 'keep',
+      voiceoverCheckpoint: {
+        version: 1,
+        stage: 'input_prepared',
+        baseVideoAssetId: 'asset-base',
+        analysisAttempt: 0,
+      },
+    }),
+    error_code: null,
+    error_message: null,
+    error_detail: null,
+    retry_count: 0,
+    max_retries: 0,
+    created_at: 1_000,
+    updated_at: 1_000,
+    started_at: null,
+    finished_at: null,
+    cancel_requested_at: 900,
+  };
+  const calls = [];
+  const toCamel = (column) => ({
+    user_id: 'userId',
+    task_type: 'taskType',
+    payload_json: 'payload',
+    provider_task_id: 'providerTaskId',
+    result_json: 'result',
+    error_code: 'errorCode',
+    error_message: 'errorMessage',
+    error_detail: 'errorDetail',
+    retry_count: 'retryCount',
+    max_retries: 'maxRetries',
+    created_at: 'createdAt',
+    updated_at: 'updatedAt',
+    started_at: 'startedAt',
+    finished_at: 'finishedAt',
+    cancel_requested_at: 'cancelRequestedAt',
+  })[column];
+  const setColumn = (column, value) => {
+    row[column] = value;
+    if (toCamel(column)) row[toCamel(column)] = value;
+  };
+  const pool = {
+    async getConnection() {
+      return {
+        query: this.query.bind(this),
+        async beginTransaction() {},
+        async commit() {},
+        async rollback() {},
+        release() {},
+      };
+    },
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/SELECT GET_LOCK/.test(sql)) return [[{ acquired: 1 }]];
+      if (/SELECT RELEASE_LOCK/.test(sql)) return [[{ released: 1 }]];
+      if (/SELECT \*\s+FROM internal_jobs\s+WHERE status = 'running'/.test(sql)) return [[]];
+      if (/SELECT \* FROM internal_jobs\s+WHERE status IN \('queued', 'retry_waiting'\)/.test(sql)) {
+        return [row.status === 'queued' ? [row] : []];
+      }
+      if (/UPDATE internal_jobs\s+SET status = 'running'/.test(sql)) {
+        setColumn('status', 'running');
+        setColumn('started_at', params[0]);
+        setColumn('updated_at', params[1]);
+        return [{ affectedRows: 1 }];
+      }
+      if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1/.test(sql)) return [[row]];
+      if (/SELECT \* FROM internal_jobs[\s\S]+user_id = \?[\s\S]+FOR UPDATE/.test(sql)) return [[row]];
+      if (/UPDATE internal_jobs[\s\S]+SET result_json = \?[\s\S]+status = 'running' AND started_at = \?/.test(sql)) {
+        setColumn('result_json', params[0]);
+        setColumn('updated_at', params[1]);
+        return [{ affectedRows: 1 }];
+      }
+      if (/SELECT MAX\(attempt_no\) AS attempt_no/.test(sql)) return [[{ attempt_no: 0 }]];
+      if (/INSERT INTO internal_job_(?:attempts|events)/.test(sql)) return [{ affectedRows: 1 }];
+      if (/UPDATE internal_job_attempts/.test(sql)) return [{ affectedRows: 1 }];
+      if (/UPDATE internal_jobs SET /.test(sql)) {
+        const assignments = sql.match(/UPDATE internal_jobs SET ([\s\S]+) WHERE id = \?/)?.[1]
+          .split(',')
+          .map((item) => item.trim().replace(/\s*= \?$/, '')) || [];
+        assignments.forEach((column, index) => setColumn(column, params[index]));
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unhandled SQL: ${sql}`);
+    },
+  };
+  const sideEffects = [];
+  const creditJobs = [];
+  const worker = createJobWorker({
+    getPool: async () => pool,
+    executeJob: async (_job, _signal, { onResultCheckpoint }) => {
+      await onResultCheckpoint({
+        voiceoverCheckpoint: {
+          stage: 'subtitle_removal',
+          subtitleRemoval: {
+            childJobId: 'golden-child-0',
+            providerTaskId: 'golden-provider-0',
+            attempt: 0,
+            status: 'submitted',
+          },
+        },
+      });
+      assert.equal(JSON.parse(row.result_json).voiceoverCheckpoint.stage, 'subtitle_removal');
+      sideEffects.push('paid-call');
+      return { result: { ignoredOnCancel: true } };
+    },
+    getMaxConcurrency: () => 1,
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+    settleJobCredits: ({ job: creditJob }) => creditJobs.push(creditJob),
+    getTaskEngineMode: () => 'mysql',
+    isExecutionPaused: () => false,
+  });
+  worker.start(5);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  worker.stop();
+
+  assert.deepEqual(sideEffects, ['paid-call']);
+  assert.equal(row.status, 'cancelled');
+  assert.equal(JSON.parse(row.result_json).audit, 'keep');
+  assert.equal(JSON.parse(row.result_json).voiceoverCheckpoint.stage, 'subtitle_removal');
+  assert.equal(
+    creditJobs[0]?.result?.voiceoverCheckpoint?.subtitleRemoval?.providerTaskId,
+    'golden-provider-0',
+  );
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: creditJobs[0],
+    error: { code: 'request_cancelled' },
+    aborted: true,
+  }), false);
+});
+
+test('classic mysql worker cannot complete or fail after its terminal claim guard loses a race', async () => {
+  for (const outcome of ['complete', 'fail']) {
+    const row = {
+      id: `parent-classic-stale-${outcome}`,
+      user_id: 'user-1',
+      module: 'video',
+      task_type: 'voiceover_translate_video',
+      provider: 'internal',
+      status: 'queued',
+      priority: 0,
+      payload_json: JSON.stringify({ taskPurpose: 'voiceover_translation', removeText: false }),
+      provider_task_id: null,
+      result_json: JSON.stringify({
+        voiceoverCheckpoint: {
+          version: 1,
+          stage: 'input_prepared',
+          baseVideoAssetId: 'asset-base',
+          analysisAttempt: 0,
+        },
+      }),
+      error_code: null,
+      error_message: null,
+      error_detail: null,
+      retry_count: 0,
+      max_retries: 0,
+      created_at: 1_000,
+      updated_at: 1_000,
+      started_at: null,
+      finished_at: null,
+      cancel_requested_at: null,
+    };
+    let driftBeforeTerminalUpdate = false;
+    let claimDrifted = false;
+    let attemptFinishes = 0;
+    const terminalEvents = [];
+    const creditFinalizations = [];
+    const setColumn = (column, value) => {
+      row[column] = value;
+    };
+    const query = async (sql, params = []) => {
+      if (/SELECT GET_LOCK/.test(sql)) return [[{ acquired: 1 }]];
+      if (/SELECT RELEASE_LOCK/.test(sql)) return [[{ released: 1 }]];
+      if (/SELECT \*\s+FROM internal_jobs\s+WHERE status = 'running'/.test(sql)) {
+        return [row.status === 'running' ? [row] : []];
+      }
+      if (/SELECT \* FROM internal_jobs\s+WHERE status IN \('queued', 'retry_waiting'\)/.test(sql)) {
+        return [row.status === 'queued' ? [row] : []];
+      }
+      if (/UPDATE internal_jobs\s+SET status = 'running'/.test(sql)) {
+        setColumn('status', 'running');
+        setColumn('started_at', params[0]);
+        setColumn('updated_at', params[1]);
+        return [{ affectedRows: 1 }];
+      }
+      if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1/.test(sql)) return [[row]];
+      if (/SELECT MAX\(attempt_no\) AS attempt_no/.test(sql)) return [[{ attempt_no: 0 }]];
+      if (/INSERT INTO internal_job_attempts/.test(sql)) return [{ affectedRows: 1 }];
+      if (/INSERT INTO internal_job_events/.test(sql)) {
+        if (claimDrifted && ['job_completed', 'job_failed'].includes(params[5])) {
+          terminalEvents.push(params[5]);
+        }
+        return [{ affectedRows: 1 }];
+      }
+      if (/UPDATE internal_job_attempts/.test(sql)) {
+        if (claimDrifted) attemptFinishes += 1;
+        return [{ affectedRows: 1 }];
+      }
+      if (/UPDATE internal_jobs SET /.test(sql)) {
+        const assignments = sql.match(/UPDATE internal_jobs SET ([\s\S]+) WHERE id = \?/)?.[1]
+          .split(',')
+          .map((item) => item.trim().replace(/\s*= \?$/, '')) || [];
+        if (assignments.includes('status') && driftBeforeTerminalUpdate) {
+          driftBeforeTerminalUpdate = false;
+          claimDrifted = true;
+          setColumn('status', 'running');
+          setColumn('started_at', Number(row.started_at) + 1);
+          setColumn('result_json', JSON.stringify({ newerClaim: outcome }));
+          setColumn('error_code', null);
+          setColumn('error_message', null);
+          if (/user_id = \? AND status = 'running' AND started_at = \?/.test(sql)) {
+            return [{ affectedRows: 0 }];
+          }
+        }
+        assignments.forEach((column, index) => setColumn(column, params[index]));
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unhandled SQL: ${sql}`);
+    };
+    const pool = {
+      query,
+      async getConnection() {
+        return {
+          query,
+          async beginTransaction() {},
+          async commit() {},
+          async rollback() {},
+          release() {},
+        };
+      },
+    };
+    const worker = createJobWorker({
+      getPool: async () => pool,
+      executeJob: async () => {
+        driftBeforeTerminalUpdate = true;
+        if (outcome === 'fail') {
+          throw Object.assign(new Error('stale executor failed'), { code: 'provider_network_error' });
+        }
+        return { result: { staleExecutor: true } };
+      },
+      getMaxConcurrency: () => 1,
+      createLog: async () => {},
+      findUserById: async () => ({ id: 'user-1', jobConcurrency: 1 }),
+      settleJobCredits: () => creditFinalizations.push('settle'),
+      releaseJobCredits: () => creditFinalizations.push('release'),
+      getTaskEngineMode: () => 'mysql',
+      isExecutionPaused: () => false,
+    });
+    worker.start(5);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    worker.stop();
+
+    assert.equal(row.status, 'running', outcome);
+    assert.deepEqual(JSON.parse(row.result_json), { newerClaim: outcome }, outcome);
+    assert.equal(row.error_code, null, outcome);
+    assert.deepEqual(creditFinalizations, [], outcome);
+    assert.equal(attemptFinishes, 0, outcome);
+    assert.deepEqual(terminalEvents, [], outcome);
+  }
 });

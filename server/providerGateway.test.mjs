@@ -6584,3 +6584,93 @@ test('upload-only transport retries a connection loss without creating a paid ta
     globalThis.fetch = originalFetch;
   }
 });
+
+test('executeProviderJob dispatches parent-owned KIE TTS through the dedicated adapter', async () => {
+  const originalFetch = globalThis.fetch;
+  const events = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl.endsWith('/api/v1/jobs/createTask')) {
+      events.push('create');
+      const body = JSON.parse(String(init.body || '{}'));
+      assert.equal(body.model, 'google/gemini-3-1-flash-tts');
+      assert.deepEqual(JSON.parse(body.input.speakers), [
+        { speaker_id: 'Speaker 1', voice_name: 'Kore' },
+      ]);
+      return createJsonResponse({ code: 200, msg: 'success', data: { taskId: 'tts-gateway-1' } });
+    }
+    if (requestUrl.includes('/api/v1/jobs/recordInfo?taskId=tts-gateway-1')) {
+      events.push('query');
+      return createJsonResponse({
+        code: 200,
+        msg: 'success',
+        data: {
+          taskId: 'tts-gateway-1',
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://provider.example/audio.mp3'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${requestUrl}`);
+  };
+
+  try {
+    const result = await executeProviderJob({
+      id: 'tts-child-1',
+      module: 'video',
+      taskType: 'kie_tts',
+      provider: 'kie',
+      payload: {
+        executionOwner: 'parent',
+        parentJobId: 'voiceover-parent-1',
+        childKey: 'tts:0:attempt:0',
+        groupIndex: 0,
+        targetLanguage: 'en',
+        voiceName: 'Kore',
+        dialogueTurns: [{ speaker: 'Speaker 1', text: 'Hello world.' }],
+        temperature: 1,
+        scene: 'Translated product voiceover.',
+        sampleContext: 'One consistent narrator.',
+      },
+    }, {
+      KIE_API_KEY: 'test-key',
+      MEIAO_KIE_TTS_POLL_INTERVAL_MS: '500',
+    }, new AbortController().signal, {
+      onProviderTaskId: async (taskId) => events.push(`checkpoint:${taskId}`),
+      kieTtsDeps: { sleep: async () => {} },
+    });
+
+    assert.deepEqual(events, ['create', 'checkpoint:tts-gateway-1', 'query']);
+    assert.equal(result.providerTaskId, 'tts-gateway-1');
+    assert.equal(result.result.audioUrl, 'https://provider.example/audio.mp3');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob never routes the internal voiceover parent through a provider adapter', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error('provider network must not be reached');
+  };
+
+  try {
+    await assert.rejects(
+      executeProviderJob({
+        id: 'voiceover-parent-1',
+        module: 'video',
+        taskType: 'voiceover_translate_video',
+        provider: 'internal',
+        payload: {},
+      }, {
+        KIE_API_KEY: 'test-key',
+      }, new AbortController().signal),
+      (error) => error?.code === 'provider_bad_request',
+    );
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

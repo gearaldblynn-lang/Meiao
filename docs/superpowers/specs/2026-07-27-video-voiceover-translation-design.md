@@ -259,12 +259,13 @@ type VoiceoverCheckpointV1 = {
 - 创建请求连接中断且无法确认上游是否接单时，子任务进入 `provider_submission_unknown`，父任务停止，不自动重提。
 - Gemini 同步分析调用在请求前写 `stage='speech_analysis_submitting'` 检查点，成功后写 `stage='speech_analyzed'` 和完整分析结果。进程若在两者之间丢失，进入 `voiceover_analysis_submission_unknown`，由用户明确重试，避免静默产生第二次计费调用。
 - 本地 Demucs 不产生外部费用；如果进程在输出耐久保存前中断，可以安全重新计算。
+- 口播 runner 开始时只调用一次 `const config = getVoiceoverConfig(env)`，并显式向分析解析器传入 `overlapToleranceMs: config.overlapToleranceMs`、`maxTargetTextBytesPerSecond: config.maxTargetTextBytesPerSecond`，向 TTS 分组器传入 `maxInputTokens: config.ttsMaxInputTokens`、`groupGapMs: config.groupGapMs`。helper 默认值只供直接调用时兜底，不能覆盖 runner 已归一化的 env 配置。
 
 ## 7. 本地人声分离
 
 ### 7.1 模型与运行方式
 
-- 使用官方 Demucs，固定 `mdx_q` 量化模型和 `--two-stems=vocals`。
+- 使用官方 Demucs v4.0.1 非量化 `mdx` 模型和 `--two-stems=vocals`；避免原 `mdx_q`/diffq 的 CC-BY-NC 与 CPython 3.11 native-build 风险。
 - 使用独立 Python 虚拟环境运行，不把 PyTorch 加入 Node 主进程。
 - Node 通过参数数组调用 `python -m demucs.separate`，禁止拼接 shell 字符串。
 - 输入为服务端生成的 WAV，输出为 `vocals.wav` 和 `no_vocals.wav`。
@@ -290,7 +291,7 @@ type VoiceoverCheckpointV1 = {
 
 - `MEIAO_VOICEOVER_TRANSLATION_ENABLED`：默认关闭。
 - `MEIAO_VOICEOVER_SEPARATION_PYTHON`：独立虚拟环境 Python 路径。
-- `MEIAO_VOICEOVER_DEMUCS_MODEL`：默认 `mdx_q`，仅允许服务端白名单。
+- `MEIAO_VOICEOVER_DEMUCS_MODEL`：默认 `mdx`，仅允许服务端白名单。
 - `MEIAO_VOICEOVER_DEMUCS_MODEL_DIR`：持久模型目录。
 - `MEIAO_VOICEOVER_SEPARATION_CONCURRENCY`：默认 `1`，限制 `1..2`。
 - `MEIAO_VOICEOVER_SEPARATION_TIMEOUT_MS`：默认 `3600000`，限制 `300000..7200000`。
@@ -299,12 +300,17 @@ type VoiceoverCheckpointV1 = {
 - `MEIAO_VOICEOVER_TTS_MAX_INPUT_TOKENS`：默认 `8192`，只允许降低当前模型目录声明的上限。
 - `MEIAO_VOICEOVER_GROUP_GAP_MS`：默认 `800`，限制 `0..3000`。
 - `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS`：默认 `150`，限制 `0..1000`。
+- `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND`：默认 `96`，限制 `16..512`；只是按口播时间窗拦截异常译文字节密度的保守安全门，不是精确语速或 tokenizer。
 - `MEIAO_VOICEOVER_DUCKING_DB`：默认 `4`，限制 `0..12`。
 - `MEIAO_VOICEOVER_FADE_MS`：默认 `40`，限制 `0..200`。
 - `MEIAO_VOICEOVER_DURATION_TOLERANCE_MS`：默认 `100`，限制 `20..500`。
 - `MEIAO_VOICEOVER_INTERMEDIATE_TTL_MS`：默认 `259200000`（72 小时），限制 `3600000..2592000000`。
 - `MEIAO_KIE_TTS_BASE_URL`：默认 `https://api.kie.ai`，只由服务端读取。
 - `MEIAO_KIE_TTS_MODEL`：默认 `google/gemini-3-1-flash-tts`，只允许服务端白名单。
+- `MEIAO_KIE_TTS_REQUEST_TIMEOUT_MS`：默认 `60000`，限制 `5000..300000`。
+- `MEIAO_KIE_TTS_POLL_INTERVAL_MS`：默认 `4000`，限制 `500..30000`。
+- `MEIAO_KIE_TTS_POLL_MAX_ATTEMPTS`：默认 `180`，限制 `1..720`。
+- `MEIAO_KIE_TTS_NOT_FOUND_GRACE_MS`：默认 `45000`，限制 `0..300000`，只容忍任务创建后短暂的查询 404。
 
 非法值回到保守默认。所有变量同步写入 `.env.server.example`、部署文档和项目概览。
 
@@ -339,7 +345,12 @@ type VoiceoverAnalysis = {
 
 - `speakerCount !== 1` 时在 KIE TTS 前失败。
 - 片段必须按时间升序、位于视频范围内、`endMs > startMs`，并且不能存在超出容差的重叠。
+- Prompt 必须列出版本化目录中的全部允许源语言代码，并明确普通话只使用 `cmn`，禁止输出 `zh` 或 `zh-CN`；Example 不放任何具体语言的 `targetText` 内容，避免误导非英语翻译。
+- 严格 JSON 解析在 `JSON.parse` 前执行资源有界、最大深度受限且按转义后键名判重的结构扫描；根、音色和分段对象的重复键一律拒绝，字符串正文中的字段名不得误报。
+- `segments` 只有在结构确认为数组后才能分类无人声；`speakerCount=0 + []` 为 `voiceover_no_speech_detected`，缺失、空值、字符串结构或 0 人却含非空分段均为 `voiceover_analysis_invalid`。
+- shared normalization 后源语言与目标语言相同时直接失败，不进入 TTS。
 - `natural` 模式要求译文适配原时间预算；`literal` 模式优先保持原意，但仍不得生成无法安全对齐的异常长度。
+- 两种模式都在分组前按 `ceil(rate * max(1, segmentSeconds))` 检查 normalized `targetText` 的 UTF-8 字节数；超限返回 `voiceover_analysis_invalid`。该门禁只识别明显异常密度，不代表精确可说时长。
 - 解析失败、语言不支持、空口播或时间轴非法都不能进入 TTS。
 
 ### 8.2 语言目录
@@ -366,6 +377,9 @@ type VoiceoverAnalysis = {
   - `POST https://api.kie.ai/api/v1/jobs/createTask`
   - `model='google/gemini-3-1-flash-tts'`
   - `input.speakers` 和 `input.dialogue_turns` 按文档要求序列化为 JSON 字符串。
+  - 单人口播精确序列化为
+    `speakers='[{"speaker_id":"Speaker 1","voice_name":"Kore"}]'` 与
+    `dialogue_turns='[{"speaker_id":"Speaker 1","text":"..."}]'`；内部 camelCase 字段不得泄漏到 provider body。
 - 查询接口：
   - `GET https://api.kie.ai/api/v1/jobs/recordInfo?taskId=...`
 - 适配器负责：
@@ -384,6 +398,7 @@ type VoiceoverAnalysis = {
 ### 10.1 口播组
 
 - 相邻间隔不超过 `MEIAO_VOICEOVER_GROUP_GAP_MS` 且总输入未超模型限制的片段合并为一个 TTS 组。
+- 规划与 checkpoint 共用 `VOICEOVER_MAX_TTS_GROUPS=100`；恰好 100 组允许，第 101 组在任何 provider 提交前以 `voiceover_tts_input_too_large` 拒绝。
 - 每组保存目标起止时间、译文、预计语速、实际音频时长和安全变速比。
 - TTS 提交前根据目标时间预算选择 `pace`。
 - TTS 完成后使用 FFmpeg `atempo` 做无变调时间适配。
@@ -396,11 +411,12 @@ type VoiceoverAnalysis = {
 - `no_vocals` 保持双声道并统一为 48 kHz。
 - 每个新口播组按原始 `startMs` 放置，首尾按 `MEIAO_VOICEOVER_FADE_MS` 淡入淡出，避免拼接爆音。
 - 口播存在时按 `MEIAO_VOICEOVER_DUCKING_DB` 对背景轨做轻度 sidechain ducking；FFmpeg readiness 必须验证所用 filter，不能上线后才发现构建不支持。
-- 混合轨做峰值保护，禁止削波。
+- 混合轨使用 `alimiter=limit=0.8912509381:level=0` 做峰值保护，禁止削波；必须保持 `level=0` 关闭 auto level compensation，避免 FFmpeg 把受限信号重新增益到 0 dBFS 而破坏 -1 dBFS ceiling。
 - 最终画面使用：
   - `removeText=false`：规范化原视频。
   - `removeText=true`：Golden 去字幕托管结果。
 - 视频轨在合同兼容时直接复制，不重新编码画面；音频编码为 AAC。
+- 父 runner 传入 FFmpeg/FFprobe 的全部本地路径必须先 canonicalize，并验证位于服务端为该父任务创建和持有的工作根目录内；浏览器不得指定工作根，路径穿越和 symlink 逃逸必须在启动子进程前拒绝。
 - 音轨不足时补静音，超出时按权威视频时长裁切；最终视频总时长与底片误差不超过 `MEIAO_VOICEOVER_DURATION_TOLERANCE_MS`。
 - 最终 MP4 使用 `faststart`，转存后验证 `video/mp4`、H.264、AAC、`ftyp`、时长和 HTTP Range。
 
@@ -476,7 +492,7 @@ type VoiceoverAnalysis = {
 ### 15.2 本地分离 runner
 
 - Python、模型、哈希和 FFmpeg readiness。
-- `mdx_q`、CPU、two-stems 参数精确且不经过 shell。
+- `mdx`、CPU、two-stems 参数精确且不经过 shell。
 - 文件名含空格和特殊字符时不注入命令。
 - 单并发、排队、超时、取消、进程组退出和临时目录清理。
 - vocals/no-vocals 缺失、空文件、时长漂移和无效 WAV 失败。
@@ -486,7 +502,7 @@ type VoiceoverAnalysis = {
 
 - RTCFE prompt 保留严格 JSON 字段和解析锚点。
 - 单人、多人、无人声、空文本、未知语言和不支持语言。
-- 时间段越界、倒序、超过 `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS` 的重叠和超长译文。
+- 时间段越界、倒序、超过 `MEIAO_VOICEOVER_TIMESTAMP_OVERLAP_TOLERANCE_MS` 的重叠、重复 JSON 键、同源/目标语言和超过 `MEIAO_VOICEOVER_MAX_TARGET_TEXT_BYTES_PER_SECOND` 保守密度门的译文。
 - 两种翻译模式的长度预算和语义约束。
 - 分析提交状态未知时不自动重提。
 

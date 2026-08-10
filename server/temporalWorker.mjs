@@ -10,13 +10,24 @@ import {
   markLocalJobFailed,
   updateLocalJobProviderTaskId,
 } from './localJobStore.mjs';
-import { getJobById, isRunningJobConcurrencyBlocking, updateJobFields } from './jobManager.mjs';
+import {
+  getJobById,
+  isRunningJobConcurrencyBlocking,
+  updateJobFields,
+  updateRunningJobForClaim,
+} from './jobManager.mjs';
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode, getProviderCompletedRejectedOutput, isProviderCompletedOutputRejectedError } from './jobRuntime.mjs';
 import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, recordJobEvent } from './taskPlatform.mjs';
 import { isDeployDrainActive } from './deployDrain.mjs';
 import { runWithDeployJobClaimLock } from './deployClaimLock.mjs';
+import {
+  isParentOwnedChildJob,
+  PARENT_OWNED_CHILD_SQL_EXCLUSION,
+  persistLocalVoiceoverParentCheckpoint,
+  persistMysqlVoiceoverParentCheckpoint,
+} from './voiceoverChildJobStore.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -61,6 +72,20 @@ const toMissingJobActivityResult = (jobId) => ({
 });
 
 const serializeJsonValue = (value) => JSON.stringify(value ?? null);
+
+const preserveVoiceoverCheckpoint = (job, nextResult) => {
+  if (
+    String(job?.taskType || '') !== 'voiceover_translate_video'
+    || !job?.result?.voiceoverCheckpoint
+  ) {
+    return nextResult ?? null;
+  }
+  return {
+    ...(job.result && typeof job.result === 'object' && !Array.isArray(job.result) ? job.result : {}),
+    ...(nextResult && typeof nextResult === 'object' && !Array.isArray(nextResult) ? nextResult : {}),
+    voiceoverCheckpoint: job.result.voiceoverCheckpoint,
+  };
+};
 
 const toSafeJobConcurrency = (value, fallback = DEFAULT_JOB_CONCURRENCY) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -152,7 +177,8 @@ const shouldDelayMysqlJobForUserConcurrency = async ({
   const [rows] = await pool.query(
     `SELECT *
      FROM internal_jobs
-     WHERE status = 'running' AND user_id = ? AND id <> ?`,
+     WHERE status = 'running' AND user_id = ? AND id <> ?
+       AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}`,
     [job.userId, job.id]
   );
   const referenceTime = now();
@@ -180,6 +206,8 @@ export const createLocalTemporalActivities = ({
   heartbeat = defaultActivityHeartbeat,
   heartbeatIntervalMs = getTemporalActivityHeartbeatIntervalMs(),
   isExecutionPaused = isDeployDrainActive,
+  voiceoverEnv = process.env,
+  resolveVoiceoverConfig,
 }) => {
   const mutate = async (operation) => {
     if (typeof mutateStore === 'function') return mutateStore(operation);
@@ -190,8 +218,11 @@ export const createLocalTemporalActivities = ({
   };
   return ({
   async executeLocalJobAttemptActivity({ jobId }) {
+    const currentJob = getLocalJobById(readStore(), jobId);
+    if (isParentOwnedChildJob(currentJob)) {
+      return toActivityResult(currentJob);
+    }
     if (isExecutionPaused()) {
-      const currentJob = getLocalJobById(readStore(), jobId);
       return currentJob ? toActivityResult(currentJob) : toMissingJobActivityResult(jobId);
     }
     const claimedJob = await mutate((initialStore) => claimLocalJobForExecution(initialStore, jobId));
@@ -202,6 +233,11 @@ export const createLocalTemporalActivities = ({
     if (isTerminalJobStatus(claimedJob.status)) {
       return toActivityResult(claimedJob);
     }
+    const expectedClaim = Object.freeze({
+      id: claimedJob.id,
+      userId: claimedJob.userId,
+      startedAt: claimedJob.startedAt,
+    });
 
     const controller = new AbortController();
     if (claimedJob.cancelRequestedAt) {
@@ -221,11 +257,32 @@ export const createLocalTemporalActivities = ({
       await mutate((providerStore) => updateLocalJobProviderTaskId(providerStore, claimedJob.id, value));
       safeHeartbeat(heartbeat, { jobId: claimedJob.id, stage: 'provider_submit', providerTaskId: value });
     };
+    const onResultCheckpoint = async (resultPatch, checkpointContext = {}) => {
+      await mutate((checkpointStore) => persistLocalVoiceoverParentCheckpoint(checkpointStore, {
+        jobId: claimedJob.id,
+        userId: claimedJob.userId,
+        startedAt: expectedClaim.startedAt,
+        resultPatch,
+        env: voiceoverEnv,
+        resolveVoiceoverConfig: checkpointContext.voiceoverConfig
+          ? () => checkpointContext.voiceoverConfig
+          : resolveVoiceoverConfig,
+      }));
+    };
 
     try {
-      const output = await executeJob(claimedJob, controller.signal, { onProviderTaskId });
+      const output = await executeJob(claimedJob, controller.signal, {
+        onProviderTaskId,
+        onResultCheckpoint,
+      });
       const finishedJob = await mutate((completeStore) => {
-        const nextJob = markLocalJobCompleted(completeStore, claimedJob.id, output, controller.signal.aborted);
+        const nextJob = markLocalJobCompleted(
+          completeStore,
+          claimedJob.id,
+          output,
+          controller.signal.aborted,
+          expectedClaim,
+        );
         try {
           settleJobCredits?.({ store: completeStore, job: nextJob, output, aborted: controller.signal.aborted });
         } catch (creditError) {
@@ -252,8 +309,17 @@ export const createLocalTemporalActivities = ({
       }
       return toActivityResult(finishedJob);
     } catch (error) {
-      const failedJob = await mutate((failureStore) => {
-        const nextJob = markLocalJobFailed(failureStore, claimedJob.id, error);
+      const failureOutcome = await mutate((failureStore) => {
+        let nextJob;
+        try {
+          nextJob = markLocalJobFailed(failureStore, claimedJob.id, error, expectedClaim);
+        } catch (failureError) {
+          if (failureError?.code !== 'job_state_changed') throw failureError;
+          return {
+            stale: true,
+            job: getLocalJobById(failureStore, claimedJob.id),
+          };
+        }
         try {
           if (isProviderCompletedOutputRejectedError(error)) {
             settleJobCredits?.({
@@ -269,8 +335,12 @@ export const createLocalTemporalActivities = ({
         } catch (creditError) {
           console.error('Account credit finalization failed after local Temporal job failure.', creditError);
         }
-        return nextJob;
+        return { stale: false, job: nextJob };
       });
+      if (failureOutcome.stale) {
+        return toActivityResult(failureOutcome.job || claimedJob);
+      }
+      const failedJob = failureOutcome.job;
 
       const user = failedJob ? findUserById(failedJob.userId) : null;
       if (user && createLog && failedJob) {
@@ -317,6 +387,8 @@ export const createMysqlTemporalActivities = ({
   cancelPollMs = 2500,
   heartbeat = defaultActivityHeartbeat,
   isExecutionPaused = isDeployDrainActive,
+  voiceoverEnv = process.env,
+  resolveVoiceoverConfig,
 }) => ({
   async executeMysqlJobAttemptActivity(input = {}) {
     const pool = await getPool();
@@ -324,6 +396,9 @@ export const createMysqlTemporalActivities = ({
     const currentJob = await getJobById(pool, jobId);
     if (!currentJob) {
       return toMissingJobActivityResult(jobId);
+    }
+    if (isParentOwnedChildJob(currentJob)) {
+      return toActivityResult(currentJob);
     }
     if (isTerminalJobStatus(currentJob.status)) {
       return toActivityResult(currentJob);
@@ -358,7 +433,8 @@ export const createMysqlTemporalActivities = ({
       claim: (connection) => connection.query(
         `UPDATE internal_jobs
          SET status = 'running', started_at = ?, updated_at = ?, error_code = NULL, error_message = NULL, error_detail = NULL
-         WHERE id = ? AND status IN ('queued', 'retry_waiting', 'running')`,
+         WHERE id = ? AND status IN ('queued', 'retry_waiting', 'running')
+           AND ${PARENT_OWNED_CHILD_SQL_EXCLUSION}`,
         [claimedAt, claimedAt, currentJob.id],
       ),
     });
@@ -440,6 +516,19 @@ export const createMysqlTemporalActivities = ({
           meta: { providerTaskId: value },
         }));
       };
+      const onResultCheckpoint = async (resultPatch, checkpointContext = {}) => {
+        await persistMysqlVoiceoverParentCheckpoint({
+          pool,
+          jobId: refreshedJob.id,
+          userId: refreshedJob.userId,
+          startedAt: claimedAt,
+          resultPatch,
+          env: voiceoverEnv,
+          resolveVoiceoverConfig: checkpointContext.voiceoverConfig
+            ? () => checkpointContext.voiceoverConfig
+            : resolveVoiceoverConfig,
+        });
+      };
 
       await runTaskPlatformWrite(() => recordJobEvent(pool, refreshedJob, {
         attemptId: attempt?.id,
@@ -471,17 +560,20 @@ export const createMysqlTemporalActivities = ({
         });
       }
 
-      const output = await executeJob(refreshedJob, controller.signal, { onProviderTaskId });
+      const output = await executeJob(refreshedJob, controller.signal, {
+        onProviderTaskId,
+        onResultCheckpoint,
+      });
       const finishedAt = now();
       const latestBeforeComplete = await getJobById(pool, refreshedJob.id);
       if (!isSameMysqlClaim(latestBeforeComplete, claimedAt)) {
         return toActivityResult(latestBeforeComplete || refreshedJob);
       }
       const finalProviderTaskId = output?.providerTaskId || notifiedProviderTaskId || refreshedJob.providerTaskId || '';
-      await updateJobFields(pool, refreshedJob.id, {
+      await updateRunningJobForClaim(pool, latestBeforeComplete, {
         status: controller.signal.aborted ? 'cancelled' : 'succeeded',
         provider_task_id: finalProviderTaskId || null,
-        result_json: serializeJsonValue(output?.result || null),
+        result_json: serializeJsonValue(preserveVoiceoverCheckpoint(latestBeforeComplete, output?.result)),
         error_code: controller.signal.aborted ? 'request_cancelled' : null,
         error_message: controller.signal.aborted ? '任务已取消' : null,
         error_detail: null,
@@ -489,7 +581,12 @@ export const createMysqlTemporalActivities = ({
         updated_at: finishedAt,
       });
       try {
-        await settleJobCredits?.({ job: refreshedJob, output, finishedAt, aborted: controller.signal.aborted });
+        await settleJobCredits?.({
+          job: latestBeforeComplete,
+          output,
+          finishedAt,
+          aborted: controller.signal.aborted,
+        });
       } catch (creditError) {
         console.error('Account credit settlement failed after MySQL Temporal job completion.', creditError);
       }
@@ -570,19 +667,30 @@ export const createMysqlTemporalActivities = ({
         providerStatus: error?.providerStatus,
       });
 
-      await updateJobFields(pool, latestJob.id, {
-        status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
-        provider_task_id: providerTaskId || null,
-        retry_count: error?.code === 'request_cancelled' ? latestJob.retryCount ?? 0 : failure.retryCount,
-        error_code: persistedErrorCode,
-        error_message: errorFields.errorMessage,
-        error_detail: errorFields.errorDetail || null,
-        result_json: isProviderCompletedOutputRejectedError(error)
-          ? serializeJsonValue(getProviderCompletedRejectedOutput(error)?.result || null)
-          : latestJob.result ? serializeJsonValue(latestJob.result) : null,
-        updated_at: finishedAt,
-        finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
-      });
+      try {
+        await updateRunningJobForClaim(pool, latestJob, {
+          status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
+          provider_task_id: providerTaskId || null,
+          retry_count: error?.code === 'request_cancelled' ? latestJob.retryCount ?? 0 : failure.retryCount,
+          error_code: persistedErrorCode,
+          error_message: errorFields.errorMessage,
+          error_detail: errorFields.errorDetail || null,
+          result_json: isProviderCompletedOutputRejectedError(error)
+            ? serializeJsonValue(preserveVoiceoverCheckpoint(
+              latestJob,
+              getProviderCompletedRejectedOutput(error)?.result,
+            ))
+            : latestJob.result ? serializeJsonValue(latestJob.result) : null,
+          updated_at: finishedAt,
+          finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
+        });
+      } catch (persistError) {
+        if (persistError?.code === 'job_state_changed') {
+          const latestAfterRace = await getJobById(pool, latestJob.id);
+          return toActivityResult(latestAfterRace || latestJob);
+        }
+        throw persistError;
+      }
       try {
         if (isProviderCompletedOutputRejectedError(error)) {
           await settleJobCredits?.({

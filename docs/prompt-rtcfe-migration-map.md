@@ -109,6 +109,7 @@ E Example 示例
 | P24 | Provider 网关 | `server/providerGateway.mjs` | `buildKieAspectRatioPromptHint` | 比例补充短 prompt | 待确认 |
 | P25 | 万物替换 | `src/utils/productReplaceAnalysis.mjs`、`src/utils/productReplaceContract.mjs` | `buildProductReplaceAnalysisPrompt`、`buildProductReplacePrompt`、`buildProductReplaceEditPrompt` | 组合替换策划、产品替换生成与结果编辑 prompt | 已迁移 |
 | P26 | 万物替换 | `src/utils/logoReplaceAnalysis.mjs` | `buildLogoReplaceAnalysisPrompt`、`buildLogoReplaceGenerationPrompt` | Logo 结构分析与原子图稿生图 prompt；历史质量解析器已停用 | 已迁移 |
+| P27 | 口播翻译 | `server/voiceoverAnalysis.mjs` | `buildVoiceoverAnalysisMessages` | vocal-only 视频分析、翻译与严格 JSON prompt；owner: `server/voiceoverAnalysis.mjs`；测试: `server/voiceoverAnalysis.test.mjs`；解析锚点: `sourceLanguage`、`speakerCount`、`voiceProfile`、`segments` | 已迁移 |
 
 说明：测试文件中的 prompt fixture 不作为源 prompt 迁移对象，但迁移后要同步更新或新增测试。
 
@@ -721,6 +722,26 @@ E Example 示例
   - provider 生图和最终资产处理成功后直接完成，不创建出图后 AI 审查任务；历史质量字段不得覆盖成功图片状态。
 - 防回归测试：`src/utils/logoReplaceAnalysis.test.mjs`、`src/utils/logoWhitespaceCrop.test.mjs`、`src/services/arkService.test.mjs`、`src/adapters/shellWorkflowLogoReplace.test.mjs`、`src/adapters/shellDataAdapter.test.mjs`
 - 你确认：`[x]`
+
+### P27 口播翻译分析
+
+- Owner：`server/voiceoverAnalysis.mjs`
+- 位置：`buildVoiceoverAnalysisMessages`
+- 当前用途：使用一个受控 vocal-only 视频完成单人口播识别、目标语言翻译、非敏感音色画像和时间段输出。
+- 输入合同：同现有视频分析一致，使用 `input_file` / `file_url`，不增加独立音频尝试或第二次付费 fallback。
+- 当前解析锚点：
+  - 根字段 `sourceLanguage`、`speakerCount`、`voiceProfile`、`segments`
+  - 音色字段 `pitch`、`brightness`、`energy`、`pace`、`accentDescription`
+  - 分段字段 `id`、`startMs`、`endMs`、`sourceText`、`targetText`
+- 关键约束：
+  - RTCFE 使用 `C Context / Constraint` 标题，同时保留 Context 锚点与 Constraint 语义。
+  - 只能输出一个严格 JSON 对象，不得包含前后文、额外对象或未知字段。
+  - Prompt 从版本化目录列出全部允许的 `sourceLanguage` 代码，明确普通话为 `cmn` 而不是 `zh` / `zh-CN`。
+  - E 不放任何具体语言内容，仅要求按 F 输出，避免非英语目标被英文 `targetText` 样例误导。
+  - `natural` 可为自然口播调整措辞；`literal` 优先原意与句式；两者都必须满足安全时间预算，并以请求的目标语言输出 `targetText`。
+  - `voiceProfile` 不推断敏感身份属性。
+- 防回归测试：`server/voiceoverAnalysis.test.mjs`；`src/services/videoStoryboardService.test.mjs` 同时锁定与当前视频分析共用的 `input_file` / `file_url` 合同。
+- 迁移状态：`[x]`
 
 ## 5. 落地顺序建议
 

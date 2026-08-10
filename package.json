@@ -22,6 +22,7 @@
     "security:audit": "npm audit --audit-level=high --omit=dev",
     "probe:media-transcode": "node scripts/probe-media-transcode.mjs",
     "probe:subtitle-removal": "node scripts/probe-subtitle-removal.mjs",
+    "probe:voiceover-translation": "node scripts/probe-voiceover-translation.mjs",
     "probe:managed-image-cos": "node scripts/probe-managed-image-cos.mjs",
     "preview": "vite preview"
   },

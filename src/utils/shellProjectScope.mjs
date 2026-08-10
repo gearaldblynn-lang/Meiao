@@ -7,7 +7,7 @@ export const SHELL_SUBFEATURE_IDS = Object.freeze({
   everything_replace: Object.freeze(['product_replace', 'background_replace', 'logo_replace']),
   image_crop: Object.freeze(['long_slice', 'resize']),
   buyer_show: Object.freeze(['image', 'copy']),
-  video: Object.freeze(['generation', 'storyboard', 'subtitle_removal', 'diagnosis']),
+  video: Object.freeze(['generation', 'storyboard', 'voiceover_translation', 'subtitle_removal', 'diagnosis']),
   xhs_cover: Object.freeze(['cover']),
   agent_center: Object.freeze(['chat', 'management', 'knowledge', 'versions']),
   smart_factory: Object.freeze(['factory']),
@@ -51,6 +51,7 @@ const SHELL_SUBFEATURE_ALIASES = Object.freeze({
   video: Object.freeze({
     短视频生成: 'generation',
     分镜生成: 'storyboard',
+    口播翻译: 'voiceover_translation',
     去字幕: 'subtitle_removal',
     视频诊断: 'diagnosis',
   }),

@@ -21,12 +21,14 @@ interface Props {
   onDeleteResult: (projectId: string, resultId: string) => void;
   onDeleteProject: (projectId: string) => void;
   onDeletePlan?: (projectId: string, planId: string) => void;
-  onRegenerateResult?: (projectId: string, resultId: string, instruction?: string) => void;
+  onRegenerateResult?: (projectId: string, resultId: string, instruction?: string, options?: { confirmNewProviderAttempt?: boolean }) => void;
   onConfirmStoryboardImaging?: (projectId: string) => void;
   onFissionResult?: (projectId: string, resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
   onEditResult?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
   onRemoveVideoSubtitles?: (projectId: string, resultId: string) => void;
+  onTranslateVideoVoiceover?: (projectId: string, resultId: string) => void;
+  onVoiceoverResultDownloaded?: (projectId: string, resultId: string) => void | Promise<void>;
   onConfirmPlan?: (projectId: string, plan: any) => void;
   onUpdatePlans?: (projectId: string, plans: any[]) => void;
   onRegeneratePlans?: (projectId: string) => void;
@@ -46,7 +48,7 @@ interface Props {
 
 const ProjectListView: React.FC<Props> = ({
   projects, tasks, title, description, emptyIcon, emptyTitle, emptySubtitle,
-  onDeleteResult, onDeleteProject, onDeletePlan, onRegenerateResult, onFissionResult, onEditResult, onRecoverResult, onRemoveVideoSubtitles, onCancelTask,
+  onDeleteResult, onDeleteProject, onDeletePlan, onRegenerateResult, onFissionResult, onEditResult, onRecoverResult, onRemoveVideoSubtitles, onTranslateVideoVoiceover, onVoiceoverResultDownloaded, onCancelTask,
   onConfirmPlan, onUpdatePlans, onRegeneratePlans, onConfirmStoryboardImaging, onTranslationRegionEdit, onCancelTranslationRegionEdit, onTranslationResultDownloaded, onImportStoryboardToGeneration,
   subFeatures, activeSubFeature, onSubFeatureChange,
   beforeProjects, afterProjects,
@@ -367,6 +369,8 @@ const ProjectListView: React.FC<Props> = ({
                     onEdit={onEditResult}
                     onRecover={onRecoverResult}
                     onRemoveVideoSubtitles={onRemoveVideoSubtitles}
+                    onTranslateVideoVoiceover={onTranslateVideoVoiceover}
+                    onVoiceoverResultDownloaded={onVoiceoverResultDownloaded}
                     onConfirmPlan={onConfirmPlan}
                     onUpdatePlans={onUpdatePlans}
                     onRegeneratePlans={onRegeneratePlans}

@@ -39,6 +39,12 @@ import PlanEditor, { type PlanItem } from './PlanEditor';
 import { useToast } from './ToastSystem';
 import ProductRestoreAnalysisPanel, { ProductRestoreResultCreditBadge } from '../modules/Retouch/ProductRestoreAnalysisPanel';
 import SubtitleComparisonPlayer from './SubtitleComparisonPlayer';
+import VoiceoverResultPlayer from './VoiceoverResultPlayer';
+import {
+  buildVoiceoverTranslationEntryActions,
+  resolveSafeVoiceoverResultMedia,
+  runVoiceoverRetryRequest,
+} from './voiceoverResultExperience';
 import { getSubtitleRemovalRetryDecision } from '../../utils/subtitleRemovalRetrySafety.mjs';
 import {
   getStoryboardCardSegmentCount,
@@ -80,12 +86,14 @@ interface Props {
   project: Project;
   onDeleteResult?: (projectId: string, resultId: string) => void;
   onDeleteProject?: (projectId: string) => void;
-  onRegenerate?: (projectId: string, resultId: string, instruction?: string) => void | Promise<void>;
+  onRegenerate?: (projectId: string, resultId: string, instruction?: string, options?: { confirmNewProviderAttempt?: boolean }) => void | Promise<void>;
   onConfirmStoryboardImaging?: (projectId: string) => void;
   onFission?: (projectId: string, resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
   onEdit?: (projectId: string, resultId: string, instruction: string, files: File[], editMode?: ProductReplaceEditMode) => void;
   onRecover?: (projectId: string, resultId: string) => void;
   onRemoveVideoSubtitles?: (projectId: string, resultId: string) => void;
+  onTranslateVideoVoiceover?: (projectId: string, resultId: string) => void;
+  onVoiceoverResultDownloaded?: (projectId: string, resultId: string) => void | Promise<void>;
   onConfirmPlan?: (projectId: string, plan: PlanItem | PlanItem[]) => void;
   onUpdatePlans?: (projectId: string, plans: PlanItem[]) => void;
   onDeletePlan?: (projectId: string, planId: string) => void;
@@ -124,6 +132,7 @@ const subFeatureNames: Record<string, string> = {
   copy: '纯文案',
   generation: '短视频',
   storyboard: '分镜',
+  voiceover_translation: '口播翻译',
   diagnosis: '诊断',
   subtitle_removal: '去字幕',
   cover: '封面',
@@ -614,7 +623,7 @@ const ResultActionButton: React.FC<{
 };
 
 const ProjectCard: React.FC<Props> = ({
-  project, onDeleteResult, onDeleteProject, onRegenerate, onConfirmStoryboardImaging, onFission, onEdit, onRecover, onRemoveVideoSubtitles, onConfirmPlan, onUpdatePlans, onDeletePlan, onRegeneratePlans, onCancelTask, onTranslationRegionEdit, onCancelTranslationRegionEdit, onTranslationResultDownloaded, onImportStoryboardToGeneration, pendingActionKeys, compact = false, showGenerationProgress = true,
+  project, onDeleteResult, onDeleteProject, onRegenerate, onConfirmStoryboardImaging, onFission, onEdit, onRecover, onRemoveVideoSubtitles, onTranslateVideoVoiceover, onVoiceoverResultDownloaded, onConfirmPlan, onUpdatePlans, onDeletePlan, onRegeneratePlans, onCancelTask, onTranslationRegionEdit, onCancelTranslationRegionEdit, onTranslationResultDownloaded, onImportStoryboardToGeneration, pendingActionKeys, compact = false, showGenerationProgress = true,
 }) => {
   const [detailOpen, setDetailOpen] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -641,6 +650,7 @@ const ProjectCard: React.FC<Props> = ({
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(false);
   const [confirmDeleteResult, setConfirmDeleteResult] = useState<string | null>(null);
   const [subtitleRetryResultId, setSubtitleRetryResultId] = useState<string | null>(null);
+  const [voiceoverRetryResultId, setVoiceoverRetryResultId] = useState<string | null>(null);
   const [fissionDialog, setFissionDialog] = useState<{
     resultId: string;
     title: string;
@@ -686,6 +696,7 @@ const ProjectCard: React.FC<Props> = ({
   const isProductRestoreProject = project.module === 'retouch' && project.subFeature === 'product_restore';
   const isRetouchComparisonProject = isRetouchComparisonScope(project.module, project.subFeature);
   const isSubtitleRemovalProject = project.module === 'video' && project.subFeature === 'subtitle_removal';
+  const isVoiceoverTranslationProject = project.module === 'video' && project.subFeature === 'voiceover_translation';
   const canRemoveVideoSubtitles = (result: GeneratedResult) => Boolean(
     onRemoveVideoSubtitles
     && project.module === 'video'
@@ -694,6 +705,24 @@ const ProjectCard: React.FC<Props> = ({
     && Boolean(result.videoUrl),
   );
   const subtitleRemovalEntryResult = project.results.find(canRemoveVideoSubtitles);
+  const voiceoverTranslationEntryActions = buildVoiceoverTranslationEntryActions({
+    enabled: Boolean(onTranslateVideoVoiceover),
+    projectSubFeature: project.subFeature,
+    results: project.results,
+  });
+  const displayResults = isVoiceoverTranslationProject
+    ? project.results.map((result) => {
+        const safeMedia = resolveSafeVoiceoverResultMedia(result);
+        return {
+          ...result,
+          sourceAssetId: safeMedia.sourceAssetId,
+          sourceUrl: safeMedia.originalUrl,
+          sourcePreviewUrl: safeMedia.originalUrl,
+          finalAssetId: safeMedia.finalAssetId,
+          videoUrl: safeMedia.finalUrl,
+        };
+      })
+    : project.results;
   const usesMinimalRoleEditPrompt = isOneClickProject || isEverythingReplaceProductEditProject || isEverythingReplaceBackgroundEditProject;
   const getCurrentStoryboardDisplayUrl = (result: GeneratedResult) => {
     if (!isVersionedImageProject) return result.imageUrl;
@@ -705,7 +734,7 @@ const ProjectCard: React.FC<Props> = ({
     );
     return versions[selectedIndex]?.imageUrl || result.imageUrl;
   };
-  const previewableResults = project.results
+  const previewableResults = displayResults
     .map((result) => isVersionedImageProject ? { ...result, imageUrl: getCurrentStoryboardDisplayUrl(result) || '' } : result)
     .filter((result) => result.imageUrl || result.videoUrl);
   const lightboxItems: LightboxMediaItem[] = previewableResults.map((result, index) => ({
@@ -852,6 +881,9 @@ const ProjectCard: React.FC<Props> = ({
   const previewResult = project.results.find((result) => isCompletedMediaResult(result)) || project.results[0];
   const subtitleRetryResult = subtitleRetryResultId
     ? project.results.find((result) => result.id === subtitleRetryResultId)
+    : undefined;
+  const voiceoverRetryResult = voiceoverRetryResultId
+    ? project.results.find((result) => result.id === voiceoverRetryResultId)
     : undefined;
 
   useEffect(() => {
@@ -1280,10 +1312,26 @@ const ProjectCard: React.FC<Props> = ({
           console.warn('[MEIAO] failed to mirror downloaded translation result', error);
         });
       }
+      if (downloaded && isVoiceoverTranslationProject && onVoiceoverResultDownloaded) {
+        void Promise.resolve(onVoiceoverResultDownloaded(project.id, result.id)).catch((error) => {
+          console.warn('[MEIAO] failed to log voiceover result download', error);
+        });
+      }
       addToast('已开始下载', 'success');
     } catch (error) {
       addToast(error instanceof Error ? error.message : '下载失败', 'error');
     }
+  };
+
+  const requestVoiceoverRetry = (result: GeneratedResult) => {
+    if (!onRegenerate) return;
+    void runVoiceoverRetryRequest({
+      result,
+      submit: (options) => onRegenerate(project.id, result.id, undefined, options),
+      requestConfirmation: () => setVoiceoverRetryResultId(result.id),
+    }).catch((error) => {
+      addToast(error instanceof Error ? error.message : '口播翻译重试失败', 'error');
+    });
   };
 
   const renderImageCropSliceCard = (result: GeneratedResult, index: number) => (
@@ -1604,6 +1652,20 @@ const ProjectCard: React.FC<Props> = ({
             />
           </div>
         ) : null}
+        {voiceoverTranslationEntryActions.length > 0 ? (
+          <div className="space-y-2 border-t p-2.5" style={{ borderColor: 'var(--border-subtle)' }}>
+            {voiceoverTranslationEntryActions.map((action) => (
+              <ResultActionButton
+                key={action.resultId}
+                icon={<Film size={13} />}
+                label={action.label}
+                tone="primary"
+                className="w-full"
+                onClick={() => onTranslateVideoVoiceover?.(project.id, action.resultId)}
+              />
+            ))}
+          </div>
+        ) : null}
       </div>
 
       {detailOpen && (
@@ -1885,6 +1947,40 @@ const ProjectCard: React.FC<Props> = ({
                     '当前项目暂无结果，可继续生成或稍后刷新同步。'
                   )}
                 </div>
+              ) : isVoiceoverTranslationProject ? (
+                <section className="space-y-3">
+                  {displayResults.map((result, index) => {
+                    const canCancel = ['generating', 'retry_waiting'].includes(result.status)
+                      && result.voiceoverStage !== 'result_persisted'
+                      && result.cancelled !== true
+                      && Boolean(onCancelTask)
+                      && Boolean(result.backendJobId || project.backendJobId);
+                    const providerSubmissionStarted = [
+                      'subtitle_removal',
+                      'speech_analysis_submitting',
+                      'speech_analyzed',
+                      'translated',
+                      'tts_generating',
+                      'audio_aligned',
+                    ].includes(String(result.voiceoverStage || ''));
+                    return (
+                      <VoiceoverResultPlayer
+                        key={result.id}
+                        result={result}
+                        canCancel={canCancel}
+                        providerSubmissionStarted={providerSubmissionStarted}
+                        onCancel={canCancel
+                          ? () => onCancelTask?.(String(result.backendJobId || project.backendJobId))
+                          : undefined}
+                        onRetry={onRegenerate ? () => requestVoiceoverRetry(result) : undefined}
+                        onDownloadFinal={(safeUrl) => void handleDownloadSingle({
+                          ...result,
+                          videoUrl: safeUrl,
+                        }, index)}
+                      />
+                    );
+                  })}
+                </section>
               ) : isStoryboardProject ? (
                 <section className="space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 px-1">
@@ -3180,6 +3276,23 @@ const ProjectCard: React.FC<Props> = ({
           }}
         />
       ) : null}
+
+      {/* Confirm paid voiceover retry */}
+      <ConfirmDialog
+        open={Boolean(voiceoverRetryResult)}
+        title="确认重新尝试口播翻译"
+        message="上一次语音或分析提交状态不明确。继续可能产生新的上游费用，原有检查点和已记录的任务 ID 会保留，是否继续？"
+        confirmText="确认重试"
+        onConfirm={() => {
+          if (voiceoverRetryResult) {
+            void onRegenerate?.(project.id, voiceoverRetryResult.id, undefined, {
+              confirmNewProviderAttempt: true,
+            });
+          }
+          setVoiceoverRetryResultId(null);
+        }}
+        onCancel={() => setVoiceoverRetryResultId(null)}
+      />
 
       {/* Confirm paid subtitle retry */}
       <ConfirmDialog

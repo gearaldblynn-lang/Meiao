@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { readFile } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 
 import {
   buildAudioTranscodeArgs,
@@ -11,7 +11,7 @@ import {
 
 const require = createRequire(import.meta.url);
 
-function resolvePackagedFfmpegPath() {
+export function resolvePackagedFfmpegPath() {
   try {
     return require('ffmpeg-static');
   } catch {
@@ -19,7 +19,7 @@ function resolvePackagedFfmpegPath() {
   }
 }
 
-function resolvePackagedFfprobePath() {
+export function resolvePackagedFfprobePath() {
   try {
     return require('@ffprobe-installer/ffprobe')?.path || null;
   } catch {
@@ -46,6 +46,65 @@ function parseFrameRate(value) {
   return Number((top / bottom).toFixed(2));
 }
 
+const MAX_MP4_CONTAINER_ATOMS = 4_096;
+
+export async function inspectMp4Container(filePath, { maxAtoms = MAX_MP4_CONTAINER_ATOMS } = {}) {
+  const effectiveMaxAtoms = parsePositiveInteger(maxAtoms, MAX_MP4_CONTAINER_ATOMS);
+  let handle;
+  try {
+    handle = await open(filePath, 'r');
+    const { size: fileSize } = await handle.stat();
+    let offset = 0;
+    let containerBrand = '';
+    let moovOffset = -1;
+    let atomCount = 0;
+    const header = Buffer.alloc(16);
+    while (offset + 8 <= fileSize) {
+      if (atomCount >= effectiveMaxAtoms) {
+        return { containerBrand, fastStart: false, atomCount, capped: true };
+      }
+      const { bytesRead } = await handle.read(header, 0, header.length, offset);
+      atomCount += 1;
+      if (bytesRead < 8) return { containerBrand, fastStart: false, atomCount, capped: false };
+      const smallSize = header.readUInt32BE(0);
+      const type = header.toString('latin1', 4, 8);
+      let atomSize = smallSize;
+      let headerSize = 8;
+      if (smallSize === 1) {
+        if (bytesRead < 16) return { containerBrand, fastStart: false, atomCount, capped: false };
+        atomSize = Number(header.readBigUInt64BE(8));
+        headerSize = 16;
+      } else if (smallSize === 0) {
+        atomSize = fileSize - offset;
+      }
+      if (!Number.isSafeInteger(atomSize) || atomSize < headerSize || offset + atomSize > fileSize) {
+        return { containerBrand, fastStart: false, atomCount, capped: false };
+      }
+      if (type === 'ftyp' && bytesRead >= 12) containerBrand = header.toString('latin1', 8, 12).trim().toLowerCase();
+      if (type === 'moov' && moovOffset < 0) moovOffset = offset;
+      if (type === 'mdat') {
+        return {
+          containerBrand,
+          fastStart: Boolean(containerBrand && moovOffset >= 0 && moovOffset < offset),
+          atomCount,
+          capped: false,
+        };
+      }
+      offset += atomSize;
+    }
+    return {
+      containerBrand,
+      fastStart: false,
+      atomCount,
+      capped: false,
+    };
+  } catch {
+    return { containerBrand: '', fastStart: false, atomCount: 0, capped: false };
+  } finally {
+    await handle?.close();
+  }
+}
+
 export function parseFfprobeOutput(stdout, kind) {
   let payload;
   try {
@@ -63,7 +122,12 @@ export function parseFfprobeOutput(stdout, kind) {
     kind,
     durationSeconds: Number(format.duration || 0),
     formatNames: String(format.format_name || '').split(',').map((item) => item.trim()).filter(Boolean),
+    containerBrand: String(format?.tags?.major_brand || '').trim().toLowerCase(),
     audioCodec: audioStream?.codec_name || null,
+    sampleRate: Number(audioStream?.sample_rate || 0),
+    channels: Number(audioStream?.channels || 0),
+    hasVideo: Boolean(videoStream),
+    hasAudio: Boolean(audioStream),
     sizeBytes: Number(format.size || 0),
   };
   if (kind === 'video') {
@@ -74,7 +138,6 @@ export function parseFfprobeOutput(stdout, kind) {
       width: Number(videoStream?.width || 0),
       height: Number(videoStream?.height || 0),
       frameRate: parseFrameRate(videoStream?.avg_frame_rate || videoStream?.r_frame_rate),
-      hasAudio: Boolean(audioStream),
     };
   }
   return result;
@@ -183,7 +246,14 @@ export function createMediaTranscodeService({
     if (exitCode !== 0) {
       throw createMediaTranscodeError('media_probe_failed', '无法读取媒体信息', { exitCode });
     }
-    return parseFfprobeOutput(stdout, kind);
+    const metadata = parseFfprobeOutput(stdout, kind);
+    if (kind !== 'video') return metadata;
+    const container = await inspectMp4Container(filePath);
+    return {
+      ...metadata,
+      containerBrand: container.containerBrand || metadata.containerBrand,
+      fastStart: container.fastStart,
+    };
   };
 
   return {

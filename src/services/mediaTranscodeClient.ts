@@ -2,7 +2,7 @@ const SESSION_TOKEN_KEY = 'MEIAO_INTERNAL_SESSION_TOKEN';
 const MEDIA_REQUEST_TIMEOUT_MS = 600_000;
 
 export type MediaTranscodeKind = 'video' | 'audio';
-export type MediaTranscodeProfile = 'seedance_reference' | 'subtitle_removal';
+export type MediaTranscodeProfile = 'seedance_reference' | 'subtitle_removal' | 'voiceover_translation';
 export type MediaUploadProgress = { loaded: number; total: number; ratio: number };
 
 export type MediaTranscodeProbe = {
