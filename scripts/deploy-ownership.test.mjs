@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,6 +34,25 @@ test('active marker creation is exclusive and never overwrites an empty marker',
     /already exists/,
   );
   assert.equal(readFileSync(markerFile, 'utf8'), '');
+}));
+
+test('active and manual markers remain readable by the unprivileged app process', () => withTempDir((dir) => {
+  const markerFile = join(dir, 'drain.marker');
+  const mutexDir = join(dir, 'mutex');
+  ownership.acquireDeployMutex({ mutexDir, ownerToken: 'owner-a' });
+  ownership.createOwnedDeployMarker({ markerFile, mutexDir, ownerToken: 'owner-a' });
+
+  assert.equal(statSync(markerFile).mode & 0o777, 0o644);
+  assert.equal(readFileSync(markerFile, 'utf8'), 'owner-a\n');
+
+  const retained = ownership.retainManualDeployMarker({
+    markerFile,
+    mutexDir,
+    ownerToken: 'owner-a',
+  });
+  assert.equal(retained.retained, true);
+  assert.equal(statSync(markerFile).mode & 0o777, 0o644);
+  assert.equal(readFileSync(markerFile, 'utf8'), 'manual\n');
 }));
 
 test('marker removal deletes only the claimed owner marker and leaves a replacement untouched', () => withTempDir((dir) => {

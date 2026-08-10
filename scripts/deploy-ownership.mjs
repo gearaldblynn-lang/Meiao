@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   lstatSync,
   mkdtempSync,
   mkdirSync,
@@ -15,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 const OWNER_FILE = 'owner';
 const COMPLETION_FILE = 'remote-complete';
 const HELPER_FILE = 'ownership-helper.mjs';
+const MARKER_MODE = 0o644;
 
 export const pathExists = (path) => {
   try {
@@ -43,6 +45,14 @@ const readExact = (path) => {
   }
 };
 
+const writeReadableMarkerExclusive = (path, content) => {
+  writeFileSync(path, content, { flag: 'wx', mode: MARKER_MODE });
+  // The deploy helper may inherit a restrictive umask from root. The service
+  // runs as an unprivileged account and must still be able to observe the
+  // marker so writes fail closed instead of making /api/health return EACCES.
+  chmodSync(path, MARKER_MODE);
+};
+
 const createPrivateClaim = ({ livePath, purpose }) => {
   const claimParent = mkdtempSync(join(
     dirname(livePath),
@@ -66,7 +76,7 @@ const removeFileClaim = ({ claimParent, claimPath }) => {
 
 const restoreFileClaim = ({ claimParent, claimPath, livePath }) => {
   try {
-    writeFileSync(livePath, readFileSync(claimPath), { flag: 'wx', mode: 0o600 });
+    writeReadableMarkerExclusive(livePath, readFileSync(claimPath));
   } catch (error) {
     if (error?.code === 'EEXIST') return false;
     throw error;
@@ -206,7 +216,7 @@ export const releaseDeployMutex = ({
 export const createOwnedDeployMarker = ({ markerFile, mutexDir, ownerToken }) => {
   verifyDeployMutex({ mutexDir, ownerToken });
   try {
-    writeFileSync(markerFile, ownerContent(ownerToken), { flag: 'wx', mode: 0o600 });
+    writeReadableMarkerExclusive(markerFile, ownerContent(ownerToken));
   } catch (error) {
     if (error?.code === 'EEXIST') throw new Error('deploy marker already exists');
     throw error;
@@ -252,7 +262,7 @@ export const retainManualDeployMarker = ({ markerFile, mutexDir, ownerToken }) =
   verifyDeployMutex({ mutexDir, ownerToken });
   const claim = createPrivateClaim({ livePath: markerFile, purpose: 'manual' });
   if (!claim) {
-    writeFileSync(markerFile, 'manual\n', { flag: 'wx', mode: 0o600 });
+    writeReadableMarkerExclusive(markerFile, 'manual\n');
     verifyDeployMutex({ mutexDir, ownerToken });
     return { retained: true };
   }
@@ -284,7 +294,7 @@ export const retainManualDeployMarker = ({ markerFile, mutexDir, ownerToken }) =
 
   verifyDeployMutex({ mutexDir, ownerToken });
   try {
-    writeFileSync(markerFile, 'manual\n', { flag: 'wx', mode: 0o600 });
+    writeReadableMarkerExclusive(markerFile, 'manual\n');
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error;
     return {

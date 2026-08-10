@@ -295,7 +295,8 @@ test('deploy_tencent cleanup never stops the last process and restores static as
   assert.doesNotMatch(cleanup, /pm2 (?:stop|restart)/);
   assert.doesNotMatch(cleanup, /backend-network-drain/);
   assert.match(source, /retain-manual/);
-  assert.match(ownershipSource, /writeFileSync\(markerFile, 'manual\\n', \{ flag: 'wx'/);
+  assert.match(ownershipSource, /writeReadableMarkerExclusive\(markerFile, 'manual\\n'\)/);
+  assert.match(ownershipSource, /chmodSync\(path, MARKER_MODE\)/);
   assert.match(cleanup, /保留 manual marker/);
 });
 
@@ -333,9 +334,9 @@ test('deploy_tencent writes and removes active drain markers only for its owner 
 
   assert.match(source, /ownership-helper\.mjs' create-marker/);
   assert.match(source, /ownership-helper\.mjs' remove-marker/);
-  assert.match(ownershipSource, /writeFileSync\(markerFile, ownerContent\(ownerToken\), \{ flag: 'wx'/);
+  assert.match(ownershipSource, /writeReadableMarkerExclusive\(markerFile, ownerContent\(ownerToken\)\)/);
   assert.match(ownershipSource, /purpose: 'quarantine'/);
-  assert.match(ownershipSource, /writeFileSync\(livePath, readFileSync\(claimPath\), \{ flag: 'wx'/);
+  assert.match(ownershipSource, /writeReadableMarkerExclusive\(livePath, readFileSync\(claimPath\)\)/);
   assert.match(ownershipSource, /verifyDeployMutex\(\{ mutexDir, ownerToken \}\)/);
   assert.doesNotMatch(source, /rm -f \\"\\\$DRAIN_MARKER_FILE\\"/);
 });
