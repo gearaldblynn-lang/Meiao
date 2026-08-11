@@ -8,6 +8,13 @@ Use this file to stop the same problems from being rediscovered and re-fixed in 
 
 Before debugging a recurring issue, search this file, related tests, and recent handoff/release docs. After fixing a repeated issue, append a concise entry.
 
+## 2026-08-11 - 浏览器超时不能覆盖 durable job 终态
+
+- Symptom: KIE 已成功且结果图可读，分镜卡片仍长期显示“结果待同步”。
+- Architecture root cause and fix: 见 `CLAUDE.md` #117。
+- Regression check: `node --test src/services/kieJobResult.test.mjs src/services/kieAiService.test.mjs src/shell/storyboardJobIdentity.test.mjs`；`node --experimental-strip-types --test src/adapters/shellDataAdapter.test.mjs`；`npm run verify`。
+- Avoid next time: timeout 后先解析最后复查的服务端终态；付费 job 创建时显式写 module/workflow/project/result identity，并用严格身份负例防止跨模块误恢复。
+
 ## 2026-08-04 - 虚拟模特活动草稿不能继续出现在公共库
 
 - Symptom: 后台仅 2 个模特显示已发布，模特替换的公共库却显示 5 个；旧选择不会立即说明不可用。

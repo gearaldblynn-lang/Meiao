@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const shellSource = readFileSync(new URL('../ShellMigratedApp.tsx', import.meta.url), 'utf8');
 const videoModuleSource = readFileSync(new URL('./modules/Video/VideoModule.tsx', import.meta.url), 'utf8');
+const storyboardServiceSource = readFileSync(new URL('../services/videoStoryboardService.ts', import.meta.url), 'utf8');
 
 test('storyboard job-created callbacks persist backend identity without releasing submit locks', () => {
   assert.match(shellSource, /recordStoryboardJobCreated/);
@@ -33,6 +34,8 @@ test('all storyboard planning and board submits carry stable project metadata', 
     assert.match(block, /boardId:/);
     assert.match(block, /onJobCreated:/);
   });
+  const boardImageSubmitBlock = storyboardServiceSource.match(/export const generateStoryboardBoardImage[\s\S]*?export const generateStoryboardWhiteBgImage/)?.[0] || '';
+  assert.match(boardImageSubmitBlock, /jobModule:\s*'video'/);
 });
 
 test('job hydration merges recovered storyboard source data and exposes cancel ids', () => {

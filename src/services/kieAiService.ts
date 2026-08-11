@@ -2,6 +2,7 @@
 import { GlobalApiConfig, ModuleConfig, KieAiResult, AspectRatio, VideoConfig, SourceImageContext } from '../types.ts';
 import { cancelInternalJob, createInternalJob, fetchInternalJob, fetchSystemConfig, getActiveModuleContext, retryInternalJob, safeCreateInternalLog, waitForInternalJob } from './internalApi';
 import { getUserVisibleTaskId } from './kieTaskUtils.mjs';
+import { resolveTerminalKieJobResult } from './kieJobResult.mjs';
 import { normalizeGptImage2Resolution } from '../utils/gptImage2.mjs';
 import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
@@ -169,56 +170,29 @@ const waitForJobResult = async (
     }
     snapshotTracker.update(finalJob.payload);
     notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
-    const finalProviderTaskId = getUserVisibleTaskId(finalJob) || undefined;
-    const finalBackendJobId = String(finalJob.id || jobId || '').trim() || undefined;
-    if (finalJob.status === 'succeeded') {
-      return withVirtualModelSnapshot({
-        imageUrl: String(finalJob.result?.imageUrl || ''),
-        videoUrl: finalJob.result?.videoUrl ? String(finalJob.result.videoUrl) : undefined,
-        taskId: finalProviderTaskId,
-        backendJobId: finalBackendJobId,
-        status: 'success',
-        message: '',
-        creditsConsumed: Number.isFinite(Number(finalJob.result?.creditsConsumed)) ? Number(finalJob.result?.creditsConsumed) : undefined,
-      });
-    }
-
-    if (finalJob.status === 'cancelled') {
-      return withVirtualModelSnapshot({
-        imageUrl: '',
-        taskId: finalProviderTaskId,
-        backendJobId: finalBackendJobId,
-        status: 'interrupted',
-        message: finalJob.errorMessage || '任务已取消',
-        errorCode: String(finalJob.errorCode || '').trim(),
-      });
-    }
-
-    if (finalJob.errorCode === 'task_not_found') {
-      return withVirtualModelSnapshot({
-        imageUrl: '',
-        taskId: finalProviderTaskId,
-        backendJobId: finalBackendJobId,
-        status: 'task_not_found',
-        message: finalJob.errorMessage || '任务不存在或已过期',
-        errorCode: String(finalJob.errorCode || '').trim(),
-      });
+    const terminalResult = resolveTerminalKieJobResult(finalJob, jobId);
+    if (terminalResult && terminalResult.status !== 'error') {
+      return withVirtualModelSnapshot(terminalResult);
     }
 
     if (allowAutoRecover && shouldAutoRecoverKieJob(finalJob)) {
       return withVirtualModelSnapshot(await recoverKieProviderTask(finalJob.providerTaskId, signal, finalJob.taskType === 'kie_video', kieClientConfigPresent));
     }
 
-    const errorCode = String(finalJob.errorCode || '').trim();
+    const finalProviderTaskId = getUserVisibleTaskId(finalJob) || undefined;
+    const finalBackendJobId = String(finalJob.id || jobId || '').trim() || undefined;
+    const errorCode = String(terminalResult?.errorCode || finalJob.errorCode || '').trim();
     return withVirtualModelSnapshot({
-      imageUrl: '',
-      taskId: finalProviderTaskId,
-      backendJobId: finalBackendJobId,
+      ...(terminalResult || {
+        imageUrl: '',
+        taskId: finalProviderTaskId,
+        backendJobId: finalBackendJobId,
+      }),
       status: 'error',
       message: getUserFacingKieErrorMessage({
         status: 'error',
-        taskId: finalProviderTaskId,
-        message: finalJob.errorMessage || '任务执行失败',
+        taskId: terminalResult?.taskId || finalProviderTaskId,
+        message: terminalResult?.message || finalJob.errorMessage || '任务执行失败',
         errorCode,
       }),
       errorCode,
@@ -231,8 +205,18 @@ const waitForJobResult = async (
     if (error.code === 'job_timeout') {
       const timeoutJob = await fetchInternalJob(jobId).catch(() => null);
       snapshotTracker.update(timeoutJob?.job?.payload);
+      const timeoutTerminalResult = resolveTerminalKieJobResult(timeoutJob?.job, jobId);
+      if (timeoutTerminalResult && timeoutTerminalResult.status !== 'error') {
+        return withVirtualModelSnapshot(timeoutTerminalResult);
+      }
       if (allowAutoRecover && shouldAutoRecoverKieJob(timeoutJob?.job)) {
         return withVirtualModelSnapshot(await recoverKieProviderTask(timeoutJob.job.providerTaskId, signal, timeoutJob.job.taskType === 'kie_video', kieClientConfigPresent));
+      }
+      if (timeoutTerminalResult) {
+        return withVirtualModelSnapshot({
+          ...timeoutTerminalResult,
+          message: getUserFacingKieErrorMessage(timeoutTerminalResult),
+        });
       }
       const fallbackTaskId = notifiedProviderTaskId || getUserVisibleTaskId(timeoutJob?.job);
       if (fallbackTaskId) {

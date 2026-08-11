@@ -2734,10 +2734,22 @@ const mapJobs = (
 
   jobs.forEach((job) => {
     const jobId = String(job?.id || '').trim();
-    if (!jobId || hiddenJobIds.has(jobId) || toModule(job.module) !== MODULE_VALUES.VIDEO) return;
     const payload = (job.payload || {}) as Record<string, unknown>;
     const shellProjectId = String(payload.shellProjectId || '').trim();
     const planningPurpose = String(payload.planningPurpose || '').trim();
+    const boardId = String(payload.boardId || '').trim();
+    const shellBoardId = String(payload.shellBoardId || '').trim();
+    const isLegacyUnknownStoryboardBoardJob = String(job.module || '').trim() === 'unknown'
+      && String(job.taskType || '').trim() === 'kie_image'
+      && String(payload.subFeature || '').trim() === 'storyboard'
+      && String(payload.taskPurpose || '').trim() === 'storyboard_board_image'
+      && planningPurpose === 'storyboard_board_image'
+      && Boolean(shellProjectId && boardId && shellBoardId === boardId);
+    if (
+      !jobId
+      || hiddenJobIds.has(jobId)
+      || (toModule(job.module) !== MODULE_VALUES.VIDEO && !isLegacyUnknownStoryboardBoardJob)
+    ) return;
     if (!shellProjectId || !['storyboard_planning', 'storyboard_board_image'].includes(planningPurpose)) return;
     const bucket = storyboardGroups.get(shellProjectId) || [];
     bucket.push(job);

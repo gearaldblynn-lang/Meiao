@@ -766,6 +766,7 @@ export const generateStoryboardBoardImage = async (
       undefined,
       'main',
       {
+        jobModule: 'video',
         ...storyboardBoardImageJobContext,
         clientSubmissionKey: String(jobContext.clientSubmissionKey || '').trim() || undefined,
         planningPurpose: String(jobContext.planningPurpose || 'storyboard_board_image').trim(),

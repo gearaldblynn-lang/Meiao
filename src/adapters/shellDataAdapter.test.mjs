@@ -1632,6 +1632,101 @@ test('shell data adapter restores board backend identity as the active cancel ta
   assert.equal(snapshot.tasks.find((item) => item.backendJobId === 'storyboard-board-job')?.projectId, projectId);
 });
 
+test('shell data adapter restores legacy unknown-module storyboard jobs by durable workflow identity', () => {
+  const projectId = 'video_1786416459557_0_vcyz';
+  const boardId = 'board_video_1786416459557_0_vcyz_2';
+  const state = {
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: projectId,
+          name: '爆款复刻方案 1',
+          config: { duration: '15s', shotCount: 2, aspectRatio: '9:16', videoGenerationMode: 'original' },
+          status: 'imaging',
+          script: '分镜脚本',
+          shots: [{ id: 'shot-2', prompt: '第二段' }],
+          boards: [{
+            id: boardId,
+            title: '分段二',
+            shotIds: ['shot-2'],
+            status: 'generating',
+            taskId: '35774d0f8c54f35f4629bd9453eb3c6f',
+            backendJobId: 'fe0e3ba1d15d3532d19acf73',
+            error: '任务已提交云端，结果待同步',
+          }],
+          createdAt: 1786416459557,
+        }],
+      },
+    },
+  };
+  const snapshot = buildShellDataSnapshot(state, [{
+    id: 'fe0e3ba1d15d3532d19acf73',
+    module: 'unknown',
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: '35774d0f8c54f35f4629bd9453eb3c6f',
+    status: 'succeeded',
+    payload: {
+      taskPurpose: 'storyboard_board_image',
+      subFeature: 'storyboard',
+      shellProjectId: projectId,
+      shellBoardId: boardId,
+      planningPurpose: 'storyboard_board_image',
+      phase: 'confirm',
+      boardId,
+    },
+    result: {
+      imageUrl: 'https://assets.example.test/storyboard-2.jpg',
+      creditsConsumed: 3,
+    },
+    createdAt: 1786417009509,
+    updatedAt: 1786417154953,
+  }]);
+  const project = snapshot.projects.find((item) => item.id === projectId)?.storyboardSourceProject;
+  const board = project?.boards.find((item) => item.id === boardId);
+
+  assert.equal(project?.status, 'completed');
+  assert.equal(board?.status, 'completed');
+  assert.equal(board?.imageUrl, 'https://assets.example.test/storyboard-2.jpg');
+  assert.equal(board?.backendJobId, 'fe0e3ba1d15d3532d19acf73');
+});
+
+test('shell data adapter does not route an unknown job into storyboard without exact board identity', () => {
+  const projectId = 'strict-legacy-storyboard-project';
+  const state = {
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: projectId,
+          status: 'imaging',
+          script: '分镜脚本',
+          shots: [{ id: 'shot-1', prompt: '镜头' }],
+          boards: [{ id: 'board-1', shotIds: ['shot-1'], status: 'generating' }],
+        }],
+      },
+    },
+  };
+  const snapshot = buildShellDataSnapshot(state, [{
+    id: 'unknown-unbound-job',
+    module: 'unknown',
+    taskType: 'kie_image',
+    status: 'succeeded',
+    payload: {
+      subFeature: 'storyboard',
+      taskPurpose: 'storyboard_board_image',
+      planningPurpose: 'storyboard_board_image',
+      shellProjectId: projectId,
+      boardId: 'board-1',
+      shellBoardId: 'different-board',
+    },
+    result: { imageUrl: '/must-not-attach.png' },
+  }]);
+  const board = snapshot.projects.find((item) => item.id === projectId)?.storyboardSourceProject?.boards[0];
+
+  assert.equal(board?.status, 'generating');
+  assert.notEqual(board?.imageUrl, '/must-not-attach.png');
+});
+
 test('storyboard hydration selects the newest same-board job without losing local edits', () => {
   const projectId = 'storyboard-multi-job-project';
   const localVersions = [

@@ -39,11 +39,18 @@ test('kieAiService returns the authoritative URL-free virtual-model snapshot for
   assert.match(kieAiSource, /snapshotTracker\.update\(currentJob\?\.payload\)/);
   assert.match(kieAiSource, /snapshotTracker\.update\(finalJob\.payload\)/);
   assert.match(kieAiSource, /const withVirtualModelSnapshot = <T extends KieAiResult>/);
-  assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'success'/);
-  assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'interrupted'/);
-  assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'task_not_found'/);
+  assert.match(kieAiSource, /resolveTerminalKieJobResult\(finalJob, jobId\)/);
+  assert.match(kieAiSource, /return withVirtualModelSnapshot\(terminalResult\)/);
   assert.match(kieAiSource, /return withVirtualModelSnapshot\(\{\s*imageUrl:[\s\S]*status: 'error'/);
   assert.match(kieAiSource, /waitForJobResult\(job\.id,[\s\S]*job\.payload\)/);
+});
+
+test('kieAiService trusts a terminal job found by the final timeout recheck', () => {
+  assert.match(kieAiSource, /const timeoutTerminalResult = resolveTerminalKieJobResult\(timeoutJob\?\.job, jobId\)/);
+  assert.match(
+    kieAiSource,
+    /if \(timeoutTerminalResult && timeoutTerminalResult\.status !== 'error'\) \{\s*return withVirtualModelSnapshot\(timeoutTerminalResult\);\s*\}/,
+  );
 });
 
 test('kieAiService can resume waiting on an internal job id before falling back to provider recovery', () => {
